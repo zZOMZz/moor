@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" /><meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'"
+  /><title>连接设置</title
+  ><link rel="stylesheet" href="settings.css" />
+  <main>
+    <div class="settings-brand">
+      <img src="icon-192.png" alt="" width="36" height="36" /><span>MOOR · 泊点</span>
+    </div>
+    <h1>从这台电脑开始。</h1>
+    <p>添加项目后即可本地使用。连接个人服务后，你的手机和另一台 Mac 也能访问这里。</p>
+    <section class="health-panel" aria-label="连接状态">
+      <div class="row">
+        <strong>连接状态</strong><button type="button" id="recover">重新连接</button>
+      </div>
+      <div id="health-cards" aria-live="polite"></div>
+      <small>重新连接不会重启仍在运行的 Agent，也不会重放之前的指令。</small>
+    </section>
+    <form id="settings">
+      <label>电脑名称<input id="name" maxlength="100" required /></label
+      ><label
+        >个人服务地址<input id="server" type="url" placeholder="https://moor.example.com" /></label
+      ><label
+        >配对码<input id="code" autocomplete="off" placeholder="在 Web 的“添加电脑”中获取" /></label
+      ><small>首次连接或更换服务器时填写配对码。</small>
+      <div class="row">
+        <strong>本机项目</strong><button type="button" id="add">添加目录</button>
+      </div>
+      <ul id="projects"></ul>
+      <fieldset>
+        <legend>本机 Agent</legend>
+        <label class="check"><input type="checkbox" value="codex" id="codex" />Codex</label
+        ><label class="check"><input type="checkbox" value="claude" id="claude" />Claude</label>
+      </fieldset>
+      <small>使用这台电脑已有的 Agent 登录和环境配置。首次使用前，请完成相应 Agent 的登录。</small>
+      <div class="actions">
+        <button class="primary" id="save">保存设置</button
+        ><button type="button" id="local">本机工作区</button
+        ><button type="button" id="remote">我的所有电脑</button>
+      </div>
+    </form>
+    <p id="status" role="status"></p>
+  </main>
+  <script src="settings.js"></script>
+</html>

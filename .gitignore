@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.data/
+*.sqlite*
+.env
+.DS_Store
+
+release/
+
+.runtime/
+*.log
+
+assets/brand/*.iconset/
+assets/brand/moor-1024.png

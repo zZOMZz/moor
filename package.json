@@ -1,0 +1,42 @@
+{
+  "name": "moor",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node dist/server.mjs",
+    "bridge": "node dist/bridge.mjs",
+    "dev": "tsx src/relay/main.ts",
+    "check": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "package:relay": "npm run build && node scripts/package.mjs relay",
+    "package:mac": "npm run build && node scripts/package.mjs mac",
+    "setup:runtime": "node scripts/setup-runtime.mjs",
+    "format": "prettier --write src scripts tests deploy package.json tsconfig.json README.md AGENTS.md",
+    "format:check": "prettier --check src scripts tests deploy package.json tsconfig.json README.md AGENTS.md"
+  },
+  "dependencies": {
+    "@lody/shared": "link:./.runtime/lody/packages/shared",
+    "@loro-dev/flock-wasm": "0.4.3",
+    "loro-crdt": "1.15.1",
+    "loro-mirror": "2.3.1",
+    "ws": "8.18.3",
+    "zod": "3.25.76",
+    "effect": "3.18.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "prettier": "3.7.4"
+  },
+  "packageManager": "pnpm@10.20.0",
+  "description": "Local-first coding agents, reachable from your own devices",
+  "license": "Apache-2.0"
+}

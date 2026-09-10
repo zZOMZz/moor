@@ -1,0 +1,6 @@
+Moor
+Copyright 2026 Moor contributors
+
+Moor uses the public Lody runtime and protocols (Apache-2.0).
+Copyright and attribution for Lody remain with its original contributors.
+See runtime.json for the pinned upstream source and release licenses/ for dependency notices.

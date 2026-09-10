@@ -1,0 +1,49 @@
+import type { Workspace } from '../protocol';
+export type Device = { id: string; name: string; online: boolean; workspaces: Workspace[] };
+export type Selection = {
+  deviceId: string;
+  workspaceId: string;
+  sessionId: string;
+  search: string;
+  projectId: string;
+};
+export type SessionSummary = {
+  id: string;
+  title?: string;
+  createdAt?: string;
+  lastMessageAt?: number;
+  project?: { kind?: string; localProjectId?: string };
+  status?: { type?: string };
+  isArchived?: boolean;
+};
+export function resolveSelection(devices: Device[], saved?: Partial<Selection>) {
+  const device = devices.find((d) => d.id === saved?.deviceId);
+  if (!device) return undefined;
+  const workspace =
+    device.workspaces.find((w) => w.id === saved?.workspaceId) ?? device.workspaces[0];
+  if (!workspace) return undefined;
+  return {
+    device,
+    workspace,
+    sessionId: workspace.id === saved?.workspaceId ? (saved.sessionId ?? '') : '',
+    search: workspace.id === saved?.workspaceId ? (saved.search ?? '') : '',
+    projectId: workspace.projects.some((p) => p.id === saved?.projectId) ? saved!.projectId! : '',
+  };
+}
+export function filterSessions(
+  list: SessionSummary[],
+  workspace: Workspace | undefined,
+  search: string,
+  projectId: string,
+) {
+  const words = search.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const time = (s: SessionSummary) => s.lastMessageAt ?? (Date.parse(s.createdAt ?? '') || 0);
+  return list
+    .filter((s) => {
+      if (s.isArchived || (projectId && s.project?.localProjectId !== projectId)) return false;
+      const project = workspace?.projects.find((p) => p.id === s.project?.localProjectId);
+      const haystack = `${s.title ?? ''} ${project?.name ?? ''}`.toLocaleLowerCase();
+      return words.every((w) => haystack.includes(w));
+    })
+    .sort((a, b) => time(b) - time(a) || a.id.localeCompare(b.id));
+}

@@ -1,0 +1,28 @@
+services:
+  relay:
+    build: ../release/relay
+    restart: unless-stopped
+    environment:
+      MOOR_ORIGIN: https://${MOOR_DOMAIN}
+    volumes:
+      - relay-data:/data
+    expose:
+      - '3078'
+  https:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      MOOR_DOMAIN: ${MOOR_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - relay
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:
