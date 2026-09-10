@@ -1,10 +1,12 @@
-import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta } from '../model';
-import type { Mutation, Workspace } from '../protocol';
+import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
+import type { Mutation, RuntimeWorkspace } from '../protocol';
+import type { Workspace, ProjectReplica } from '../catalog';
 import * as cache from './cache';
 const root = document.querySelector<HTMLElement>('#app')!;
 import { esc, renderItem, renderFileChanges } from './content';
 import {
-  filterSessions,
+  filterCatalogSessions,
+  catalogSessionList,
   resolveSelection,
   type Device,
   type Selection,
@@ -15,10 +17,13 @@ let search = '',
   restoredSelection = false,
   selectionLoading = 0;
 let localOnly = false;
+let catalog: Workspace[] = [],
+  activeWorkspace: Workspace | undefined,
+  replica: ProjectReplica | undefined;
 let owner = '',
   devices: Device[] = [],
   selected: Device | undefined,
-  workspace: Workspace | undefined,
+  workspace: RuntimeWorkspace | undefined,
   sessionId = '',
   doc = new LoroDoc(),
   flock = new Flock(),
@@ -80,7 +85,8 @@ async function api(path: string, body?: unknown) {
   return data;
 }
 function prefix() {
-  return `/api/devices/${selected!.id}`;
+  if (!activeWorkspace || !replica) throw new Error('请先选择项目副本');
+  return `/api/workspaces/${activeWorkspace.id}/replicas/${replica.id}`;
 }
 function query() {
   return `?workspace=${encodeURIComponent(workspace!.id)}`;
@@ -104,6 +110,7 @@ async function boot() {
     connect();
     await cache.write('last-owner', owner).catch(error);
     devices = (await cache.read<Device[]>(owner + '/devices').catch(() => undefined)) ?? [];
+    catalog = (await cache.read<Workspace[]>(owner + '/workspaces').catch(() => undefined)) ?? [];
     await loadDevices();
     await restoreSelection();
   } catch {
@@ -111,6 +118,12 @@ async function boot() {
     if (owner) {
       shell();
       devices = (await cache.read<Device[]>(owner + '/devices').catch(() => undefined)) ?? [];
+      catalog = (await cache.read<Workspace[]>(owner + '/workspaces').catch(() => undefined)) ?? [];
+      catalog = catalog.map((w) => ({
+        ...w,
+        hosts: w.hosts.map((h) => ({ ...h, online: false })),
+        replicas: w.replicas.map((r) => ({ ...r, available: false })),
+      }));
       devices = devices.map((d) => ({ ...d, online: false }));
       renderDevices();
       error(new ApiError('当前离线，可阅读本机缓存的历史', 0));
@@ -133,7 +146,7 @@ function showLogin(setup: boolean) {
 }
 function shell() {
   window.dispatchEvent(new Event('moor:ready'));
-  root.innerHTML = `<header><button id="nav-toggle" class="quiet" aria-label="选择电脑和会话" aria-controls="navigation" aria-expanded="false">☰</button><a class="brand" href="/"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></a><div class="header-actions"><span id="connection" class="subtle">正在连接</span><button id="pair">添加电脑</button><button id="logout" class="quiet">退出</button></div></header><button id="nav-shade" hidden aria-label="关闭会话列表"></button><div class="layout"><aside id="navigation"><div class="section-label">我的电脑</div><div id="devices"></div><div class="section-label">会话 <button id="new" class="quiet">＋ 新建</button></div><div id="navigation-controls"></div><div id="session-count" class="subtle"></div><div id="sessions"></div></aside><main><div id="target"></div><div id="notice" role="alert"></div><div id="history"><div class="welcome"><span class="eyebrow">PERSONAL WORKSPACE</span><h1>在任意设备上，<br>接着做下去。</h1><p>选择一台已连接的电脑，打开它的项目与会话。</p><div class="hint">代码和 Agent 始终在你选择的电脑运行。</div></div></div><form id="composer" hidden><div id="new-options"></div><label class="sr-only" for="prompt">发送给 Agent 的指令</label><textarea id="prompt" placeholder="描述接下来要做的事…" rows="3"></textarea><div class="compose-footer"><span id="draft-state">输入保存在当前设备</span><div><button type="button" id="cancel" hidden>停止</button><button class="primary" id="send">发送 ↑</button></div></div></form></main></div><dialog id="pair-dialog"><h2>连接一台电脑</h2><p>在 Mac 上打开 Moor 的连接设置，填写服务地址和下面的配对码。</p><code id="pair-code"></code><p>配对码有效期 5 分钟，仅可使用一次。</p><pre id="pair-command"></pre><button id="close-dialog">完成</button></dialog>`;
+  root.innerHTML = `<header><button id="nav-toggle" class="quiet" aria-label="选择工作区和会话" aria-controls="navigation" aria-expanded="false">☰</button><a class="brand" href="/"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></a><div class="header-actions"><span id="connection" class="subtle">正在连接</span><button id="pair">添加电脑</button><button id="logout" class="quiet">退出</button></div></header><button id="nav-shade" hidden aria-label="关闭会话列表"></button><div class="layout"><aside id="navigation"><div id="workspace-picker"></div><button id="manage-workspace" class="quiet">管理工作区</button><div class="section-label">执行电脑</div><div id="devices"></div><div class="section-label">会话 <button id="new" class="quiet">＋ 新建</button></div><div id="navigation-controls"></div><div id="session-count" class="subtle"></div><div id="sessions"></div></aside><main><div id="target"></div><div id="notice" role="alert"></div><div id="history"><div class="welcome"><span class="eyebrow">PERSONAL WORKSPACE</span><h1>在任意设备上，<br>接着做下去。</h1><p>选择工作区，查看各台电脑上的项目与会话。</p><div class="hint">代码和 Agent 始终在你选择的电脑运行。</div></div></div><form id="composer" hidden><div id="new-options"></div><label class="sr-only" for="prompt">发送给 Agent 的指令</label><textarea id="prompt" placeholder="描述接下来要做的事…" rows="3"></textarea><div class="compose-footer"><span id="draft-state">输入保存在当前设备</span><div><button type="button" id="cancel" hidden>停止</button><button class="primary" id="send">发送 ↑</button></div></div></form></main></div><dialog id="pair-dialog"><h2>连接一台电脑</h2><p>在 Mac 上打开 Moor 的连接设置，填写服务地址和下面的配对码。</p><code id="pair-code"></code><p>配对码有效期 5 分钟，仅可使用一次。</p><pre id="pair-command"></pre><button id="close-dialog">完成</button></dialog><dialog id="workspace-dialog"></dialog>`;
   const toggleNav = (open: boolean) => {
     root.toggleAttribute('data-nav-open', open);
     $('#nav-toggle').setAttribute('aria-expanded', String(open));
@@ -150,7 +163,7 @@ function shell() {
   }
   $('#pair').onclick = () =>
     run(async () => {
-      const { code } = await api('/api/pair', {});
+      const { code } = await api('/api/pair', { workspaceId: activeWorkspace?.id });
       $('#pair-code').textContent = code;
       $('#pair-command').textContent = location.origin;
       $<HTMLDialogElement>('#pair-dialog').showModal();
@@ -165,11 +178,34 @@ function shell() {
       owner = '';
       selected = undefined;
       workspace = undefined;
+      activeWorkspace = undefined;
+      catalog = [];
+      replica = undefined;
       restoredSelection = false;
       connected = false;
       showLogin(false);
     });
-  $('#new').onclick = () => run(() => openSession(''));
+  $('#manage-workspace').onclick = () => showWorkspaceManager();
+  $('#new').onclick = () =>
+    run(async () => {
+      const copies = activeWorkspace?.replicas.filter((r) => r.projectId === projectFilter) ?? [];
+      const currentHost = activeWorkspace?.hosts.find(
+        (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
+      );
+      const copy =
+        copies.find((r) => r.hostId === currentHost?.id) ??
+        copies.find((r) => r.available) ??
+        copies[0];
+      const host = activeWorkspace?.hosts.find((h) => h.id === copy?.hostId);
+      if (host && host.id !== currentHost?.id)
+        await selectDevice(host.deviceId, {
+          workspaceId: host.runtimeWorkspaceId,
+          projectId: projectFilter,
+          search,
+          sessionId: '',
+        });
+      else await openSession('');
+    });
   $<HTMLFormElement>('#composer').onsubmit = (e) => {
     e.preventDefault();
     run(sendTurn);
@@ -201,7 +237,7 @@ function connect() {
     run(async () => {
       await loadDevices();
       await restoreSelection();
-      if (selected && workspace) {
+      if (activeWorkspace) {
         await loadSessions();
         if (sessionId) await loadSession();
       }
@@ -223,7 +259,7 @@ function connect() {
         refreshTimer = undefined;
         run(async () => {
           await loadDevices();
-          if (selected && workspace) {
+          if (activeWorkspace) {
             await loadSessions();
             if (sessionId) await loadSession();
           }
@@ -233,7 +269,10 @@ function connect() {
 }
 async function loadDevices() {
   const requestedOwner = owner;
-  const fresh: Device[] = await api('/api/devices');
+  const [fresh, spaces]: [Device[], Workspace[]] = await Promise.all([
+    api('/api/devices'),
+    api('/api/workspaces'),
+  ]);
   if (!owner || owner !== requestedOwner) return;
   devices = fresh.map((d) => ({
     ...d,
@@ -241,18 +280,40 @@ async function loadDevices() {
       ? d.workspaces
       : (devices.find((old) => old.id === d.id)?.workspaces ?? []),
   }));
-  await cache.write(owner + '/devices', devices);
+  catalog = spaces.map((w) => ({
+    ...w,
+    replicas: w.replicas.map((r) => ({
+      ...r,
+      rootPath:
+        r.rootPath ??
+        catalog.find((old) => old.id === w.id)?.replicas.find((old) => old.id === r.id)?.rootPath,
+    })),
+  }));
+  if (activeWorkspace) activeWorkspace = catalog.find((w) => w.id === activeWorkspace!.id);
+  if (replica) replica = activeWorkspace?.replicas.find((r) => r.id === replica!.id);
+  await Promise.all([
+    cache.write(owner + '/devices', devices),
+    cache.write(owner + '/workspaces', catalog),
+  ]);
   if (selected) {
     selected = devices.find((d) => d.id === selected!.id);
     workspace = selected?.workspaces.find((w) => w.id === workspace?.id);
-    if (!selected) {
+    if (
+      !selected ||
+      !activeWorkspace?.hosts.some(
+        (h) => h.deviceId === selected!.id && h.runtimeWorkspaceId === workspace?.id,
+      )
+    ) {
+      selected = undefined;
+      workspace = undefined;
+      replica = undefined;
       sessionGeneration++;
       sessionId = '';
       doc = new LoroDoc();
       meta = null;
       pending = undefined;
       sessionList = [];
-      $('#history').textContent = '设备授权已撤销';
+      $('#history').textContent = '执行目标已移出工作区或授权已撤销，请重新选择。';
       renderSessions();
       $<HTMLFormElement>('#composer').hidden = true;
     }
@@ -260,58 +321,222 @@ async function loadDevices() {
   renderDevices();
   renderNavigation();
   clearRecoveredNotice();
-  if (selected && !workspace && selected.workspaces.length && !selectionLoading)
+  if (
+    selected &&
+    !workspace &&
+    activeWorkspace?.hosts.some((h) => h.deviceId === selected!.id) &&
+    !selectionLoading
+  )
     await selectDevice(selected.id);
   updateComposer();
 }
 function watch() {
-  if (events?.readyState === WebSocket.OPEN && selected && workspace)
+  if (events?.readyState !== WebSocket.OPEN) return;
+  if (!sessionId || !replica || !selected || !workspace) {
+    events.send(JSON.stringify({ type: 'unwatch' }));
+    return;
+  }
+  if (selected && workspace)
     events.send(
       JSON.stringify({
         type: 'watch',
         deviceId: selected.id,
         workspaceId: workspace.id,
         sessionId,
+        catalogWorkspaceId: activeWorkspace?.id,
+        replicaId: replica?.id,
       }),
     );
 }
 function renderDevices() {
   renderInto(
+    '#workspace-picker',
+    `<label>工作区<select id="workspace-switch" aria-label="工作区">${catalog.map((w) => `<option value="${esc(w.id)}" ${w.id === activeWorkspace?.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`,
+  );
+  $('#workspace-switch').onchange = () =>
+    run(() => selectWorkspace($<HTMLSelectElement>('#workspace-switch').value));
+  renderInto(
     '#devices',
-    devices.length
-      ? devices
+    activeWorkspace?.hosts.length
+      ? activeWorkspace.hosts
           .map(
-            (d) =>
-              `<div class="device-group"><button class="device ${selected?.id === d.id ? 'selected' : ''}" data-device="${esc(d.id)}"><span class="computer">▣</span><span><strong>${esc(d.name)}</strong><small><i class="dot ${d.online ? 'online' : ''}"></i>${d.online ? '在线' : '离线 · 仅本机缓存'}</small></span></button>${localOnly ? '' : `<button class="revoke quiet" data-revoke="${esc(d.id)}" aria-label="撤销 ${esc(d.name)} 的授权">移除</button>`}</div>`,
+            (h) =>
+              `<div class="device-group"><button class="device ${selected?.id === h.deviceId && workspace?.id === h.runtimeWorkspaceId ? 'selected' : ''}" data-host="${esc(h.id)}"><span class="computer">▣</span><span><strong>${esc(h.name)}</strong><small><i class="dot ${h.online ? 'online' : ''}"></i>${h.online ? '在线' : '离线 · 仅本机缓存'}</small></span></button></div>`,
           )
           .join('')
-      : '<p class="empty">还没有连接电脑。<br>点击“添加电脑”开始。</p>',
+      : '<p class="empty">工作区还没有电脑。可添加电脑，或在管理工作区中调整已有电脑的归属。</p>',
   );
-  document
-    .querySelectorAll<HTMLElement>('[data-device]')
-    .forEach((el) => (el.onclick = () => run(() => selectDevice(el.dataset.device!))));
-  document.querySelectorAll<HTMLElement>('[data-revoke]').forEach(
+  document.querySelectorAll<HTMLElement>('[data-host]').forEach(
     (el) =>
       (el.onclick = () =>
         run(async () => {
-          if (!confirm('撤销这台电脑的远程访问授权？本地 Lody 可继续使用。')) return;
-          await api('/api/devices/' + el.dataset.revoke + '/revoke', {});
-          await loadDevices();
+          const host = activeWorkspace!.hosts.find((h) => h.id === el.dataset.host)!;
+          await selectDevice(host.deviceId, {
+            workspaceId: host.runtimeWorkspaceId,
+            sessionId: '',
+            search,
+            projectId: projectFilter,
+          });
         })),
   );
 }
+function selectReplica(expectedProjectId?: string) {
+  const localProjectId =
+    expectedProjectId ?? document.querySelector<HTMLSelectElement>('#project')?.value;
+  const host = activeWorkspace?.hosts.find(
+    (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
+  );
+  replica = activeWorkspace?.replicas.find(
+    (r) => r.hostId === host?.id && r.localProjectId === localProjectId,
+  );
+  renderTarget();
+  void persistSelection().catch(error);
+  updateComposer();
+}
+function renderTarget() {
+  const project = activeWorkspace?.projects.find((p) => p.id === replica?.projectId);
+  $('#target').innerHTML =
+    `<div><span class="eyebrow">${esc(activeWorkspace?.name ?? '')} · 执行电脑</span><h2>${esc(selected?.name ?? '')}</h2></div><div class="target-project"><strong>${esc(project?.name ?? '')}</strong><small>${esc(replica?.rootPath ?? '')}</small></div>`;
+}
+function projectLabel(space: Workspace, projectId: string) {
+  const project = space.projects.find((p) => p.id === projectId);
+  if (!project) return '项目';
+  if (space.projects.filter((p) => p.name === project.name).length < 2) return project.name;
+  const names = [
+    ...new Set(
+      space.replicas
+        .filter((r) => r.projectId === projectId)
+        .map((r) => space.hosts.find((h) => h.id === r.hostId)?.name)
+        .filter(Boolean),
+    ),
+  ];
+  return `${project.name} · ${names.join(' / ') || '未分配副本'}`;
+}
+function showWorkspaceManager() {
+  const dialog = $<HTMLDialogElement>('#workspace-dialog');
+  const space = activeWorkspace;
+  dialog.innerHTML = `<h2>管理工作区</h2><form id="create-workspace"><label>新工作区名称<input name="name" required maxlength="100"></label><button>创建工作区</button></form>${
+    space
+      ? `
+    <form id="rename-workspace"><label>当前工作区名称<input name="name" value="${esc(space.name)}" required maxlength="100"></label><button>保存名称</button></form>
+    <h3>执行电脑</h3><p>更改归属会将这台电脑的本地工作区及其项目副本一起归入目标工作区。会话仍在原电脑执行。</p>
+    ${space.hosts.map((h) => `<form data-move-host="${esc(h.id)}"><label>${esc(h.name)}<select name="workspaceId">${catalog.map((w) => `<option value="${esc(w.id)}" ${w.id === space.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label><button>更改归属</button>${localOnly ? '' : `<button type="button" data-revoke="${esc(h.deviceId)}">撤销授权</button>`}</form>`).join('') || '<p>尚未连接电脑。</p>'}
+    <h3>项目与本地副本</h3><p>把不同电脑上的副本归入同一项目后，会话列表可以按该项目统一筛选。文件保留在各电脑原目录。</p>
+    <form id="create-project"><label>新项目名称<input name="name" required maxlength="200"></label><button>创建项目</button></form>
+    ${space.replicas.map((r) => `<form data-assign-replica="${esc(r.id)}"><label>${esc(space.hosts.find((h) => h.id === r.hostId)?.name ?? '')}<small>${esc(r.rootPath ?? '离线副本')}</small><select name="projectId" aria-label="副本所属项目">${space.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === r.projectId ? 'selected' : ''}>${esc(projectLabel(space, p.id))}</option>`).join('')}</select></label><button>保存归组</button></form>`).join('')}
+    `
+      : ''
+  }<p id="manager-notice" role="status"></p><button id="close-workspace-dialog">完成</button>`;
+  const submitForm = (
+    selector: string,
+    action: (data: Record<string, FormDataEntryValue>, form: HTMLFormElement) => Promise<void>,
+  ) => {
+    dialog.querySelectorAll<HTMLFormElement>(selector).forEach(
+      (form) =>
+        (form.onsubmit = (event) => {
+          event.preventDefault();
+          const fields = Object.fromEntries(new FormData(form));
+          form.querySelectorAll<HTMLButtonElement>('button').forEach((b) => (b.disabled = true));
+          void action(fields, form)
+            .catch((e) => {
+              $('#manager-notice').textContent = e instanceof Error ? e.message : String(e);
+            })
+            .finally(() =>
+              form
+                .querySelectorAll<HTMLButtonElement>('button')
+                .forEach((b) => (b.disabled = false)),
+            );
+        }),
+    );
+  };
+  submitForm('#create-workspace', async (data) => {
+    const created = await api('/api/workspaces', data);
+    await loadDevices();
+    await selectWorkspace(created.id);
+    showWorkspaceManager();
+  });
+  const refresh = async () => {
+    await loadDevices();
+    await loadSessions();
+    showWorkspaceManager();
+  };
+  submitForm('#rename-workspace', async (data) => {
+    await api(`/api/workspaces/${space!.id}/rename`, data);
+    await refresh();
+  });
+  submitForm('#create-project', async (data) => {
+    await api(`/api/workspaces/${space!.id}/projects`, data);
+    await refresh();
+  });
+  submitForm('[data-assign-replica]', async (data, form) => {
+    await api(`/api/workspaces/${space!.id}/replicas/${form.dataset.assignReplica}/assign`, data);
+    await refresh();
+  });
+  submitForm('[data-move-host]', async (data, form) => {
+    await api(`/api/workspaces/${space!.id}/hosts/${form.dataset.moveHost}/move`, data);
+    await refresh();
+  });
+  dialog.querySelectorAll<HTMLElement>('[data-revoke]').forEach(
+    (button) =>
+      (button.onclick = () =>
+        run(async () => {
+          if (!confirm('撤销这台电脑的远程访问授权？本地执行组件可继续使用。')) return;
+          await api(`/api/devices/${button.dataset.revoke}/revoke`, {});
+          await refresh();
+        })),
+  );
+  $('#close-workspace-dialog').onclick = () => dialog.close();
+  if (!dialog.open) dialog.showModal();
+}
+async function selectWorkspace(id: string, saved?: Partial<Selection>) {
+  const target = catalog.find((w) => w.id === id);
+  if (!target) return;
+  activeWorkspace = target;
+  search = saved?.search ?? '';
+  projectFilter = target.projects.some((p) => p.id === saved?.projectId) ? saved!.projectId! : '';
+  selected = undefined;
+  workspace = undefined;
+  replica = undefined;
+  sessionId = '';
+  pending = undefined;
+  sessionGeneration++;
+  renderDevices();
+  renderNavigation();
+  watch();
+  const exactHost = target.hosts.find(
+    (h) => h.deviceId === saved?.deviceId && h.runtimeWorkspaceId === saved?.workspaceId,
+  );
+  const host = exactHost ?? target.hosts[0];
+  if (host)
+    await selectDevice(host.deviceId, {
+      ...(exactHost ? saved : {}),
+      workspaceId: host.runtimeWorkspaceId,
+      search,
+      projectId: projectFilter,
+    });
+  else {
+    sessionList = [];
+    $('#composer').hidden = true;
+    $('#target').textContent = target.name;
+    $('#history').textContent = '添加电脑后，可在这个工作区开始会话。';
+    renderSessions();
+    await persistSelection();
+  }
+}
 async function persistSelection() {
-  if (!selected || !workspace) return;
+  if (!activeWorkspace) return;
   const state: Selection = {
-    deviceId: selected.id,
-    workspaceId: workspace.id,
+    deviceId: selected?.id ?? '',
+    workspaceId: workspace?.id ?? '',
     sessionId,
     search,
     projectId: projectFilter,
+    catalogWorkspaceId: activeWorkspace.id,
+    replicaId: replica?.id,
   };
   await Promise.all([
     cache.write(owner + '/view', state),
-    cache.write(owner + '/' + selected.id + '/view', state),
+    cache.write(owner + '/' + (selected?.id ?? activeWorkspace.id) + '/view', state),
   ]);
 }
 async function restoreSelection() {
@@ -320,9 +545,15 @@ async function restoreSelection() {
   const generation = sessionGeneration;
   const saved = await cache.read<Selection>(owner + '/view');
   if (generation !== sessionGeneration) return;
-  const target = resolveSelection(devices, saved);
-  if (target) await selectDevice(target.device.id, { ...saved!, workspaceId: target.workspace.id });
-  else if (devices.length === 1) await selectDevice(devices[0].id);
+  const space =
+    catalog.find((w) => w.id === saved?.catalogWorkspaceId) ??
+    catalog.find((w) =>
+      w.hosts.some(
+        (h) => h.deviceId === saved?.deviceId && h.runtimeWorkspaceId === saved?.workspaceId,
+      ),
+    ) ??
+    catalog[0];
+  if (space) await selectWorkspace(space.id, saved);
 }
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
   restoredSelection = true;
@@ -331,7 +562,9 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
   try {
     selected = devices.find((d) => d.id === id);
     workspace = undefined;
+    replica = undefined;
     sessionId = '';
+    watch();
     sessionList = [];
     meta = null;
     pending = undefined;
@@ -341,21 +574,36 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
     renderSessions();
     const saved = explicit ?? (await cache.read<Selection>(owner + '/' + id + '/view'));
     if (generation !== sessionGeneration) return;
-    const target = resolveSelection(devices, { ...saved, deviceId: id });
-    if (!target) {
+    const binding =
+      activeWorkspace?.hosts.find(
+        (h) =>
+          h.deviceId === id && (!saved?.workspaceId || h.runtimeWorkspaceId === saved.workspaceId),
+      ) ?? activeWorkspace?.hosts.find((h) => h.deviceId === id);
+    const target =
+      binding &&
+      resolveSelection(devices, {
+        ...saved,
+        deviceId: id,
+        workspaceId: binding.runtimeWorkspaceId,
+      });
+    if (!target || target.workspace.id !== binding?.runtimeWorkspaceId) {
       renderNavigation();
       $('#target').textContent = '';
       $('#history').textContent = '等待电脑上的执行组件启动并同步工作区…';
+      await loadSessions();
       return;
     }
     selected = target.device;
     workspace = target.workspace;
-    search = target.search;
-    projectFilter = target.projectId;
+    search = saved?.search ?? '';
+    projectFilter = activeWorkspace?.projects.some((p) => p.id === saved?.projectId)
+      ? saved!.projectId!
+      : '';
+    renderDevices();
     renderNavigation();
     await loadSessions();
     if (generation !== sessionGeneration) return;
-    await openSession(target.sessionId);
+    await openSession(target.sessionId, saved?.replicaId);
   } finally {
     if (selectionLoading === generation) selectionLoading = 0;
   }
@@ -363,13 +611,13 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
 function renderNavigation() {
   const el = document.querySelector('#navigation-controls');
   if (!el) return;
-  if (!selected || !workspace) {
+  if (!activeWorkspace) {
     renderInto('#navigation-controls', '');
     return;
   }
   renderInto(
     '#navigation-controls',
-    `<label>工作区<select id="workspace-switch" aria-label="工作区">${selected.workspaces.map((w) => `<option value="${esc(w.id)}" ${w.id === workspace?.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label><label>项目<select id="project-filter" aria-label="筛选项目"><option value="">全部项目</option>${workspace.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === projectFilter ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label><label class="sr-only" for="session-search">搜索会话或项目</label><input id="session-search" type="search" placeholder="搜索会话或项目…" autocomplete="off">`,
+    `<label>项目<select id="project-filter" aria-label="筛选项目"><option value="">全部项目</option>${activeWorkspace.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === projectFilter ? 'selected' : ''}>${esc(projectLabel(activeWorkspace!, p.id))}</option>`).join('')}</select></label><label class="sr-only" for="session-search">搜索会话、项目或电脑</label><input id="session-search" type="search" placeholder="搜索会话、项目或电脑…" autocomplete="off">`,
   );
   if ($<HTMLInputElement>('#session-search').value !== search)
     $<HTMLInputElement>('#session-search').value = search;
@@ -383,54 +631,84 @@ function renderNavigation() {
     renderSessions();
     run(persistSelection);
   };
-  $('#workspace-switch').onchange = () =>
-    run(() =>
-      selectDevice(selected!.id, {
-        workspaceId: $<HTMLSelectElement>('#workspace-switch').value,
-        sessionId: '',
-        search: '',
-        projectId: '',
-      }),
-    );
 }
 async function loadSessions() {
-  if (!workspace || !selected) return;
-  const deviceId = selected.id,
-    workspaceId = workspace.id,
-    listKey = [owner, deviceId, workspaceId, 'list'].join('/'),
-    endpoint = prefix() + '/sessions' + query();
-  let list: any[];
-  try {
-    list = await api(endpoint);
-    await cache.write(listKey, list);
-  } catch {
-    list = (await cache.read<any[]>(listKey)) ?? [];
+  if (!activeWorkspace) return;
+  const space = activeWorkspace,
+    generation = sessionGeneration,
+    requestedOwner = owner;
+  // Bound concurrency; every host returns its own index, which stays in browser cache.
+  const rows: SessionSummary[][] = [];
+  for (let i = 0; i < space.hosts.length; i += 4) {
+    rows.push(
+      ...(await Promise.all(
+        space.hosts.slice(i, i + 4).map(async (host) => {
+          const listKey = [requestedOwner, host.deviceId, host.runtimeWorkspaceId, 'list'].join(
+            '/',
+          );
+          let list: SessionSummary[];
+          try {
+            if (!host.online) throw new Error('offline');
+            list = await api(`/api/workspaces/${space.id}/hosts/${host.id}/sessions`);
+            await cache.write(listKey, list);
+          } catch {
+            list = (await cache.read<SessionSummary[]>(listKey)) ?? [];
+          }
+          return catalogSessionList(list, space, host.id);
+        }),
+      )),
+    );
   }
-  if (selected?.id !== deviceId || workspace?.id !== workspaceId) return;
-  sessionList = list;
+  if (activeWorkspace !== space || generation !== sessionGeneration || owner !== requestedOwner)
+    return;
+  sessionList = rows.flat();
   renderSessions();
 }
 function renderSessions() {
-  const list = filterSessions(sessionList, workspace, search, projectFilter);
+  const list = filterCatalogSessions(sessionList, activeWorkspace, search, projectFilter);
   const count = document.querySelector('#session-count');
-  if (count) count.textContent = workspace ? `${list.length} 个会话 · 最近活动优先` : '';
+  if (count) count.textContent = activeWorkspace ? `${list.length} 个会话 · 最近活动优先` : '';
   renderInto(
     '#sessions',
     list.length
       ? list
           .map((s) => {
-            const project = workspace?.projects.find((p) => p.id === s.project?.localProjectId);
-            return `<button class="session ${sessionId === s.id ? 'selected' : ''}" data-session="${esc(s.id)}"><span>${esc(s.title ?? '新会话')}</span><small>${esc(project?.name ?? '项目')} · ${new Date(s.lastMessageAt ?? s.createdAt ?? 0).toLocaleDateString()}</small></button>`;
+            const project = activeWorkspace?.projects.find((p) => p.id === s.projectId);
+            return `<button class="session ${sessionId === s.id && replica?.id === s.replicaId ? 'selected' : ''}" data-session="${esc(s.id)}" data-replica="${esc(s.replicaId ?? '')}"><span>${esc(s.title ?? '新会话')}</span><small>${esc(project?.name ?? '项目')} · ${esc(s.deviceName ?? '')} · ${new Date(s.lastMessageAt ?? s.createdAt ?? 0).toLocaleDateString()}</small></button>`;
           })
           .join('')
-      : `<p class="empty">${search || projectFilter ? '没有匹配的会话，试试其他关键词或项目。' : '这里会显示这台电脑的会话。'}</p>`,
+      : `<p class="empty">${search || projectFilter ? '没有匹配的会话，试试其他关键词或项目。' : '这里会汇总工作区内各台电脑的会话。'}</p>`,
   );
   document
     .querySelectorAll<HTMLElement>('[data-session]')
-    .forEach((el) => (el.onclick = () => run(() => openSession(el.dataset.session!))));
+    .forEach(
+      (el) => (el.onclick = () => run(() => openSession(el.dataset.session!, el.dataset.replica))),
+    );
 }
-async function openSession(id: string) {
+async function openSession(id: string, replicaId?: string) {
+  const row = sessionList.find(
+    (s) =>
+      s.id === id &&
+      (replicaId
+        ? s.replicaId === replicaId
+        : activeWorkspace?.replicas.find((r) => r.id === s.replicaId)?.hostId ===
+          activeWorkspace?.hosts.find(
+            (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
+          )?.id),
+  );
+  const target = activeWorkspace?.replicas.find(
+    (r) => r.id === (replicaId || row?.replicaId || (id ? replica?.id : undefined)),
+  );
+  if (id && !target) throw new Error('该会话的项目副本不可用，请从会话列表重新选择。');
+  if (id && target) {
+    const host = activeWorkspace!.hosts.find((h) => h.id === target.hostId)!;
+    selected = devices.find((d) => d.id === host.deviceId);
+    workspace = selected?.workspaces.find((w) => w.id === host.runtimeWorkspaceId);
+    replica = target;
+  }
   if (!workspace) return;
+  if (!id) replica = undefined;
+  renderDevices();
   rendered.delete($('#history'));
   const generation = ++sessionGeneration;
   sessionId = id;
@@ -438,7 +716,6 @@ async function openSession(id: string) {
   $('#nav-toggle').setAttribute('aria-expanded', 'false');
   $('#nav-shade').hidden = true;
   void persistSelection().catch(error);
-  watch();
   doc = new LoroDoc();
   flock = new Flock();
   meta = null;
@@ -446,25 +723,41 @@ async function openSession(id: string) {
   if (generation !== sessionGeneration) return;
   pending = restored;
   renderSessions();
-  $('#target').innerHTML =
-    `<div><span class="eyebrow">执行电脑</span><h2>${esc(selected?.name)}</h2></div><span>${esc(workspace.name)}</span>`;
+  renderTarget();
   $<HTMLFormElement>('#composer').hidden = false;
   const draft = await cache.read<string>(key('draft'));
   if (generation !== sessionGeneration) return;
   $<HTMLTextAreaElement>('#prompt').value = draft ?? '';
   $('#new-options').innerHTML = id
     ? ''
-    : `<label>项目<select id="project">${workspace.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label><label>Agent<select id="agent">${workspace.agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label>`;
+    : `<label>项目<select id="project">${workspace.projects.map((p) => `<option value="${esc(p.id)}">${esc(activeWorkspace?.projects.find((logical) => logical.id === activeWorkspace?.replicas.find((r) => r.localProjectId === p.id && activeWorkspace?.hosts.some((h) => h.id === r.hostId && h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id))?.projectId)?.name ?? p.name)}</option>`).join('')}</select></label><label>Agent<select id="agent">${workspace.agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label>`;
+  let pendingProject: string | undefined;
   if (!id) {
     const options = await cache.read<{ project: string; agent: string }>(key('options'));
     if (generation !== sessionGeneration) return;
-    const project = projectFilter || options?.project;
+    const filtered = activeWorkspace?.replicas.find(
+      (r) =>
+        r.projectId === projectFilter &&
+        activeWorkspace?.hosts.some(
+          (h) =>
+            h.id === r.hostId &&
+            h.deviceId === selected?.id &&
+            h.runtimeWorkspaceId === workspace?.id,
+        ),
+    );
+    const pendingMeta = new Flock();
+    if (pending?.metaBundle) pendingMeta.importJson(pending.metaBundle as never);
+    pendingProject = pending
+      ? (metas(pendingMeta)['session-' + pending.sessionId]?.project as any)?.localProjectId
+      : undefined;
+    const project = pendingProject || filtered?.localProjectId || options?.project;
     if (workspace.projects.some((p) => p.id === project))
       $<HTMLSelectElement>('#project').value = project!;
     if (workspace.agents.some((a) => a.id === options?.agent))
       $<HTMLSelectElement>('#agent').value = options!.agent;
     for (const selector of ['#project', '#agent'])
       $(selector).onchange = () => {
+        selectReplica();
         void cache
           .write(key('options'), {
             project: $<HTMLSelectElement>('#project').value,
@@ -473,6 +766,8 @@ async function openSession(id: string) {
           .catch(error);
       };
   }
+  if (!id) selectReplica(pendingProject);
+  watch();
   if (id) {
     const saved = await cache.read<any>(key('session'));
     if (generation !== sessionGeneration) return;
@@ -566,12 +861,17 @@ function updateComposer() {
     .forEach((b) => (b.disabled = sending || !!pending || !connected || !selected?.online));
   const create = document.querySelector<HTMLButtonElement>('#new');
   if (create) create.disabled = !workspace;
+  for (const selector of ['#project', '#agent']) {
+    const field = document.querySelector<HTMLSelectElement>(selector);
+    if (field) field.disabled = sending || !!pending;
+  }
   const send = document.querySelector<HTMLButtonElement>('#send');
   if (!send) return;
   send.disabled =
     sending ||
     !connected ||
     !selected?.online ||
+    !replica?.available ||
     (!pending && (!workspace?.agents.length || (!sessionId && !workspace?.projects.length)));
   send.textContent = sending ? '提交中…' : pending ? '重试确认' : '发送 ↑';
   $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending;
@@ -636,6 +936,13 @@ async function sendTurn() {
   if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
   const prompt = $<HTMLTextAreaElement>('#prompt').value.trim();
   if (!prompt) return;
+  const generation = sessionGeneration;
+  if (!sessionId)
+    await cache.write(key('options'), {
+      project: $<HTMLSelectElement>('#project').value,
+      agent: $<HTMLSelectElement>('#agent').value,
+    });
+  if (generation !== sessionGeneration) return;
   const id = sessionId || crypto.randomUUID(),
     agent = workspace.agents.find(
       (a) => a.id === (meta?.agentConfigId ?? $<HTMLSelectElement>('#agent')?.value),

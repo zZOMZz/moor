@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createHash, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { assert, type Workspace } from '../protocol';
+import { assert, type RuntimeWorkspace } from '../protocol';
+import { Catalog } from './catalog';
 const derive = promisify(scrypt);
 export const token = () => randomBytes(32).toString('base64url');
 export const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -15,6 +16,7 @@ export type Device = {
 };
 export class Store {
   db: DatabaseSync;
+  catalog: Catalog;
   constructor(
     file: string,
     public now: () => number = Date.now,
@@ -26,6 +28,15 @@ export class Store {
       CREATE TABLE IF NOT EXISTS pair(code TEXT PRIMARY KEY,owner TEXT,expires INTEGER);
       CREATE TABLE IF NOT EXISTS device(id TEXT PRIMARY KEY,owner TEXT,name TEXT,token TEXT UNIQUE,revoked INTEGER DEFAULT 0,machine_id TEXT,catalog TEXT DEFAULT '[]');
     `);
+    this.catalog = new Catalog(this.db);
+    for (const table of ['pair', 'device'])
+      if (
+        !this.db
+          .prepare(`PRAGMA table_info(${table})`)
+          .all()
+          .some((c) => c.name === 'workspace_id')
+      )
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN workspace_id TEXT`);
   }
   close() {
     this.db.close();
@@ -70,9 +81,12 @@ export class Store {
   logout(secret: string) {
     this.db.prepare('DELETE FROM login WHERE token=?').run(hash(secret));
   }
-  pair(owner: string) {
+  pair(owner: string, workspaceId?: string) {
+    if (workspaceId) this.catalog.workspace(owner, workspaceId);
     const code = randomBytes(12).toString('base64url');
-    this.db.prepare('INSERT INTO pair VALUES(?,?,?)').run(hash(code), owner, this.now() + 300000);
+    this.db
+      .prepare('INSERT INTO pair(code,owner,expires,workspace_id) VALUES(?,?,?,?)')
+      .run(hash(code), owner, this.now() + 300000, workspaceId ?? null);
     return code;
   }
   redeem(code: string, name: string, id = crypto.randomUUID() as string) {
@@ -85,8 +99,8 @@ export class Store {
     try {
       this.db.prepare('DELETE FROM pair WHERE code=?').run(hash(code));
       this.db
-        .prepare('INSERT INTO device(id,owner,name,token) VALUES(?,?,?,?)')
-        .run(id, pair.owner, name, hash(secret));
+        .prepare('INSERT INTO device(id,owner,name,token,workspace_id) VALUES(?,?,?,?,?)')
+        .run(id, pair.owner, name, hash(secret), pair.workspace_id ?? null);
       this.db.exec('COMMIT');
     } catch (e) {
       this.db.exec('ROLLBACK');
@@ -117,7 +131,18 @@ export class Store {
     this.device(owner, id);
     this.db.prepare('UPDATE device SET revoked=1 WHERE id=?').run(id);
   }
-  bind(d: Device, machineId: string, workspaces: Workspace[]) {
+  localDevice(owner: string, name: string) {
+    const id = 'local-machine',
+      secret = token();
+    this.db
+      .prepare(
+        `INSERT INTO device(id,owner,name,token) VALUES(?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name,token=excluded.token,revoked=0 WHERE device.owner=excluded.owner`,
+      )
+      .run(id, owner, name, hash(secret));
+    return { id, token: secret };
+  }
+  bind(d: Device, machineId: string, workspaces: RuntimeWorkspace[]) {
     assert(!d.machine_id || d.machine_id === machineId, 409, '该配对已绑定另一台机器');
     assert(
       workspaces.every((w) => w.machineId === machineId),
@@ -125,10 +150,6 @@ export class Store {
       '工作区执行机器不匹配',
     );
     this.db.prepare('UPDATE device SET machine_id=? WHERE id=?').run(machineId, d.id);
-  }
-  workspace(d: Device, ws: string): Workspace {
-    const w = (JSON.parse(d.catalog) as Workspace[]).find((w) => w.id === ws);
-    assert(w, 404, '工作区不可用');
-    return w;
+    this.catalog.discover(d.owner, d.id, workspaces);
   }
 }

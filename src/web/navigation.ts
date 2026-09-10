@@ -1,11 +1,14 @@
-import type { Workspace } from '../protocol';
-export type Device = { id: string; name: string; online: boolean; workspaces: Workspace[] };
+import type { RuntimeWorkspace } from '../protocol';
+import type { Workspace } from '../catalog';
+export type Device = { id: string; name: string; online: boolean; workspaces: RuntimeWorkspace[] };
 export type Selection = {
   deviceId: string;
   workspaceId: string;
   sessionId: string;
   search: string;
   projectId: string;
+  catalogWorkspaceId?: string;
+  replicaId?: string;
 };
 export type SessionSummary = {
   id: string;
@@ -15,6 +18,9 @@ export type SessionSummary = {
   project?: { kind?: string; localProjectId?: string };
   status?: { type?: string };
   isArchived?: boolean;
+  replicaId?: string;
+  projectId?: string;
+  deviceName?: string;
 };
 export function resolveSelection(devices: Device[], saved?: Partial<Selection>) {
   const device = devices.find((d) => d.id === saved?.deviceId);
@@ -30,9 +36,41 @@ export function resolveSelection(devices: Device[], saved?: Partial<Selection>) 
     projectId: workspace.projects.some((p) => p.id === saved?.projectId) ? saved!.projectId! : '',
   };
 }
-export function filterSessions(
+export function catalogSessionList(list: SessionSummary[], workspace: Workspace, hostId: string) {
+  const host = workspace.hosts.find((h) => h.id === hostId);
+  return list.flatMap((s) => {
+    const replica = workspace.replicas.find(
+      (r) => r.hostId === hostId && r.localProjectId === s.project?.localProjectId,
+    );
+    return replica
+      ? [{ ...s, replicaId: replica.id, projectId: replica.projectId, deviceName: host?.name }]
+      : [];
+  });
+}
+export function filterCatalogSessions(
   list: SessionSummary[],
   workspace: Workspace | undefined,
+  search: string,
+  projectId: string,
+) {
+  const words = search.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const time = (s: SessionSummary) => s.lastMessageAt ?? (Date.parse(s.createdAt ?? '') || 0);
+  return list
+    .filter((s) => {
+      if (s.isArchived || (projectId && s.projectId !== projectId)) return false;
+      const project = workspace?.projects.find((p) => p.id === s.projectId);
+      const haystack =
+        `${s.title ?? ''} ${project?.name ?? ''} ${s.deviceName ?? ''}`.toLocaleLowerCase();
+      return words.every((w) => haystack.includes(w));
+    })
+    .sort(
+      (a, b) =>
+        time(b) - time(a) || `${a.replicaId}/${a.id}`.localeCompare(`${b.replicaId}/${b.id}`),
+    );
+}
+export function filterSessions(
+  list: SessionSummary[],
+  workspace: RuntimeWorkspace | undefined,
   search: string,
   projectId: string,
 ) {

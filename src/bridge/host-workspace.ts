@@ -3,7 +3,7 @@ import { Effect } from 'effect';
 import { LocalLoroTransportAdapter } from '@lody/shared/local-loro-transport';
 import type { LocalControlClientService } from '@lody/shared/node/local-ipc';
 import { Flock, LoroDoc, VersionVector, decode, delta, metas, mirror } from '../model';
-import { assert, AppError, type Workspace, type Mutation } from '../protocol';
+import { assert, AppError, type RuntimeWorkspace, type Mutation } from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { Journal } from './journal';
 import type { LocalLoroDataPlaneConnection } from '@lody/shared/local-loro-transport';
@@ -23,7 +23,7 @@ export class HostWorkspace {
   closed = false;
   lifetime = new AbortController();
   constructor(
-    public workspace: Workspace,
+    public workspace: RuntimeWorkspace,
     private link: LocalLoroDataPlaneConnection,
     private control: LocalControlClientService,
     private journal: Journal,
@@ -158,17 +158,26 @@ export class HostWorkspace {
       }
     }
   }
-  list() {
+  list(localProjectId?: string) {
     this.ensureConnected();
     return Object.entries(metas(this.meta))
       .filter(
         ([name, m]) =>
-          name.startsWith('session-') && m.id && m.machineId === this.workspace.machineId,
+          name.startsWith('session-') &&
+          m.id &&
+          m.machineId === this.workspace.machineId &&
+          (!localProjectId || (m.project as any)?.localProjectId === localProjectId),
       )
       .map(([, m]) => m)
       .sort((a: any, b: any) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
   }
-  async read(sessionId: string, version?: string) {
+  checkProject(sessionId: string, localProjectId?: string) {
+    if (!localProjectId) return;
+    const meta = metas(this.meta)['session-' + sessionId];
+    assert((meta?.project as any)?.localProjectId === localProjectId, 404, '会话不属于该项目副本');
+  }
+  async read(sessionId: string, version?: string, localProjectId?: string) {
+    this.checkProject(sessionId, localProjectId);
     const meta = metas(this.meta)['session-' + sessionId];
     assert(meta?.machineId === this.workspace.machineId, 404, '会话不属于这台电脑');
     const s = await this.acquire(sessionId);
@@ -197,9 +206,12 @@ export class HostWorkspace {
     }
     throw new AppError(504, '执行主机未确认文档接收，请重试确认');
   }
-  async mutate(m: Mutation) {
+  async mutate(m: Mutation, localProjectId?: string) {
     return this.serial(m.sessionId, async () => {
+      if (metas(this.meta)['session-' + m.sessionId])
+        this.checkProject(m.sessionId, localProjectId);
       const record = this.journal.lookup(this.workspace.id, m);
+      if (record && localProjectId) this.checkProject(m.sessionId, localProjectId);
       if (record?.phase === 'accepted') return JSON.parse(record.result);
       this.ensureConnected();
       const s = await this.acquire(m.sessionId);
@@ -256,6 +268,13 @@ export class HostWorkspace {
             '会话已有新回合，旧指令不能再次派发',
           );
         const validated = record ? null : validateMutation(s.doc, this.meta, this.workspace, m);
+        if (localProjectId && validated)
+          assert(
+            (metas(validated.flock)['session-' + m.sessionId].project as any)?.localProjectId ===
+              localProjectId,
+            400,
+            '执行项目与副本不匹配',
+          );
         const turnId =
           record?.turn_id ??
           String(metas(validated!.flock)['session-' + m.sessionId].latestUserMsgId ?? '');
@@ -334,8 +353,9 @@ export class HostWorkspace {
       }
     });
   }
-  async cancel(sessionId: string, turnId: string) {
+  async cancel(sessionId: string, turnId: string, localProjectId?: string) {
     return this.serial(sessionId, async () => {
+      this.checkProject(sessionId, localProjectId);
       this.ensureConnected();
       assert(
         metas(this.meta)['session-' + sessionId]?.machineId === this.workspace.machineId,

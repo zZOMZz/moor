@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
 import { hostname } from 'node:os';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { WebSocket } from 'ws';
 import { Effect } from 'effect';
@@ -16,7 +16,7 @@ import { Journal } from './journal';
 import { localCodexPath, withLocalCodex } from './local-codex';
 import { Store, token } from '../relay/accounts';
 import { createApp } from '../relay/http';
-import { AppError, assert, mutationSchema, PROTOCOL, type Workspace } from '../protocol';
+import { AppError, assert, mutationSchema, PROTOCOL, type RuntimeWorkspace } from '../protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -125,7 +125,7 @@ async function refresh() {
     );
     for (const w of state.connectedWorkspaces ?? []) {
       if (!workspaces.has(w.id) || workspaces.get(w.id)!.closed) {
-        const workspace: Workspace = {
+        const workspace: RuntimeWorkspace = {
           id: w.id,
           name: w.name,
           userId: identity.userId,
@@ -215,6 +215,8 @@ function connect(target: Target) {
     try {
       const m = JSON.parse(raw.toString());
       if (m.type === 'watch' || m.type === 'unwatch') {
+        if (m.type === 'watch' && m.localProjectId)
+          workspaces.get(m.workspaceId)?.checkProject(m.sessionId, m.localProjectId);
         const key = m.workspaceId + '/' + m.sessionId;
         if (m.type === 'watch')
           target.watches.set(key, { workspaceId: m.workspaceId, sessionId: m.sessionId });
@@ -226,15 +228,15 @@ function connect(target: Target) {
           const workspace = workspaces.get(m.workspaceId);
           assert(ready && workspace && !workspace.closed, 409, '本地 Lody 不可达');
           let result: unknown;
-          if (m.method === 'sessions') result = workspace.list();
+          if (m.method === 'sessions') result = workspace.list(m.localProjectId);
           else if (m.method === 'session')
-            result = await workspace.read(m.params.sessionId, m.params.version);
+            result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
           else if (m.method === 'mutate') {
             const body = mutationSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.mutate(body);
+            result = await workspace.mutate(body, m.localProjectId);
           } else if (m.method === 'cancel')
-            result = await workspace.cancel(m.params.sessionId, m.params.turnId);
+            result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');
           send(ws, { type: 'response', requestId: m.requestId, result });
         } catch (e) {
@@ -273,13 +275,18 @@ function connect(target: Target) {
 }
 let localApp: ReturnType<typeof createApp> | undefined, localStore: Store | undefined;
 if (values.desktop) {
-  // A loopback-only, in-memory relay keeps the same UI usable without a public server.
+  // A loopback-only relay keeps the same UI usable without a public server.
+  // Persist product organization across restarts; runtime data remains owned by Lody.
   // Native main receives its credential over the private child-process IPC channel.
   assert(Boolean(process.send), 500, '本机界面必须由客户端启动');
-  localStore = new Store(':memory:');
-  const secret = await localStore.setup('local@localhost.invalid', token(), 'local-desktop');
+  localStore = new Store(configPath + '.catalog.sqlite');
+  chmodSync(configPath + '.catalog.sqlite', 0o600);
+  localStore.db.prepare('DELETE FROM login').run();
+  const secret = localStore.hasAccount()
+    ? localStore.createLogin('local-desktop')
+    : await localStore.setup('local@localhost.invalid', token(), 'local-desktop');
   const owner = localStore.owner(secret),
-    device = localStore.redeem(localStore.pair(owner), values.name ?? hostname(), 'local-machine');
+    device = localStore.localDevice(owner, values.name ?? hostname());
   localApp = createApp(localStore, {
     origin: 'http://127.0.0.1:0',
     setupToken: token(),

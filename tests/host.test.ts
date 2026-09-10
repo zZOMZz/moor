@@ -6,8 +6,8 @@ import { HostWorkspace } from '../src/bridge/host-workspace';
 import { Journal } from '../src/bridge/journal';
 import { Store } from '../src/relay/accounts';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../src/model';
-import type { Mutation, Workspace } from '../src/protocol';
-const ws: Workspace = {
+import type { Mutation, RuntimeWorkspace } from '../src/protocol';
+const ws: RuntimeWorkspace = {
   id: 'lw_synthetic',
   name: '验证工作区',
   userId: 'local:synthetic',
@@ -204,7 +204,7 @@ function request(f: ReturnType<typeof fixture>, sessionId = 'session-a') {
     metaBundle: flock.exportJson(version),
   } as Mutation;
 }
-test('relay database contains only account and device records, never session bodies', async (t) => {
+test('relay database contains only identity and organization records, never session bodies', async (t) => {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const secret = await store.setup('synthetic@example.com', 'synthetic-password-only'),
@@ -216,7 +216,16 @@ test('relay database contains only account and device records, never session bod
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all()
       .map((r) => r.name),
-    ['account', 'device', 'login', 'pair'],
+    [
+      'account',
+      'device',
+      'host_binding',
+      'login',
+      'pair',
+      'project',
+      'project_replica',
+      'workspace',
+    ],
   );
   strict.equal(store.device(owner, device.id).catalog, '[]');
   strict.throws(() => store.device('another-account', device.id));
@@ -385,9 +394,28 @@ test('approval is bound to its active request; competing and late choices are re
   }
   const allow = choice('allow'),
     deny = choice('deny');
+  await strict.rejects(() => f.host.mutate(allow, 'other-project'));
   const accepted = await f.host.mutate(allow);
   strict.equal(accepted.delivered, true);
   await strict.rejects(() => f.host.mutate(deny));
   strict.deepEqual(await f.host.mutate(allow), accepted);
   strict.equal(f.dispatches(), 1, 'an approval never starts a new Agent turn');
+});
+
+test('replica routes cannot read, mutate, retry or cancel a different local project', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.ready();
+  const m = request(f);
+  await strict.rejects(() => f.host.mutate(m, 'other-project'));
+  strict.equal(f.dispatches(), 0);
+  strict.equal(f.journal.has(m.operationId), false);
+  await f.host.mutate(m, 'project-a');
+  strict.equal(f.host.list('project-a').length, 1);
+  strict.equal(f.host.list('other-project').length, 0);
+  await strict.rejects(() => f.host.read(m.sessionId, undefined, 'other-project'));
+  await strict.rejects(() => f.host.mutate(m, 'other-project'));
+  await strict.rejects(() => f.host.cancel(m.sessionId, 'turn', 'other-project'));
+  strict.equal(f.dispatches(), 1);
+  strict.equal((await f.host.mutate(m, 'project-a')).delivered, true);
 });

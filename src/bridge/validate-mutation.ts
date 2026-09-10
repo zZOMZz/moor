@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { assert, type Mutation, type Workspace } from '../protocol';
+import { assert, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '../model';
 const clone = (source: LoroDoc) => {
   const d = new LoroDoc();
@@ -10,7 +10,7 @@ const clone = (source: LoroDoc) => {
 export function validateMutation(
   originalDoc: LoroDoc,
   originalFlock: Flock,
-  ws: Workspace,
+  ws: RuntimeWorkspace,
   m: Mutation,
 ) {
   const name = 'session-' + m.sessionId,
