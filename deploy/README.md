@@ -2,6 +2,56 @@
 
 中转服务使用 Node 24、WebSocket 和 SQLite。以下命令在仓库根目录运行，先执行 `corepack pnpm package:relay` 生成服务包。服务保存账号、设备绑定与撤销，以及工作区、逻辑项目和副本映射；代码、Agent 配置和完整会话仍在执行电脑。升级工作区模型时需同时更新中转服务和 Mac 客户端（Moor 桥接协议 v2），沿用原数据卷；旧设备首次连接后自动归入个人工作区。
 
+## 通过本地 SSH 更新已有 VPS
+
+本地需要 Node 24、已安装的锁定依赖、固定版本的 Lody runtime、pnpm、SSH 和 SCP。先在本机配置 SSH 别名 `moor-vps`，独立核实并信任服务器主机密钥。脚本使用非交互认证与严格主机密钥检查，不上传 SSH 密钥或本地 `.env`。VPS 需要 Bash、Docker Compose、Python 3、curl、flock、sha256sum 和 tar；默认通过 `sudo -n docker` 操作容器。
+
+```sh
+# 只读：验证连接、Docker 权限、现有数据卷与公网 HTTPS 健康状态
+pnpm deploy:check
+
+# 主动发布当前工作区的代码（包含尚未提交的修改）
+pnpm deploy:relay
+```
+
+默认更新 `moor-vps` 上 `/opt/moor/compose.yaml` 的 `moor` 项目，只重建 `relay` 服务。其他部署可传入 `--host`、`--compose`、`--project`、`--state`；Docker 不需要 sudo 时传入 `--sudo no`。路径使用不含空格的绝对路径。
+
+```sh
+pnpm deploy:check --host my-vps --compose /srv/moor/compose.yaml --project existing-moor --state /srv/moor/.moor-deploy --sudo no
+```
+
+此入口只更新已有且健康的单实例中转服务，不负责首次安装或更改域名、环境变量和 Compose 配置。执行前确认这些配置与运行中的服务一致。脚本会核对 `/data` 的实际命名卷与 Compose 解析出的卷名，发现不一致立即退出。`deploy:check` 不修改服务器文件；发布时还会获取部署锁，防止同一状态目录内的并发发布。
+
+发布先运行 `pnpm check`、`pnpm test`、`pnpm build` 和 `pnpm format:check`，任一失败即退出。随后只上传现有打包脚本生成的程序归档，验证 SHA-256，并在 VPS 构建新镜像。构建成功后停止中转、备份完整 `/data`，然后启动新版本，验证容器内健康状态和原域名的 HTTPS `/healthz`。更新期间中转连接会短暂断开；这不是零停机发布。
+
+程序、备份和镜像覆盖配置分别保存在 VPS 的 `/opt/moor/.moor-deploy/release-*` 内。备份不进入程序目录或 Docker 构建上下文，也不下载到源码仓库。备份含账号与设备凭据，文件默认仅部署用户可读。旧镜像与备份不会自动清理，应由操作者按自己的保留策略管理磁盘空间。
+
+成功后，`/opt/moor/.moor-deploy/current.json` 记录新镜像；原 Compose 文件、`.env`、证书卷和数据卷继续沿用。**之后手动运行 Compose 必须追加此覆盖文件**，否则原配置中的旧镜像可能被重新启动：
+
+```sh
+sudo -n docker compose -p moor -f /opt/moor/compose.yaml -f /opt/moor/.moor-deploy/current.json ps
+sudo -n docker compose -p moor -f /opt/moor/compose.yaml -f /opt/moor/.moor-deploy/current.json up -d --no-build --pull never
+```
+
+### 发布失败与恢复
+
+- 校验或镜像构建失败：原服务继续运行。
+- 停机备份失败：脚本尝试启动原容器，不运行新程序。
+- 尝试启动新版本后失败：脚本停止新服务，输出本次发布目录。该目录保留 `data.tar.gz`、`previous.json` 和 `next.json`，不会自动覆盖数据库或启动旧版本，因为新程序可能已经迁移了数据。
+
+恢复前先核对数据库兼容性、失败阶段和服务状态。如果确认旧版本可直接使用当前数据，可在 VPS 执行以下命令，用实际发布目录替换 `RELEASE`：
+
+```sh
+RELEASE=/opt/moor/.moor-deploy/release-实际目录
+sudo -n docker compose -p moor -f /opt/moor/compose.yaml -f "$RELEASE/previous.json" up -d --no-deps --no-build --pull never relay
+# 核对健康状态后再更新后续手工操作使用的镜像记录
+cp "$RELEASE/previous.json" /opt/moor/.moor-deploy/current.json
+```
+
+如需恢复停机备份，先停止服务并保存失败后的数据，按照下文的备份恢复流程恢复至新建空卷，再明确调整 Compose 卷映射；恢复会舍弃备份之后的写入，不能盲目将归档覆盖到现有数据库上。SSH 中断或强制终止后，应先检查容器和本次发布目录，再决定恢复或重新发布。
+
+`/healthz` 只验证中转可访问。发布后仍需用真实 Mac/iPhone 检查登录、执行电脑在线、历史补齐及手动重试；这些操作不由部署脚本自动执行。
+
 ## 启动 HTTPS 服务
 
 复制 `.env.example` 为同目录的 `.env`，填写 `MOOR_DOMAIN`，只写域名，不带协议或路径。将域名解析到服务器，并允许访问 80/443。Caddy 会申请和续期证书，详见 [Caddy 自动 HTTPS 文档](https://caddyserver.com/docs/automatic-https)。

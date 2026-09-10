@@ -11,6 +11,8 @@
     "start": "node dist/server.mjs",
     "bridge": "node dist/bridge.mjs",
     "dev": "tsx src/relay/main.ts",
+    "deploy:check": "node scripts/deploy-relay.mjs check",
+    "deploy:relay": "node scripts/deploy-relay.mjs deploy",
     "check": "tsc --noEmit",
     "test": "node scripts/test.mjs",
     "package:relay": "npm run build && node scripts/package.mjs relay",
