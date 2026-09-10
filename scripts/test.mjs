@@ -13,7 +13,7 @@ for (const file of tests)
     platform: 'node',
     format: 'esm',
     target: 'node24',
-    external: ['loro-crdt', 'ws'],
+    external: ['loro-crdt', 'ws', 'jsdom', 'react', 'react-dom', 'react-dom/client'],
     banner: {
       js: "import { createRequire } from 'node:module'; const require=createRequire(import.meta.url);",
     },

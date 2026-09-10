@@ -1,9 +1,18 @@
+import {
+  showShell,
+  showNavigation,
+  showTarget,
+  showRunControls,
+  showAuth,
+  closeNavigation,
+  resizeComposer,
+  sendIcon,
+} from './ui';
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
 import { agentSchema, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { resolveRunSelection, selectionFromInput, type RunSelection } from '../run-config';
 import type { Workspace, ProjectReplica } from '../catalog';
 import * as cache from './cache';
-const root = document.querySelector<HTMLElement>('#app')!;
 import { esc, renderItem, renderFileChanges } from './content';
 import {
   filterCatalogSessions,
@@ -134,96 +143,83 @@ async function boot() {
   }
 }
 function showLogin(setup: boolean) {
-  window.dispatchEvent(new Event('moor:ready'));
-  root.innerHTML = `<div class="auth"><div class="brand"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></div><h1>${setup ? '你的电脑，随处可达。' : '继续你的工作。'}</h1><p>项目留在电脑上，从手机或另一台电脑继续对话。</p><form id="login"><label>邮箱<input name="email" type="email" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="${setup ? 12 : 1}" required></label>${setup ? '<label>初始化口令<input name="setupToken" autocomplete="off" required></label><small>口令位于服务端首次启动时显示的文件中。</small>' : ''}<button class="primary">${setup ? '创建个人账号' : '登录'}</button></form><p id="notice" role="alert"></p></div>`;
-  $('#login').onsubmit = (e) => {
-    e.preventDefault();
-    run(async () => {
-      const data = Object.fromEntries(new FormData(e.currentTarget as HTMLFormElement));
+  showAuth({
+    setup,
+    onSubmit: async (data) => {
       await api(setup ? '/api/setup' : '/api/login', data);
       await boot();
-    });
-  };
+    },
+  });
+  window.dispatchEvent(new Event('moor:ready'));
 }
 function shell() {
+  showShell({
+    onSend: () => run(sendTurn),
+    onDraft: (value) => {
+      void cache.write(key('draft'), value).catch(error);
+    },
+    onCancel: cancelTurn,
+  });
   window.dispatchEvent(new Event('moor:ready'));
-  root.innerHTML = `<header><button id="nav-toggle" class="quiet" aria-label="选择工作区和会话" aria-controls="navigation" aria-expanded="false">☰</button><a class="brand" href="/"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></a><div class="header-actions"><span id="connection" class="subtle">正在连接</span><button id="pair">添加电脑</button><button id="logout" class="quiet">退出</button></div></header><button id="nav-shade" hidden aria-label="关闭会话列表"></button><div class="layout"><aside id="navigation"><div id="workspace-picker"></div><button id="manage-workspace" class="quiet">管理工作区</button><div class="section-label">执行电脑</div><div id="devices"></div><div class="section-label">会话 <button id="new" class="quiet">＋ 新建</button></div><div id="navigation-controls"></div><div id="session-count" class="subtle"></div><div id="sessions"></div></aside><main><div id="target"></div><div id="notice" role="alert"></div><div id="history"><div class="welcome"><span class="eyebrow">PERSONAL WORKSPACE</span><h1>在任意设备上，<br>接着做下去。</h1><p>选择工作区，查看各台电脑上的项目与会话。</p><div class="hint">代码和 Agent 始终在你选择的电脑运行。</div></div></div><form id="composer" hidden><div id="new-options"></div><div id="run-options"></div><label class="sr-only" for="prompt">发送给 Agent 的指令</label><textarea id="prompt" placeholder="描述接下来要做的事…" rows="3"></textarea><div class="compose-footer"><span id="draft-state">输入保存在当前设备</span><div><button type="button" id="cancel" hidden>停止</button><button class="primary" id="send">发送 ↑</button></div></div></form></main></div><dialog id="pair-dialog"><h2>连接一台电脑</h2><p>在 Mac 上打开 Moor 的连接设置，填写服务地址和下面的配对码。</p><code id="pair-code"></code><p>配对码有效期 5 分钟，仅可使用一次。</p><pre id="pair-command"></pre><button id="close-dialog">完成</button></dialog><dialog id="workspace-dialog"></dialog>`;
-  const toggleNav = (open: boolean) => {
-    root.toggleAttribute('data-nav-open', open);
-    $('#nav-toggle').setAttribute('aria-expanded', String(open));
-    $('#nav-shade').hidden = !open;
-  };
-  $('#nav-toggle').onclick = () => toggleNav(!root.hasAttribute('data-nav-open'));
-  $('#nav-shade').onclick = () => toggleNav(false);
-  document.onkeydown = (e) => {
-    if (e.key === 'Escape') toggleNav(false);
-  };
-  if (localOnly) {
-    $('#pair').hidden = true;
-    $('#logout').hidden = true;
-  }
-  $('#pair').onclick = () =>
-    run(async () => {
-      const { code } = await api('/api/pair', { workspaceId: activeWorkspace?.id });
-      $('#pair-code').textContent = code;
-      $('#pair-command').textContent = location.origin;
-      $<HTMLDialogElement>('#pair-dialog').showModal();
-    });
-  $('#close-dialog').onclick = () => $<HTMLDialogElement>('#pair-dialog').close();
-  $('#logout').onclick = () =>
-    run(async () => {
-      await api('/api/logout', {});
-      sessionGeneration++;
-      events?.close();
-      await cache.clear();
-      owner = '';
-      selected = undefined;
-      workspace = undefined;
-      activeWorkspace = undefined;
-      catalog = [];
-      replica = undefined;
-      restoredSelection = false;
-      connected = false;
-      showLogin(false);
-    });
-  $('#manage-workspace').onclick = () => showWorkspaceManager();
-  $('#new').onclick = () =>
-    run(async () => {
-      const copies = activeWorkspace?.replicas.filter((r) => r.projectId === projectFilter) ?? [];
-      const currentHost = activeWorkspace?.hosts.find(
-        (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
-      );
-      const copy =
-        copies.find((r) => r.hostId === currentHost?.id) ??
-        copies.find((r) => r.available) ??
-        copies[0];
-      const host = activeWorkspace?.hosts.find((h) => h.id === copy?.hostId);
-      if (host && host.id !== currentHost?.id)
-        await selectDevice(host.deviceId, {
-          workspaceId: host.runtimeWorkspaceId,
-          projectId: projectFilter,
-          search,
-          sessionId: '',
-        });
-      else await openSession('');
-    });
-  $<HTMLFormElement>('#composer').onsubmit = (e) => {
-    e.preventDefault();
-    run(sendTurn);
-  };
-  $<HTMLTextAreaElement>('#prompt').oninput = () => {
-    void cache.write(key('draft'), $<HTMLTextAreaElement>('#prompt').value).catch(error);
-  };
-  $('#cancel').onclick = () =>
-    run(async () => {
-      const state = mirror(doc, sessionId),
-        turn = state.getState().history.find((t) => t.role === 'assistant' && !t.finished);
-      state.dispose();
-      if (turn) {
-        const result = await api(prefix() + '/cancel' + query(), { sessionId, turnId: turn.id });
-        if (result.success === false) throw new Error(result.error ?? '停止未获确认');
-      }
-    });
+  renderNavigation();
+}
+function pairComputer() {
+  closeNavigation();
+  run(async () => {
+    const { code } = await api('/api/pair', { workspaceId: activeWorkspace?.id });
+    $('#pair-code').textContent = code;
+    $('#pair-command').textContent = location.origin;
+    $<HTMLDialogElement>('#pair-dialog').showModal();
+  });
+}
+function logout() {
+  run(async () => {
+    await api('/api/logout', {});
+    sessionGeneration++;
+    events?.close();
+    await cache.clear();
+    owner = '';
+    selected = undefined;
+    workspace = undefined;
+    activeWorkspace = undefined;
+    catalog = [];
+    replica = undefined;
+    restoredSelection = false;
+    connected = false;
+    showLogin(false);
+  });
+}
+function newSession() {
+  return run(async () => {
+    const copies = activeWorkspace?.replicas.filter((r) => r.projectId === projectFilter) ?? [];
+    const currentHost = activeWorkspace?.hosts.find(
+      (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
+    );
+    const copy =
+      copies.find((r) => r.hostId === currentHost?.id) ??
+      copies.find((r) => r.available) ??
+      copies[0];
+    const host = activeWorkspace?.hosts.find((h) => h.id === copy?.hostId);
+    if (host && host.id !== currentHost?.id)
+      await selectDevice(host.deviceId, {
+        workspaceId: host.runtimeWorkspaceId,
+        projectId: projectFilter,
+        search,
+        sessionId: '',
+      });
+    else await openSession('');
+  });
+}
+function cancelTurn() {
+  return run(async () => {
+    const state = mirror(doc, sessionId),
+      turn = state.getState().history.find((t) => t.role === 'assistant' && !t.finished);
+    state.dispose();
+    if (turn) {
+      const result = await api(prefix() + '/cancel' + query(), { sessionId, turnId: turn.id });
+      if (result.success === false) throw new Error(result.error ?? '停止未获确认');
+    }
+  });
 }
 function connect() {
   events?.close();
@@ -233,7 +229,8 @@ function connect() {
     if (events !== ws) return;
     connected = true;
     clearRecoveredNotice();
-    $('#connection').textContent = '已连接';
+    renderNavigation();
+    renderTarget();
     watch();
     run(async () => {
       await loadDevices();
@@ -247,8 +244,8 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
-    const el = document.querySelector('#connection');
-    if (el) el.textContent = '连接中断 · 可读缓存';
+    renderNavigation();
+    renderTarget();
     updateComposer();
     setTimeout(() => {
       if (events === ws && owner) connect();
@@ -350,37 +347,10 @@ function watch() {
     );
 }
 function renderDevices() {
-  renderInto(
-    '#workspace-picker',
-    `<label>工作区<select id="workspace-switch" aria-label="工作区">${catalog.map((w) => `<option value="${esc(w.id)}" ${w.id === activeWorkspace?.id ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select></label>`,
-  );
-  $('#workspace-switch').onchange = () =>
-    run(() => selectWorkspace($<HTMLSelectElement>('#workspace-switch').value));
-  renderInto(
-    '#devices',
-    activeWorkspace?.hosts.length
-      ? activeWorkspace.hosts
-          .map(
-            (h) =>
-              `<div class="device-group"><button class="device ${selected?.id === h.deviceId && workspace?.id === h.runtimeWorkspaceId ? 'selected' : ''}" data-host="${esc(h.id)}"><span class="computer">▣</span><span><strong>${esc(h.name)}</strong><small><i class="dot ${h.online ? 'online' : ''}"></i>${h.online ? '在线' : '离线 · 仅本机缓存'}</small></span></button></div>`,
-          )
-          .join('')
-      : '<p class="empty">工作区还没有电脑。可添加电脑，或在管理工作区中调整已有电脑的归属。</p>',
-  );
-  document.querySelectorAll<HTMLElement>('[data-host]').forEach(
-    (el) =>
-      (el.onclick = () =>
-        run(async () => {
-          const host = activeWorkspace!.hosts.find((h) => h.id === el.dataset.host)!;
-          await selectDevice(host.deviceId, {
-            workspaceId: host.runtimeWorkspaceId,
-            sessionId: '',
-            search,
-            projectId: projectFilter,
-          });
-        })),
-  );
+  renderNavigation();
+  renderTarget();
 }
+
 function selectReplica(expectedProjectId?: string) {
   const localProjectId =
     expectedProjectId ?? document.querySelector<HTMLSelectElement>('#project')?.value;
@@ -396,9 +366,17 @@ function selectReplica(expectedProjectId?: string) {
 }
 function renderTarget() {
   const project = activeWorkspace?.projects.find((p) => p.id === replica?.projectId);
-  $('#target').innerHTML =
-    `<div><span class="eyebrow">${esc(activeWorkspace?.name ?? '')} · 执行电脑</span><h2>${esc(selected?.name ?? '')}</h2></div><div class="target-project"><strong>${esc(project?.name ?? '')}</strong><small>${esc(replica?.rootPath ?? '')}</small></div>`;
+  const row = sessionList.find((s) => s.id === sessionId && s.replicaId === replica?.id);
+  showTarget({
+    project: project?.name || activeWorkspace?.name,
+    title: meta?.title || row?.title || (sessionId ? '会话' : '新会话'),
+    host: selected?.name,
+    path: replica?.rootPath,
+    connected,
+    online: !!selected?.online,
+  });
 }
+
 function projectLabel(space: Workspace, projectId: string) {
   const project = space.projects.find((p) => p.id === projectId);
   if (!project) return '项目';
@@ -414,6 +392,7 @@ function projectLabel(space: Workspace, projectId: string) {
   return `${project.name} · ${names.join(' / ') || '未分配副本'}`;
 }
 function showWorkspaceManager() {
+  closeNavigation();
   const dialog = $<HTMLDialogElement>('#workspace-dialog');
   const space = activeWorkspace;
   dialog.innerHTML = `<h2>管理工作区</h2><form id="create-workspace"><label>新工作区名称<input name="name" required maxlength="100"></label><button>创建工作区</button></form>${
@@ -518,7 +497,7 @@ async function selectWorkspace(id: string, saved?: Partial<Selection>) {
   else {
     sessionList = [];
     $('#composer').hidden = true;
-    $('#target').textContent = target.name;
+    renderTarget();
     $('#history').textContent = '添加电脑后，可在这个工作区开始会话。';
     renderSessions();
     await persistSelection();
@@ -589,7 +568,7 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
       });
     if (!target || target.workspace.id !== binding?.runtimeWorkspaceId) {
       renderNavigation();
-      $('#target').textContent = '';
+      renderTarget();
       $('#history').textContent = '等待电脑上的执行组件启动并同步工作区…';
       await loadSessions();
       return;
@@ -610,29 +589,52 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
   }
 }
 function renderNavigation() {
-  const el = document.querySelector('#navigation-controls');
-  if (!el) return;
-  if (!activeWorkspace) {
-    renderInto('#navigation-controls', '');
-    return;
-  }
-  renderInto(
-    '#navigation-controls',
-    `<label>项目<select id="project-filter" aria-label="筛选项目"><option value="">全部项目</option>${activeWorkspace.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === projectFilter ? 'selected' : ''}>${esc(projectLabel(activeWorkspace!, p.id))}</option>`).join('')}</select></label><label class="sr-only" for="session-search">搜索会话、项目或电脑</label><input id="session-search" type="search" placeholder="搜索会话、项目或电脑…" autocomplete="off">`,
-  );
-  if ($<HTMLInputElement>('#session-search').value !== search)
-    $<HTMLInputElement>('#session-search').value = search;
-  $('#session-search').oninput = () => {
-    search = $<HTMLInputElement>('#session-search').value;
-    renderSessions();
-    run(persistSelection);
-  };
-  $('#project-filter').onchange = () => {
-    projectFilter = $<HTMLSelectElement>('#project-filter').value;
-    renderSessions();
-    run(persistSelection);
-  };
+  showNavigation({
+    catalog,
+    space: activeWorkspace,
+    projectLabels: Object.fromEntries(
+      activeWorkspace?.projects.map((p) => [p.id, projectLabel(activeWorkspace!, p.id)]) ?? [],
+    ),
+    list: filterCatalogSessions(sessionList, activeWorkspace, search, projectFilter),
+    projectFilter,
+    search,
+    selectedSession: sessionId,
+    selectedReplica: replica?.id,
+    deviceId: selected?.id,
+    runtimeWorkspaceId: workspace?.id,
+    connected,
+    localOnly,
+    canCreate: !!workspace,
+    onWorkspace: (id) => run(() => selectWorkspace(id)),
+    onHost: (id) =>
+      run(async () => {
+        const host = activeWorkspace?.hosts.find((h) => h.id === id);
+        if (host)
+          await selectDevice(host.deviceId, {
+            workspaceId: host.runtimeWorkspaceId,
+            sessionId: '',
+            search,
+            projectId: projectFilter,
+          });
+      }),
+    onSearch: (value) => {
+      search = value;
+      renderNavigation();
+      run(persistSelection);
+    },
+    onProject: (value) => {
+      projectFilter = value;
+      renderNavigation();
+      run(persistSelection);
+    },
+    onSession: (id, copy) => run(() => openSession(id, copy)),
+    onNew: newSession,
+    onManage: showWorkspaceManager,
+    onPair: pairComputer,
+    onLogout: logout,
+  });
 }
+
 async function loadSessions() {
   if (!activeWorkspace) return;
   const space = activeWorkspace,
@@ -666,26 +668,10 @@ async function loadSessions() {
   renderSessions();
 }
 function renderSessions() {
-  const list = filterCatalogSessions(sessionList, activeWorkspace, search, projectFilter);
-  const count = document.querySelector('#session-count');
-  if (count) count.textContent = activeWorkspace ? `${list.length} 个会话 · 最近活动优先` : '';
-  renderInto(
-    '#sessions',
-    list.length
-      ? list
-          .map((s) => {
-            const project = activeWorkspace?.projects.find((p) => p.id === s.projectId);
-            return `<button class="session ${sessionId === s.id && replica?.id === s.replicaId ? 'selected' : ''}" data-session="${esc(s.id)}" data-replica="${esc(s.replicaId ?? '')}"><span>${esc(s.title ?? '新会话')}</span><small>${esc(project?.name ?? '项目')} · ${esc(s.deviceName ?? '')} · ${new Date(s.lastMessageAt ?? s.createdAt ?? 0).toLocaleDateString()}</small></button>`;
-          })
-          .join('')
-      : `<p class="empty">${search || projectFilter ? '没有匹配的会话，试试其他关键词或项目。' : '这里会汇总工作区内各台电脑的会话。'}</p>`,
-  );
-  document
-    .querySelectorAll<HTMLElement>('[data-session]')
-    .forEach(
-      (el) => (el.onclick = () => run(() => openSession(el.dataset.session!, el.dataset.replica))),
-    );
+  renderNavigation();
+  renderTarget();
 }
+
 async function openSession(id: string, replicaId?: string) {
   const row = sessionList.find(
     (s) =>
@@ -715,9 +701,7 @@ async function openSession(id: string, replicaId?: string) {
   runOptionsReady = false;
   runOptionsGeneration++;
   sessionId = id;
-  root.removeAttribute('data-nav-open');
-  $('#nav-toggle').setAttribute('aria-expanded', 'false');
-  $('#nav-shade').hidden = true;
+  closeNavigation();
   void persistSelection().catch(error);
   doc = new LoroDoc();
   flock = new Flock();
@@ -731,6 +715,7 @@ async function openSession(id: string, replicaId?: string) {
   const draft = await cache.read<string>(key('draft'));
   if (generation !== sessionGeneration) return;
   $<HTMLTextAreaElement>('#prompt').value = draft ?? '';
+  resizeComposer();
   $('#new-options').innerHTML = id
     ? ''
     : `<label>项目<select id="project">${workspace.projects.map((p) => `<option value="${esc(p.id)}">${esc(activeWorkspace?.projects.find((logical) => logical.id === activeWorkspace?.replicas.find((r) => r.localProjectId === p.id && activeWorkspace?.hosts.some((h) => h.id === r.hostId && h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id))?.projectId)?.name ?? p.name)}</option>`).join('')}</select></label><label>Agent<select id="agent">${workspace.agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label>`;
@@ -810,6 +795,7 @@ async function loadSession() {
   if (data.update) doc.import(decode(data.update));
   flock.importJson(data.metaBundle);
   meta = data.meta;
+  renderTarget();
   await cache.write(key('session'), {
     snapshot: encode(doc.export({ mode: 'snapshot' })),
     metaBundle: flock.exportJson(),
@@ -837,7 +823,7 @@ function renderHistory() {
             )
             .join(
               '',
-            )}${renderFileChanges(turn.fileDiff, turn.id + '/files')}${turn.role === 'assistant' && !turn.finished ? '<span class="working">● Agent 正在处理</span>' : ''}</article>`,
+            )}${renderFileChanges(turn.fileDiff, turn.id + '/files')}${turn.role === 'assistant' && !turn.finished ? '<span class="working">Agent 正在处理</span>' : ''}</article>`,
       )
       .join('') || '<p class="empty">会话已建立，等待第一条消息。</p>';
   const expanded = new Map(
@@ -955,85 +941,28 @@ async function refreshRunOptions() {
   }
 }
 function renderRunOptions() {
-  const container = document.querySelector<HTMLElement>('#run-options');
-  if (!container) return;
   const capabilities = currentAgent()?.runConfig;
-  const models = capabilities?.models ?? [];
-  const efforts = models.find((m) => m.id === runSelection.modelId)?.efforts ?? [];
-  const modes = capabilities?.modes ?? [];
-  const modeLabels: Record<string, string> =
-    currentAgent()?.agentType === 'codex'
-      ? {
-          'read-only': '只读',
-          agent: '工作区权限',
-          'agent-auto-review': '自动审批审查',
-          'agent-full-access': '完全访问',
-        }
-      : {};
-  const modeDescriptions: Record<string, string> =
-    currentAgent()?.agentType === 'codex'
-      ? {
-          'read-only': '以只读权限开始；修改文件和执行命令需要审批。',
-          agent: '允许在项目工作区内读写和执行；额外权限按 Agent 请求审批。',
-          'agent-auto-review': '由 Codex 审查器评估需要额外权限的操作。',
-          'agent-full-access': '允许访问工作区之外的文件和网络，执行权限更广。',
-        }
-      : {};
-  const options = (
-    items: { id: string; name: string }[],
-    selected: string | undefined,
-    fallback: string,
-  ) =>
-    `<option value="">${fallback}</option>` +
-    (selected && !items.some((i) => i.id === selected)
-      ? `<option value="${esc(selected)}" selected>${esc(selected)}（不可用）</option>`
-      : '') +
-    items
-      .map(
-        (i) =>
-          `<option value="${esc(i.id)}"${i.id === selected ? ' selected' : ''}>${esc(i.name)}</option>`,
-      )
-      .join('');
-  const disabled = sending || !!pending || runOptionsLoading || !runOptionsReady;
   let validation = '';
   try {
     resolveRunSelection(runSelection, capabilities);
   } catch (e) {
     validation = (e as Error).message;
   }
-  const selectedMode = modes.find((m) => m.id === runSelection.modeId);
-  const description =
-    validation ||
-    (runOptionsLoading
-      ? '正在从执行主机读取选项…'
-      : !capabilities
-        ? '尚未获取模型选项，可刷新读取；留空则沿用 Agent 设置。'
-        : runSelection.modeId
-          ? modeDescriptions[runSelection.modeId] || selectedMode?.description || selectedMode?.name
-          : '沿用 Agent 的审批设置。');
-  renderInto(
-    '#run-options',
-    `<div class="run-controls"><label>模型<select id="model" ${disabled ? 'disabled' : ''}>${options(models, runSelection.modelId, '沿用 Agent 设置')}</select></label><label>Effort<select id="effort" ${disabled || !efforts.length ? 'disabled' : ''}>${options(
-      efforts.map((e) => ({ id: e, name: e })),
-      runSelection.reasoningEffort,
-      !runSelection.modelId ? '先选择模型' : '沿用 Agent 设置',
-    )}</select></label><label>审批与权限<select id="approval-mode" ${disabled ? 'disabled' : ''}>${options(
-      modes.map((m) => ({ ...m, name: modeLabels[m.id] || m.name })),
-      runSelection.modeId,
-      '沿用 Agent 设置',
-    )}</select></label><button type="button" id="refresh-run-options" class="quiet" ${disabled || !connected || !selected?.online || !replica?.available ? 'disabled' : ''}>刷新选项</button></div><p class="run-description${validation ? ' invalid' : ''}">${esc(description)}${sessionId ? ' 设置对下一条指令生效。' : ''}</p>`,
-  );
-  for (const [selector, property] of [
-    ['#model', 'modelId'],
-    ['#effort', 'reasoningEffort'],
-    ['#approval-mode', 'modeId'],
-  ] as const) {
-    $<HTMLSelectElement>(selector).onchange = () => {
+  showRunControls({
+    capabilities,
+    selection: runSelection,
+    agentType: currentAgent()?.agentType,
+    disabled: sending || !!pending || runOptionsLoading || !runOptionsReady,
+    loading: runOptionsLoading,
+    canRefresh: connected && !!selected?.online && !!replica?.available,
+    validation,
+    existing: !!sessionId,
+    onChange: (property, value) => {
       runSelectionTouched = true;
-      runSelection[property] = $<HTMLSelectElement>(selector).value || undefined;
+      runSelection = { ...runSelection, [property]: value || undefined };
       if (
         property === 'modelId' &&
-        !models
+        !capabilities?.models
           .find((m) => m.id === runSelection.modelId)
           ?.efforts.includes(runSelection.reasoningEffort ?? '')
       )
@@ -1042,9 +971,9 @@ function renderRunOptions() {
         .write(runOptionsKey(), { base: currentRunInput().base, selection: { ...runSelection } })
         .catch(error);
       updateComposer();
-    };
-  }
-  $('#refresh-run-options').onclick = () => run(refreshRunOptions);
+    },
+    onRefresh: () => run(refreshRunOptions),
+  });
   return !!validation;
 }
 
@@ -1072,7 +1001,9 @@ function updateComposer() {
         invalidRunOptions ||
         !currentAgent() ||
         (!sessionId && !workspace?.projects.length)));
-  send.textContent = sending ? '提交中…' : pending ? '重试确认' : '发送 ↑';
+  sendIcon(sending ? 'sending' : pending ? 'pending' : 'ready');
+  send.setAttribute('aria-label', sending ? '提交中' : pending ? '重试确认' : '发送指令');
+  send.classList.toggle('pending', !!pending);
   $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending;
   const state = document.querySelector('#draft-state');
   if (state)
@@ -1080,7 +1011,8 @@ function updateComposer() {
       ? '提交结果待确认，重试会使用同一编号'
       : !connected || !selected?.online
         ? '执行电脑离线 · 输入保留为草稿'
-        : '输入保存在当前设备';
+        : '';
+  if (state) state.toggleAttribute('hidden', !state.textContent);
   let active = false;
   if (sessionId) {
     const v = mirror(doc, sessionId);
@@ -1088,8 +1020,10 @@ function updateComposer() {
     v.dispose();
   }
   if (active && !pending) send.disabled = true;
-  if (active && state && !pending && selected?.online && connected)
+  if (active && state && !pending && selected?.online && connected) {
     state.textContent = 'Agent 正在处理 · 下一条指令保留为草稿';
+    state.removeAttribute('hidden');
+  }
   $<HTMLButtonElement>('#cancel').hidden = !active;
   $<HTMLButtonElement>('#cancel').disabled = !connected || !selected?.online;
 }
