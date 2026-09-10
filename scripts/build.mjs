@@ -26,6 +26,7 @@ await build({
   target: ['safari17', 'chrome120'],
   sourcemap: true,
   alias: { 'loro-crdt': 'loro-crdt/base64' },
+  minify: true,
   entryPoints: ['src/web/app.ts'],
   outfile: 'dist/public/app.js',
 });
@@ -35,6 +36,7 @@ const { createHash } = await import('node:crypto');
 const hash = createHash('sha256');
 for (const file of [
   'app.js',
+  'startup.js',
   'index.html',
   'style.css',
   'manifest.webmanifest',

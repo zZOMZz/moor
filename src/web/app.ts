@@ -71,6 +71,7 @@ async function api(path: string, body?: unknown) {
     method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(body === undefined ? 10000 : 45000),
   }).catch(() => {
     throw new ApiError('中转服务暂不可达，草稿和待确认请求已保留。', 0);
   });
@@ -99,26 +100,27 @@ async function boot() {
     }
     localOnly = me.localOnly === true;
     owner = me.owner;
-    await cache.write('last-owner', owner);
-    devices = (await cache.read<Device[]>(owner + '/devices')) ?? [];
     shell();
     connect();
+    await cache.write('last-owner', owner).catch(error);
+    devices = (await cache.read<Device[]>(owner + '/devices').catch(() => undefined)) ?? [];
     await loadDevices();
     await restoreSelection();
   } catch {
-    owner = (await cache.read<string>('last-owner')) ?? '';
+    owner = (await cache.read<string>('last-owner').catch(() => undefined)) ?? '';
     if (owner) {
       shell();
-      devices = (await cache.read<Device[]>(owner + '/devices')) ?? [];
+      devices = (await cache.read<Device[]>(owner + '/devices').catch(() => undefined)) ?? [];
       devices = devices.map((d) => ({ ...d, online: false }));
       renderDevices();
       error(new ApiError('当前离线，可阅读本机缓存的历史', 0));
-      await restoreSelection();
+      await restoreSelection().catch(error);
       connect();
     } else showLogin(false);
   }
 }
 function showLogin(setup: boolean) {
+  window.dispatchEvent(new Event('moor:ready'));
   root.innerHTML = `<div class="auth"><div class="brand"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></div><h1>${setup ? '你的电脑，随处可达。' : '继续你的工作。'}</h1><p>项目留在电脑上，从手机或另一台电脑继续对话。</p><form id="login"><label>邮箱<input name="email" type="email" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="${setup ? 12 : 1}" required></label>${setup ? '<label>初始化口令<input name="setupToken" autocomplete="off" required></label><small>口令位于服务端首次启动时显示的文件中。</small>' : ''}<button class="primary">${setup ? '创建个人账号' : '登录'}</button></form><p id="notice" role="alert"></p></div>`;
   $('#login').onsubmit = (e) => {
     e.preventDefault();
@@ -130,6 +132,7 @@ function showLogin(setup: boolean) {
   };
 }
 function shell() {
+  window.dispatchEvent(new Event('moor:ready'));
   root.innerHTML = `<header><button id="nav-toggle" class="quiet" aria-label="选择电脑和会话" aria-controls="navigation" aria-expanded="false">☰</button><a class="brand" href="/"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></a><div class="header-actions"><span id="connection" class="subtle">正在连接</span><button id="pair">添加电脑</button><button id="logout" class="quiet">退出</button></div></header><button id="nav-shade" hidden aria-label="关闭会话列表"></button><div class="layout"><aside id="navigation"><div class="section-label">我的电脑</div><div id="devices"></div><div class="section-label">会话 <button id="new" class="quiet">＋ 新建</button></div><div id="navigation-controls"></div><div id="session-count" class="subtle"></div><div id="sessions"></div></aside><main><div id="target"></div><div id="notice" role="alert"></div><div id="history"><div class="welcome"><span class="eyebrow">PERSONAL WORKSPACE</span><h1>在任意设备上，<br>接着做下去。</h1><p>选择一台已连接的电脑，打开它的项目与会话。</p><div class="hint">代码和 Agent 始终在你选择的电脑运行。</div></div></div><form id="composer" hidden><div id="new-options"></div><label class="sr-only" for="prompt">发送给 Agent 的指令</label><textarea id="prompt" placeholder="描述接下来要做的事…" rows="3"></textarea><div class="compose-footer"><span id="draft-state">输入保存在当前设备</span><div><button type="button" id="cancel" hidden>停止</button><button class="primary" id="send">发送 ↑</button></div></div></form></main></div><dialog id="pair-dialog"><h2>连接一台电脑</h2><p>在 Mac 上打开 Moor 的连接设置，填写服务地址和下面的配对码。</p><code id="pair-code"></code><p>配对码有效期 5 分钟，仅可使用一次。</p><pre id="pair-command"></pre><button id="close-dialog">完成</button></dialog>`;
   const toggleNav = (open: boolean) => {
     root.toggleAttribute('data-nav-open', open);
@@ -727,7 +730,11 @@ async function respondPermission(requestId: string, optionId: string) {
     update: delta(candidate, before),
   });
 }
-if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js');
+if (
+  'serviceWorker' in navigator &&
+  !['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname)
+)
+  void navigator.serviceWorker.register('/sw.js').catch(() => {});
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && owner) {
     if (!events || events.readyState > WebSocket.OPEN) connect();

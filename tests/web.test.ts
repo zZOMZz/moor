@@ -129,6 +129,18 @@ test('tool output includes command, terminal exit status and diff while preservi
     /data-permission/,
   );
 });
+test('runtime failure and warning metadata remain visible and escaped', () => {
+  for (const name of ['chat_failed', 'agent_warning']) {
+    const html = renderItem(
+      { type: 'system_notice', name, meta: { message: '<script>upgrade Codex</script>' } },
+      true,
+      'notice',
+    );
+    assert.match(html, /upgrade Codex/);
+    assert.match(html, /&lt;script&gt;/);
+    assert.doesNotMatch(html, /<script>/);
+  }
+});
 test('file change summary exposes paths and counts rather than CRDT internals', () => {
   const html = renderFileChanges(
     [{ filePath: 'src/main.ts', add: 3, del: 1, cc: { fileId: 'private-internal-id' } }],

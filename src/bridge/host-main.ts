@@ -13,6 +13,7 @@ import { getLodyDataDir } from '@lody/shared/node/installation-profile';
 import { LocalLink } from './local-link';
 import { HostWorkspace } from './host-workspace';
 import { Journal } from './journal';
+import { localCodexPath, withLocalCodex } from './local-codex';
 import { Store, token } from '../relay/accounts';
 import { createApp } from '../relay/http';
 import { AppError, assert, mutationSchema, PROTOCOL, type Workspace } from '../protocol';
@@ -140,15 +141,21 @@ async function refresh() {
         for (const agentType of values['builtin-agent'] ?? []) {
           assert(['codex', 'claude'].includes(agentType), 400, '仅支持 Codex 或 Claude');
           const id = 'personal-' + agentType;
-          if (!host.machine.get(['agentConfig', id])) {
-            host.machine.set(['agentConfig', id], {
-              id,
-              name: agentType === 'codex' ? 'Codex' : 'Claude',
-              machineId,
-              cliType: 'builtin',
-              agentType,
-              env: {},
-            });
+          const existing = host.machine.get(['agentConfig', id]);
+          const base = existing ?? {
+            id,
+            name: agentType === 'codex' ? 'Codex' : 'Claude',
+            machineId,
+            cliType: 'builtin',
+            agentType,
+            env: {},
+          };
+          const configured = withLocalCodex(
+            base,
+            agentType === 'codex' ? localCodexPath() : undefined,
+          );
+          if (!existing || configured !== base) {
+            host.machine.set(['agentConfig', id], configured);
             host.machine.commit();
           }
         }

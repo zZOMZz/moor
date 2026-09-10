@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { ProcessRecovery } = require('./recovery.cjs');
+const { loadPage, clearLocalShellCache } = require('./page-loader.cjs');
 const { pathToFileURL } = require('node:url');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
@@ -36,6 +37,7 @@ let settingsWindow,
   bridgeHealth = { local: 'unavailable', relay: 'unpaired', workspaces: 0 },
   recovering = false,
   restart;
+let requestedView = 'local';
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -75,7 +77,27 @@ function lockedWindow(origin, partition) {
   });
   return window;
 }
+function openPage(window, origin) {
+  loadPage(window, origin, () => {
+    void dialog
+      .showMessageBox(window, {
+        type: 'warning',
+        title: 'Moor 页面未能打开',
+        message: '页面加载失败或超时',
+        detail: '可以重试加载，或打开连接设置检查本机执行组件与中转连接。',
+        buttons: ['连接设置', '重试加载'],
+        defaultId: 0,
+        cancelId: 0,
+      })
+      .then(({ response }) => {
+        if (window.isDestroyed()) return;
+        if (response === 1) openPage(window, origin);
+        else showSettings();
+      });
+  });
+}
 function showLocal() {
+  requestedView = 'local';
   if (!localOrigin) {
     showSettings();
     return;
@@ -88,9 +110,10 @@ function showLocal() {
   localWindow.on('closed', () => {
     localWindow = null;
   });
-  void localWindow.loadURL(localOrigin);
+  openPage(localWindow, localOrigin);
 }
 function showRemote() {
+  requestedView = 'remote';
   if (!settings.server) {
     showSettings();
     return;
@@ -103,7 +126,7 @@ function showRemote() {
   remoteWindow.on('closed', () => {
     remoteWindow = null;
   });
-  void remoteWindow.loadURL(settings.server);
+  openPage(remoteWindow, settings.server);
 }
 function showSettings() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
@@ -237,6 +260,15 @@ function startBridge() {
     if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(message.origin) || typeof message.secret !== 'string')
       return;
     localOrigin = message.origin;
+    // The application ships its own local UI. Clear only replaceable shell
+    // caches, never cookies/IndexedDB where login, drafts and pending requests live.
+    try {
+      await clearLocalShellCache(session.fromPartition('persist:personal-local'), localOrigin);
+    } catch {
+      bridgeStatus = '本机界面缓存更新失败，请重新打开 Moor。';
+      showSettings();
+      return;
+    }
     await session.fromPartition('persist:personal-local').cookies.set({
       url: localOrigin,
       name: 'personal',
@@ -247,8 +279,8 @@ function startBridge() {
     });
     if (bridge !== child) return;
     bridgeStatus = '本机界面已启动，等待执行组件';
-    if (localWindow && !localWindow.isDestroyed()) void localWindow.loadURL(localOrigin);
-    else if (!settings.server) showLocal();
+    if (localWindow && !localWindow.isDestroyed()) openPage(localWindow, localOrigin);
+    else if (requestedView === 'local') showLocal();
   });
   child.on('error', (e) => {
     bridgeStatus = '连接组件启动失败，请重新连接。';
@@ -369,7 +401,7 @@ ipcMain.handle('personal:open', async (event, mode) => {
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => (settings.server ? showRemote() : showLocal()));
+  app.on('second-instance', showLocal);
   app.whenReady().then(() => {
     for (const partition of ['persist:personal-local', 'persist:personal-remote']) {
       const s = session.fromPartition(partition);
@@ -406,10 +438,9 @@ else {
     );
     hostRecovery.start();
     startBridge();
-    if (settings.server) showRemote();
-    else showSettings();
+    showLocal();
   });
-  app.on('activate', () => (settings.server ? showRemote() : showLocal()));
+  app.on('activate', showLocal);
   // Closing a window leaves the execution host alive; explicit Quit stops this app's processes.
   app.on('window-all-closed', () => {});
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => app.quit());

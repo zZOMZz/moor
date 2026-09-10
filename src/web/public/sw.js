@@ -2,6 +2,7 @@ const CACHE = 'personal-shell-__BUILD__';
 const ASSETS = [
   '/',
   '/app.js',
+  '/startup.js',
   '/style.css',
   '/icon-192.png',
   '/icon-512.png',

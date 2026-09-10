@@ -118,9 +118,18 @@ export function renderItem(item: any, finished: boolean, key: string): string {
       .join('');
     return `<div class="tool"><div class="tool-heading"><strong>${esc(item.title ?? item.kind ?? '工具调用')}</strong><span class="tool-status ${item.status === 'failed' ? 'failed' : ''}">${esc(state)}</span></div>${content}${item.rawInput ? detail(key + '/input', '输入参数', codeBlock(json(item.rawInput))) : ''}${item.rawOutput && !content ? detail(key + '/output', '输出', codeBlock(json(item.rawOutput))) : ''}${p && !p.outcome && !finished ? `<div class="permission"><p>需要你的确认</p>${p._meta ? codeBlock(json(p._meta), '操作详情') : ''}${p.options.map((o: any) => `<button data-permission="${esc(p.requestId)}" data-option="${esc(o.optionId)}">${esc(o.name)}</button>`).join('')}<button data-permission="${esc(p.requestId)}" data-option="">取消</button></div>` : ''}</div>`;
   }
-  return item.type === 'system_notice'
-    ? `<p class="subtle">${esc(item.message ?? item.name)}</p>`
-    : '';
+  if (item.type === 'system_notice') {
+    const labels: Record<string, string> = {
+      agent_warning: 'Agent 提醒',
+      chat_failed: '执行失败',
+    };
+    const message = [item.meta?.message, item.message, item.text].find(
+      (value) => typeof value === 'string' && value.trim(),
+    );
+    const label = labels[item.name] ?? item.name ?? '系统提示';
+    return `<p class="subtle">${esc(label)}${message ? `：${esc(message)}` : ''}</p>`;
+  }
+  return '';
 }
 export function renderFileChanges(files: any, key: string): string {
   if (!Array.isArray(files) || !files.length) return '';

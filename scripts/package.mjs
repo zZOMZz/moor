@@ -92,7 +92,7 @@ if (mode === 'relay') {
   console.log(dest);
 } else if (mode === 'mac') {
   if (process.platform !== 'darwin') throw new Error('macOS packaging must run on macOS');
-  const dest = resolve('release/macos-' + process.arch),
+  const dest = resolve(process.env.MOOR_RELEASE_DIR ?? 'release', 'macos-' + process.arch),
     app = join(dest, 'Moor.app');
   await mkdir(dest, { recursive: true });
   const electron = join(lody, 'apps/electron/node_modules/electron/dist/Electron.app');
