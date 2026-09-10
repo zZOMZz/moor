@@ -1,3 +1,5 @@
+import { syntheticCapabilities } from './agent-capabilities';
+import { agentOptions } from '../../src/bridge/agent-options';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { Store } from '../../src/relay/accounts';
@@ -34,7 +36,18 @@ export async function syntheticRelay(port = 0) {
         { id: 'local-moor', name: 'moor', rootPath: `/synthetic/${label}/moor` },
         { id: 'local-other', name: 'other', rootPath: `/synthetic/${label}/other` },
       ],
-      agents: [{ id: 'agent', name: 'Synthetic Codex', cliType: 'builtin', agentType: 'codex' }],
+      agents: [
+        {
+          id: 'agent',
+          name: 'Synthetic Codex',
+          cliType: 'builtin',
+          agentType: 'codex',
+          runConfig: agentOptions(
+            { cliType: 'builtin', agentType: 'codex' },
+            syntheticCapabilities,
+          ),
+        },
+      ],
     };
     const meta = new Flock(),
       docs = new Map<string, LoroDoc>(),
@@ -84,6 +97,8 @@ export async function syntheticRelay(port = 0) {
           result = Object.values(metas(meta)).filter(
             (s) => !m.localProjectId || (s.project as any).localProjectId === m.localProjectId,
           );
+        else if (m.method === 'agent-options')
+          result = runtime.agents.find((a) => a.id === m.params.agentId);
         else if (m.method === 'session') {
           if (
             !current ||

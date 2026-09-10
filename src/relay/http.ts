@@ -283,6 +283,28 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (parts[5] === 'agent-options' && req.method === 'POST') {
+            const input = z
+              .object({ agentId: z.string().min(1).max(160) })
+              .strict()
+              .parse(await body(req));
+            assert(
+              runtime?.agents.some((a) => a.id === input.agentId),
+              404,
+              'Agent 配置不可用',
+            );
+            return json(
+              res,
+              200,
+              await request(
+                host.device_id,
+                'agent-options',
+                host.runtime_id,
+                input,
+                replica.local_id,
+              ),
+            );
+          }
           if (parts[5] === 'sessions' && req.method === 'GET')
             return json(
               res,

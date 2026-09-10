@@ -6,6 +6,7 @@ import { Flock, LoroDoc, VersionVector, decode, delta, metas, mirror } from '../
 import { assert, AppError, type RuntimeWorkspace, type Mutation } from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { Journal } from './journal';
+import { agentOptions } from './agent-options';
 import type { LocalLoroDataPlaneConnection } from '@lody/shared/local-loro-transport';
 type DocState = { doc: LoroDoc; sub: any; off: () => void; watched: boolean; users: number };
 export class HostWorkspace {
@@ -94,8 +95,64 @@ export class HostWorkspace {
       .scan({ prefix: ['agentConfig'] })
       .map((r) => r.value as any)
       .filter((v) => v?.id && v.machineId === this.workspace.machineId)
-      .map((v) => ({ id: v.id, name: v.name, cliType: v.cliType, agentType: v.agentType }));
+      .map((v) => ({
+        id: v.id,
+        name: v.name,
+        cliType: v.cliType,
+        agentType: v.agentType,
+        runConfig: agentOptions(v, this.machine.get(['acpCapability', v.id]) as any),
+      }));
     this.catalogue();
+  }
+  async refreshAgentOptions(agentId: string, localProjectId?: string) {
+    this.ensureConnected();
+    assert(
+      this.workspace.agents.some((a) => a.id === agentId),
+      404,
+      'Agent 配置不可用',
+    );
+    assert(
+      !localProjectId || this.workspace.projects.some((p) => p.id === localProjectId),
+      404,
+      '项目副本不可用',
+    );
+    const lockKey = 'capabilities/' + agentId;
+    const existing = this.locks.get(lockKey);
+    if (existing) return existing;
+    const refresh = (async () => {
+      const responses = await Effect.runPromise(
+        this.control.sessionControl(
+          {
+            type: 'machine/acp-capabilities-refresh',
+            machineId: this.workspace.machineId as never,
+            workspaceId: this.workspace.id as never,
+            configId: agentId as never,
+          },
+          { timeoutMs: 20000 },
+        ),
+      );
+      const response = responses.find(
+        (r) => r.type === 'machine/acp-capabilities-refresh_response',
+      );
+      assert(
+        response?.success,
+        502,
+        '无法读取 Agent 模型选项，请检查执行主机的 Agent 登录状态后重试',
+      );
+      await this.connected(this.machineSub.rejoin());
+      await this.connected(this.machineSub.waitUntilSynced());
+      this.ensureConnected();
+      this.updateCatalogue();
+      const agent = this.workspace.agents.find((a) => a.id === agentId);
+      assert(agent?.runConfig, 502, '主机尚未提供有效的模型选项，请稍后手动刷新');
+      return agent;
+    })();
+    this.locks.set(lockKey, refresh);
+    try {
+      return await refresh;
+    } finally {
+      this.locks.delete(lockKey);
+    }
   }
   async acquire(sessionId: string) {
     this.ensureConnected();

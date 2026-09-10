@@ -884,3 +884,34 @@ details .code-block pre {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+/* Composer controls wrap on phones without widening the conversation. */
+#new-options,
+.run-controls {
+  flex-wrap: wrap;
+}
+.run-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px 20px;
+}
+.run-controls label {
+  color: #71816e;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.run-controls select {
+  min-width: 0;
+  max-width: min(240px, 58vw);
+}
+.run-description {
+  font-size: 12px;
+  color: #71816e;
+  line-height: 1.5;
+  margin: 8px 0 12px;
+}
+.run-description.invalid {
+  color: #a14332;
+}

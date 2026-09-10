@@ -1,5 +1,6 @@
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
-import type { Mutation, RuntimeWorkspace } from '../protocol';
+import { agentSchema, type Mutation, type RuntimeWorkspace } from '../protocol';
+import { resolveRunSelection, selectionFromInput, type RunSelection } from '../run-config';
 import type { Workspace, ProjectReplica } from '../catalog';
 import * as cache from './cache';
 const root = document.querySelector<HTMLElement>('#app')!;
@@ -146,7 +147,7 @@ function showLogin(setup: boolean) {
 }
 function shell() {
   window.dispatchEvent(new Event('moor:ready'));
-  root.innerHTML = `<header><button id="nav-toggle" class="quiet" aria-label="选择工作区和会话" aria-controls="navigation" aria-expanded="false">☰</button><a class="brand" href="/"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></a><div class="header-actions"><span id="connection" class="subtle">正在连接</span><button id="pair">添加电脑</button><button id="logout" class="quiet">退出</button></div></header><button id="nav-shade" hidden aria-label="关闭会话列表"></button><div class="layout"><aside id="navigation"><div id="workspace-picker"></div><button id="manage-workspace" class="quiet">管理工作区</button><div class="section-label">执行电脑</div><div id="devices"></div><div class="section-label">会话 <button id="new" class="quiet">＋ 新建</button></div><div id="navigation-controls"></div><div id="session-count" class="subtle"></div><div id="sessions"></div></aside><main><div id="target"></div><div id="notice" role="alert"></div><div id="history"><div class="welcome"><span class="eyebrow">PERSONAL WORKSPACE</span><h1>在任意设备上，<br>接着做下去。</h1><p>选择工作区，查看各台电脑上的项目与会话。</p><div class="hint">代码和 Agent 始终在你选择的电脑运行。</div></div></div><form id="composer" hidden><div id="new-options"></div><label class="sr-only" for="prompt">发送给 Agent 的指令</label><textarea id="prompt" placeholder="描述接下来要做的事…" rows="3"></textarea><div class="compose-footer"><span id="draft-state">输入保存在当前设备</span><div><button type="button" id="cancel" hidden>停止</button><button class="primary" id="send">发送 ↑</button></div></div></form></main></div><dialog id="pair-dialog"><h2>连接一台电脑</h2><p>在 Mac 上打开 Moor 的连接设置，填写服务地址和下面的配对码。</p><code id="pair-code"></code><p>配对码有效期 5 分钟，仅可使用一次。</p><pre id="pair-command"></pre><button id="close-dialog">完成</button></dialog><dialog id="workspace-dialog"></dialog>`;
+  root.innerHTML = `<header><button id="nav-toggle" class="quiet" aria-label="选择工作区和会话" aria-controls="navigation" aria-expanded="false">☰</button><a class="brand" href="/"><img class="mark" src="/icon-192.png" alt="" /> Moor <span class="subtle">泊点</span></a><div class="header-actions"><span id="connection" class="subtle">正在连接</span><button id="pair">添加电脑</button><button id="logout" class="quiet">退出</button></div></header><button id="nav-shade" hidden aria-label="关闭会话列表"></button><div class="layout"><aside id="navigation"><div id="workspace-picker"></div><button id="manage-workspace" class="quiet">管理工作区</button><div class="section-label">执行电脑</div><div id="devices"></div><div class="section-label">会话 <button id="new" class="quiet">＋ 新建</button></div><div id="navigation-controls"></div><div id="session-count" class="subtle"></div><div id="sessions"></div></aside><main><div id="target"></div><div id="notice" role="alert"></div><div id="history"><div class="welcome"><span class="eyebrow">PERSONAL WORKSPACE</span><h1>在任意设备上，<br>接着做下去。</h1><p>选择工作区，查看各台电脑上的项目与会话。</p><div class="hint">代码和 Agent 始终在你选择的电脑运行。</div></div></div><form id="composer" hidden><div id="new-options"></div><div id="run-options"></div><label class="sr-only" for="prompt">发送给 Agent 的指令</label><textarea id="prompt" placeholder="描述接下来要做的事…" rows="3"></textarea><div class="compose-footer"><span id="draft-state">输入保存在当前设备</span><div><button type="button" id="cancel" hidden>停止</button><button class="primary" id="send">发送 ↑</button></div></div></form></main></div><dialog id="pair-dialog"><h2>连接一台电脑</h2><p>在 Mac 上打开 Moor 的连接设置，填写服务地址和下面的配对码。</p><code id="pair-code"></code><p>配对码有效期 5 分钟，仅可使用一次。</p><pre id="pair-command"></pre><button id="close-dialog">完成</button></dialog><dialog id="workspace-dialog"></dialog>`;
   const toggleNav = (open: boolean) => {
     root.toggleAttribute('data-nav-open', open);
     $('#nav-toggle').setAttribute('aria-expanded', String(open));
@@ -711,6 +712,8 @@ async function openSession(id: string, replicaId?: string) {
   renderDevices();
   rendered.delete($('#history'));
   const generation = ++sessionGeneration;
+  runOptionsReady = false;
+  runOptionsGeneration++;
   sessionId = id;
   root.removeAttribute('data-nav-open');
   $('#nav-toggle').setAttribute('aria-expanded', 'false');
@@ -747,17 +750,22 @@ async function openSession(id: string, replicaId?: string) {
     );
     const pendingMeta = new Flock();
     if (pending?.metaBundle) pendingMeta.importJson(pending.metaBundle as never);
+    const pendingAgent = pending
+      ? metas(pendingMeta)['session-' + pending.sessionId]?.agentConfigId
+      : undefined;
     pendingProject = pending
       ? (metas(pendingMeta)['session-' + pending.sessionId]?.project as any)?.localProjectId
       : undefined;
     const project = pendingProject || filtered?.localProjectId || options?.project;
     if (workspace.projects.some((p) => p.id === project))
       $<HTMLSelectElement>('#project').value = project!;
-    if (workspace.agents.some((a) => a.id === options?.agent))
-      $<HTMLSelectElement>('#agent').value = options!.agent;
+    const agentId = pendingAgent || options?.agent;
+    if (workspace.agents.some((a) => a.id === agentId))
+      $<HTMLSelectElement>('#agent').value = String(agentId);
     for (const selector of ['#project', '#agent'])
       $(selector).onchange = () => {
         selectReplica();
+        if (selector === '#agent') void restoreRunOptions().catch(error);
         void cache
           .write(key('options'), {
             project: $<HTMLSelectElement>('#project').value,
@@ -787,6 +795,8 @@ async function openSession(id: string, replicaId?: string) {
   } else
     $('#history').innerHTML =
       '<div class="welcome compact"><span class="eyebrow">NEW SESSION</span><h1>开始一段新的工作。</h1><p>选择这台电脑上的项目和 Agent，然后发送第一条指令。</p></div>';
+  if (generation !== sessionGeneration) return;
+  await restoreRunOptions();
   updateComposer();
 }
 async function loadSession() {
@@ -855,7 +865,191 @@ function renderHistory() {
   });
   if (atBottom) container.scrollTop = container.scrollHeight;
 }
+let runSelection: RunSelection = {},
+  runOptionsLoading = false,
+  runOptionsReady = false;
+let runOptionsGeneration = 0;
+let runSelectionTouched = false;
+const capabilityAttempts = new Set<string>();
+function currentAgent() {
+  return workspace?.agents.find(
+    (a) =>
+      a.id === (meta?.agentConfigId ?? document.querySelector<HTMLSelectElement>('#agent')?.value),
+  );
+}
+function runOptionsKey() {
+  return key('run-options') + '/' + currentAgent()?.id;
+}
+function currentRunInput() {
+  const candidate = new LoroDoc();
+  candidate.import(doc.export({ mode: 'snapshot' }));
+  if (pending?.kind === 'turn') candidate.import(decode(pending.update));
+  const view = mirror(candidate, pending?.sessionId || sessionId || 'new');
+  const state = view.getState();
+  const latest = state.history.findLast((t) => t.role === 'user');
+  const runtime = state.acpRuntimeConfig;
+  const input = runtime?.basedOnUserTurnId === latest?.id ? runtime : latest?.inputConfig;
+  const result = { base: latest?.id ?? '', input: structuredClone(input) };
+  view.dispose();
+  return result;
+}
+async function restoreRunOptions() {
+  const generation = ++runOptionsGeneration,
+    session = sessionGeneration;
+  runOptionsReady = false;
+  runOptionsLoading = false;
+  updateComposer();
+  const current = currentRunInput();
+  const saved = await cache.read<{ base: string; selection: RunSelection }>(runOptionsKey());
+  if (generation !== runOptionsGeneration || session !== sessionGeneration) return;
+  runSelectionTouched = !pending && saved?.base === current.base;
+  runSelection =
+    !pending && saved?.base === current.base
+      ? saved.selection
+      : selectionFromInput(current.input, currentAgent()?.runConfig);
+  runOptionsReady = true;
+  updateComposer();
+  const attempt = [owner, selected?.id, workspace?.id, currentAgent()?.id].join('/');
+  if (
+    !currentAgent()?.runConfig &&
+    currentAgent() &&
+    connected &&
+    selected?.online &&
+    replica?.available &&
+    !pending &&
+    !capabilityAttempts.has(attempt)
+  ) {
+    capabilityAttempts.add(attempt);
+    void refreshRunOptions().catch(error);
+  }
+}
+async function refreshRunOptions() {
+  const agent = currentAgent();
+  if (!agent || runOptionsLoading || pending || sending) return;
+  const generation = runOptionsGeneration,
+    session = sessionGeneration;
+  runOptionsLoading = true;
+  updateComposer();
+  try {
+    const updated = agentSchema.parse(
+      await api(prefix() + '/agent-options', { agentId: agent.id }),
+    );
+    if (
+      generation !== runOptionsGeneration ||
+      session !== sessionGeneration ||
+      currentAgent()?.id !== agent.id
+    )
+      return;
+    Object.assign(currentAgent()!, updated);
+    // Recover an effort field from the saved native turn when capabilities were initially unavailable.
+    if (!runSelectionTouched && !pending && !runSelection.reasoningEffort) {
+      const inherited = selectionFromInput(currentRunInput().input, updated.runConfig);
+      if (inherited.modelId === runSelection.modelId)
+        runSelection.reasoningEffort = inherited.reasoningEffort;
+    }
+  } finally {
+    if (generation === runOptionsGeneration && session === sessionGeneration) {
+      runOptionsLoading = false;
+      updateComposer();
+    }
+  }
+}
+function renderRunOptions() {
+  const container = document.querySelector<HTMLElement>('#run-options');
+  if (!container) return;
+  const capabilities = currentAgent()?.runConfig;
+  const models = capabilities?.models ?? [];
+  const efforts = models.find((m) => m.id === runSelection.modelId)?.efforts ?? [];
+  const modes = capabilities?.modes ?? [];
+  const modeLabels: Record<string, string> =
+    currentAgent()?.agentType === 'codex'
+      ? {
+          'read-only': '只读',
+          agent: '工作区权限',
+          'agent-auto-review': '自动审批审查',
+          'agent-full-access': '完全访问',
+        }
+      : {};
+  const modeDescriptions: Record<string, string> =
+    currentAgent()?.agentType === 'codex'
+      ? {
+          'read-only': '以只读权限开始；修改文件和执行命令需要审批。',
+          agent: '允许在项目工作区内读写和执行；额外权限按 Agent 请求审批。',
+          'agent-auto-review': '由 Codex 审查器评估需要额外权限的操作。',
+          'agent-full-access': '允许访问工作区之外的文件和网络，执行权限更广。',
+        }
+      : {};
+  const options = (
+    items: { id: string; name: string }[],
+    selected: string | undefined,
+    fallback: string,
+  ) =>
+    `<option value="">${fallback}</option>` +
+    (selected && !items.some((i) => i.id === selected)
+      ? `<option value="${esc(selected)}" selected>${esc(selected)}（不可用）</option>`
+      : '') +
+    items
+      .map(
+        (i) =>
+          `<option value="${esc(i.id)}"${i.id === selected ? ' selected' : ''}>${esc(i.name)}</option>`,
+      )
+      .join('');
+  const disabled = sending || !!pending || runOptionsLoading || !runOptionsReady;
+  let validation = '';
+  try {
+    resolveRunSelection(runSelection, capabilities);
+  } catch (e) {
+    validation = (e as Error).message;
+  }
+  const selectedMode = modes.find((m) => m.id === runSelection.modeId);
+  const description =
+    validation ||
+    (runOptionsLoading
+      ? '正在从执行主机读取选项…'
+      : !capabilities
+        ? '尚未获取模型选项，可刷新读取；留空则沿用 Agent 设置。'
+        : runSelection.modeId
+          ? modeDescriptions[runSelection.modeId] || selectedMode?.description || selectedMode?.name
+          : '沿用 Agent 的审批设置。');
+  renderInto(
+    '#run-options',
+    `<div class="run-controls"><label>模型<select id="model" ${disabled ? 'disabled' : ''}>${options(models, runSelection.modelId, '沿用 Agent 设置')}</select></label><label>Effort<select id="effort" ${disabled || !efforts.length ? 'disabled' : ''}>${options(
+      efforts.map((e) => ({ id: e, name: e })),
+      runSelection.reasoningEffort,
+      !runSelection.modelId ? '先选择模型' : '沿用 Agent 设置',
+    )}</select></label><label>审批与权限<select id="approval-mode" ${disabled ? 'disabled' : ''}>${options(
+      modes.map((m) => ({ ...m, name: modeLabels[m.id] || m.name })),
+      runSelection.modeId,
+      '沿用 Agent 设置',
+    )}</select></label><button type="button" id="refresh-run-options" class="quiet" ${disabled || !connected || !selected?.online || !replica?.available ? 'disabled' : ''}>刷新选项</button></div><p class="run-description${validation ? ' invalid' : ''}">${esc(description)}${sessionId ? ' 设置对下一条指令生效。' : ''}</p>`,
+  );
+  for (const [selector, property] of [
+    ['#model', 'modelId'],
+    ['#effort', 'reasoningEffort'],
+    ['#approval-mode', 'modeId'],
+  ] as const) {
+    $<HTMLSelectElement>(selector).onchange = () => {
+      runSelectionTouched = true;
+      runSelection[property] = $<HTMLSelectElement>(selector).value || undefined;
+      if (
+        property === 'modelId' &&
+        !models
+          .find((m) => m.id === runSelection.modelId)
+          ?.efforts.includes(runSelection.reasoningEffort ?? '')
+      )
+        runSelection.reasoningEffort = undefined;
+      void cache
+        .write(runOptionsKey(), { base: currentRunInput().base, selection: { ...runSelection } })
+        .catch(error);
+      updateComposer();
+    };
+  }
+  $('#refresh-run-options').onclick = () => run(refreshRunOptions);
+  return !!validation;
+}
+
 function updateComposer() {
+  const invalidRunOptions = renderRunOptions();
   document
     .querySelectorAll<HTMLButtonElement>('[data-permission]')
     .forEach((b) => (b.disabled = sending || !!pending || !connected || !selected?.online));
@@ -872,7 +1066,12 @@ function updateComposer() {
     !connected ||
     !selected?.online ||
     !replica?.available ||
-    (!pending && (!workspace?.agents.length || (!sessionId && !workspace?.projects.length)));
+    (!pending &&
+      (!runOptionsReady ||
+        runOptionsLoading ||
+        invalidRunOptions ||
+        !currentAgent() ||
+        (!sessionId && !workspace?.projects.length)));
   send.textContent = sending ? '提交中…' : pending ? '重试确认' : '发送 ↑';
   $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending;
   const state = document.querySelector('#draft-state');
@@ -948,6 +1147,8 @@ async function sendTurn() {
       (a) => a.id === (meta?.agentConfigId ?? $<HTMLSelectElement>('#agent')?.value),
     );
   if (!agent) throw new Error('这台电脑还没有可用的 Agent 配置');
+  if (!runOptionsReady || runOptionsLoading) throw new Error('正在读取运行设置，请稍后发送');
+  const selectedConfig = resolveRunSelection(runSelection, agent.runConfig);
   const candidate = new LoroDoc();
   candidate.import(doc.export({ mode: 'snapshot' }));
   const localFlock = Flock.fromJson(
@@ -960,6 +1161,7 @@ async function sendTurn() {
     turnId = crypto.randomUUID(),
     now = new Date().toISOString();
   const inputConfig = {
+    ...selectedConfig,
     prompt,
     cliType: agent.cliType,
     agentType: agent.agentType,

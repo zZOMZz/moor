@@ -1,3 +1,4 @@
+import { syntheticCapabilities } from './support/agent-capabilities';
 import test from 'node:test';
 import strict from 'node:assert/strict';
 import { Effect } from 'effect';
@@ -42,6 +43,8 @@ function fixture() {
   let connected = true,
     chain = Promise.resolve(),
     dispatches = 0;
+  const dispatched: any[] = [];
+  const refreshes: any[] = [];
   let gate: ((m: any) => Promise<void>) | undefined;
   function pauseDocJoin(ordinal: number) {
     let seen = 0,
@@ -85,9 +88,17 @@ function fixture() {
     },
   };
   const control = {
+    sessionControl: (m: any) =>
+      Effect.sync(() => {
+        refreshes.push(m);
+        machine.set(['acpCapability', m.configId], syntheticCapabilities as never);
+        machine.commit();
+        return [{ type: 'machine/acp-capabilities-refresh_response', success: true }];
+      }),
     machineRpc: (m: any) =>
       Effect.sync(() => {
         dispatches++;
+        dispatched.push(m);
         const view = mirror(getDoc('session-' + m.params.sessionId), m.params.sessionId);
         strict.ok(
           view.getState().history.some((t) => t.id === m.params.userTurnId),
@@ -126,6 +137,8 @@ function fixture() {
     journal,
     pauseDocJoin,
     dispatches: () => dispatches,
+    dispatched,
+    refreshes,
     flush: () => chain,
     disconnect: () => {
       connected = false;
@@ -142,7 +155,11 @@ function fixture() {
     },
   };
 }
-function request(f: ReturnType<typeof fixture>, sessionId = 'session-a') {
+function request(
+  f: ReturnType<typeof fixture>,
+  sessionId = 'session-a',
+  config: Record<string, unknown> = {},
+) {
   const source = f.getDoc('session-' + sessionId),
     doc = new LoroDoc();
   doc.import(source.export({ mode: 'snapshot' }));
@@ -158,6 +175,7 @@ function request(f: ReturnType<typeof fixture>, sessionId = 'session-a') {
       agentType: 'codex',
       mcpServerIds: [],
       taskToolsEnabled: false,
+      ...config,
     };
   view.setState((s: any) => {
     s.history.push({
@@ -418,4 +436,56 @@ test('replica routes cannot read, mutate, retry or cancel a different local proj
   await strict.rejects(() => f.host.cancel(m.sessionId, 'turn', 'other-project'));
   strict.equal(f.dispatches(), 1);
   strict.equal((await f.host.mutate(m, 'project-a')).delivered, true);
+});
+
+test('capability refresh uses scoped public IPC and dispatch preserves selected settings across retries', async (t) => {
+  const f = fixture();
+  t.after(() => f.close());
+  await f.host.ready();
+  await strict.rejects(f.host.refreshAgentOptions('unknown', 'project-a'));
+  await strict.rejects(f.host.refreshAgentOptions('agent-a', 'unknown'));
+  strict.equal(f.refreshes.length, 0);
+  const agent = (await f.host.refreshAgentOptions('agent-a', 'project-a')) as any;
+  strict.equal(agent.runConfig.models.length, 2);
+  strict.equal(f.dispatches(), 0);
+  strict.deepEqual(f.refreshes[0], {
+    type: 'machine/acp-capabilities-refresh',
+    machineId: ws.machineId,
+    workspaceId: ws.id,
+    configId: 'agent-a',
+  });
+  const config = {
+    modelId: 'model-b',
+    modeId: 'agent-auto-review',
+    configOptionValues: { reasoning_effort: 'medium' },
+  };
+  const m = request(f, 'selected-settings', config);
+  await f.host.mutate(m, 'project-a');
+  strict.equal(f.dispatched[0].params.inputConfig.modelId, config.modelId);
+  strict.equal(f.dispatched[0].params.inputConfig.modeId, config.modeId);
+  strict.deepEqual(
+    f.dispatched[0].params.inputConfig.configOptionValues,
+    config.configOptionValues,
+  );
+  f.host.workspace.agents[0].runConfig = undefined;
+  await f.host.mutate(m, 'project-a');
+  strict.equal(f.dispatches(), 1);
+});
+test('host rejects unsupported models, efforts, permission modes and arbitrary config before staging', async (t) => {
+  const f = fixture();
+  t.after(() => f.close());
+  await f.host.ready();
+  await f.host.refreshAgentOptions('agent-a', 'project-a');
+  for (const config of [
+    { modelId: 'unknown' },
+    { modeId: 'unknown' },
+    { modelId: 'model-b', configOptionValues: { reasoning_effort: 'high' } },
+    { modelId: 'model-a', configOptionValues: { reasoning_effort: 'low', shell: 'injected' } },
+    { configOptionValues: { approval_policy: 'never' } },
+  ]) {
+    const m = request(f, 'invalid-settings', config);
+    await strict.rejects(f.host.mutate(m, 'project-a'));
+    strict.equal(f.journal.has(m.operationId), false);
+  }
+  strict.equal(f.dispatches(), 0);
 });

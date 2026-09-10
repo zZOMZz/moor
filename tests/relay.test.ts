@@ -114,3 +114,35 @@ test('subscriptions cannot combine a workspace, replica and different device', a
     false,
   );
 });
+
+test('agent options are scoped to the selected workspace, host and project replica', async (t) => {
+  const f = await syntheticRelay();
+  t.after(f.close);
+  const [space]: Workspace[] = await (await f.api('/api/workspaces')).json();
+  const replica = space.replicas.find((r) => r.hostId === space.hosts[1].id)!;
+  const path = `/api/workspaces/${space.id}/replicas/${replica.id}/agent-options`;
+  const before = f.hosts[0].messages.length;
+  const response = await f.api(path, { agentId: 'agent' });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).runConfig.models.length, 2);
+  assert.equal(f.hosts[0].messages.length, before);
+  const request = f.hosts[1].messages.at(-1);
+  assert.equal(request.method, 'agent-options');
+  assert.equal(request.workspaceId, space.hosts[1].runtimeWorkspaceId);
+  assert.equal(request.localProjectId, replica.localProjectId);
+  assert.equal((await f.api(path, { agentId: 'unknown' })).status, 404);
+  assert.equal((await f.api(path, { agentId: 'agent', command: 'injected' })).status, 400);
+  assert.equal(
+    (await fetch(f.origin + path, { method: 'POST', headers: { Origin: f.origin } })).status,
+    401,
+  );
+  const other = await (await f.api('/api/workspaces', { name: 'Other' })).json();
+  assert.equal(
+    (
+      await f.api(`/api/workspaces/${other.id}/replicas/${replica.id}/agent-options`, {
+        agentId: 'agent',
+      })
+    ).status,
+    404,
+  );
+});

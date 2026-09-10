@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { resolveRunSelection, selectionFromInput } from '../run-config';
 import { assert, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '../model';
 const clone = (source: LoroDoc) => {
@@ -123,10 +124,35 @@ export function validateMutation(
     );
     assert(
       Object.keys(turn.inputConfig).every((k) =>
-        ['prompt', 'cliType', 'agentType', 'mcpServerIds', 'taskToolsEnabled'].includes(k),
+        [
+          'prompt',
+          'cliType',
+          'agentType',
+          'mcpServerIds',
+          'taskToolsEnabled',
+          'modelId',
+          'modeId',
+          'configOptionValues',
+        ].includes(k),
       ),
       400,
       '不允许远程注入启动配置',
+    );
+    let selectedConfig: ReturnType<typeof resolveRunSelection>;
+    try {
+      selectedConfig = resolveRunSelection(
+        selectionFromInput(turn.inputConfig, agent.runConfig),
+        agent.runConfig,
+      );
+    } catch (e) {
+      assert(false, 400, (e as Error).message);
+    }
+    assert(
+      isDeepStrictEqual(turn.inputConfig.configOptionValues, selectedConfig.configOptionValues) &&
+        isDeepStrictEqual(turn.inputConfig.modelId, selectedConfig.modelId) &&
+        isDeepStrictEqual(turn.inputConfig.modeId, selectedConfig.modeId),
+      400,
+      '模型或审批设置包含不支持的选项',
     );
     assert(
       isDeepStrictEqual(turn.inputConfig.mcpServerIds, []) &&

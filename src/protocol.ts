@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { runCapabilitiesSchema } from './run-config';
 
 export const PROTOCOL = 2;
 export const id = z
@@ -16,6 +17,7 @@ export const agentSchema = z.object({
   name: z.string().max(200),
   cliType: z.string(),
   agentType: z.string(),
+  runConfig: runCapabilitiesSchema.optional(),
 });
 // Lody IPC scope, not a Moor product workspace.
 export const runtimeWorkspaceSchema = z.object({

@@ -229,6 +229,8 @@ function connect(target: Target) {
           assert(ready && workspace && !workspace.closed, 409, '本地 Lody 不可达');
           let result: unknown;
           if (m.method === 'sessions') result = workspace.list(m.localProjectId);
+          else if (m.method === 'agent-options')
+            result = await workspace.refreshAgentOptions(m.params.agentId, m.localProjectId);
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
           else if (m.method === 'mutate') {
