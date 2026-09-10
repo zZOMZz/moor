@@ -1,14 +1,6 @@
 const CACHE = 'personal-shell-__BUILD__';
 const ASSETS = [
-  '/',
-  '/app.js',
-  '/startup.js',
-  '/style.css',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/apple-touch-icon.png',
-  '/favicon.ico',
-  '/manifest.webmanifest',
+  /* __ASSETS__ */
 ];
 self.addEventListener('install', (e) =>
   e.waitUntil(

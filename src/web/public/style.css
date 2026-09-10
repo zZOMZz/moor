@@ -190,16 +190,80 @@ small {
     0 6px 25px var(--glass-shadow);
   outline: none;
 }
-/* Soft colour beneath the material provides depth without moving wallpaper. */
-body:before {
+/* Keep the navigation tint inside its material, including during startup. */
+.sidebar-glass:before {
   content: '';
-  position: fixed;
+  position: absolute;
   z-index: -1;
-  inset: 0 auto 0 0;
-  width: var(--sidebar-width);
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
   background:
     radial-gradient(ellipse at 0 15%, #a8c8b94a, transparent 65%),
     radial-gradient(ellipse at 90% 90%, #d9c8a440, transparent 55%);
+}
+.startup-shell {
+  display: flex;
+  height: 100dvh;
+  background: var(--surface);
+}
+.startup-sidebar {
+  flex: 0 0 var(--sidebar-width);
+  padding: 28px 30px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+.startup-brand {
+  margin-bottom: 40px;
+  font-size: 18px;
+  font-weight: 650;
+}
+.startup-brand span {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.startup-line {
+  height: 10px;
+  margin: 22px 0;
+  border-radius: 5px;
+  background: var(--border);
+}
+.startup-line.short {
+  width: 65%;
+}
+.startup-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.startup-toolbar {
+  height: 64px;
+  border-bottom: 1px solid var(--border);
+}
+.startup-message {
+  display: grid;
+  flex: 1;
+  align-content: center;
+  justify-items: center;
+  color: var(--muted);
+  padding: 24px;
+}
+.startup-mark {
+  font-size: 32px;
+  color: var(--accent);
+}
+.startup-failure {
+  max-width: 520px;
+  margin: auto;
+  padding: 15vh 24px 24px;
+}
+@media (max-width: 760px) {
+  .startup-sidebar {
+    display: none;
+  }
 }
 .sidebar-brand {
   display: flex;

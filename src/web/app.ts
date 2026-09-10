@@ -1,3 +1,5 @@
+import { api as request, ApiError, type Identity } from './api';
+import { firstStartupSource } from './bootstrap';
 import {
   showShell,
   showNavigation,
@@ -72,28 +74,6 @@ function clearRecoveredNotice() {
   }
   networkNotice = false;
 }
-class ApiError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-    public rejected = false,
-  ) {
-    super(message);
-  }
-}
-async function api(path: string, body?: unknown) {
-  const r = await fetch(path, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(body === undefined ? 10000 : 45000),
-  }).catch(() => {
-    throw new ApiError('中转服务暂不可达，草稿和待确认请求已保留。', 0);
-  });
-  const data = await r.json();
-  if (!r.ok) throw new ApiError(data.error, r.status, data.rejected === true);
-  return data;
-}
 function prefix() {
   if (!activeWorkspace || !replica) throw new Error('请先选择项目副本');
   return `/api/workspaces/${activeWorkspace.id}/replicas/${replica.id}`;
@@ -107,40 +87,104 @@ function key(kind: string) {
 function run(fn: () => Promise<unknown>) {
   void fn().catch(error);
 }
-async function boot() {
-  try {
-    const me = await api('/api/me');
-    if (!me.owner) {
-      showLogin(me.needsSetup);
-      return;
-    }
-    localOnly = me.localOnly === true;
-    owner = me.owner;
-    shell();
-    connect();
-    await cache.write('last-owner', owner).catch(error);
-    devices = (await cache.read<Device[]>(owner + '/devices').catch(() => undefined)) ?? [];
-    catalog = (await cache.read<Workspace[]>(owner + '/workspaces').catch(() => undefined)) ?? [];
-    await loadDevices();
-    await restoreSelection();
-  } catch {
-    owner = (await cache.read<string>('last-owner').catch(() => undefined)) ?? '';
-    if (owner) {
-      shell();
-      devices = (await cache.read<Device[]>(owner + '/devices').catch(() => undefined)) ?? [];
-      catalog = (await cache.read<Workspace[]>(owner + '/workspaces').catch(() => undefined)) ?? [];
-      catalog = catalog.map((w) => ({
-        ...w,
-        hosts: w.hosts.map((h) => ({ ...h, online: false })),
-        replicas: w.replicas.map((r) => ({ ...r, available: false })),
-      }));
-      devices = devices.map((d) => ({ ...d, online: false }));
-      renderDevices();
-      error(new ApiError('当前离线，可阅读本机缓存的历史', 0));
-      await restoreSelection().catch(error);
-      connect();
-    } else showLogin(false);
+let authenticated = false,
+  bootGeneration = 0;
+async function api(path: string, body?: unknown) {
+  if (!authenticated && !['/api/me', '/api/login', '/api/setup', '/api/logout'].includes(path))
+    throw new ApiError('正在确认登录状态，可阅读本地历史。', 0);
+  return request(path, body);
+}
+function resetWorkspace() {
+  events?.close();
+  events = null;
+  connected = false;
+  authenticated = false;
+  sessionGeneration++;
+  runOptionsGeneration++;
+  owner = '';
+  selected = undefined;
+  workspace = undefined;
+  activeWorkspace = undefined;
+  replica = undefined;
+  devices = [];
+  catalog = [];
+  sessionList = [];
+  sessionId = '';
+  pending = undefined;
+  meta = null;
+  restoredSelection = false;
+  selectionLoading = 0;
+  search = projectFilter = '';
+  localOnly = false;
+  doc = new LoroDoc();
+  flock = new Flock();
+}
+async function restoreCachedWorkspace(cachedOwner: string, generation: number) {
+  const [savedDevices, savedCatalog] = await Promise.all([
+    cache.read<Device[]>(cachedOwner + '/devices').catch(() => undefined),
+    cache.read<Workspace[]>(cachedOwner + '/workspaces').catch(() => undefined),
+  ]);
+  if (generation !== bootGeneration || owner !== cachedOwner) return;
+  devices = (savedDevices ?? []).map((d) => ({ ...d, online: false }));
+  catalog = (savedCatalog ?? []).map((w) => ({
+    ...w,
+    hosts: w.hosts.map((h) => ({ ...h, online: false })),
+    replicas: w.replicas.map((r) => ({ ...r, available: false })),
+  }));
+  renderDevices();
+  await restoreSelection();
+}
+export async function boot(
+  identity: Promise<Identity | null> = request('/api/me').catch(() => null),
+  cachedOwner: Promise<string | undefined> = cache
+    .read<string>('last-owner')
+    .catch(() => undefined),
+) {
+  const generation = ++bootGeneration;
+  resetWorkspace();
+  const source = await firstStartupSource(identity, cachedOwner);
+  if (generation !== bootGeneration) return;
+  if (source.kind === 'identity' && source.identity && !source.identity.owner) {
+    void cache.write('last-owner', undefined).catch(() => {});
+    showLogin(source.identity.needsSetup);
+    return;
   }
+  owner =
+    source.kind === 'cache' ? source.owner : (source.identity?.owner ?? (await cachedOwner) ?? '');
+  if (generation !== bootGeneration) return;
+  if (!owner) {
+    showLogin(false);
+    return;
+  }
+  shell();
+  error(new ApiError('正在连接，可阅读本地历史。', 0));
+  const restoring = restoreCachedWorkspace(owner, generation).catch((cause) => {
+    if (generation === bootGeneration) error(cause);
+  });
+  const me = await identity;
+  if (generation !== bootGeneration) return;
+  if (me && me.owner !== owner) {
+    // Invalidate pending cache reads immediately. An old account's history must
+    // not survive a confirmed logout or be adopted by a different account.
+    resetWorkspace();
+    if (!me.owner) {
+      bootGeneration++;
+      void cache.write('last-owner', undefined).catch(() => {});
+      showLogin(me.needsSetup);
+    } else await boot(Promise.resolve(me), Promise.resolve(undefined));
+    return;
+  }
+  await restoring;
+  if (generation !== bootGeneration) return;
+  if (!me) {
+    error(new ApiError('当前离线，可阅读本机缓存的历史', 0));
+    return;
+  }
+  authenticated = true;
+  localOnly = me.localOnly === true;
+  void cache.write('last-owner', owner).catch(error);
+  renderNavigation();
+  connect();
 }
 function showLogin(setup: boolean) {
   showAuth({
@@ -175,17 +219,9 @@ function pairComputer() {
 function logout() {
   run(async () => {
     await api('/api/logout', {});
-    sessionGeneration++;
-    events?.close();
+    bootGeneration++;
+    resetWorkspace();
     await cache.clear();
-    owner = '';
-    selected = undefined;
-    workspace = undefined;
-    activeWorkspace = undefined;
-    catalog = [];
-    replica = undefined;
-    restoredSelection = false;
-    connected = false;
     showLogin(false);
   });
 }
@@ -222,6 +258,7 @@ function cancelTurn() {
   });
 }
 function connect() {
+  if (!authenticated || !owner) return;
   events?.close();
   const ws = new WebSocket(new URL('/events', location.href.replace(/^http/, 'ws')));
   events = ws;
@@ -266,6 +303,7 @@ function connect() {
   };
 }
 async function loadDevices() {
+  if (!authenticated) return;
   const requestedOwner = owner;
   const [fresh, spaces]: [Device[], Workspace[]] = await Promise.all([
     api('/api/devices'),
@@ -534,6 +572,7 @@ async function restoreSelection() {
     ) ??
     catalog[0];
   if (space) await selectWorkspace(space.id, saved);
+  else restoredSelection = false;
 }
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
   restoredSelection = true;
@@ -581,9 +620,10 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
       : '';
     renderDevices();
     renderNavigation();
-    await loadSessions();
+    await loadSessions(false);
     if (generation !== sessionGeneration) return;
     await openSession(target.sessionId, saved?.replicaId);
+    if (authenticated) run(loadSessions);
   } finally {
     if (selectionLoading === generation) selectionLoading = 0;
   }
@@ -635,7 +675,7 @@ function renderNavigation() {
   });
 }
 
-async function loadSessions() {
+async function loadSessions(refresh = true) {
   if (!activeWorkspace) return;
   const space = activeWorkspace,
     generation = sessionGeneration,
@@ -651,7 +691,7 @@ async function loadSessions() {
           );
           let list: SessionSummary[];
           try {
-            if (!host.online) throw new Error('offline');
+            if (!refresh || !authenticated || !host.online) throw new Error('offline');
             list = await api(`/api/workspaces/${space.id}/hosts/${host.id}/sessions`);
             await cache.write(listKey, list);
           } catch {
@@ -769,7 +809,11 @@ async function openSession(id: string, replicaId?: string) {
       flock.importJson(saved.metaBundle);
       meta = saved.meta;
       renderHistory();
-    } else $('#history').textContent = '正在读取会话…';
+    } else
+      $('#history').textContent =
+        authenticated && selected?.online
+          ? '正在读取会话…'
+          : '当前设备尚未缓存这段会话，连接执行电脑后可读取。';
     try {
       await loadSession();
     } catch (e) {
@@ -787,7 +831,7 @@ async function openSession(id: string, replicaId?: string) {
 async function loadSession() {
   const generation = sessionGeneration,
     id = sessionId;
-  if (!id) return;
+  if (!id || !authenticated || !selected?.online) return;
   const data = await api(
     prefix() + '/sessions/' + id + query() + '&version=' + encodeURIComponent(vv(doc)),
   );
@@ -1174,13 +1218,12 @@ async function respondPermission(requestId: string, optionId: string) {
     update: delta(candidate, before),
   });
 }
-if (
-  'serviceWorker' in navigator &&
-  !['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname)
-)
-  void navigator.serviceWorker.register('/sw.js').catch(() => {});
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && owner) {
+    if (!authenticated) {
+      run(() => boot());
+      return;
+    }
     if (!events || events.readyState > WebSocket.OPEN) connect();
     else
       run(async () => {
@@ -1190,6 +1233,8 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('online', () => {
-  if (owner) connect();
+  if (owner) {
+    if (authenticated) connect();
+    else run(() => boot());
+  }
 });
-void boot();

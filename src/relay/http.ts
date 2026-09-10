@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { resolve, extname } from 'node:path';
+import { resolve } from 'node:path';
+import { serveStatic } from './static';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { Store, type Device } from './accounts';
@@ -379,24 +379,7 @@ export function createApp(
       const publicDir = resolve(options.publicDir ?? 'dist/public'),
         filename = resolve(publicDir, path === '/' ? 'index.html' : '.' + path);
       assert(filename.startsWith(publicDir + '/'), 404, '未找到');
-      const bytes = await readFile(filename).catch(() => {
-        throw new AppError(404, '未找到');
-      });
-      const type: Record<string, string> = {
-        '.html': 'text/html; charset=utf-8',
-        '.js': 'text/javascript',
-        '.css': 'text/css',
-        '.svg': 'image/svg+xml',
-        '.png': 'image/png',
-        '.ico': 'image/x-icon',
-        '.json': 'application/json',
-        '.webmanifest': 'application/manifest+json',
-      };
-      res.writeHead(200, {
-        'Content-Type': type[extname(filename)] ?? 'application/octet-stream',
-        'Cache-Control': 'no-cache',
-      });
-      res.end(bytes);
+      await serveStatic(req, res, filename);
     } catch (e) {
       if (!res.headersSent)
         json(res, e instanceof AppError ? e.status : e instanceof z.ZodError ? 400 : 500, {

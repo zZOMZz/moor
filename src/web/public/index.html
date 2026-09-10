@@ -9,10 +9,27 @@
     <link rel="icon" href="/favicon.ico" sizes="256x256" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="/style.css" />
+    <!-- __PRELOADS__ -->
     <title>Moor</title>
   </head>
   <body>
-    <div id="app"><p>正在加载 Moor…</p></div>
+    <div id="app">
+      <div class="startup-shell" aria-busy="true" aria-label="Moor">
+        <aside class="startup-sidebar" aria-hidden="true">
+          <div class="startup-brand">Moor <span>泊点</span></div>
+          <div class="startup-line"></div>
+          <div class="startup-line short"></div>
+          <div class="startup-line"></div>
+        </aside>
+        <main class="startup-main">
+          <div class="startup-toolbar" aria-hidden="true"></div>
+          <div class="startup-message">
+            <span class="startup-mark" aria-hidden="true">M</span>
+            <p id="startup-status" role="status">正在连接工作区…</p>
+          </div>
+        </main>
+      </div>
+    </div>
     <script type="module" src="/startup.js"></script>
   </body>
 </html>

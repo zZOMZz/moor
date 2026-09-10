@@ -1,8 +1,83 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
+import { JSDOM } from 'jsdom';
+import { firstStartupSource } from '../src/web/bootstrap';
+import type { Identity } from '../src/web/api';
 import { deadline } from '../src/web/deadline';
 import { loadPage, clearLocalShellCache } from '../src/desktop/page-loader.cjs';
+
+test('local startup does not wait for identity, and confirmed identity does not wait for blocked storage', async () => {
+  let confirm!: (identity: Identity | null) => void;
+  const identity = new Promise<Identity | null>((resolve) => {
+    confirm = resolve;
+  });
+  assert.deepEqual(await firstStartupSource(identity, Promise.resolve('cached-owner')), {
+    kind: 'cache',
+    owner: 'cached-owner',
+  });
+  const me = { owner: 'verified-owner', needsSetup: false };
+  confirm(me);
+  assert.deepEqual(await firstStartupSource(identity, new Promise(() => {})), {
+    kind: 'identity',
+    identity: me,
+  });
+  const logout = { owner: null, needsSetup: false };
+  assert.deepEqual(
+    await firstStartupSource(Promise.resolve(logout), Promise.resolve('old-owner')),
+    {
+      kind: 'identity',
+      identity: logout,
+    },
+  );
+  assert.deepEqual(await firstStartupSource(Promise.resolve(null), Promise.resolve(undefined)), {
+    kind: 'identity',
+    identity: null,
+  });
+});
+
+test('slow startup retains its skeleton, offers manual retry and accepts late readiness', async () => {
+  const html = await readFile('src/web/public/index.html', 'utf8');
+  const source = await readFile('src/web/public/startup.js', 'utf8');
+  const dom = new JSDOM(html, { url: 'https://synthetic.invalid' });
+  const { window } = dom;
+  window.localStorage.setItem('moor-appearance', 'dark');
+  let expire!: () => void;
+  let complete!: (entry: { start: () => void }) => void;
+  const entry = new Promise<{ start: () => void }>((resolve) => {
+    complete = resolve;
+  });
+  runInNewContext(source.replace("import('__ENTRY__')", 'loadEntry()'), {
+    window,
+    document: window.document,
+    localStorage: window.localStorage,
+    location: window.location,
+    setTimeout: (callback: () => void) => {
+      expire = callback;
+      return 1;
+    },
+    clearTimeout() {},
+    loadEntry: () => entry,
+  });
+  assert.equal(window.document.documentElement.dataset.theme, 'dark');
+  expire();
+  assert(window.document.querySelector('.startup-shell'));
+  assert.match(window.document.querySelector('#startup-status')!.textContent!, /仍在加载/);
+  assert.equal(window.document.querySelector('.startup-message button')!.textContent, '重新加载');
+  assert.equal(window.document.querySelector('.startup-failure'), null);
+  complete({
+    start: () => {
+      window.document.querySelector('#app')!.textContent = 'synthetic workspace';
+      window.dispatchEvent(new window.Event('moor:ready'));
+    },
+  });
+  await entry;
+  expire();
+  assert.equal(window.document.querySelector('#app')!.textContent, 'synthetic workspace');
+  dom.window.close();
+});
 
 test('local shell cleanup excludes login, drafts and session databases', async () => {
   let options: any;
