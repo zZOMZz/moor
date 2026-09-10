@@ -11,7 +11,7 @@ import { catalogSessionList, filterCatalogSessions } from '../src/web/navigation
 
 const runtime = (machineId: string): RuntimeWorkspace => ({
   id: 'lw_same',
-  name: 'Lody',
+  name: 'Moor host',
   machineId,
   userId: 'synthetic-user',
   projects: [{ id: 'same-local-id', name: 'moor', rootPath: '/synthetic/moor' }],

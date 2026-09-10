@@ -40,7 +40,10 @@ class ProcessRecovery {
     if (this.healthyAt !== null && this.now() - this.healthyAt >= 60_000) this.attempt = 0;
     this.healthyAt = null;
     if (code === 3) {
-      this.update('blocked', '已有 Lody 执行实例占用本机服务。请正常退出该实例后点击“重新连接”。');
+      this.update(
+        'blocked',
+        '已有 Moor 执行实例占用本机数据目录。请正常退出该实例后点击“重新连接”。',
+      );
       return;
     }
     const delays = [1000, 3000, 10000];

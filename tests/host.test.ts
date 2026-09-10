@@ -1,10 +1,12 @@
 import { syntheticCapabilities } from './support/agent-capabilities';
 import test from 'node:test';
 import strict from 'node:assert/strict';
-import { Effect } from 'effect';
-import { LocalLoroDataPlaneServer } from '@lody/shared/local-loro-data-plane-server';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HostWorkspace } from '../src/bridge/host-workspace';
-import { Journal } from '../src/bridge/journal';
+import { RuntimeStore } from '../src/runtime/store';
+import type { AgentDriver } from '../src/runtime/agent';
 import { Store } from '../src/relay/accounts';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../src/model';
 import type { Mutation, RuntimeWorkspace } from '../src/protocol';
@@ -16,142 +18,74 @@ const ws: RuntimeWorkspace = {
   projects: [{ id: 'project-a', name: '合成项目', rootPath: '/synthetic/project' }],
   agents: [{ id: 'agent-a', name: '合成 Agent', cliType: 'builtin', agentType: 'codex' }],
 };
-function fixture() {
-  const meta = new Flock(),
-    machine = new Flock(),
-    docs = new Map<string, LoroDoc>(),
-    journal = new Journal(':memory:');
-  machine.set(['localProject', 'project-a'], ws.projects[0] as never);
-  machine.set(['agentConfig', 'agent-a'], { ...ws.agents[0], machineId: ws.machineId } as never);
-  machine.commit();
-  const getDoc = (name: string) => {
-    let d = docs.get(name);
-    if (!d) {
-      d = new LoroDoc();
-      docs.set(name, d);
-    }
-    return d;
-  };
-  const engine = new LocalLoroDataPlaneServer({
-    workspaceId: ws.id,
-    resolveDoc: async (id) => getDoc(id),
-    resolveMetaFlock: async () => meta,
-    resolveFlockDoc: async () => machine,
-  });
-  const messages = new Set<(v: any) => void>(),
-    statuses = new Set<(v: boolean) => void>();
-  let connected = true,
-    chain = Promise.resolve(),
-    dispatches = 0;
+function fixture(file = ':memory:') {
+  const store = new RuntimeStore(file);
+  Object.assign(store.workspace, structuredClone(ws));
+  store.save('identity', Buffer.from(JSON.stringify(store.workspace)));
+  store.machine.set(['localProject', 'project-a'], ws.projects[0]);
+  store.machine.set(['agentConfig', 'agent-a'], { ...ws.agents[0], machineId: ws.machineId });
+  store.saveMachine();
+  let dispatches = 0;
   const dispatched: any[] = [];
-  const refreshes: any[] = [];
-  let gate: ((m: any) => Promise<void>) | undefined;
-  function pauseDocJoin(ordinal: number) {
-    let seen = 0,
-      reach!: () => void,
-      resume!: () => void;
-    const reached = new Promise<void>((r) => (reach = r)),
-      waiting = new Promise<void>((r) => (resume = r));
-    gate = async (m) => {
-      if (m.type === 'join' && m.room.scope === 'doc' && ++seen === ordinal) {
-        reach();
-        await waiting;
-      }
-    };
-    return { reached, resume };
-  }
-  const connection = {
-    id: 'synthetic-local-socket',
-    send: (m: any) => {
-      for (const f of messages) f(m);
-    },
-  };
-  const link = {
-    isConnected: () => connected,
-    onStatusChange: (f: (v: boolean) => void) => {
-      statuses.add(f);
-      return () => {
-        statuses.delete(f);
+  let callbacks: Parameters<AgentDriver['open']>[3];
+  let complete!: () => void;
+  let prompted!: () => void;
+  const started = new Promise<void>((r) => (prompted = r));
+  const driver: AgentDriver = {
+    async open(_config, _cwd, nativeId, c) {
+      callbacks = c;
+      return {
+        id: nativeId ?? 'synthetic-native',
+        capabilities: syntheticCapabilities,
+        async prompt(input) {
+          dispatches++;
+          dispatched.push(input);
+          prompted();
+          await new Promise<void>((r) => (complete = r));
+        },
+        async cancel() {
+          complete?.();
+        },
+        close() {
+          complete?.();
+        },
       };
     },
-    onMessage: (f: (v: any) => void) => {
-      messages.add(f);
-      return () => {
-        messages.delete(f);
-      };
-    },
-    send: (m: any) => {
-      chain = chain.then(async () => {
-        await gate?.(m);
-        if (connected) await engine.handleMessage(connection, m);
-      });
-    },
-  };
-  const control = {
-    sessionControl: (m: any) =>
-      Effect.sync(() => {
-        refreshes.push(m);
-        machine.set(['acpCapability', m.configId], syntheticCapabilities as never);
-        machine.commit();
-        return [{ type: 'machine/acp-capabilities-refresh_response', success: true }];
-      }),
-    machineRpc: (m: any) =>
-      Effect.sync(() => {
-        dispatches++;
-        dispatched.push(m);
-        const view = mirror(getDoc('session-' + m.params.sessionId), m.params.sessionId);
-        strict.ok(
-          view.getState().history.some((t) => t.id === m.params.userTurnId),
-          'daemon must receive the actual browser-authored turn before ACK',
-        );
-        view.dispose();
-        strict.equal(
-          metas(meta)['session-' + m.params.sessionId].latestUserMsgId,
-          m.params.userTurnId,
-        );
-        return {
-          ok: true,
-          result: {
-            type: 'session/dispatch-turn_response',
-            sessionId: m.params.sessionId,
-            userTurnId: m.params.userTurnId,
-            accepted: true,
-            disposition: 'accepted',
-          },
-        };
-      }),
   };
   const host = new HostWorkspace(
-    structuredClone(ws),
-    link,
-    control as never,
-    journal,
+    store,
+    driver,
     () => {},
     () => {},
   );
   return {
     host,
-    meta,
-    machine,
-    getDoc,
-    journal,
-    pauseDocJoin,
+    store,
+    journal: store.journal,
+    get meta() {
+      return store.meta;
+    },
+    machine: store.machine,
+    getDoc: (name: string) => host.active.get(name.slice(8))?.doc ?? store.doc(name.slice(8)),
     dispatches: () => dispatches,
     dispatched,
-    refreshes,
-    flush: () => chain,
-    disconnect: () => {
-      connected = false;
-      for (const f of statuses) f(false);
-    },
-    reconnect: () => {
-      connected = true;
-      for (const f of statuses) f(true);
+    started,
+    permission: () =>
+      callbacks.permission({
+        toolCall: { toolCallId: 'tool-1', title: 'Synthetic edit' },
+        options: [
+          { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+        ],
+      }),
+    finish: async () => {
+      const done = [...host.active.values()].map((r) => r.done);
+      complete?.();
+      await Promise.all(done);
     },
     close: () => {
       host.close();
-      engine.dispose();
-      journal.close();
+      store.close();
     },
   };
 }
@@ -250,95 +184,6 @@ test('relay database contains only identity and organization records, never sess
   store.revoke(owner, device.id);
   strict.throws(() => store.deviceToken(device.token));
 });
-test('delivery waits for real local IPC v7 reconciliation and daemon dispatch ACK', async (t) => {
-  const f = fixture();
-  t.after(f.close);
-  await f.host.ready();
-  const m = request(f);
-  const accepted = await f.host.mutate(m);
-  strict.equal(accepted.delivered, true);
-  strict.equal(
-    metas(f.meta)['session-' + m.sessionId].latestUserMsgId,
-    f.journal.lookup(ws.id, m).turn_id,
-  );
-  const snapshot = await f.host.read(m.sessionId);
-  strict.equal(snapshot.online, true);
-  strict.ok(snapshot.update);
-});
-test('same request recovers a lost relay response without creating another turn', async (t) => {
-  const f = fixture();
-  t.after(f.close);
-  await f.host.ready();
-  const m = request(f),
-    first = await f.host.mutate(m);
-  strict.deepEqual(await f.host.mutate(m), first);
-  const view = mirror(f.getDoc('session-' + m.sessionId), m.sessionId);
-  strict.equal(view.getState().history.length, 1);
-  view.dispose();
-  await strict.rejects(() => f.host.mutate({ ...m, sessionId: 'different-session' }));
-});
-test('two clients race at the host; stale/offline turns do not dispatch', async (t) => {
-  const f = fixture();
-  t.after(f.close);
-  await f.host.ready();
-  const a = request(f),
-    b = request(f);
-  const results = await Promise.allSettled([f.host.mutate(a), f.host.mutate(b)]);
-  strict.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
-  f.disconnect();
-  await strict.rejects(() => f.host.mutate(request(f, 'offline-session')));
-  strict.equal(metas(f.meta)['session-offline-session'], undefined);
-});
-test('session room subscriptions exist only while requested or watched', async (t) => {
-  const f = fixture();
-  t.after(f.close);
-  await f.host.ready();
-  const m = request(f);
-  await f.host.mutate(m);
-  strict.equal(f.host.docs.size, 0);
-  await f.host.watch(m.sessionId, true);
-  strict.equal(f.host.docs.size, 1);
-  await f.host.read(m.sessionId);
-  strict.equal(f.host.docs.size, 1);
-  await f.host.watch(m.sessionId, false);
-  strict.equal(f.host.docs.size, 0);
-});
-
-test('disconnect during initial read rejects immediately and cannot dispatch on reconnect', async (t) => {
-  const f = fixture();
-  t.after(f.close);
-  await f.host.ready();
-  const gate = f.pauseDocJoin(1),
-    m = request(f),
-    pending = f.host.mutate(m);
-  await gate.reached;
-  f.disconnect();
-  await strict.rejects(pending);
-  f.reconnect();
-  gate.resume();
-  await f.flush();
-  strict.equal(f.dispatches(), 0);
-  strict.equal(f.journal.lookup(ws.id, m), undefined);
-  strict.equal(f.host.docs.size, 0);
-});
-test('disconnect after staging preserves the request id but never auto dispatches', async (t) => {
-  const f = fixture();
-  t.after(f.close);
-  await f.host.ready();
-  const gate = f.pauseDocJoin(2),
-    m = request(f),
-    pending = f.host.mutate(m);
-  await gate.reached;
-  f.disconnect();
-  await strict.rejects(pending, (e: any) => e.status === 504);
-  f.reconnect();
-  gate.resume();
-  await f.flush();
-  strict.equal(f.dispatches(), 0);
-  strict.equal(f.journal.lookup(ws.id, m).phase, 'staged');
-  strict.equal(f.host.docs.size, 0);
-});
-
 test('pairing codes expire, can only be used once, and cannot move an existing device to a different host', async (t) => {
   let now = 0;
   const store = new Store(':memory:', () => now);
@@ -354,127 +199,167 @@ test('pairing codes expire, can only be used once, and cannot move an existing d
   store.bind(store.device(owner, device.id), ws.machineId, [ws]);
   strict.throws(() => store.bind(store.device(owner, device.id), 'another-host', []));
 });
-test('approval is bound to its active request; competing and late choices are rejected', async (t) => {
+test('delivery commits document, metadata and receipt atomically before Agent prompt', async (t) => {
   const f = fixture();
   t.after(f.close);
-  await f.host.ready();
+  const m = request(f),
+    result = await f.host.mutate(m, 'project-a');
+  strict.equal(result.delivered, true);
+  const persisted = mirror(f.store.doc(m.sessionId), m.sessionId);
+  strict.equal(persisted.getState().history.length, 2);
+  persisted.dispose();
+  strict.equal(f.journal.lookup(ws.id, m).phase, 'accepted');
+  strict.ok((await f.host.read(m.sessionId)).update);
+  await f.started;
+  strict.equal(f.dispatches(), 1);
+  strict.deepEqual(await f.host.mutate(m), result);
+  strict.equal(f.dispatches(), 1);
+  await strict.rejects(f.host.mutate({ ...m, sessionId: 'other' }));
+});
+test('concurrent and offline turns never start a second prompt', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const a = request(f),
+    b = request(f);
+  const outcomes = await Promise.allSettled([f.host.mutate(a), f.host.mutate(b)]);
+  strict.equal(outcomes.filter((v) => v.status === 'fulfilled').length, 1);
+  await f.started;
+  f.host.close();
+  await strict.rejects(f.host.mutate(request(f, 'offline-session')));
+  strict.equal(f.dispatches(), 1);
+  strict.equal(metas(f.meta)['session-offline-session'], undefined);
+});
+test('failed persistence rolls back receipt and document and cannot dispatch', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const m = request(f);
+  f.store.journal.db.exec(
+    "CREATE TRIGGER fail_snapshot BEFORE INSERT ON session BEGIN SELECT RAISE(ABORT, 'synthetic disk failure'); END",
+  );
+  await strict.rejects(f.host.mutate(m));
+  strict.equal(f.journal.has(m.operationId), false);
+  strict.equal(metas(f.meta)['session-' + m.sessionId], undefined);
+  strict.equal(f.dispatches(), 0);
+});
+test('restart retains receipt and history, settles interrupted turns and never replays', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'moor-runtime-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'host.sqlite'),
+    f = fixture(file),
+    m = request(f);
+  const first = await f.host.mutate(m);
+  await f.started;
+  // Save an interrupted snapshot, then close the owner before reopening its database.
+  const snapshot = f.store.doc(m.sessionId).export({ mode: 'snapshot' });
+  f.close();
+  const seed = new RuntimeStore(file);
+  seed.journal.db.prepare('UPDATE session SET snapshot=? WHERE id=?').run(snapshot, m.sessionId);
+  seed.close();
+  const next = fixture(file);
+  t.after(next.close);
+  strict.equal(next.dispatches(), 0);
+  strict.deepEqual(await next.host.mutate(m), first);
+  strict.equal(next.dispatches(), 0);
+  const view = mirror(next.store.doc(m.sessionId), m.sessionId);
+  strict.ok(view.getState().history.every((turn) => turn.finished));
+  view.dispose();
+  await next.host.mutate(request(next));
+  await next.started;
+  strict.equal(next.dispatches(), 1);
+});
+function choice(f: ReturnType<typeof fixture>, m: Mutation, optionId: string) {
+  const doc = new LoroDoc();
+  doc.import(f.getDoc('session-' + m.sessionId).export({ mode: 'snapshot' }));
+  const version = vv(doc),
+    view = mirror(doc, m.sessionId);
+  let requestId = '';
+  view.setState((s: any) => {
+    const item = s.history.at(-1).items.find((i: any) => i.permissionRequest);
+    requestId = item.permissionRequest.requestId;
+    item.permissionRequest.outcome = { outcome: 'selected', optionId };
+  });
+  view.dispose();
+  doc.commit();
+  return {
+    ...m,
+    operationId: crypto.randomUUID(),
+    kind: 'permission' as const,
+    expectedTurnId: f.journal.lookup(ws.id, m).turn_id,
+    requestId,
+    update: delta(doc, version),
+    metaBundle: undefined,
+  };
+}
+test('approval reaches only the active request; competing and late choices fail', async (t) => {
+  const f = fixture();
+  t.after(f.close);
   const m = request(f);
   await f.host.mutate(m);
-  const host = f.getDoc('session-' + m.sessionId),
-    view = mirror(host, m.sessionId);
-  view.setState(
-    (s: any) =>
-      void s.history.push({
-        id: 'assistant-1',
-        role: 'assistant',
-        timestamp: '2026-01-01T00:00:01Z',
-        finished: false,
-        items: [
-          {
-            type: 'tool_call',
-            toolCallId: 'tool-1',
-            title: 'Synthetic edit',
-            status: 'pending',
-            kind: 'edit',
-            permissionRequest: {
-              requestId: 'permission-1',
-              options: [
-                { optionId: 'allow', kind: 'allow_once', name: 'Allow' },
-                { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
-              ],
-            },
-          },
-        ],
-        fileDiff: null,
-      }),
-  );
-  view.dispose();
-  host.commit();
-  function choice(optionId: string) {
-    const d = new LoroDoc();
-    d.import(host.export({ mode: 'snapshot' }));
-    const before = vv(d),
-      v = mirror(d, m.sessionId);
-    v.setState((s: any) => {
-      s.history[1].items[0].permissionRequest.outcome = { outcome: 'selected', optionId };
-    });
-    v.dispose();
-    d.commit();
-    return {
-      ...m,
-      operationId: crypto.randomUUID(),
-      kind: 'permission' as const,
-      expectedTurnId: f.journal.lookup(ws.id, m).turn_id,
-      requestId: 'permission-1',
-      update: delta(d, before),
-      metaBundle: undefined,
-    };
-  }
-  const allow = choice('allow'),
-    deny = choice('deny');
-  await strict.rejects(() => f.host.mutate(allow, 'other-project'));
-  const accepted = await f.host.mutate(allow);
-  strict.equal(accepted.delivered, true);
-  await strict.rejects(() => f.host.mutate(deny));
-  strict.deepEqual(await f.host.mutate(allow), accepted);
-  strict.equal(f.dispatches(), 1, 'an approval never starts a new Agent turn');
+  await f.started;
+  const permission = f.permission(),
+    allow = choice(f, m, 'allow'),
+    deny = choice(f, m, 'deny');
+  await strict.rejects(f.host.mutate(allow, 'other-project'));
+  const result = await f.host.mutate(allow);
+  strict.deepEqual(await permission, { outcome: { outcome: 'selected', optionId: 'allow' } });
+  await strict.rejects(f.host.mutate(deny));
+  strict.deepEqual(await f.host.mutate(allow), result);
+  strict.equal(f.dispatches(), 1);
+  await f.finish();
+  await strict.rejects(f.host.mutate({ ...deny, operationId: crypto.randomUUID() }));
 });
-
-test('replica routes cannot read, mutate, retry or cancel a different local project', async (t) => {
+test('cancel binds exact assistant turn and invalidates pending permission', async (t) => {
   const f = fixture();
   t.after(f.close);
-  await f.host.ready();
   const m = request(f);
-  await strict.rejects(() => f.host.mutate(m, 'other-project'));
-  strict.equal(f.dispatches(), 0);
+  await f.host.mutate(m);
+  await f.started;
+  const permission = f.permission(),
+    allow = choice(f, m, 'allow');
+  await strict.rejects(f.host.cancel(m.sessionId, 'stale-turn'));
+  const turnId = f.host.active.get(m.sessionId)!.turnId;
+  strict.deepEqual(await f.host.cancel(m.sessionId, turnId, 'project-a'), { success: true });
+  strict.deepEqual(await permission, { outcome: { outcome: 'cancelled' } });
+  await strict.rejects(f.host.mutate(allow));
+  await strict.rejects(f.host.cancel(m.sessionId, turnId));
+});
+test('project and workspace scope are validated before receipt creation or retry', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const m = request(f);
+  await strict.rejects(f.host.mutate(m, 'other-project'));
+  await strict.rejects(f.host.mutate({ ...m, workspaceId: 'other-workspace' }));
   strict.equal(f.journal.has(m.operationId), false);
   await f.host.mutate(m, 'project-a');
   strict.equal(f.host.list('project-a').length, 1);
   strict.equal(f.host.list('other-project').length, 0);
-  await strict.rejects(() => f.host.read(m.sessionId, undefined, 'other-project'));
-  await strict.rejects(() => f.host.mutate(m, 'other-project'));
-  await strict.rejects(() => f.host.cancel(m.sessionId, 'turn', 'other-project'));
-  strict.equal(f.dispatches(), 1);
-  strict.equal((await f.host.mutate(m, 'project-a')).delivered, true);
+  await strict.rejects(f.host.read(m.sessionId, undefined, 'other-project'));
+  await strict.rejects(f.host.mutate(m, 'other-project'));
+  await strict.rejects(f.host.cancel(m.sessionId, 'turn', 'other-project'));
 });
-
-test('capability refresh uses scoped public IPC and dispatch preserves selected settings across retries', async (t) => {
+test('host obtains ACP capabilities and preserves selected input across retry', async (t) => {
   const f = fixture();
-  t.after(() => f.close());
-  await f.host.ready();
+  t.after(f.close);
   await strict.rejects(f.host.refreshAgentOptions('unknown', 'project-a'));
   await strict.rejects(f.host.refreshAgentOptions('agent-a', 'unknown'));
-  strict.equal(f.refreshes.length, 0);
-  const agent = (await f.host.refreshAgentOptions('agent-a', 'project-a')) as any;
-  strict.equal(agent.runConfig.models.length, 2);
-  strict.equal(f.dispatches(), 0);
-  strict.deepEqual(f.refreshes[0], {
-    type: 'machine/acp-capabilities-refresh',
-    machineId: ws.machineId,
-    workspaceId: ws.id,
-    configId: 'agent-a',
-  });
+  const agent = await f.host.refreshAgentOptions('agent-a', 'project-a');
+  strict.equal(agent.runConfig!.models.length, 2);
   const config = {
     modelId: 'model-b',
-    modeId: 'agent-auto-review',
+    modeId: 'agent',
     configOptionValues: { reasoning_effort: 'medium' },
   };
   const m = request(f, 'selected-settings', config);
-  await f.host.mutate(m, 'project-a');
-  strict.equal(f.dispatched[0].params.inputConfig.modelId, config.modelId);
-  strict.equal(f.dispatched[0].params.inputConfig.modeId, config.modeId);
-  strict.deepEqual(
-    f.dispatched[0].params.inputConfig.configOptionValues,
-    config.configOptionValues,
-  );
+  await f.host.mutate(m);
+  await f.started;
+  strict.deepEqual(f.dispatched[0].configOptionValues, config.configOptionValues);
   f.host.workspace.agents[0].runConfig = undefined;
-  await f.host.mutate(m, 'project-a');
+  await f.host.mutate(m);
   strict.equal(f.dispatches(), 1);
 });
-test('host rejects unsupported models, efforts, permission modes and arbitrary config before staging', async (t) => {
+test('unsupported models, efforts, permission modes and launch settings fail before staging', async (t) => {
   const f = fixture();
-  t.after(() => f.close());
-  await f.host.ready();
+  t.after(f.close);
   await f.host.refreshAgentOptions('agent-a', 'project-a');
   for (const config of [
     { modelId: 'unknown' },
@@ -482,9 +367,10 @@ test('host rejects unsupported models, efforts, permission modes and arbitrary c
     { modelId: 'model-b', configOptionValues: { reasoning_effort: 'high' } },
     { modelId: 'model-a', configOptionValues: { reasoning_effort: 'low', shell: 'injected' } },
     { configOptionValues: { approval_policy: 'never' } },
+    { command: '/injected' },
   ]) {
     const m = request(f, 'invalid-settings', config);
-    await strict.rejects(f.host.mutate(m, 'project-a'));
+    await strict.rejects(f.host.mutate(m));
     strict.equal(f.journal.has(m.operationId), false);
   }
   strict.equal(f.dispatches(), 0);

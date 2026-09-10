@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 
 // Include notices for every package actually incorporated in the browser bundle,
 // including transitive dependencies such as the interaction/positioning helpers.
-export async function browserNotices(inputs) {
+export async function browserNotices(inputs, target = 'browser') {
   const packages = new Map();
   for (const input of Object.keys(inputs)) {
     if (!input.includes('node_modules/')) continue;
@@ -20,7 +20,7 @@ export async function browserNotices(inputs) {
     }
   }
   const sections = [
-    'Moor browser dependency notices\nDependencies are bundled locally; no runtime CDN is required.',
+    `Moor ${target} dependency notices\nDependencies are bundled locally; no runtime CDN is required.`,
   ];
   for (const [name, { directory, manifest }] of [...packages].sort(([a], [b]) =>
     a.localeCompare(b),

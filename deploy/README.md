@@ -4,7 +4,7 @@
 
 ## 通过本地 SSH 更新已有 VPS
 
-本地需要 Node 24、已安装的锁定依赖、固定版本的 Lody runtime、pnpm、SSH 和 SCP。先在本机配置 SSH 别名 `moor-vps`，独立核实并信任服务器主机密钥。脚本使用非交互认证与严格主机密钥检查，不上传 SSH 密钥或本地 `.env`。VPS 需要 Bash、Docker Compose、Python 3、curl、flock、sha256sum 和 tar；默认通过 `sudo -n docker` 操作容器。
+本地需要 Node 24、已安装的锁定依赖、pnpm、SSH 和 SCP。先在本机配置 SSH 别名 `moor-vps`，独立核实并信任服务器主机密钥。脚本使用非交互认证与严格主机密钥检查，不上传 SSH 密钥或本地 `.env`。VPS 需要 Bash、Docker Compose、Python 3、curl、flock、sha256sum 和 tar；默认通过 `sudo -n docker` 操作容器。
 
 ```sh
 # 只读：验证连接、Docker 权限、现有数据卷与公网 HTTPS 健康状态

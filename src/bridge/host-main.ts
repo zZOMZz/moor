@@ -3,28 +3,21 @@ import { hostname } from 'node:os';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { WebSocket } from 'ws';
-import { Effect } from 'effect';
-import {
-  makeLocalProbeClientAuto,
-  makeLocalControlClientAuto,
-  getLocalLoroDataPlaneSocketPath,
-} from '@lody/shared/node/local-ipc';
-import { getLodyDataDir } from '@lody/shared/node/installation-profile';
-import { LocalLink } from './local-link';
 import { HostWorkspace } from './host-workspace';
-import { Journal } from './journal';
+import { acquireRuntimeLock } from '../runtime/lock';
+import { RuntimeStore } from '../runtime/store';
+import { acpDriver } from '../runtime/acp';
 import { localCodexPath, withLocalCodex } from './local-codex';
 import { Store, token } from '../relay/accounts';
 import { createApp } from '../relay/http';
-import { AppError, assert, mutationSchema, PROTOCOL, type RuntimeWorkspace } from '../protocol';
+import { AppError, assert, mutationSchema, PROTOCOL } from '../protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
     pair: { type: 'string' },
     name: { type: 'string' },
     config: { type: 'string' },
-    'run-file': { type: 'string' },
-    'data-socket': { type: 'string' },
+    'runtime-data': { type: 'string' },
     project: { type: 'string', multiple: true },
     'builtin-agent': { type: 'string', multiple: true },
     desktop: { type: 'boolean' },
@@ -32,7 +25,7 @@ const { values } = parseArgs({
   },
 });
 type Config = { server: string; id: string; token: string };
-const configPath = resolve(values.config ?? '.data/bridge.json');
+const configPath = resolve(values.config ?? '.data/bridge-v3.json');
 let config: Config | undefined;
 if (values.pair) {
   if (!values.server) throw new Error('配对时需要 --server');
@@ -59,11 +52,22 @@ if (values.pair) {
   }
 }
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
-const probe = makeLocalProbeClientAuto({ runFilePath: values['run-file'] }),
-  control = makeLocalControlClientAuto({ runFilePath: values['run-file'] });
-const link = new LocalLink(values['data-socket'] ?? getLocalLoroDataPlaneSocketPath('local'));
+const runtimeFile = resolve(
+  values['runtime-data'] ??
+    process.env.MOOR_RUNTIME_DATA ??
+    join(dirname(configPath), 'runtime-v1.sqlite'),
+);
+let releaseRuntime: () => void;
+try {
+  releaseRuntime = acquireRuntimeLock(runtimeFile + '.ownership.sqlite');
+} catch {
+  console.error('已有 Moor 实例使用该数据目录，或主机锁需要检查');
+  process.exit(3);
+}
+process.once('exit', releaseRuntime);
+const runtime = new RuntimeStore(runtimeFile);
 const workspaces = new Map<string, HostWorkspace>(),
-  journal = new Journal(configPath + '.journal.sqlite');
+  journal = runtime.journal;
 type Target = {
   config: Config;
   local: boolean;
@@ -74,7 +78,7 @@ type Target = {
 };
 const targets: Target[] = [];
 let stopped = false,
-  machineId = '',
+  machineId = runtime.workspace.machineId,
   ready = false,
   refreshing = false,
   projectsRegistered = false;
@@ -86,7 +90,7 @@ function reportHealth() {
   const remote = targets.find((t) => !t.local);
   process.send({
     type: 'health',
-    local: ready && link.isConnected() && workspaces.size > 0 ? 'ready' : 'unavailable',
+    local: ready && workspaces.size > 0 ? 'ready' : 'unavailable',
     relay: !remote
       ? 'unpaired'
       : remote.revoked
@@ -101,7 +105,7 @@ function broadcast(v: unknown) {
   for (const t of targets) send(t.socket, v);
 }
 function hello() {
-  if (ready && link.isConnected())
+  if (ready)
     broadcast({
       type: 'hello',
       protocol: PROTOCOL,
@@ -114,67 +118,38 @@ async function syncWatch(workspaceId: string, sessionId: string) {
   await workspaces.get(workspaceId)?.watch(sessionId, wanted);
 }
 async function refresh() {
-  if (refreshing || stopped) return;
+  if (stopped || refreshing) return;
   refreshing = true;
   try {
-    const state = await Effect.runPromise(probe.state({ timeoutMs: 3000 }));
-    if (!link.isConnected() || !state.machineId) throw new Error('本地未连接');
-    machineId = state.machineId;
-    const identity = JSON.parse(
-      readFileSync(join(getLodyDataDir('local'), 'local-identity.json'), 'utf8'),
-    );
-    for (const w of state.connectedWorkspaces ?? []) {
-      if (!workspaces.has(w.id) || workspaces.get(w.id)!.closed) {
-        const workspace: RuntimeWorkspace = {
-          id: w.id,
-          name: w.name,
-          userId: identity.userId,
-          machineId,
-          projects: [],
-          agents: [],
-        };
-        const host = new HostWorkspace(workspace, link, control, journal, hello, (sessionId) =>
-          broadcast({ type: 'changed', workspaceId: w.id, sessionId }),
-        );
-        workspaces.set(w.id, host);
-        await host.ready();
-        for (const agentType of values['builtin-agent'] ?? []) {
-          assert(['codex', 'claude'].includes(agentType), 400, '仅支持 Codex 或 Claude');
-          const id = 'personal-' + agentType;
-          const existing = host.machine.get(['agentConfig', id]);
-          const base = existing ?? {
-            id,
-            name: agentType === 'codex' ? 'Codex' : 'Claude',
-            machineId,
-            cliType: 'builtin',
-            agentType,
-            env: {},
-          };
-          const configured = withLocalCodex(
-            base,
-            agentType === 'codex' ? localCodexPath() : undefined,
-          );
-          if (!existing || configured !== base) {
-            host.machine.set(['agentConfig', id], configured);
-            host.machine.commit();
-          }
-        }
-        for (const t of targets)
-          for (const watch of t.watches.values())
-            if (watch.workspaceId === w.id) await syncWatch(w.id, watch.sessionId);
-      }
+    let host = workspaces.get(runtime.workspace.id);
+    if (!host) {
+      host = new HostWorkspace(runtime, acpDriver, hello, (sessionId) =>
+        broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId }),
+      );
+      workspaces.set(runtime.workspace.id, host);
     }
     if (!projectsRegistered) {
-      for (const project of values.project ?? [])
-        await Effect.runPromise(
-          control.projectControl({
-            type: 'local-project/add',
-            machineId: machineId as never,
-            rootPath: resolve(project),
-          }),
+      for (const project of values.project ?? []) runtime.registerProject(resolve(project));
+      for (const agentType of values['builtin-agent'] ?? []) {
+        assert(['codex', 'claude'].includes(agentType), 400, '仅支持 Codex 或 Claude');
+        const id = 'personal-' + agentType;
+        const existing = runtime.machine.get(['agentConfig', id]);
+        const base = existing ?? {
+          id,
+          name: agentType === 'codex' ? 'Codex' : 'Claude',
+          machineId,
+          cliType: 'builtin',
+          agentType,
+        };
+        runtime.machine.set(
+          ['agentConfig', id],
+          withLocalCodex(base, agentType === 'codex' ? localCodexPath() : undefined),
         );
+      }
+      runtime.saveMachine();
       projectsRegistered = true;
     }
+    host.updateCatalogue();
     ready = true;
     hello();
   } catch {
@@ -185,13 +160,6 @@ async function refresh() {
     reportHealth();
   }
 }
-link.onStatusChange((connected) => {
-  if (!connected) {
-    ready = false;
-    broadcast({ type: 'unavailable' });
-  } else void refresh();
-  reportHealth();
-});
 function connect(target: Target) {
   if (stopped || target.revoked) return;
   const url = new URL('/bridge', target.config.server);
@@ -226,7 +194,7 @@ function connect(target: Target) {
       if (m.type === 'request') {
         try {
           const workspace = workspaces.get(m.workspaceId);
-          assert(ready && workspace && !workspace.closed, 409, '本地 Lody 不可达');
+          assert(ready && workspace && !workspace.closed, 409, '本机执行服务不可达');
           let result: unknown;
           if (m.method === 'sessions') result = workspace.list(m.localProjectId);
           else if (m.method === 'agent-options')
@@ -278,7 +246,7 @@ function connect(target: Target) {
 let localApp: ReturnType<typeof createApp> | undefined, localStore: Store | undefined;
 if (values.desktop) {
   // A loopback-only relay keeps the same UI usable without a public server.
-  // Persist product organization across restarts; runtime data remains owned by Lody.
+  // Persist product organization across restarts; session data belongs to the Moor execution host.
   // Native main receives its credential over the private child-process IPC channel.
   assert(Boolean(process.send), 500, '本机界面必须由客户端启动');
   localStore = new Store(configPath + '.catalog.sqlite');
@@ -334,10 +302,9 @@ async function stop() {
     target.socket?.terminate();
   }
   for (const w of workspaces.values()) w.close();
-  link.close();
   await localApp?.close();
   localStore?.close();
-  journal.close();
+  runtime.close();
   process.disconnect?.();
 }
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => void stop());

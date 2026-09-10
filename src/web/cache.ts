@@ -1,6 +1,6 @@
 import { deadline } from './deadline';
 const db = new Promise<IDBDatabase>((resolve, reject) => {
-  const r = indexedDB.open('lody-personal', 1);
+  const r = indexedDB.open('moor-runtime-v1', 1);
   r.onupgradeneeded = () => r.result.createObjectStore('cache');
   r.onsuccess = () => resolve(r.result);
   r.onerror = () => reject(r.error);

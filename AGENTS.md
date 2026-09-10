@@ -1,9 +1,9 @@
 # Moor contributor guidelines
 
-Moor is an independent, local-first client and self-hosted relay built on Lody's public runtime.
-Lody stays an unmodified, pinned external checkout. Its OSS desktop remains local-only.
+Moor is an independent, local-first client, execution host and self-hosted relay.
+Moor owns its session schema and persistence; pinned ACP adapters connect local coding agents.
 
-- Use the public local IPC v7 and session schemas; never read Lody SQLite files directly.
+- Use Moor's versioned session schema and typed host boundary. Never read another application's databases or depend on an external source checkout.
 - Only the execution host imports and persists user CRDT operations. The relay stores no session bodies.
 - Bind every request to account, device, workspace, project and session.
 - Keep credentials out of shared documents. Never expose a raw shell or socket proxy.

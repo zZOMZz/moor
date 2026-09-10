@@ -3,8 +3,7 @@ import { readdir, mkdir } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 await mkdir('dist/tests', { recursive: true });
 const tests = (await readdir('tests')).filter((n) => n.endsWith('.test.ts'));
-// Resolve public TS workspace imports as production does. One external WASM module must
-// own every LoroDoc/VersionVector instance across the linked public/private workspaces.
+// Bundle tests like production. One external WASM module owns all CRDT instances.
 for (const file of tests)
   await build({
     entryPoints: ['tests/' + file],

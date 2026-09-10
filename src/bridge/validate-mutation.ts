@@ -101,7 +101,7 @@ export function validateMutation(
       400,
       '仅允许追加一个用户回合',
     );
-    const turn = next.history.at(-1)!;
+    const turn: any = next.history.at(-1)!;
     assert(
       isDeepStrictEqual({ ...oldState, history: next.history }, next),
       400,
@@ -113,12 +113,24 @@ export function validateMutation(
       '用户回合不匹配',
     );
     assert(
+      turn.finished === true &&
+        turn.status === 'pending' &&
+        !turn.read &&
+        !turn.userTurnId &&
+        isDeepStrictEqual(turn.items, [{ type: 'text', text: turn.inputConfig?.prompt }]) &&
+        turn.fileDiff === null,
+      400,
+      '用户回合包含不支持的状态或内容',
+    );
+    assert(
       turn.inputConfig?.cliType === agent.cliType && turn.inputConfig.agentType === agent.agentType,
       400,
       'Agent 不匹配',
     );
     assert(
-      turn.inputConfig.prompt.length > 0 && turn.inputConfig.prompt.length <= 100000,
+      typeof turn.inputConfig.prompt === 'string' &&
+        turn.inputConfig.prompt.length > 0 &&
+        turn.inputConfig.prompt.length <= 100000,
       400,
       '指令为空或过长',
     );

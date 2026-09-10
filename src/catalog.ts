@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { id, agentSchema } from './protocol';
 
-// Product identity is independent of a host's Lody workspace and filesystem.
+// Product identity is independent of a host's execution workspace and filesystem.
 export const projectSourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('local') }),
   z.object({

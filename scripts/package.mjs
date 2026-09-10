@@ -3,13 +3,14 @@ import { join, resolve, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { archiveRelay } from './relay-package.mjs';
-const require = createRequire(import.meta.url),
-  lody = resolve(process.env.LODY_SOURCE ?? '.runtime/lody');
+const require = createRequire(import.meta.url);
 const mode = process.argv[2] ?? 'relay';
 async function packageDir(name, from = process.cwd()) {
   let entry;
   try {
+    // A resolved manifest is authoritative even for npm aliases (native Codex packages).
     entry = require.resolve(name + '/package.json', { paths: [from] });
+    return dirname(await realpath(entry));
   } catch {
     entry = require.resolve(name, { paths: [from] });
   }
@@ -30,6 +31,34 @@ async function copyPackage(name, dest, from) {
     filter: (path) => !path.includes('/node_modules/.cache/'),
   });
 }
+// Preserve each package's dependency resolution and bundled licenses, without copying
+// unrelated workspace modules, source checkouts or operator data.
+async function copyDependencyTree(name, dest, from = process.cwd(), ancestors = new Set()) {
+  const directory = await packageDir(name, from);
+  if (ancestors.has(directory)) throw new Error('Dependency cycle while packaging ' + name);
+  const target = join(dest, 'node_modules', name);
+  await cp(directory, target, {
+    recursive: true,
+    dereference: true,
+    filter: (path) =>
+      path === directory ||
+      !path
+        .slice(directory.length + 1)
+        .split('/')
+        .includes('node_modules'),
+  });
+  const manifest = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
+  const next = new Set(ancestors).add(directory);
+  for (const dep of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) {
+    try {
+      await packageDir(dep, directory);
+    } catch (error) {
+      if (dep in (manifest.optionalDependencies ?? {})) continue;
+      throw error;
+    }
+    await copyDependencyTree(dep, target, directory, next);
+  }
+}
 async function copyRuntime(dest) {
   await mkdir(dest, { recursive: true });
   for (const file of ['bridge.mjs', 'server.mjs']) await cp('dist/' + file, join(dest, file));
@@ -38,10 +67,10 @@ async function copyRuntime(dest) {
 }
 async function licenses(dest) {
   await mkdir(join(dest, 'licenses'), { recursive: true });
-  await cp(join(lody, 'LICENSE'), join(dest, 'licenses', 'Lody-LICENSE'));
   await cp('LICENSE', join(dest, 'licenses', 'Moor-LICENSE'));
   await cp('NOTICE', join(dest, 'licenses', 'Moor-NOTICE'));
-  const manifests = [process.cwd(), join(lody, 'apps/cli')];
+  await cp('dist/THIRD_PARTY_NOTICES.txt', join(dest, 'licenses', 'BUNDLED-NOTICES.txt'));
+  const manifests = [process.cwd()];
   for (const from of manifests) {
     const manifest = JSON.parse(await readFile(join(from, 'package.json'), 'utf8'));
     for (const name of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies })) {
@@ -95,7 +124,7 @@ if (mode === 'relay') {
   const dest = resolve(process.env.MOOR_RELEASE_DIR ?? 'release', 'macos-' + process.arch),
     app = join(dest, 'Moor.app');
   await mkdir(dest, { recursive: true });
-  const electron = join(lody, 'apps/electron/node_modules/electron/dist/Electron.app');
+  const electron = join(await packageDir('electron'), 'dist/Electron.app');
   await rm(app, { recursive: true, force: true });
   await cp(electron, app, { recursive: true, verbatimSymlinks: true });
   const resources = join(app, 'Contents', 'Resources'),
@@ -111,16 +140,11 @@ if (mode === 'relay') {
   await licenses(root);
   const runtime = join(root, 'runtime');
   await copyRuntime(runtime);
-  await cp(join(lody, 'apps/electron/resources/cli'), join(runtime, 'cli'), {
-    recursive: true,
-    dereference: true,
-  });
-  // Preserve licenses for the unmodified OSS execution bundle and Electron runtime.
-  await cp(join(lody, 'LICENSE'), join(root, 'LODY-LICENSE'));
-  await cp(join(lody, 'NOTICE'), join(root, 'LODY-NOTICE')).catch(() => {});
+  for (const name of ['@agentclientprotocol/codex-acp', '@agentclientprotocol/claude-agent-acp'])
+    await copyDependencyTree(name, runtime);
   await writeFile(
     join(root, 'THIRD-PARTY.txt'),
-    'Moor uses Lody (Apache-2.0), Electron and the dependencies shipped in runtime/node_modules and runtime/cli/node_modules. See licenses/ and the license files supplied alongside those packages.\n',
+    'Moor includes Electron and pinned ACP adapters. See licenses/ and the license files alongside runtime/node_modules packages.\n',
   );
   const plist = join(app, 'Contents', 'Info.plist');
   let xml = await readFile(plist, 'utf8');

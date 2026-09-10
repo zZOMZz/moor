@@ -1,7 +1,7 @@
 import { LoroDoc, VersionVector } from 'loro-crdt';
 import { Flock } from '@loro-dev/flock-wasm/base64';
 import { Mirror } from 'loro-mirror';
-import { sessionDocSchema } from '@lody/shared';
+import { sessionDocSchema } from './session-schema';
 export { LoroDoc, VersionVector, Flock };
 export const encode = (bytes: Uint8Array): string => {
   if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');

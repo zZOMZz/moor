@@ -4,8 +4,9 @@ import { browserNotices } from './browser-notices.mjs';
 import tailwind from '@tailwindcss/postcss';
 import { mkdir, cp, readFile, writeFile } from 'node:fs/promises';
 await mkdir('dist/public', { recursive: true });
-// Public workspace packages ship TS source. Bundle them; keep only the native ws runtime external.
+// Bundle Moor and the ACP protocol client; preserve native runtime packages externally.
 const nodeOptions = {
+  metafile: true,
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -16,12 +17,23 @@ const nodeOptions = {
     js: "import { createRequire } from 'node:module'; const require=createRequire(import.meta.url);",
   },
 };
-await build({ ...nodeOptions, entryPoints: ['src/relay/main.ts'], outfile: 'dist/server.mjs' });
-await build({
+const relayBuild = await build({
+  ...nodeOptions,
+  entryPoints: ['src/relay/main.ts'],
+  outfile: 'dist/server.mjs',
+});
+const hostBuild = await build({
   ...nodeOptions,
   entryPoints: ['src/bridge/host-main.ts'],
   outfile: 'dist/bridge.mjs',
 });
+await writeFile(
+  'dist/THIRD_PARTY_NOTICES.txt',
+  await browserNotices(
+    { ...relayBuild.metafile.inputs, ...hostBuild.metafile.inputs },
+    'host and relay',
+  ),
+);
 const browserBuild = await build({
   metafile: true,
   bundle: true,

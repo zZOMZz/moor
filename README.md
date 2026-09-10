@@ -4,7 +4,7 @@
 
 **代码留在自己的电脑，工作从任意设备继续。**
 
-Moor 是基于 [Lody](https://github.com/LodyAI/Lody) 公共运行组件开发的独立项目，提供个人多设备访问、macOS 客户端和可自托管的移动 Web/PWA。手机或另一台电脑可以查看、继续和停止目标电脑上的 Agent 会话。
+Moor 是独立的本地 Agent 执行主机，通过标准 [ACP](https://agentclientprotocol.com/) 连接 Codex 和 Claude，提供个人多设备访问、macOS 客户端和可自托管的移动 Web/PWA。手机或另一台电脑可以查看、继续和停止目标电脑上的 Agent 会话。
 
 当前是个人使用的开发预览版：macOS Apple Silicon + Web/PWA。Windows、团队权限和公司 SSO 留待后续版本；macOS 安装包尚未完成开发者签名与公证。
 
@@ -42,7 +42,7 @@ Workspace 是 Moor 的顶层工作空间，一个工作区可以连接多台电�
 
 ```text
 Moor 工作区
-├── 执行电脑 A、B（各自运行 Lody 和 Agent）
+├── 执行电脑 A、B（各自运行 Moor 和 Agent）
 ├── 逻辑项目 moor
 │   ├── A 上的本地副本 → /Users/me/github/moor
 │   └── B 上的本地副本 → /Users/me/projects/moor
@@ -51,13 +51,21 @@ Moor 工作区
 
 项目与本地副本分开建模。项目有名称和代码来源，本地副本关联主机、本地项目编号和目录。首次发现时为每个副本建立独立项目，不会因为目录、名称或本地编号相同就自动合并。在**管理工作区 → 项目与本地副本**中，可创建逻辑项目，再将不同电脑的副本归入同一项目；之后按这个项目筛选即可看到多台电脑上的会话。
 
-**管理工作区**也支持创建、重命名工作区，以及调整执行电脑的工作区归属。当前映射单位是主机上的 Lody 本地工作区：一个本地工作区归入一个 Moor 工作区，其项目副本一起移动。调整归属只改变组织元数据，已有会话、代码目录与执行位置保持原样；若原逻辑项目包含其他电脑的副本，移出的部分会在目标工作区建立独立项目。
+**管理工作区**也支持创建、重命名工作区，以及调整执行电脑的工作区归属。当前映射单位是主机上的 Moor 执行工作区：一个本地工作区归入一个 Moor 工作区，其项目副本一起移动。调整归属只改变组织元数据，已有会话、代码目录与执行位置保持原样；若原逻辑项目包含其他电脑的副本，移出的部分会在目标工作区建立独立项目。
 
-Moor 的 `Workspace` 与 Lody 的 `RuntimeWorkspace` 分开：后者仍使用公共 IPC v7 和原始会话 schema。新会话、读取、停止与审批通过明确的项目副本路由，执行主机再次验证本地项目与会话归属。账号负责访问授权；本地运行组件的 `userId` 保持独立。
+Moor 的产品 `Workspace` 与执行主机的 `RuntimeWorkspace` 分开。执行主机拥有独立身份、会话格式和本地数据库。新会话、读取、停止与审批通过明确的项目副本路由，执行主机再次验证本地项目与会话归属。账号负责访问授权；本地运行组件的 `userId` 保持独立。
 
 代码来源模型支持本地来源及 Git 仓库描述（GitHub、GitLab 或其他服务）。当前界面使用已在主机登记的本地目录；声明 Git 来源不会克隆仓库、传递凭据或启动 Agent。自动拉取、分支/worktree 管理与跨主机会话迁移尚未实现。
 
-升级时，旧设备在首次使用新桥接协议连接后加入默认的**个人工作区**，旧会话编号和浏览器草稿、待确认请求的缓存键保持不变。中转服务与 Mac 客户端需一起更新（Moor 桥接协议 v2；Lody IPC 仍为 v7）。本机模式将组织信息保存在客户端自己的目录中，不依赖远程账号。本机模式与各中转服务的工作区组织分别保存，当前不会互相同步组织设置。
+本机模式的组织信息保存在客户端自己的目录中，与各中转服务的组织设置分别保存。
+
+### 从旧运行时升级
+
+这次升级移除了 Lody 源码、包、IPC 和守护进程依赖。Moor 桥接协议升级为 **v3**，会话格式为 **v1**；中转服务与客户端需一起更新。主机数据保存在 `runtime-v1.sqlite`，浏览器使用独立的 `moor-runtime-v1` 数据库，配对信息使用 `bridge-v3.json`。请重新配对电脑并登记项目；旧设备绑定可在确认后手动撤销。
+
+旧运行时数据库、浏览器缓存与草稿、旧配对文件均保留原样。本版不自动导入旧会话或待确认操作，也不直接读取旧应用的数据库。旧历史需通过旧版本查看；新会话在 Moor 中创建。新版本不会在升级或重连时执行旧草稿。忽略目录 `.runtime/` 中的旧源码检出可以留存，但安装、测试和打包都不会使用它。
+
+架构边界、事务与恢复语义见 [独立执行架构](docs/runtime.md)。
 
 ## 本地优先的数据模型
 
@@ -71,7 +79,7 @@ Moor 的 `Workspace` 与 Lody 的 `RuntimeWorkspace` 分开：后者仍使用公
 
 浏览器使用 Loro/Flock 生成文档操作，执行主机校验后接收。CRDT 同步不等于指令已经执行：
 
-- **送达**必须由执行主机确认。
+- **送达**表示 Moor 主机已在同一数据库事务中保存会话与去重凭据并接受执行；不代表模型已成功完成。Agent 启动或执行失败会显示在回合中。
 - **结果待确认**保留原请求编号，点击“重试确认”检查或完成同一个请求。
 - **离线草稿**不会在重连后自动发送。
 - **审批**只接受匹配当前回合、当前请求的有效响应，不自动批准。
@@ -84,48 +92,50 @@ Moor 的 `Workspace` 与 Lody 的 `RuntimeWorkspace` 分开：后者仍使用公
 ```sh
 git clone https://github.com/zZOMZz/moor.git
 cd moor
-node scripts/setup-runtime.mjs
 corepack pnpm install --frozen-lockfile
 corepack pnpm check
 corepack pnpm test
 corepack pnpm build
 ```
 
-`setup-runtime` 按 [runtime.json](runtime.json) 拉取固定版本的公共 Lody 源码与所需 ACP 子模块到被忽略的 `.runtime/lody`，安装依赖并准备协议相关构建。它不需要任何 Lody 私有仓库。现有目录版本不一致时会停止，不覆盖本地修改。
-
-若已准备好该版本的 Lody 工作区，可以显式复用：
-
-```sh
-node scripts/setup-runtime.mjs --source /path/to/Lody
-corepack pnpm install --frozen-lockfile
-```
+无需准备外部运行时仓库。ACP SDK、Codex/Claude 适配器和 Electron 直接锁定在 `package.json` / `pnpm-lock.yaml` 中。Agent 登录凭据仍由 Agent 在本机管理。
 
 ```text
 src/relay/     个人账号、设备绑定、临时消息转发
-src/bridge/    主机校验、本地 IPC、请求去重
+src/bridge/    主机校验、执行生命周期、请求去重
+src/runtime/   Moor 数据库、独占锁、ACP 适配层
+src/session-schema.ts  Moor 会话格式
 src/web/       桌面与移动浏览器共用界面
 src/desktop/   Electron 壳、项目选择、连接诊断
-scripts/       固定版本运行组件准备、构建与打包
+scripts/       构建、打包与合成验证
 ```
 
 ### macOS 安装包
 
 桌面启动优先打开随应用提供的本机工作区，中转在后台连接；访问其他电脑时使用菜单“我的所有电脑”。本机页面更新仅清理可重新生成的界面缓存，保留草稿与待确认请求。页面加载失败或超时会提供手动重试，重试加载不会自动发送任务。
 
-Codex 执行时优先使用 `/Applications/Codex.app` 附带的 CLI，其次查找 Homebrew 的 `codex`，未找到时使用固定 Lody 版本管理的运行组件。可在启动 Moor 前通过 `MOOR_CODEX_PATH` 指定可执行文件的绝对路径；已有 Agent 配置中的显式路径保持不变。模型提示需要更新 Codex 时，应更新实际选中的本机 Codex。执行错误详情会直接显示在会话中。
+Codex 执行时优先使用 `/Applications/Codex.app` 附带的 CLI，其次查找 Homebrew 的 `codex`，未找到时使用锁定的 Codex ACP 包附带的 CLI。可在启动 Moor 前通过 `MOOR_CODEX_PATH` 指定可执行文件的绝对路径；已有 Agent 配置中的显式路径保持不变。模型提示需要更新 Codex 时，应更新实际选中的本机 Codex。执行错误详情会直接显示在会话中。
 
 在目标架构的 Mac 上构建：
 
 ```sh
-node scripts/setup-runtime.mjs --build
+ELECTRON_CACHE=/tmp/moor-electron-cache node node_modules/electron/install.js
 corepack pnpm package:mac
 ```
 
-结果位于 `release/macos-arm64/Moor.app` 与同目录 ZIP。客户端附带 Electron、Node 和 Lody 执行组件，运行时不需要源码目录、Node 或 pnpm。当前打包流程只构建本机架构，不生成 Windows 安装包。
+结果位于 `release/macos-arm64/Moor.app` 与同目录 ZIP。客户端附带 Electron、Node、Moor 执行服务和锁定的 ACP 适配器，运行时不需要源码目录、Node 或 pnpm。当前打包流程只构建本机架构，不生成 Windows 安装包。
 
-包采用本地 ad-hoc 签名供开发验证，正式分发需使用开发者证书和公证。Lody 当前每个系统用户仅允许一个本地执行实例；若已有实例，请正常退出它，再点击 Moor 的**重新连接**。
+包采用本地 ad-hoc 签名供开发验证，正式分发需使用开发者证书和公证。同一 Moor 数据库由独占锁保护，每个数据目录只允许一个执行主机。意外退出会由操作系统释放锁，恢复不会重放指令。
 
-升级旧版 Lody Personal 时，客户端优先复用原应用数据目录；浏览器数据库和凭据标识保留兼容。Web 更新在下次页面加载时生效，可使用浏览器刷新或客户端的 **窗口 → 刷新页面**。草稿仍保存在本机。
+客户端保留旧版应用目录的发现逻辑，以保留已有连接设置和项目列表；新数据与旧运行时数据分开保存。Web 更新在下次页面加载时生效，可使用浏览器刷新或客户端的 **窗口 → 刷新页面**。
+
+无桌面主机可通过命令行配对并启动：
+
+```sh
+node dist/bridge.mjs --server https://moor.example.com --pair PAIR_CODE --project /absolute/project --builtin-agent codex
+```
+
+`--runtime-data /absolute/host.sqlite`（或 `MOOR_RUNTIME_DATA`）指定主机数据库。只有本机设置可选择可执行程序，远程请求不能传入命令、环境变量或额外 MCP。合成验证可在独立目录运行 `pnpm exec tsx scripts/prepare-validation.ts /tmp/moor-synthetic/host.sqlite /tmp/synthetic-project`，然后启动桥接时指定同一数据库。该脚本要求主机已停止。
 
 ### 中转服务包
 
@@ -164,10 +174,12 @@ docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay 
 
 ## 验证与范围
 
-`pnpm test` 使用合成数据、公共 IPC 数据平面和确定性的故障信号，覆盖主机确认、请求去重、离线与审批竞争，以及会话选择、输出转义和恢复上限。本机 Docker 已验证 HTTPS/WSS、合成双主机路由和停机备份恢复；发布包另有测试确保运行数据不会进入压缩包。真实双 Mac + iPhone、真实 Agent 登录、目标服务器证书和网关、Windows 打包仍需在相应设备与环境验收，不能由本机模拟代替。
+`pnpm test` 使用合成数据、Moor 持久化与真实 stdio ACP 合成进程和确定性的故障信号，覆盖主机确认、请求去重、离线与审批竞争，以及会话选择、输出转义和恢复上限。本机 Docker 已验证 HTTPS/WSS、合成双主机路由和停机备份恢复；发布包另有测试确保运行数据不会进入压缩包。真实双 Mac + iPhone、真实 Agent 登录、目标服务器证书和网关、Windows 打包仍需在相应设备与环境验收，不能由本机模拟代替。
+
+当前 ACP 适配层支持文本、思考、工具输出、审批、取消和原生会话恢复；不声明文件系统或终端代理能力。模型 effort 只显示 Agent 明确报告的当前模型选项，不推测其他模型能力。
 
 当前不支持团队成员权限、SSO、服务端历史副本、跨主机迁移项目、任意远程终端及额外 MCP 配置。架构保留独立的账号与设备边界，后续可扩展。
 
 ## 开源与品牌
 
-Apache-2.0，见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。Moor 是独立衍生项目，Lody 的署名和公共源码边界保持不变。图标通过内置 ImageGen 生成，提示词与资产说明见 [品牌说明](assets/brand/README.md)。
+Apache-2.0，见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。历史来源与署名保留在 NOTICE 中；当前构建不包含 Lody。图标通过内置 ImageGen 生成，提示词与资产说明见 [品牌说明](assets/brand/README.md)。

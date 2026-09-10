@@ -1,9 +1,12 @@
 Moor
 Copyright 2026 Moor contributors
 
-Moor uses the public Lody runtime and protocols (Apache-2.0).
+Earlier Moor releases used the Lody runtime and protocols (Apache-2.0).
+Moor now owns its execution host and session format; Lody is not a dependency.
 Copyright and attribution for Lody remain with its original contributors.
-See runtime.json for the pinned upstream source and release licenses/ for dependency notices.
+Historical upstream: https://github.com/LodyAI/Lody
+Historical revision: e88b18c6e8242704f3b4ffa3afbaf38bad3a1ead
+See release licenses/ and bundled package license files for dependency notices.
 
 Moor's interface uses React, Base UI and Lucide, with Tailwind CSS utilities.
 Their original license and copyright notices, including bundled transitive

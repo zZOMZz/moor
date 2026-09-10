@@ -1,5 +1,4 @@
 import { syntheticCapabilities } from './agent-capabilities';
-import { agentOptions } from '../../src/bridge/agent-options';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { Store } from '../../src/relay/accounts';
@@ -29,7 +28,7 @@ export async function syntheticRelay(port = 0) {
     const device = store.redeem(store.pair(owner), 'Synthetic Mac ' + label);
     const runtime: RuntimeWorkspace = {
       id: 'lw-synthetic',
-      name: 'Lody',
+      name: 'Moor host',
       machineId: 'machine-' + label,
       userId: 'synthetic-' + label,
       projects: [
@@ -42,10 +41,7 @@ export async function syntheticRelay(port = 0) {
           name: 'Synthetic Codex',
           cliType: 'builtin',
           agentType: 'codex',
-          runConfig: agentOptions(
-            { cliType: 'builtin', agentType: 'codex' },
-            syntheticCapabilities,
-          ),
+          runConfig: syntheticCapabilities,
         },
       ],
     };

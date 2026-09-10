@@ -1,48 +1,64 @@
 import test from 'node:test';
 import strict from 'node:assert/strict';
-import { agentOptions } from '../src/bridge/agent-options';
+import { capabilities } from '../src/runtime/capabilities';
 import { resolveRunSelection } from '../src/run-config';
-import { syntheticCapabilities as capability } from './support/agent-capabilities';
-const agent = { cliType: 'builtin', agentType: 'codex' };
-test('runtime capabilities preserve model-specific effort and native approval modes', () => {
-  const options = agentOptions(agent, capability)!;
+import { syntheticCapabilities } from './support/agent-capabilities';
+test('host capabilities preserve model-specific effort and native approval modes', () => {
   strict.deepEqual(
     resolveRunSelection(
       { modelId: 'model-b', reasoningEffort: 'medium', modeId: 'agent' },
-      options,
+      syntheticCapabilities,
     ),
-    {
-      modelId: 'model-b',
-      modeId: 'agent',
-      configOptionValues: { reasoning_effort: 'medium' },
-    },
+    { modelId: 'model-b', modeId: 'agent', configOptionValues: { reasoning_effort: 'medium' } },
   );
-  strict.throws(() =>
-    resolveRunSelection({ modelId: 'model-b', reasoningEffort: 'high' }, options),
-  );
-  strict.throws(() => resolveRunSelection({ modelId: 'unavailable' }, options));
-  strict.throws(() => resolveRunSelection({ modeId: 'unavailable' }, options));
-  strict.throws(() => resolveRunSelection({ reasoningEffort: 'high' }, options));
+  for (const choice of [
+    { modelId: 'model-b', reasoningEffort: 'high' },
+    { modelId: 'missing' },
+    { modeId: 'missing' },
+    { reasoningEffort: 'high' },
+  ])
+    strict.throws(() => resolveRunSelection(choice, syntheticCapabilities));
   strict.deepEqual(resolveRunSelection({}), {});
 });
-test('snapshot efforts apply only to measured model; stale and provisional capabilities are omitted', () => {
-  const options = agentOptions(agent, { ...capability, modelReasoningEfforts: undefined })!;
-  strict.deepEqual(options.models[0].efforts, ['low', 'high']);
-  strict.deepEqual(options.models[1].efforts, []);
-  strict.equal(agentOptions(agent, { ...capability, cacheVersion: 0 }), undefined);
-  strict.equal(agentOptions(agent, { ...capability, provenance: undefined }), undefined);
-  strict.equal(agentOptions({ ...agent, agentType: 'claude' }, capability), undefined);
-});
-test('thought-level category maps another agent effort field without exposing unrelated options', () => {
-  const options = agentOptions(agent, {
-    ...capability,
-    configOptions: capability.configOptions!.map((o) =>
-      o.id === 'reasoning_effort' ? { ...o, id: 'effort' } : o,
-    ),
-  })!;
+test('ACP grouped model options are normalized and effort applies only to the measured model', () => {
+  const result = capabilities({
+    configOptions: [
+      {
+        id: 'model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'a',
+        options: [
+          {
+            group: 'vendor',
+            options: [
+              { value: 'a', name: 'A' },
+              { value: 'b', name: 'B' },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'effort',
+        category: 'thought_level',
+        type: 'select',
+        options: [{ value: 'low', name: 'Low' }],
+      },
+      {
+        id: 'mode',
+        category: 'mode',
+        type: 'select',
+        options: [{ value: 'agent', name: 'Agent' }],
+      },
+    ],
+  });
+  strict.deepEqual(result.models, [
+    { id: 'a', name: 'A', efforts: ['low'] },
+    { id: 'b', name: 'B', efforts: [] },
+  ]);
   strict.deepEqual(
-    resolveRunSelection({ modelId: 'model-a', reasoningEffort: 'high' }, options)
-      .configOptionValues,
-    { effort: 'high' },
+    resolveRunSelection({ modelId: 'a', reasoningEffort: 'low' }, result).configOptionValues,
+    { effort: 'low' },
   );
+  strict.deepEqual(capabilities({}), { models: [], modes: [] });
 });

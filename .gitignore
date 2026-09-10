@@ -12,3 +12,5 @@ release/
 
 assets/brand/*.iconset/
 assets/brand/moor-1024.png
+
+.pnpm-store/

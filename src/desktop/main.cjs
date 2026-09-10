@@ -19,8 +19,8 @@ if (!customDataDir && !fs.existsSync(app.getPath('userData'))) {
 const data = app.getPath('userData');
 fs.mkdirSync(data, { recursive: true, mode: 0o700 });
 const settingsFile = path.join(data, 'settings.json'),
-  bridgeFile = path.join(data, 'bridge.json'),
-  runtimeData = path.join(data, 'lody');
+  bridgeFile = path.join(data, 'bridge-v3.json'),
+  runtimeData = path.join(data, 'runtime-v1.sqlite');
 let settings = { server: '', name: os.hostname(), projects: [], agents: ['codex'] };
 try {
   settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) };
@@ -28,7 +28,6 @@ try {
 let settingsWindow,
   localWindow,
   remoteWindow,
-  host,
   bridge,
   quitting = false,
   localOrigin = '',
@@ -42,8 +41,7 @@ const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
   ELECTRON_RUN_AS_NODE: '1',
-  LODY_PLATFORM: 'local',
-  LODY_DATA_DIR: runtimeData,
+  MOOR_RUNTIME_DATA: runtimeData,
 };
 const write = (file, value) =>
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
@@ -162,35 +160,8 @@ function trusted(event) {
   )
     throw new Error('无效的本机设置请求');
 }
-const hostRecovery = new ProcessRecovery({
-  launch: () => {
-    const child = spawn(
-      process.execPath,
-      [
-        path.join(contentRoot, 'cli', 'index.js'),
-        'start',
-        '--machine-name',
-        settings.name,
-        '--cli-types',
-        ...settings.agents,
-      ],
-      { env, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true },
-    );
-    host = child;
-    child.once('close', () => {
-      if (host === child) {
-        host = null;
-        bridgeHealth.local = 'unavailable';
-      }
-    });
-    return child;
-  },
-  onState: (state) => {
-    hostStatus = state;
-  },
-});
 function health() {
-  const localReady = !!localOrigin && bridgeHealth.local === 'ready' && !!host;
+  const localReady = !!localOrigin && bridgeHealth.local === 'ready' && !!bridge;
   const remoteLabels = {
     unpaired: '尚未配对。登录个人服务后，使用“添加电脑”的配对码连接。',
     connected: '中转链路已连接。手机和其他电脑可以访问在线工作区。',
@@ -252,6 +223,11 @@ function startBridge() {
           workspaces: Number(message.workspaces) || 0,
         };
         if (message.local === 'ready') hostRecovery.ready();
+        hostStatus = {
+          state: message.local === 'ready' ? 'ready' : 'starting',
+          message: message.local === 'ready' ? '本机执行服务已就绪' : '等待本机执行服务',
+          attempt: 0,
+        };
         bridgeStatus = message.local === 'ready' ? '本机工作区已就绪' : '等待本机执行组件恢复连接';
       }
       return;
@@ -292,9 +268,19 @@ function startBridge() {
     bridgeHealth.local = 'unavailable';
     bridgeHealth.relay = settings.server ? 'reconnecting' : 'unpaired';
     bridgeStatus = '连接组件已退出，正在重新启动';
-    if (!quitting) restart = setTimeout(startBridge, 3000);
+    // ProcessRecovery owns bounded retries; never replay a pending turn.
+  });
+  return child;
+}
+function makeRecovery() {
+  return new ProcessRecovery({
+    launch: startBridge,
+    onState: (state) => {
+      hostStatus = state;
+    },
   });
 }
+let hostRecovery = makeRecovery();
 let restartChain = Promise.resolve();
 function restartBridge() {
   const task = restartChain.then(restartBridgeOnce);
@@ -302,6 +288,7 @@ function restartBridge() {
   return task;
 }
 async function restartBridgeOnce() {
+  hostRecovery.stop();
   clearTimeout(restart);
   localOrigin = '';
   const old = bridge;
@@ -316,7 +303,8 @@ async function restartBridgeOnce() {
       old.kill('SIGTERM');
     });
   }
-  startBridge();
+  hostRecovery = makeRecovery();
+  hostRecovery.start();
 }
 ipcMain.handle('personal:settings', (event) => {
   trusted(event);
@@ -336,7 +324,6 @@ ipcMain.handle('personal:recover', async (event) => {
   if (recovering) return health();
   recovering = true;
   try {
-    hostRecovery.retry();
     await restartBridge();
     return health();
   } finally {
@@ -391,7 +378,6 @@ ipcMain.handle('personal:save', async (event, value) => {
     remoteWindow.close();
     remoteWindow = null;
   }
-  hostRecovery.retry();
   await restartBridge();
   return { ok: true, paired: Boolean(code) };
 });
@@ -437,7 +423,6 @@ else {
       ]),
     );
     hostRecovery.start();
-    startBridge();
     showLocal();
   });
   app.on('activate', showLocal);
@@ -447,7 +432,6 @@ else {
   app.on('before-quit', () => {
     quitting = true;
     clearTimeout(restart);
-    bridge?.kill('SIGTERM');
     hostRecovery.stop();
   });
 }

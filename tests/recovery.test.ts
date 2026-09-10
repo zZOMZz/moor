@@ -61,7 +61,7 @@ test('unexpected exits recover with a bound, and manual recovery never kills a l
   f.children.at(-1).emit('close', 0);
   assert.equal(f.timers.size, 0);
 });
-test('another Lody instance is not terminated or retried automatically', () => {
+test('another Moor instance is not terminated or retried automatically', () => {
   const f = fixture();
   f.recovery.start();
   f.children[0].emit('close', 3);

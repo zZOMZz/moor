@@ -41,14 +41,21 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         },
       });
     if (m.method === 'session/new') return send({ id: m.id, result: { sessionId: randomUUID() } });
+    if (m.method === 'session/load') {
+      update(m.params.sessionId, {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'synthetic historical replay' },
+      });
+      return send({ id: m.id, result: {} });
+    }
     if (
-      m.method === 'session/load' ||
       m.method === 'session/resume' ||
       m.method === 'session/set_mode' ||
       m.method === 'session/set_config_option'
     )
       return send({ id: m.id, result: {} });
     if (m.method === 'session/prompt') {
+      if (m.params.prompt[0]?.text === 'synthetic-crash') process.exit(2);
       const sessionId = m.params.sessionId,
         toolCallId = randomUUID();
       update(sessionId, {

@@ -17,7 +17,6 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - run: npm install --global corepack@0.34.5
-      - run: node scripts/setup-runtime.mjs
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm check
       - run: corepack pnpm test

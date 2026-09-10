@@ -873,8 +873,9 @@ function currentRunInput() {
   const view = mirror(candidate, pending?.sessionId || sessionId || 'new');
   const state = view.getState();
   const latest = state.history.findLast((t) => t.role === 'user');
-  const runtime = state.acpRuntimeConfig;
-  const input = runtime?.basedOnUserTurnId === latest?.id ? runtime : latest?.inputConfig;
+  const input = latest?.inputConfig as
+    | { modelId?: string; modeId?: string; configOptionValues?: unknown }
+    | undefined;
   const result = { base: latest?.id ?? '', input: structuredClone(input) };
   view.dispose();
   return result;
