@@ -1,0 +1,15 @@
+# Only packaged program files enter the Docker build context.
+**
+!server.mjs
+!package.json
+!public/
+!public/**
+!node_modules/
+node_modules/**
+!node_modules/ws/
+!node_modules/ws/**
+!licenses/
+!licenses/**
+!README.txt
+!Dockerfile
+!.dockerignore

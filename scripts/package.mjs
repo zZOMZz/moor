@@ -2,6 +2,7 @@ import { cp, mkdir, readFile, writeFile, realpath, readdir, stat, rm } from 'nod
 import { join, resolve, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
+import { archiveRelay } from './relay-package.mjs';
 const require = createRequire(import.meta.url),
   lody = resolve(process.env.LODY_SOURCE ?? '.runtime/lody');
 const mode = process.argv[2] ?? 'relay';
@@ -82,16 +83,12 @@ if (mode === 'relay') {
   );
   await licenses(dest);
   await cp('deploy/Dockerfile', join(dest, 'Dockerfile'));
+  await cp('deploy/.dockerignore', join(dest, '.dockerignore'));
   await writeFile(
     join(dest, 'README.txt'),
     'Run with Node 24+: MOOR_PUBLIC_DIR=./public MOOR_DATA_DIR=./data node server.mjs\nSee https://github.com/zZOMZz/moor#readme for HTTPS, initial setup and migration.\n',
   );
-  const archived = spawnSync(
-    'tar',
-    ['-czf', 'release/moor-relay-0.2.0.tar.gz', '-C', 'release', 'relay'],
-    { stdio: 'inherit' },
-  );
-  if (archived.status !== 0) throw new Error('Relay archive failed');
+  archiveRelay(dest, 'release/moor-relay-0.2.0.tar.gz');
   console.log(dest);
 } else if (mode === 'mac') {
   if (process.platform !== 'darwin') throw new Error('macOS packaging must run on macOS');

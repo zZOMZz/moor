@@ -115,17 +115,17 @@ MOOR_PUBLIC_DIR=./public MOOR_DATA_DIR=./data node server.mjs
 先生成服务包，再复制 `deploy/.env.example` 为 `deploy/.env`，填写服务器域名：
 
 ```sh
-docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
-docker compose --env-file deploy/.env -f deploy/compose.yaml exec relay cat /data/setup-token
+docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml up -d --build
+docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay cat /data/setup-token
 ```
 
 `relay-data` 卷保存账号和设备信息，Caddy 卷保存证书。公网入口需允许 80/443。该服务需要常驻 Node 进程、WebSocket 与 SQLite 文件，不是可直接上传的 Cloudflare Worker。
 
-从公网迁往内网时，停止旧服务并完整备份数据库目录或卷；恢复到新服务，调整域名、证书及 `MOOR_ORIGIN`。域名变化时重新登录和配对。项目与完整会话仍在各执行电脑，无需搬到服务端。
+从公网迁往内网时，停止旧服务并完整备份数据卷；恢复到新服务，调整域名、证书及 `MOOR_ORIGIN`。域名变化时重新登录和配对，浏览器草稿与缓存不会跨域名迁移。完整命令与双 Mac/iPhone 验收步骤见 [部署与迁移说明](deploy/README.md)。已有部署应沿用原 Compose 项目名。项目与完整会话仍在各执行电脑，无需搬到服务端。
 
 ## 验证与范围
 
-`pnpm test` 使用合成数据、公共 IPC 数据平面和确定性的故障信号，覆盖主机确认、请求去重、离线与审批竞争，以及会话选择、输出转义和恢复上限。真实双 Mac + iPhone、真实 Agent 登录、Windows 打包、Docker/HTTPS 部署仍需在相应设备与环境验收，不能由本机模拟代替。
+`pnpm test` 使用合成数据、公共 IPC 数据平面和确定性的故障信号，覆盖主机确认、请求去重、离线与审批竞争，以及会话选择、输出转义和恢复上限。本机 Docker 已验证 HTTPS/WSS、合成双主机路由和停机备份恢复；发布包另有测试确保运行数据不会进入压缩包。真实双 Mac + iPhone、真实 Agent 登录、目标服务器证书和网关、Windows 打包仍需在相应设备与环境验收，不能由本机模拟代替。
 
 当前不支持团队成员权限、SSO、服务端历史副本、跨主机迁移项目、任意远程终端及额外 MCP 配置。架构保留独立的账号与设备边界，后续可扩展。
 
