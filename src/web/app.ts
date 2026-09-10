@@ -41,12 +41,21 @@ function renderInto(selector: string, html: string) {
 }
 let networkNotice = false;
 function error(e: unknown) {
-  networkNotice = e instanceof ApiError && e.status === 0;
+  networkNotice = e instanceof ApiError && (e.status === 0 || (e.status === 409 && !e.rejected));
   const el = document.querySelector('#notice');
   if (el) {
     el.textContent = e instanceof Error ? e.message : String(e);
     el.classList.add('visible');
   }
+}
+function clearRecoveredNotice() {
+  if (!networkNotice || !connected || !selected?.online) return;
+  const notice = document.querySelector('#notice');
+  if (notice) {
+    notice.textContent = '';
+    notice.classList.remove('visible');
+  }
+  networkNotice = false;
 }
 class ApiError extends Error {
   constructor(
@@ -103,7 +112,7 @@ async function boot() {
       devices = (await cache.read<Device[]>(owner + '/devices')) ?? [];
       devices = devices.map((d) => ({ ...d, online: false }));
       renderDevices();
-      error(new Error('当前离线，可阅读本机缓存的历史'));
+      error(new ApiError('当前离线，可阅读本机缓存的历史', 0));
       await restoreSelection();
       connect();
     } else showLogin(false);
@@ -183,14 +192,7 @@ function connect() {
   ws.onopen = () => {
     if (events !== ws) return;
     connected = true;
-    if (networkNotice) {
-      const notice = document.querySelector('#notice');
-      if (notice) {
-        notice.textContent = '';
-        notice.classList.remove('visible');
-      }
-      networkNotice = false;
-    }
+    clearRecoveredNotice();
     $('#connection').textContent = '已连接';
     watch();
     run(async () => {
@@ -254,6 +256,7 @@ async function loadDevices() {
   }
   renderDevices();
   renderNavigation();
+  clearRecoveredNotice();
   if (selected && !workspace && selected.workspaces.length && !selectionLoading)
     await selectDevice(selected.id);
   updateComposer();
