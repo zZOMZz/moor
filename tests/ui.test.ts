@@ -10,6 +10,8 @@ test('mobile navigation menus stay inside the dialog focus boundary and survive 
     url: 'https://synthetic.invalid',
   });
   const win = dom.window;
+  // Bundling loads React before jsdom, enabling its legacy input-event fallback.
+  Object.assign(win.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
   for (const name of [
     'window',
     'document',
@@ -70,7 +72,9 @@ test('mobile navigation menus stay inside the dialog focus boundary and survive 
     ],
   } as unknown as Workspace;
   let selectedHost = '',
-    created = 0;
+    created = 0,
+    sent = 0;
+  const drafts: string[] = [];
   const props = {
     catalog: [space],
     space,
@@ -106,7 +110,15 @@ test('mobile navigation menus stay inside the dialog focus boundary and survive 
   };
   try {
     await act(async () => {
-      showShell({ onSend() {}, onDraft() {}, onCancel() {} });
+      showShell({
+        onSend() {
+          sent++;
+        },
+        onDraft(value) {
+          drafts.push(value);
+        },
+        onCancel() {},
+      });
       showNavigation(props);
     });
     await click(button('选择工作区和会话'));
@@ -144,6 +156,24 @@ test('mobile navigation menus stay inside the dialog focus boundary and survive 
       button('选择工作区和会话'),
       'drawer returns focus to its trigger',
     );
+
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt')!;
+    const suggestion = [
+      ...document.querySelectorAll<HTMLButtonElement>('.composer-suggestions button'),
+    ].find((element) => element.textContent === '梳理项目')!;
+    prompt.value = '保留已有草稿';
+    await click(suggestion);
+    assert.equal(prompt.value, '保留已有草稿\n\n请梳理当前项目的结构、主要功能和开发方式。');
+    assert.deepEqual(
+      drafts,
+      [prompt.value],
+      'suggestions persist through the normal draft callback',
+    );
+    assert.equal(sent, 0, 'choosing a suggestion never submits a task');
+    prompt.readOnly = true;
+    await click(suggestion);
+    assert.equal(drafts.length, 1, 'pending submissions keep their draft unchanged');
+    prompt.readOnly = false;
 
     const changes: unknown[] = [];
     const controls = {
@@ -195,6 +225,19 @@ test('mobile navigation menus stay inside the dialog focus boundary and survive 
     });
     for (const name of ['模型', 'Effort', '审批'])
       assert.equal(button(name).disabled, true, 'pending operations lock configuration');
+
+    Object.assign(globalThis, {
+      matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    });
+    await act(async () => {
+      showShell({ onSend() {}, onDraft() {}, onCancel() {} });
+      showNavigation(props);
+    });
+    assert.equal(document.querySelector('#navigation')!.hasAttribute('data-open'), true);
+    await click(button('收起侧栏'));
+    assert.equal(document.querySelector('#navigation')!.hasAttribute('data-closed'), true);
+    await click(button('选择工作区和会话'));
+    assert.equal(document.querySelector('#navigation')!.hasAttribute('data-open'), true);
   } finally {
     await act(async () => disposeUI());
     dom.window.close();

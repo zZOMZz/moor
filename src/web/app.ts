@@ -407,7 +407,7 @@ function renderTarget() {
   const row = sessionList.find((s) => s.id === sessionId && s.replicaId === replica?.id);
   showTarget({
     project: project?.name || activeWorkspace?.name,
-    title: meta?.title || row?.title || (sessionId ? '会话' : '新会话'),
+    title: meta?.title || row?.title || (sessionId ? '任务' : '新任务'),
     host: selected?.name,
     path: replica?.rootPath,
     connected,
@@ -433,7 +433,7 @@ function showWorkspaceManager() {
   closeNavigation();
   const dialog = $<HTMLDialogElement>('#workspace-dialog');
   const space = activeWorkspace;
-  dialog.innerHTML = `<h2>管理工作区</h2><form id="create-workspace"><label>新工作区名称<input name="name" required maxlength="100"></label><button>创建工作区</button></form>${
+  dialog.innerHTML = `<h2>管理工作区</h2><div class="workspace-dialog-body"><form id="create-workspace"><label>新工作区名称<input name="name" required maxlength="100"></label><button>创建工作区</button></form>${
     space
       ? `
     <form id="rename-workspace"><label>当前工作区名称<input name="name" value="${esc(space.name)}" required maxlength="100"></label><button>保存名称</button></form>
@@ -444,7 +444,7 @@ function showWorkspaceManager() {
     ${space.replicas.map((r) => `<form data-assign-replica="${esc(r.id)}"><label>${esc(space.hosts.find((h) => h.id === r.hostId)?.name ?? '')}<small>${esc(r.rootPath ?? '离线副本')}</small><select name="projectId" aria-label="副本所属项目">${space.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === r.projectId ? 'selected' : ''}>${esc(projectLabel(space, p.id))}</option>`).join('')}</select></label><button>保存归组</button></form>`).join('')}
     `
       : ''
-  }<p id="manager-notice" role="status"></p><button id="close-workspace-dialog">完成</button>`;
+  }</div><footer class="dialog-actions"><p id="manager-notice" role="status"></p><button class="primary" id="close-workspace-dialog">完成</button></footer>`;
   const submitForm = (
     selector: string,
     action: (data: Record<string, FormDataEntryValue>, form: HTMLFormElement) => Promise<void>,
@@ -614,6 +614,7 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
     }
     selected = target.device;
     workspace = target.workspace;
+    clearRecoveredNotice();
     search = saved?.search ?? '';
     projectFilter = activeWorkspace?.projects.some((p) => p.id === saved?.projectId)
       ? saved!.projectId!
@@ -823,7 +824,7 @@ async function openSession(id: string, replicaId?: string) {
     }
   } else
     $('#history').innerHTML =
-      '<div class="welcome compact"><span class="eyebrow">NEW SESSION</span><h1>开始一段新的工作。</h1><p>选择这台电脑上的项目和 Agent，然后发送第一条指令。</p></div>';
+      '<div class="welcome compact"><span class="eyebrow">你的工作，由此继续</span><h1>今天，想做些什么？</h1><p>从一个想法开始，把接下来的事交给 Moor。</p></div>';
   if (generation !== sessionGeneration) return;
   await restoreRunOptions();
   updateComposer();

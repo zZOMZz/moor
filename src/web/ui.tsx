@@ -8,16 +8,22 @@ import { Select } from '@base-ui/react/select';
 import { Popover } from '@base-ui/react/popover';
 import {
   ArrowUp,
+  ArrowUpRight,
+  Bug,
   ChevronDown,
   Check,
+  CodeXml,
   Cpu,
+  FileText,
   Folder,
   LogOut,
   Monitor,
+  MessageSquare,
   MoreHorizontal,
   PanelLeft,
   Plus,
   Search,
+  ScanLine,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
@@ -81,12 +87,14 @@ export function Shell({
 }) {
   const [mobile, setMobile] = useState(() => matchMedia('(max-width: 760px)').matches);
   const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   useEffect(() => {
     closeDrawer = () => setOpen(false);
     const media = matchMedia('(max-width: 760px)');
     const update = () => {
       setMobile(media.matches);
       setOpen(false);
+      setCollapsed(false);
     };
     media.addEventListener('change', update);
     return () => {
@@ -95,9 +103,9 @@ export function Shell({
     };
   }, []);
   return (
-    <div className="workspace-shell">
+    <div className={`workspace-shell ${collapsed && !mobile ? 'navigation-collapsed' : ''}`}>
       <Dialog.Root
-        open={!mobile || open}
+        open={mobile ? open : !collapsed}
         onOpenChange={(value) => {
           if (mobile) setOpen(value);
         }}
@@ -106,7 +114,7 @@ export function Shell({
         <Dialog.Portal keepMounted>
           <Dialog.Backdrop className="nav-backdrop" />
           <Dialog.Popup
-            className="sidebar-glass"
+            className="sidebar"
             initialFocus={mobile}
             id="navigation"
             aria-label="工作区与会话"
@@ -116,6 +124,13 @@ export function Shell({
               <img src="/icon-192.png" alt="" />
               <span>Moor</span>
               <span className="brand-sub">泊点</span>
+              <button
+                className="icon-button desktop-only"
+                aria-label="收起侧栏"
+                onClick={() => setCollapsed(true)}
+              >
+                <PanelLeft />
+              </button>
               <Dialog.Close className="icon-button mobile-only" aria-label="关闭会话列表">
                 <X />
               </Dialog.Close>
@@ -129,8 +144,11 @@ export function Shell({
           <header className="session-toolbar">
             <Dialog.Trigger
               id="nav-toggle"
-              className="icon-button mobile-only"
+              className={`icon-button ${collapsed ? '' : 'mobile-only'}`}
               aria-label="选择工作区和会话"
+              onClick={() => {
+                if (!mobile) setCollapsed(false);
+              }}
             >
               <PanelLeft />
             </Dialog.Trigger>
@@ -141,10 +159,8 @@ export function Shell({
           <div id="notice" role="alert" />
           <div id="history" aria-label="会话内容">
             <div className="welcome">
-              <div className="welcome-mark">
-                <Sparkles />
-              </div>
-              <h1>在这里，接着做下去。</h1>
+              <span className="eyebrow">你的工作，由此继续</span>
+              <h1>今天，想做些什么？</h1>
               <p>选择一个项目，继续你的工作。</p>
             </div>
           </div>
@@ -156,13 +172,12 @@ export function Shell({
               onSend();
             }}
           >
-            <div id="new-options" />
             <label className="sr-only" htmlFor="prompt">
               发送给 Agent 的指令
             </label>
             <textarea
               id="prompt"
-              placeholder="描述接下来要做的事…"
+              placeholder="交给 Moor 一项任务，让想法开始发生…"
               rows={1}
               onChange={(e) => {
                 resizeComposer(e.currentTarget);
@@ -175,6 +190,7 @@ export function Shell({
                 }
               }}
             />
+            <div id="new-options" />
             <div className="composer-toolbar">
               <div id="run-options">
                 <Content name="#run-options" />
@@ -197,6 +213,44 @@ export function Shell({
             </div>
             <div id="draft-state" role="status" />
           </form>
+          <div className="composer-suggestions" aria-label="任务灵感">
+            {[
+              { icon: CodeXml, label: '开发新功能', prompt: '帮我在当前项目中实现一个新功能：' },
+              { icon: Bug, label: '排查问题', prompt: '帮我排查并修复这个问题：' },
+              {
+                icon: ScanLine,
+                label: '审查代码',
+                prompt: '请审查当前项目的代码变更，找出潜在问题并给出改进建议。',
+              },
+              {
+                icon: FileText,
+                label: '梳理项目',
+                prompt: '请梳理当前项目的结构、主要功能和开发方式。',
+              },
+            ].map(({ icon: Icon, label, prompt }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => {
+                  const field = document.querySelector<HTMLTextAreaElement>('#prompt');
+                  if (!field || field.disabled || field.readOnly) return;
+                  field.value = field.value.trim() ? `${field.value}\n\n${prompt}` : prompt;
+                  onDraft(field.value);
+                  resizeComposer(field);
+                  field.focus();
+                }}
+              >
+                <Icon />
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="composer-hint">
+            想法留在这里，工作在你的电脑上继续。<span>⌘ / Ctrl + Enter 发送</span>
+          </p>
+          <footer className="workspace-footer">
+            <span>Moor · 泊点</span>每一个想法，都有一个开始。
+          </footer>
         </main>
       </Dialog.Root>
       <dialog id="pair-dialog" aria-labelledby="pair-title">
@@ -377,7 +431,8 @@ export function Navigation(p: NavigationProps) {
       </div>
       <button id="new" className="new-session" disabled={!p.canCreate} onClick={p.onNew}>
         <SquarePen />
-        新会话<span className="shortcut">＋</span>
+        新建任务
+        <Plus className="shortcut" />
       </button>
       <div className="navigation-search">
         <Search />
@@ -385,7 +440,7 @@ export function Navigation(p: NavigationProps) {
           id="session-search"
           type="search"
           aria-label="搜索会话、项目或电脑"
-          placeholder="搜索会话…"
+          placeholder="搜索任务"
           value={p.search}
           onChange={(e) => p.onSearch(e.target.value)}
         />
@@ -405,12 +460,37 @@ export function Navigation(p: NavigationProps) {
           ))}
         </PopupMenu>
       </div>
+      <section className="navigation-projects" aria-label="项目">
+        <div className="section-heading">
+          <h2>项目</h2>
+          <button className="icon-button" aria-label="管理项目" onClick={p.onManage}>
+            <Settings2 />
+          </button>
+        </div>
+        {p.space?.projects.map((project) => (
+          <button
+            key={project.id}
+            className="project-link"
+            aria-pressed={p.projectFilter === project.id}
+            onClick={() => p.onProject(p.projectFilter === project.id ? '' : project.id)}
+          >
+            <Folder />
+            <span>{p.projectLabels[project.id] || project.name}</span>
+            <ArrowUpRight />
+          </button>
+        ))}
+        {!p.space?.projects.length && <p className="project-empty">连接电脑后，项目会出现在这里</p>}
+      </section>
       {p.projectFilter && (
         <button className="filter-chip" onClick={() => p.onProject('')}>
           {p.space?.projects.find((v) => v.id === p.projectFilter)?.name}
           <X />
         </button>
       )}
+      <div className="section-heading tasks-heading">
+        <h2>最近任务</h2>
+        <span>{p.list.length}</span>
+      </div>
       <nav id="sessions" aria-label="会话列表">
         {[...groups].map(([id, sessions]) => (
           <section className="session-group" key={id}>
@@ -430,7 +510,7 @@ export function Navigation(p: NavigationProps) {
                 }
                 onClick={() => p.onSession(s.id, s.replicaId)}
               >
-                <span className="session-title truncate">{s.title || '新会话'}</span>
+                <span className="session-title truncate">{s.title || '新任务'}</span>
                 <small>
                   {s.deviceName || '执行电脑'}
                   <span>
@@ -447,9 +527,10 @@ export function Navigation(p: NavigationProps) {
           </section>
         ))}
         {!p.list.length && (
-          <p className="empty">
-            {p.search || p.projectFilter ? '没有匹配的会话' : '从一段新会话开始。'}
-          </p>
+          <div className="empty">
+            <MessageSquare />
+            <p>{p.search || p.projectFilter ? '没有匹配的任务' : '新建一个任务，开始你的工作'}</p>
+          </div>
         )}
       </nav>
       <div className="sidebar-bottom">
@@ -463,7 +544,7 @@ export function Navigation(p: NavigationProps) {
             </>
           }
         >
-          <div className="menu-label">为新会话选择执行电脑</div>
+          <div className="menu-label">为新任务选择执行电脑</div>
           {p.space?.hosts.map((h) => (
             <Menu.Item key={h.id} className="menu-item" onClick={() => p.onHost(h.id)}>
               <i className={`dot ${h.online ? 'online' : ''}`} />
@@ -545,10 +626,11 @@ export function Target({
       <div className="session-heading min-w-0">
         <span>{project || '工作区'}</span>
         <span className="breadcrumb-divider">/</span>
-        <h1>{title || '新会话'}</h1>
+        <h1>{title || '新任务'}</h1>
       </div>
       <Popover.Root>
         <Popover.Trigger className="host-trigger" aria-label="执行电脑与连接状态">
+          <Monitor />
           <i className={`dot ${online && connected ? 'online' : ''}`} />
           <span>{host || '选择电脑'}</span>
           <ChevronDown />

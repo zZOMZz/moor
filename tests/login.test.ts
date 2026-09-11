@@ -137,7 +137,7 @@ test('missing or blocked WebGL leaves the static fallback without scheduling fra
   }
 });
 
-test('glass login preserves form data on failure, prevents duplicate submission and supports setup', async () => {
+test('login preserves form data on failure, prevents duplicate submission and supports setup', async () => {
   const env = environment();
   env.win.HTMLCanvasElement.prototype.getContext = (() => null) as any;
   const { act, createElement } = await import('react');

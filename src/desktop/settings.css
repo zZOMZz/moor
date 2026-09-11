@@ -1,10 +1,28 @@
+/* The desktop settings use the same opaque monochrome palette as the workspace. */
+:root {
+  color-scheme: light dark;
+  --surface: #fafafa;
+  --raised: #ffffff;
+  --ink: #242424;
+  --muted: #737373;
+  --border: #e1e1e1;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #191919;
+    --raised: #242424;
+    --ink: #ededed;
+    --muted: #a0a0a0;
+    --border: #343434;
+  }
+}
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
-  background: #f5f4ef;
-  color: #242a29;
+  background: var(--surface);
+  color: var(--ink);
   font:
     14px -apple-system,
     BlinkMacSystemFont,
@@ -14,7 +32,7 @@ main {
   padding: 28px 38px;
 }
 .eyebrow {
-  color: #547663;
+  color: var(--muted);
   letter-spacing: 2px;
   font-size: 11px;
 }
@@ -24,7 +42,7 @@ h1 {
 }
 p,
 small {
-  color: #69736f;
+  color: var(--muted);
   line-height: 1.6;
 }
 form > label {
@@ -34,25 +52,27 @@ form > label {
 input:not([type='checkbox']) {
   display: block;
   width: 100%;
-  border: 1px solid #d5dcd7;
-  background: white;
+  border: 1px solid var(--border);
+  background: var(--raised);
   border-radius: 7px;
   padding: 10px;
   font: inherit;
+  color: inherit;
   margin-top: 5px;
 }
 button {
-  border: 1px solid #cbd6ce;
-  background: white;
+  border: 1px solid var(--border);
+  background: var(--raised);
   border-radius: 7px;
   padding: 9px 12px;
   font: inherit;
+  color: inherit;
   cursor: pointer;
 }
 .primary {
-  background: #195d62;
-  color: white;
-  border-color: #195d62;
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
 }
 .row,
 .actions {
@@ -103,33 +123,34 @@ fieldset {
   gap: 10px;
   font-size: 12px;
   letter-spacing: 2px;
-  color: #195d62;
+  color: var(--ink);
 }
 .settings-brand img {
   border-radius: 9px;
+  filter: grayscale(1);
 }
 .health-panel {
-  border: 1px solid #d6e1da;
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 14px;
-  background: #fcfdfb;
+  background: var(--raised);
 }
 .health-panel .row {
   margin: 0 0 12px;
 }
 .health-card {
-  border-left: 3px solid #b2c2bc;
+  border-left: 3px solid var(--border);
   padding: 2px 10px;
   margin: 10px 0;
 }
 .health-card[data-state='ready'],
 .health-card[data-state='connected'] {
-  border-color: #36836b;
+  border-color: var(--ink);
 }
 .health-card[data-state='failed'],
 .health-card[data-state='blocked'],
 .health-card[data-state='revoked'] {
-  border-color: #bc7452;
+  border-color: var(--muted);
 }
 .health-card strong {
   font-size: 12px;
@@ -144,6 +165,6 @@ button:disabled {
   cursor: default;
 }
 :focus-visible {
-  outline: 2px solid #39858b;
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
