@@ -67,6 +67,14 @@ Moor 的产品 `Workspace` 与执行主机的 `RuntimeWorkspace` 分开。执行
 
 架构边界、事务与恢复语义见 [独立执行架构](docs/runtime.md)。
 
+## 本机验收场景原型
+
+在开发环境运行 `corepack pnpm acceptance`，可以打开独立的验收工作台。它会先构建当前 Moor 界面，再按选择准备三个场景：窄屏管理弹窗、工作区名称保存、会话抽屉。页面就绪后可以直接操作，点击“重置现场”会用新的浏览器环境和合成数据重新准备。
+
+原型使用真实 Moor 界面、主机和本地存储，但所有账号、会话和 Agent 回复都是合成数据；不连接正常使用的 Moor 数据或真实 Agent。每次运行服务一份固定的界面构建副本。接受本版和文本反馈只记录在本次验收记录中，当前不会自动发给 Agent。
+
+这是计划的第一个本机里程碑：尚未支持外部项目配方、Agent 完成后自动准备、手机远程验收或截图反馈。窄屏场景使用桌面 Chromium 视口，不代表 iPhone 真机验证。使用方式、生命周期和验证范围见 [验收场景说明](docs/acceptance.md)。
+
 ## 本地优先的数据模型
 
 | 位置           | 持久化内容                                                       |
@@ -119,7 +127,7 @@ Codex 执行时优先使用 `/Applications/Codex.app` 附带的 CLI，其次查�
 在目标架构的 Mac 上构建：
 
 ```sh
-ELECTRON_CACHE=/tmp/moor-electron-cache node node_modules/electron/install.js
+electron_config_cache=/tmp/moor-electron-cache node node_modules/electron/install.js
 corepack pnpm package:mac
 ```
 

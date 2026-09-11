@@ -8,6 +8,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "acceptance": "node scripts/acceptance.mjs",
+    "acceptance:check": "node scripts/acceptance.mjs --check",
     "start": "node dist/server.mjs",
     "bridge": "node dist/bridge.mjs",
     "dev": "tsx src/relay/main.ts",

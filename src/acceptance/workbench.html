@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:;"
+    />
+    <title>Moor · 验收工作台</title>
+    <link rel="stylesheet" href="workbench.css" />
+    <script src="workbench.js" defer></script>
+  </head>
+  <body>
+    <div class="workbench">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">m</span>
+          <div>
+            <span class="brand-name">Moor</span><span class="brand-divider">/</span>
+            <h1>验收工作台</h1>
+          </div>
+        </div>
+        <div class="prototype-label"><span aria-hidden="true"></span>本机原型 · 合成数据</div>
+      </header>
+
+      <main class="workspace">
+        <aside class="control-rail" aria-label="验收控制">
+          <section aria-labelledby="scene-heading">
+            <p class="eyebrow">把结果看清楚</p>
+            <h2 id="scene-heading">这次，验收什么？</h2>
+            <p class="section-description">选一个场景，打开可操作的界面。</p>
+            <div id="scene-list" class="scene-list" aria-label="验收场景"></div>
+            <button id="prepare-button" class="button button-primary" type="button" disabled>
+              开始验收
+            </button>
+            <p class="manual-note">手动启动 · 切换场景不会自动运行</p>
+          </section>
+
+          <section class="run-section" aria-labelledby="run-heading">
+            <div class="section-heading-row">
+              <h3 id="run-heading">本次运行</h3>
+              <span id="run-status" class="status-pill" data-status="idle">尚未开始</span>
+            </div>
+            <p id="run-stage" class="run-stage" role="status" aria-live="polite">
+              准备好后，点击开始验收。
+            </p>
+            <dl class="run-details">
+              <div>
+                <dt>构建</dt>
+                <dd id="build-id">—</dd>
+              </div>
+              <div>
+                <dt>运行</dt>
+                <dd id="run-id">—</dd>
+              </div>
+            </dl>
+            <div class="utility-actions">
+              <button id="reset-button" class="button button-secondary" type="button" disabled>
+                重置场景
+              </button>
+              <button id="stop-button" class="button button-secondary" type="button" disabled>
+                停止运行
+              </button>
+            </div>
+          </section>
+
+          <section class="check-section" aria-labelledby="check-heading">
+            <h3 id="check-heading">看看这些细节</h3>
+            <ul id="check-list" class="check-list"></ul>
+          </section>
+
+          <section class="decision-section" aria-labelledby="decision-heading">
+            <div class="section-heading-row">
+              <h3 id="decision-heading">留下验收结论</h3>
+              <span id="decision-status" class="decision-status"></span>
+            </div>
+            <label for="feedback-input" class="feedback-label">哪里需要调整？</label>
+            <textarea
+              id="feedback-input"
+              rows="3"
+              maxlength="4000"
+              placeholder="例如：弹窗底部的确认按钮被遮住了。"
+            ></textarea>
+            <div class="decision-actions">
+              <button id="feedback-button" class="button button-secondary" type="button" disabled>
+                记录待修改
+              </button>
+              <button id="accept-button" class="button button-primary" type="button" disabled>
+                接受本版
+              </button>
+            </div>
+            <p class="manual-note">反馈保存在本次验收记录，本阶段不发送给 Agent。</p>
+            <p id="feedback-saved" class="saved-note" hidden></p>
+          </section>
+          <p id="command-error" class="error-message" role="alert" hidden></p>
+          <div id="action-announcement" class="sr-only" aria-live="polite"></div>
+        </aside>
+
+        <section class="preview-panel" aria-labelledby="preview-heading">
+          <header class="preview-header">
+            <div>
+              <h2 id="preview-heading">场景预览</h2>
+              <span id="preview-caption">等待手动启动</span>
+            </div>
+            <span class="simulation-label">浏览器窄屏模拟 · 非手机实测</span>
+          </header>
+          <div class="preview-deck">
+            <div class="preview-frame">
+              <div class="browser-bar" aria-hidden="true">
+                <span class="browser-dots"><i></i><i></i><i></i></span>
+                <span>本机合成场景</span>
+                <span id="viewport-size">390 × 740</span>
+              </div>
+              <div id="preview-slot">
+                <div id="preview-overlay" class="preview-overlay">
+                  <div class="empty-symbol" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <h3 id="overlay-heading">给成果一个确认的时刻</h3>
+                  <p id="overlay-description">
+                    选择左侧场景并开始验收。<br />在这里操作界面，再留下你的判断。
+                  </p>
+                  <span id="overlay-status" class="overlay-status">等待开始</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="preview-footnote">固定尺寸的浏览器视口；真实设备表现仍需另行验证。</p>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
