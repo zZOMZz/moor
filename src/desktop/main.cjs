@@ -16,6 +16,7 @@ const { createAttachmentSaver } = require('./attachment-save.cjs');
 const { DesktopGitHubSettings } = require('./github-settings.cjs');
 const { DesktopPreviewSettings } = require('./preview-settings.cjs');
 const { DesktopSkillsSettings } = require('./skills-settings.cjs');
+const { DesktopAgentSettings } = require('./agent-settings.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -54,6 +55,7 @@ let localReadyGeneration = 0,
 const githubSettings = new DesktopGitHubSettings({ bridge: () => bridge });
 const previewSettings = new DesktopPreviewSettings({ bridge: () => bridge });
 const skillsSettings = new DesktopSkillsSettings({ bridge: () => bridge });
+const agentSettings = new DesktopAgentSettings({ bridge: () => bridge });
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -228,6 +230,7 @@ function showSettings() {
     githubSettings.invalidate();
     previewSettings.invalidate();
     skillsSettings.invalidate();
+    agentSettings.invalidate();
   });
   void settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
 }
@@ -296,6 +299,7 @@ function startBridge() {
     if (githubSettings.receive(child, message)) return;
     if (previewSettings.receive(child, message)) return;
     if (skillsSettings.receive(child, message)) return;
+    if (agentSettings.receive(child, message)) return;
     if (message?.type === 'notification') {
       let status = 'failed';
       try {
@@ -379,6 +383,7 @@ function startBridge() {
     githubSettings.disconnect(child);
     previewSettings.disconnect(child);
     skillsSettings.disconnect(child);
+    agentSettings.disconnect(child);
     if (bridge !== child) return;
     bridge = null;
     localOrigin = '';
@@ -412,6 +417,7 @@ async function restartBridgeOnce() {
   if (old) githubSettings.disconnect(old);
   if (old) previewSettings.disconnect(old);
   if (old) skillsSettings.disconnect(old);
+  if (old) agentSettings.disconnect(old);
   bridge = null;
   if (old && old.exitCode === null && old.signalCode === null) {
     await new Promise((resolve) => {
@@ -488,6 +494,30 @@ ipcMain.handle('personal:recover', async (event) => {
   } finally {
     recovering = false;
   }
+});
+ipcMain.handle('personal:agent-config', (event, value) => {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  return agentSettings.request(value, () => {
+    try {
+      trusted({ sender, senderFrame: frame });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+});
+ipcMain.handle('personal:agent-executable', async (event) => {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  const result = await dialog.showOpenDialog(settingsWindow, {
+    properties: ['openFile'],
+    title: '选择本机 ACP 可执行程序',
+  });
+  trusted({ sender, senderFrame: frame });
+  return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.handle('personal:project', async (event) => {
   trusted(event);
@@ -626,6 +656,7 @@ else {
     githubSettings.close();
     previewSettings.close();
     skillsSettings.close();
+    agentSettings.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

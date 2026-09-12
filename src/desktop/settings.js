@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
-let projects = [];
+let projects = [],
+  bootstrapAgents = [];
 let notificationsEnabled = false,
   notificationsSupported = false,
   notificationsBusy = false;
@@ -28,7 +29,7 @@ window.personal
     $('name').value = s.name;
     $('server').value = s.server;
     projects = s.projects;
-    for (const a of s.agents) $(a).checked = true;
+    bootstrapAgents = s.agents.filter((agent) => ['codex', 'claude'].includes(agent));
     render();
     renderHealth(s.health);
   })
@@ -54,7 +55,7 @@ $('settings').onsubmit = async (e) => {
       name: $('name').value,
       code: $('code').value,
       projects,
-      agents: ['codex', 'claude'].filter((a) => $(a).checked),
+      agents: bootstrapAgents,
     });
     $('code').value = '';
     status(r.paired ? '设备已配对。可以打开“我的所有电脑”。' : '设置已保存。本机任务会继续运行。');
@@ -592,4 +593,175 @@ $('skills-toggle').onclick = () => {
 window.addEventListener('beforeunload', () => {
   skillsClosed = true;
   skillsRevision++;
+});
+
+let agentState,
+  agentBusy = false,
+  agentClosed = false,
+  agentGeneration = 0,
+  agentEdited = false;
+const selectedAgentPreset = () =>
+  agentState?.presets.find((preset) => preset.id === $('agent-preset').value);
+function renderAgentPreset() {
+  const preset = selectedAgentPreset(),
+    builtin = preset && preset.cliType !== 'custom';
+  for (const type of ['codex', 'claude'])
+    $('agent-add-' + type).disabled =
+      agentState?.presets.some((item) => item.id === 'personal-' + type) === true;
+  agentEdited = false;
+  $('agent-name').value = preset?.name ?? '';
+  $('agent-command').value = preset?.command ?? '';
+  $('agent-args').value = JSON.stringify(preset?.args ?? [], null, 2);
+  $('agent-enabled').checked = preset?.enabled === true;
+  for (const id of ['agent-name', 'agent-command', 'agent-args', 'agent-choose', 'agent-save'])
+    $(id).disabled = !!builtin;
+  $('agent-enabled').disabled = !!builtin;
+  $('agent-save').textContent = preset ? '保存新版本' : '登记自定义 ACP';
+  $('agent-check').disabled = !preset;
+  $('agent-toggle').disabled = !preset;
+  $('agent-toggle').textContent = preset?.enabled ? '不用于新会话' : '用于新会话';
+  $('agent-remove').disabled = !preset;
+  $('agent-version').textContent = preset
+    ? `当前版本：${preset.versionId}${builtin ? ' · 内置适配器，启动配置由 Moor 管理' : ''}`
+    : '新配置默认不用于新会话。登记后可检查连接，再明确启用。';
+  const checked = preset?.checked;
+  $('agent-check-status').textContent = !preset
+    ? ''
+    : !checked
+      ? '此版本尚未检查连接。'
+      : !checked.ok
+        ? checked.error
+        : `此版本已连接；报告 ${checked.runConfig?.models.length ?? 0} 个模型、${checked.runConfig?.modes.length ?? 0} 个审批模式。实际项目中的选项可能不同。`;
+}
+function renderAgents(value, action) {
+  const previous = agentState?.presets.map((preset) => preset.id) ?? [];
+  agentState = value;
+  const created =
+    (action.action === 'save' && !action.id) || action.action === 'builtin'
+      ? value.presets.find((preset) => !previous.includes(preset.id))?.id
+      : undefined;
+  optionsFor(
+    'agent-preset',
+    value.presets.map((preset) => ({
+      id: preset.id,
+      label: preset.name + (preset.enabled ? '（用于新会话）' : '（不用于新会话）'),
+    })),
+    created ?? $('agent-preset').value,
+    '新增自定义 ACP',
+  );
+  renderAgentPreset();
+  $('agent-status').textContent =
+    action.action === 'read'
+      ? '已读取本机配置；未启动 Agent。'
+      : action.action === 'check'
+        ? '已完成所选版本的连接检查；未发送指令。'
+        : '本机配置已保存，已有会话的 Agent 版本保持不变。';
+}
+async function agentAction(action) {
+  if (agentBusy || agentClosed) return;
+  agentBusy = true;
+  const generation = ++agentGeneration;
+  $('agent-controls').disabled = true;
+  $('agent-refresh').disabled = true;
+  $('agent-status').textContent =
+    action.action === 'check' ? '正在启动已保存的 Agent 检查连接…' : '正在处理本机 Agent 设置…';
+  try {
+    const value = await window.personal.agentConfig(action);
+    if (agentClosed || generation !== agentGeneration) return;
+    renderAgents(value, action);
+  } catch (error) {
+    if (agentClosed || generation !== agentGeneration) return;
+    agentState = undefined;
+    $('agent-status').textContent =
+      (error.message || '操作结果尚未确认') + '。请刷新后检查；不会自动重试。';
+  } finally {
+    if (!agentClosed && generation === agentGeneration) {
+      agentBusy = false;
+      $('agent-controls').disabled = !agentState;
+      $('agent-refresh').disabled = false;
+    }
+  }
+}
+function editAgent(action) {
+  if (!agentState || agentBusy) return;
+  return agentAction({ expectedRevision: agentState.revision, ...action });
+}
+$('agent-settings').ontoggle = () => {
+  if ($('agent-settings').open && !agentState && !agentBusy) void agentAction({ action: 'read' });
+};
+$('agent-refresh').onclick = () => agentAction({ action: 'read' });
+for (const type of ['codex', 'claude'])
+  $('agent-add-' + type).onclick = () => editAgent({ action: 'builtin', agentType: type });
+$('agent-preset').onchange = renderAgentPreset;
+function markAgentEdited() {
+  agentEdited = true;
+  $('agent-check').disabled = true;
+  $('agent-check-status').textContent = '表单已修改，请先保存新版本再检查连接。';
+}
+for (const id of ['agent-name', 'agent-command', 'agent-args', 'agent-enabled'])
+  $(id).oninput = markAgentEdited;
+$('agent-save').onclick = () => {
+  let args;
+  try {
+    args = JSON.parse($('agent-args').value);
+    if (
+      !Array.isArray(args) ||
+      args.length > 128 ||
+      args.some((arg) => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))
+    )
+      throw new Error('程序参数需要是最多 128 项的 JSON 字符串数组，每项最多 4096 字符。');
+  } catch (error) {
+    $('agent-status').textContent =
+      error instanceof SyntaxError ? '程序参数不是有效的 JSON 字符串数组。' : error.message;
+    return;
+  }
+  const id = $('agent-preset').value;
+  return editAgent({
+    action: 'save',
+    ...(id ? { id } : {}),
+    name: $('agent-name').value.trim(),
+    command: $('agent-command').value,
+    args,
+    enabled: $('agent-enabled').checked,
+  });
+};
+$('agent-check').onclick = () => {
+  const preset = selectedAgentPreset();
+  if (preset && !agentEdited)
+    return editAgent({ action: 'check', id: preset.id, versionId: preset.versionId });
+};
+$('agent-toggle').onclick = () => {
+  const preset = selectedAgentPreset();
+  if (preset) return editAgent({ action: 'enabled', id: preset.id, enabled: !preset.enabled });
+};
+$('agent-remove').onclick = () => {
+  const preset = selectedAgentPreset();
+  if (preset) return editAgent({ action: 'remove', id: preset.id });
+};
+$('agent-choose').onclick = async () => {
+  if (agentClosed || agentBusy || !agentState) return;
+  agentBusy = true;
+  const generation = ++agentGeneration;
+  $('agent-controls').disabled = true;
+  $('agent-refresh').disabled = true;
+  try {
+    const command = await window.personal.agentExecutable();
+    if (command && !agentClosed && generation === agentGeneration) {
+      $('agent-command').value = command;
+      markAgentEdited();
+    }
+  } catch (error) {
+    if (!agentClosed && generation === agentGeneration)
+      $('agent-status').textContent = error.message || '程序选择失败';
+  } finally {
+    if (!agentClosed && generation === agentGeneration) {
+      agentBusy = false;
+      $('agent-controls').disabled = !agentState;
+      $('agent-refresh').disabled = false;
+    }
+  }
+};
+window.addEventListener('beforeunload', () => {
+  agentClosed = true;
+  agentGeneration++;
 });

@@ -272,7 +272,7 @@ test('confirmed session actions survive stale reads and preserve draft and archi
           globalThis.__moorAppCache.set(key, structuredClone(value));
           return true;
         };
-        export const compareText=async(key,expected,value,current,signal)=>{if(signal?.aborted||!current())throw new Error("stale draft");const cache=globalThis.__moorAppCache;if(cache.get(key)!==expected)return false;cache.set(key,value);return true;}; export const compareWrite=async(key,expectedRevision,value,current)=>{if(!current())throw new Error("stale Git target");const cache=globalThis.__moorAppCache;if((cache.get(key)?.cacheRevision??0)!==expectedRevision)return false;cache.set(key,structuredClone(value));return true;}; export const clear = async () => { globalThis.__moorAppCache.clear(); };
+        export const compareText=async(key,expected,value,current,signal)=>{if(signal?.aborted||!current())throw new Error("stale draft");const cache=globalThis.__moorAppCache;if(cache.get(key)!==expected)return false;cache.set(key,value);return true;}; export const compareWrite=async(key,expectedRevision,value,current)=>{if(!current())throw new Error("stale Git target");const cache=globalThis.__moorAppCache;if((cache.get(key)?.cacheRevision??0)!==expectedRevision)return false;cache.set(key,structuredClone(value));return true;}; export const compareDraftBundle=async()=>{throw new Error("unexpected role draft application");}; export const clear = async () => { globalThis.__moorAppCache.clear(); };
       `,
           }));
           builder.onLoad({ filter: /\/src\/web\/app\.ts$/ }, async (args) => ({

@@ -205,6 +205,71 @@
         >
       </fieldset>
     </details>
+    <details id="agent-settings" class="health-panel">
+      <summary>本机 Agent 配置</summary>
+      <p>
+        登记支持 ACP 的本机程序。程序路径与参数只保存在这台执行电脑，自己的其他设备可以选择已启用的
+        Agent。
+      </p>
+      <button type="button" id="agent-refresh">刷新 Agent 设置</button>
+      <p id="agent-status" role="status">展开后读取本机配置，不会启动 Agent。</p>
+      <fieldset id="agent-controls" disabled>
+        <legend>Agent 与启动配置</legend>
+        <div class="actions">
+          <button type="button" id="agent-add-codex">添加 Codex</button>
+          <button type="button" id="agent-add-claude">添加 Claude</button>
+        </div>
+        <label
+          >已登记 Agent<select id="agent-preset">
+            <option value="">新增自定义 ACP</option>
+          </select></label
+        >
+        <label
+          >名称<input
+            id="agent-name"
+            maxlength="100"
+            autocomplete="off"
+            placeholder="我的 ACP Agent"
+        /></label>
+        <label
+          >本机程序绝对路径<input
+            id="agent-command"
+            maxlength="4096"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="选择 ACP 可执行程序"
+        /></label>
+        <button type="button" id="agent-choose">选择程序</button>
+        <label
+          >程序参数（JSON 字符串数组）<textarea
+            id="agent-args"
+            rows="4"
+            maxlength="65536"
+            spellcheck="false"
+            placeholder='["--stdio"]'
+          >
+[]</textarea
+          >
+        </label>
+        <small
+          >每个数组元素是一个独立参数；不会经过 shell
+          展开。请不要在角色说明或消息中填写凭据。</small
+        >
+        <label class="check"><input id="agent-enabled" type="checkbox" />用于新会话</label>
+        <p id="agent-version"></p>
+        <p id="agent-check-status" role="status"></p>
+        <div class="actions">
+          <button type="button" id="agent-save">登记自定义 ACP</button>
+          <button type="button" id="agent-check" disabled>检查已保存的连接</button>
+          <button type="button" id="agent-toggle" disabled>用于新会话</button>
+          <button type="button" id="agent-remove" disabled>从新会话列表移除</button>
+        </div>
+        <small
+          >检查连接会启动一次已保存的
+          Agent，读取能力后关闭，不发送指令。保存修改会生成新版本；停用或移除只影响新会话，已有会话继续使用原版本。</small
+        >
+      </fieldset>
+    </details>
     <form id="settings">
       <label>电脑名称<input id="name" maxlength="100" required /></label
       ><label
@@ -216,12 +281,6 @@
         <strong>本机项目</strong><button type="button" id="add">添加目录</button>
       </div>
       <ul id="projects"></ul>
-      <fieldset>
-        <legend>本机 Agent</legend>
-        <label class="check"><input type="checkbox" value="codex" id="codex" />Codex</label
-        ><label class="check"><input type="checkbox" value="claude" id="claude" />Claude</label>
-      </fieldset>
-      <small>使用这台电脑已有的 Agent 登录和环境配置。首次使用前，请完成相应 Agent 的登录。</small>
       <div class="actions">
         <button class="primary" id="save">保存设置</button
         ><button type="button" id="local">本机工作区</button

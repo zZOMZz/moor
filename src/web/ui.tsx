@@ -165,6 +165,7 @@ export function Shell({
               <Content name="#github-control" />
               <Content name="#project-preview-control" />
               <Content name="#skills-control" />
+              <Content name="#roles-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -276,6 +277,7 @@ export function Shell({
       <Content name="#github-write-view" />
       <Content name="#project-preview-view" />
       <Content name="#skills-view" />
+      <Content name="#roles-view" />
     </div>
   );
 }
