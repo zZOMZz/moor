@@ -7,6 +7,11 @@ import { Store, type Device } from './accounts';
 import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
 import { workspaceInputSchema, projectInputSchema, replicaAssignmentSchema } from '../catalog';
+import {
+  FILE_CONTENT_FEATURE,
+  projectFileReadSchema,
+  projectFileResultSchema,
+} from '../content-protocol';
 export function createApp(
   store: Store,
   options: { origin: string; setupToken: string; publicDir?: string; localOnly?: boolean },
@@ -35,6 +40,8 @@ export function createApp(
     string,
     {
       device: string;
+      socket: WebSocket;
+      method: string;
       resolve: (v: unknown) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
@@ -53,6 +60,18 @@ export function createApp(
     for (const [ws, v] of viewers)
       if (v.owner === owner) send(ws, { type: 'changed', deviceId, workspaceId, room });
   };
+  function rejectFileReads(device: string, socket?: WebSocket) {
+    for (const [id, pending] of commands)
+      if (
+        pending.device === device &&
+        pending.method === 'file-content' &&
+        (!socket || pending.socket === socket)
+      ) {
+        clearTimeout(pending.timer);
+        commands.delete(id);
+        pending.reject(new AppError(409, '执行主机连接已变更，请重新读取文件'));
+      }
+  }
   function request(
     device: string,
     method: string,
@@ -62,14 +81,15 @@ export function createApp(
   ): Promise<unknown> {
     assert(online(device), 409, '执行电脑不可达，指令未送达');
     assert(commands.size < 64, 429, '请求过多，请稍后再试');
-    const requestId = crypto.randomUUID();
+    const requestId = crypto.randomUUID(),
+      socket = bridges.get(device)!.socket;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         commands.delete(requestId);
         reject(new AppError(504, '执行主机尚未确认，请重试确认同一请求'));
       }, 30000);
-      commands.set(requestId, { device, resolve, reject, timer });
-      send(bridges.get(device)!.socket, {
+      commands.set(requestId, { device, socket, method, resolve, reject, timer });
+      send(socket, {
         type: 'request',
         requestId,
         method,
@@ -98,13 +118,13 @@ export function createApp(
     req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '';
   const loginCookie = (secret: string) =>
     `personal=${secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000${origin.startsWith('https:') ? '; Secure' : ''}`;
-  async function body(req: IncomingMessage) {
+  async function body(req: IncomingMessage, maxBytes = 34 * 1024 * 1024) {
     assert(req.headers['content-type']?.startsWith('application/json'), 415, '需要 JSON 请求');
     let size = 0;
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
       size += chunk.length;
-      assert(size <= 34 * 1024 * 1024, 413, '请求过大');
+      assert(size <= maxBytes, 413, '请求过大');
       chunks.push(chunk);
     }
     try {
@@ -352,6 +372,63 @@ export function createApp(
               ),
             );
           }
+          if (parts[5] === 'file-content' && parts.length === 6 && req.method === 'POST') {
+            const input = projectFileReadSchema.parse(await body(req, 16 * 1024));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '文件请求与项目副本不匹配',
+            );
+            assert(
+              runtime?.features?.includes(FILE_CONTENT_FEATURE),
+              409,
+              '请先升级执行电脑上的 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const response = projectFileResultSchema.safeParse(
+              await request(
+                host.device_id,
+                'file-content',
+                host.runtime_id,
+                input,
+                replica.local_id,
+              ),
+            );
+            // Reads can remain in flight while the user moves a host or signs
+            // out. Recheck the original delivery scope before returning bytes.
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            const current = store.catalog.replica(owner!, workspaceId, replica.id);
+            assert(
+              current.host.device_id === host.device_id &&
+                current.host.runtime_id === input.workspaceId &&
+                current.local_id === input.localProjectId,
+              409,
+              '文件请求的执行目标已变更',
+            );
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === host.runtime_id);
+            assert(
+              online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.features?.includes(FILE_CONTENT_FEATURE) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              '项目副本离线或已从主机移除',
+            );
+            assert(response.success, 502, '执行主机返回的文件内容格式无效');
+            const result = response.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId &&
+                result.path === input.path &&
+                (result.status !== 'not-modified' || input.knownVersion === result.content.version),
+              502,
+              '执行主机返回的文件内容与请求不匹配',
+            );
+            return json(res, 200, result);
+          }
           if (parts[5] === 'cancel' && req.method === 'POST') {
             const input = z
               .object({ sessionId: z.string(), turnId: z.string() })
@@ -368,6 +445,7 @@ export function createApp(
         const d = store.device(owner!, parts[2]);
         if (parts[3] === 'revoke' && req.method === 'POST') {
           store.revoke(owner!, d.id);
+          rejectFileReads(d.id);
           bridges.get(d.id)?.socket.close(1008, 'revoked');
           bridges.delete(d.id);
           changed(owner!, d.id);
@@ -441,6 +519,7 @@ export function createApp(
         const d = store.deviceToken(bearer(req));
         wss.handleUpgrade(req, socket, head, (ws) => {
           const previous = bridges.get(d.id);
+          if (previous) rejectFileReads(d.id, previous.socket);
           previous?.socket.close(1008, 'replaced');
           bridges.set(d.id, { socket: ws, ready: false, workspaces: [] });
           ws.on('message', (raw) => {
@@ -457,6 +536,7 @@ export function createApp(
                 for (const v of viewers.values())
                   if (v.watch?.deviceId === d.id) send(ws, { type: 'watch', ...v.watch });
               } else if (message.type === 'unavailable') {
+                rejectFileReads(d.id, ws);
                 bridges.set(d.id, { socket: ws, ready: false, workspaces: [] });
                 changed(d.owner, d.id);
               } else if (message.type === 'changed') {
@@ -466,7 +546,7 @@ export function createApp(
                 });
               } else if (message.type === 'response') {
                 const c = commands.get(message.requestId);
-                if (c?.device === d.id) {
+                if (c?.device === d.id && c.socket === ws) {
                   clearTimeout(c.timer);
                   commands.delete(message.requestId);
                   if (message.error)
@@ -485,6 +565,7 @@ export function createApp(
             }
           });
           ws.on('close', () => {
+            rejectFileReads(d.id, ws);
             if (bridges.get(d.id)?.socket === ws) {
               bridges.delete(d.id);
               changed(d.owner, d.id);

@@ -5,6 +5,14 @@ import { validateMutation } from './validate-mutation';
 import { RuntimeStore } from '../runtime/store';
 import type { AgentConfig, AgentDriver, AgentSession, PermissionOutcome } from '../runtime/agent';
 import { runCapabilitiesSchema } from '../run-config';
+import {
+  CONTENT_VERSION,
+  FILE_CONTENT_FEATURE,
+  projectFileReadSchema,
+  type ProjectFileRead,
+  type ProjectFileResult,
+} from '../content-protocol';
+import { readProjectFileBytes } from '../runtime/project-files';
 
 type Active = {
   turnId: string;
@@ -37,6 +45,7 @@ export class HostWorkspace {
     private driver: AgentDriver,
     private catalogue: () => void,
     private changed: (sessionId?: string) => void,
+    private fileReader = readProjectFileBytes,
   ) {
     this.updateCatalogue();
   }
@@ -47,7 +56,7 @@ export class HostWorkspace {
     this.ensureConnected();
   }
   updateCatalogue() {
-    this.workspace.features = ['session-actions'];
+    this.workspace.features = ['session-actions', FILE_CONTENT_FEATURE];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
       .map((r) => r.value as any);
@@ -194,6 +203,60 @@ export class HostWorkspace {
       this.changed(action.sessionId);
       return result;
     });
+  }
+  async readProjectFile(
+    input: ProjectFileRead,
+    localProjectId?: string,
+  ): Promise<ProjectFileResult> {
+    const request = projectFileReadSchema.parse(input);
+    const scope = () => {
+      this.ensureConnected();
+      assert(request.workspaceId === this.workspace.id, 400, '文件读取目标不匹配');
+      assert(
+        !localProjectId || request.localProjectId === localProjectId,
+        400,
+        '读取项目与副本不匹配',
+      );
+      this.checkProject(request.sessionId, request.localProjectId);
+      const project = this.machine.get(['localProject', request.localProjectId]) as
+        | { id: string; rootPath: string }
+        | undefined;
+      assert(
+        project?.id === request.localProjectId &&
+          this.workspace.projects.some(
+            (item) => item.id === project.id && item.rootPath === project.rootPath,
+          ),
+        404,
+        '项目副本已从主机移除',
+      );
+      return {
+        rootPath: project.rootPath,
+        userId: this.workspace.userId,
+        machineId: this.workspace.machineId,
+      };
+    };
+    const before = scope();
+    const { bytes, content } = await this.fileReader(before.rootPath, request.path);
+    const after = scope();
+    assert(
+      before.rootPath === after.rootPath &&
+        before.userId === after.userId &&
+        before.machineId === after.machineId,
+      409,
+      '文件读取范围已变化，请重试',
+    );
+    const base: Omit<ProjectFileResult, 'status'> = {
+      contentVersion: CONTENT_VERSION,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      path: request.path,
+      content,
+      confirmed: true as const,
+    };
+    return request.knownVersion === content.version
+      ? { ...base, status: 'not-modified' }
+      : { ...base, status: 'content', encoding: 'base64', data: bytes.toString('base64') };
   }
   async mutate(m: Mutation, localProjectId?: string) {
     return this.serial(m.sessionId, async () => {

@@ -428,7 +428,7 @@ test('session action schema permits only explicit scoped metadata operations', (
 test('session actions preserve transcript, files, native context and lifecycle without an Agent prompt', async (t) => {
   const f = fixture();
   t.after(f.close);
-  strict.deepEqual(f.host.workspace.features, ['session-actions']);
+  strict.ok(f.host.workspace.features?.includes('session-actions'));
   await f.host.mutate(request(f));
   await f.started;
   const before = metas(f.meta)['session-session-a'];
