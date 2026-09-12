@@ -100,6 +100,13 @@ import {
 import { GIT_WORKTREE_FEATURE, type GitAction, type GitStateRead } from '../git-protocol';
 import { SessionExecutionManager, type ExecutionLease } from '../runtime/session-execution';
 import { SessionForkManager } from '../runtime/session-fork';
+import { SessionPreviewManager, type SessionPreviewOptions } from '../runtime/session-preview';
+import {
+  PREVIEW_FEATURE,
+  type PreviewRead,
+  type PreviewAction,
+  type PreviewOpen,
+} from '../preview-protocol';
 import { SessionGithubManager, type SessionGithubOptions } from '../runtime/session-github';
 import {
   SessionGithubWriteManager,
@@ -143,6 +150,7 @@ export class HostWorkspace {
   forkManager: SessionForkManager;
   githubManager: SessionGithubManager;
   githubWriteManager: SessionGithubWriteManager;
+  previewManager: SessionPreviewManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -163,9 +171,11 @@ export class HostWorkspace {
     git?: ConstructorParameters<typeof SessionExecutionManager>[1],
     github?: SessionGithubOptions,
     githubWrite?: SessionGithubWriteOptions,
+    preview?: SessionPreviewOptions,
   ) {
     this.executionManager = new SessionExecutionManager(this, git);
     this.forkManager = new SessionForkManager(this, driver);
+    this.previewManager = new SessionPreviewManager(this, preview);
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -205,6 +215,7 @@ export class HostWorkspace {
       SESSION_FORK_FEATURE,
       GITHUB_FEATURE,
       GITHUB_WRITE_FEATURE,
+      PREVIEW_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -417,6 +428,18 @@ export class HostWorkspace {
   }
   readGitState(input: GitStateRead, localProjectId?: string) {
     return this.executionManager.read(input, localProjectId);
+  }
+  readPreview(input: PreviewRead, localProjectId?: string) {
+    return this.previewManager.read(input, localProjectId);
+  }
+  previewAction(input: PreviewAction, localProjectId?: string) {
+    return this.previewManager.action(input, localProjectId);
+  }
+  inspectPreview(input: { request: PreviewAction }, localProjectId?: string) {
+    return this.previewManager.inspect(input, localProjectId);
+  }
+  closePreview(input: { request: PreviewOpen }, localProjectId?: string) {
+    return this.previewManager.close(input, localProjectId);
   }
   async readGithub(input: GithubRead, localProjectId?: string) {
     try {
@@ -1401,6 +1424,7 @@ export class HostWorkspace {
   }
   close() {
     if (this.closed) return;
+    void this.previewManager.closeAll().catch(() => {});
     for (const [id, run] of this.active) {
       const terminal = run.terminal ?? {
         status: 'failed',

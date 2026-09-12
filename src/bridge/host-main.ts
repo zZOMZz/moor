@@ -31,6 +31,14 @@ import {
   githubWriteAbandonSchema,
 } from '../github-write-protocol';
 import { GitHubConfig } from '../runtime/github-config';
+import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
+import { createPreviewRenderer } from '../runtime/preview-renderer';
+import {
+  previewReadSchema,
+  previewActionSchema,
+  previewInspectSchema,
+  previewCloseSchema,
+} from '../preview-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -44,8 +52,20 @@ const { values } = parseArgs({
     'public-dir': { type: 'string' },
     'github-config-dir': { type: 'string' },
     'github-config-stdin': { type: 'boolean' },
+    'preview-config-stdin': { type: 'boolean' },
   },
 });
+const configurationOnly = values['github-config-stdin'] || values['preview-config-stdin'];
+if (
+  values['preview-config-stdin'] &&
+  (values.desktop || values.pair || values['github-config-stdin'])
+) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({ error: '预览本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
+  );
+  process.exit(1);
+}
 if (values['github-config-stdin'] && (values.desktop || values.pair)) {
   writeFileSync(
     process.stdout.fd,
@@ -77,7 +97,7 @@ if (values.pair) {
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8'));
   } catch (e) {
-    if (!values.desktop && !values['github-config-stdin']) throw e;
+    if (!values.desktop && !configurationOnly) throw e;
   }
 }
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
@@ -108,12 +128,66 @@ const githubConfig = new GitHubConfig(
         .scan({ prefix: ['localProject'] })
         .map((row) => row.value as { id: string; name: string; rootPath: string }),
     changed: () => {
-      if (!values['github-config-stdin'])
+      if (!configurationOnly)
         broadcast({ type: 'github-changed', workspaceId: runtime.workspace.id });
     },
   },
 );
-if (values['github-config-stdin']) {
+const previewBlockedOrigins = new Set<string>();
+if (config) previewBlockedOrigins.add(config.server);
+const previewConfig = new PreviewConfig(join(dirname(runtimeFile), 'preview-v1.json'), {
+  identity: () => ({
+    workspaceId: runtime.workspace.id,
+    machineId: runtime.workspace.machineId,
+    userId: runtime.workspace.userId,
+  }),
+  targets: () => {
+    const projects = runtime.machine
+      .scan({ prefix: ['localProject'] })
+      .map((row) => row.value as { id: string; name: string; rootPath: string });
+    const targets: PreviewLocalTarget[] = projects.map((p) => ({
+      localProjectId: p.id,
+      executionId: 'shared',
+      label: p.name + ' · 原目录',
+      rootPath: p.rootPath,
+      projectRoot: p.rootPath,
+    }));
+    for (const row of runtime.journal.db
+      .prepare(
+        'SELECT session_id,project_id FROM session_execution WHERE workspace_id=? AND user_id=? AND machine_id=?',
+      )
+      .all(runtime.workspace.id, runtime.workspace.userId, runtime.workspace.machineId)) {
+      const project = projects.find((p) => p.id === row.project_id);
+      if (!project) continue;
+      try {
+        const lease = runtime.executions.lease({
+          workspaceId: runtime.workspace.id,
+          userId: runtime.workspace.userId,
+          machineId: runtime.workspace.machineId,
+          localProjectId: project.id,
+          sessionId: String(row.session_id),
+          rootPath: project.rootPath,
+        });
+        targets.push({
+          localProjectId: project.id,
+          executionId: lease.executionId,
+          label: project.name + ' · ' + lease.executionId,
+          rootPath: lease.rootPath,
+          projectRoot: lease.projectRoot,
+        });
+      } catch {
+        /* Removed, changing or invalid worktrees cannot be registered. */
+      }
+    }
+    return targets;
+  },
+  blockedOrigins: () => [...previewBlockedOrigins],
+  changed: () => {
+    if (!configurationOnly)
+      for (const host of workspaces.values()) host.previewManager.invalidate();
+  },
+});
+if (configurationOnly) {
   let exitCode = 0;
   try {
     let bytes = 0;
@@ -121,17 +195,29 @@ if (values['github-config-stdin']) {
     for await (const value of process.stdin) {
       const chunk = Buffer.from(value);
       bytes += chunk.length;
-      assert(bytes <= 16 * 1024, 413, 'GitHub 本机配置请求过大');
+      assert(
+        bytes <= 16 * 1024,
+        413,
+        values['preview-config-stdin'] ? '预览本机配置请求过大' : 'GitHub 本机配置请求过大',
+      );
       chunks.push(chunk);
     }
-    const result = await githubConfig.handle(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const result = values['preview-config-stdin']
+      ? previewConfig.handle(input)
+      : await githubConfig.handle(input);
     writeFileSync(process.stdout.fd, JSON.stringify(result) + '\n');
   } catch (error) {
     exitCode = 1;
     writeFileSync(
       process.stdout.fd,
       JSON.stringify({
-        error: error instanceof AppError ? error.message : 'GitHub 本机配置请求无效',
+        error:
+          error instanceof AppError
+            ? error.message
+            : values['preview-config-stdin']
+              ? '预览本机配置请求无效'
+              : 'GitHub 本机配置请求无效',
       }) + '\n',
     );
   } finally {
@@ -141,6 +227,7 @@ if (values['github-config-stdin']) {
 }
 const workspaces = new Map<string, HostWorkspace>(),
   journal = runtime.journal;
+const previewRenderer = createPreviewRenderer();
 const notifications = new NotificationDispatcher({ hosts: () => workspaces.values() });
 const nativeGeneration = {},
   nativeChannel = 'native:' + runtime.workspace.machineId;
@@ -211,6 +298,8 @@ async function refresh() {
         undefined,
         undefined,
         { config: githubConfig },
+        undefined,
+        { config: previewConfig, driver: previewRenderer },
       );
       workspaces.set(runtime.workspace.id, host);
     }
@@ -317,7 +406,23 @@ function connect(target: Target) {
             result = await workspace.refreshAgentOptions(m.params.agentId, m.localProjectId);
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
-          else if (m.method === 'github-write-read') {
+          else if (m.method === 'preview-read') {
+            const input = previewReadSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readPreview(input, m.localProjectId);
+          } else if (m.method === 'preview-action') {
+            const input = previewActionSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.previewAction(input, m.localProjectId);
+          } else if (m.method === 'preview-inspect') {
+            const input = previewInspectSchema.parse(m.params);
+            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.inspectPreview(input, m.localProjectId);
+          } else if (m.method === 'preview-close') {
+            const input = previewCloseSchema.parse(m.params);
+            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.closePreview(input, m.localProjectId);
+          } else if (m.method === 'github-write-read') {
             const input = githubWriteReadSchema.parse(m.params);
             assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.readGithubWrite(input, m.localProjectId);
@@ -425,6 +530,7 @@ function connect(target: Target) {
                   'github-action',
                   'github-abandon',
                   'github-write-action',
+                  'preview-action',
                 ].includes(m.method) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
@@ -443,6 +549,7 @@ function connect(target: Target) {
         ws,
       );
     if (target.socket !== ws) return;
+    for (const host of workspaces.values()) host.previewManager.invalidate();
     const watches = [...target.watches.values()];
     target.watches.clear();
     for (const w of watches) void syncWatch(w.workspaceId, w.sessionId).catch(() => {});
@@ -488,6 +595,7 @@ if (values.desktop) {
   assert(address && typeof address === 'object', 500, '无法启动本机界面');
   writeFileSync(configPath + '.local-port', String(address.port), { mode: 0o600 });
   const origin = 'http://127.0.0.1:' + address.port;
+  previewBlockedOrigins.add(origin);
   localApp.setOrigin(origin);
   targets.push({
     config: { server: origin, ...device },
@@ -502,6 +610,33 @@ if (values.desktop) {
     return true;
   });
   process.on('message', (message) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      message.type === 'preview-config'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)
+      )
+        return;
+      const requestId = request.requestId;
+      if (stopped || !process.connected) return;
+      try {
+        const state = previewConfig.handle(request.action);
+        process.send?.({ type: 'preview-config-result', requestId, ok: true, state });
+      } catch (error) {
+        process.send?.({
+          type: 'preview-config-result',
+          requestId,
+          ok: false,
+          error: error instanceof AppError ? error.message : '预览本机设置操作未完成，请重新读取',
+        });
+      }
+      return;
+    }
     if (
       message &&
       typeof message === 'object' &&
@@ -536,7 +671,10 @@ if (values.desktop) {
     notifications.acknowledge(nativeChannel, nativeGeneration, message);
     notifications.drain();
   });
-  process.on('disconnect', () => notifications.disconnect(nativeChannel, nativeGeneration));
+  process.on('disconnect', () => {
+    notifications.disconnect(nativeChannel, nativeGeneration);
+    for (const host of workspaces.values()) host.previewManager.invalidate();
+  });
 }
 if (
   config &&
@@ -559,6 +697,7 @@ async function stop() {
     target.socket?.terminate();
   }
   for (const w of workspaces.values()) w.close();
+  await previewRenderer.closeAll();
   await localApp?.close();
   localStore?.close();
   runtime.close();

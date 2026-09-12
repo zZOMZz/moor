@@ -61,7 +61,8 @@ async function copyDependencyTree(name, dest, from = process.cwd(), ancestors = 
 }
 async function copyRuntime(dest) {
   await mkdir(dest, { recursive: true });
-  for (const file of ['bridge.mjs', 'server.mjs']) await cp('dist/' + file, join(dest, file));
+  for (const file of ['bridge.mjs', 'server.mjs', 'preview-renderer.cjs'])
+    await cp('dist/' + file, join(dest, file));
   await cp('dist/public', join(dest, 'public'), { recursive: true });
   for (const pkg of ['ws', 'loro-crdt']) await copyPackage(pkg, dest);
 }
@@ -136,7 +137,7 @@ if (mode === 'relay') {
   await cp('assets/brand/moor.icns', join(resources, 'moor.icns'));
   await writeFile(
     join(root, 'package.json'),
-    JSON.stringify({ name: 'moor', version: '0.2.0', private: true, main: 'main.cjs' }) + '\n',
+    JSON.stringify({ name: 'moor', version: '0.2.0', private: true, main: 'entry.cjs' }) + '\n',
   );
   await licenses(root);
   const runtime = join(root, 'runtime');

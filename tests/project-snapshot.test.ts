@@ -52,6 +52,9 @@ test('automatic Git and directory snapshots exclude reserved GitHub credentials 
     'github-v1.json',
     'private/github-v1.json.tmp-save',
     'private/GITHUB-V1.JSON',
+    'preview-v1.json',
+    'private/preview-v1.json.tmp-save',
+    'private/PREVIEW-V1.JSON',
   ])
     p.write(path, '{"token":"synthetic-private-github-token"}');
   for (const options of [directoryOnly, {}]) {
@@ -62,6 +65,7 @@ test('automatic Git and directory snapshots exclude reserved GitHub credentials 
     const tree = await enumerateProjectFiles(p.root, options),
       snapshot = await captureProjectSnapshot(p.root, options);
     strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('github-v1.json')));
+    strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('preview-v1.json')));
     strict.ok(tree.issues.some((issue) => issue.reason === 'policy-excluded'));
     strict.equal(JSON.stringify(snapshot).includes('synthetic-private-github-token'), false);
   }

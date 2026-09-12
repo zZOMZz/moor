@@ -91,6 +91,9 @@ test('Moor GitHub credential and temporary files are reserved even when their pa
     'src/github-v1.json',
     'src/github-v1.json.tmp-synthetic',
     'src/GITHUB-V1.JSON',
+    'preview-v1.json',
+    'src/preview-v1.json.tmp-synthetic',
+    'src/PREVIEW-V1.JSON',
   ]) {
     writeFileSync(join(f.root, path), '{"token":"synthetic-private-github-token"}');
     await strict.rejects(f.host.readProjectFile({ ...f.request, path }), status(403));

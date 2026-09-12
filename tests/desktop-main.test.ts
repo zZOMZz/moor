@@ -223,6 +223,29 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     });
   const invoke = (name: string, value?: unknown, event = settingsEvent()) =>
     handlers.get(name)!(event, value);
+  for (const event of [
+    { sender: {}, senderFrame: settingsWindow.webContents.mainFrame },
+    {
+      sender: settingsWindow.webContents,
+      senderFrame: { ...settingsWindow.webContents.mainFrame },
+    },
+  ])
+    assert.throws(
+      () => invoke('personal:preview-config', { action: 'read' }, event),
+      /无效的本机设置请求/,
+    );
+  const previewReading = invoke('personal:preview-config', { action: 'read' });
+  const previewRequest = children[0].sent.at(-1);
+  assert.equal(previewRequest.type, 'preview-config');
+  children[0].emit('message', {
+    type: 'preview-config-result',
+    requestId: previewRequest.requestId,
+    ok: true,
+    state: { revision: 0, targets: [], services: [], privateMetadata: 'not-public' },
+  });
+  const previewState = await previewReading;
+  assert.equal(previewState.revision, 0);
+  assert.equal('privateMetadata' in previewState, false);
   assert.throws(
     () =>
       invoke(
@@ -344,7 +367,10 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   localWindow.close();
   const sending = emitMessage(children[0], { type: 'notification', event: next });
   assert.equal(notices.length, 2);
-  assert.equal(children[0].sent.length, 1);
+  assert.equal(
+    children[0].sent.filter((message: any) => message.type === 'notification-ack').length,
+    1,
+  );
   notices[1].emit('show');
   await sending;
   assert.equal(children[0].sent.at(-1).status, 'shown');
@@ -441,7 +467,10 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     secret: 'synthetic-stale',
   });
   await clearing.entered;
+  const previewBeforeRestart = invoke('personal:preview-config', { action: 'read' });
+  const previewRestartRejection = assert.rejects(previewBeforeRestart, /已重启/);
   await invoke('personal:recover');
+  await previewRestartRejection;
   const replacementReady = emitMessage(children.at(-1), {
     type: 'local-ready',
     origin: 'http://127.0.0.1:4532',

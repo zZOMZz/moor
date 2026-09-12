@@ -3060,3 +3060,107 @@ dialog pre {
     padding: 16px;
   }
 }
+.project-preview-panel {
+  width: min(1180px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+}
+.project-preview-panel p,
+.project-preview-panel pre,
+.preview-composer-cards p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.project-preview-panel small {
+  display: block;
+  opacity: 0.75;
+}
+.preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  margin: 12px 0;
+}
+.preview-toolbar label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.project-preview-panel input:not([type='checkbox']),
+.project-preview-panel select,
+.project-preview-panel textarea {
+  max-width: 100%;
+  min-width: 0;
+}
+.project-preview-panel textarea {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+}
+.project-preview-panel button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.preview-frame {
+  position: relative;
+  display: block;
+  padding: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  cursor: crosshair;
+}
+.preview-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+.preview-element-outline {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #22c55e;
+  background: #22c55e22;
+  pointer-events: none;
+}
+.preview-element,
+.preview-annotation-card,
+.preview-composer-cards > div {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 12px 0;
+}
+.preview-annotation-card img {
+  max-width: 100%;
+  height: auto;
+}
+.preview-annotation-card button {
+  margin: 4px;
+}
+.preview-empty {
+  padding: 32px 12px;
+  text-align: center;
+  border: 1px dashed var(--border);
+}
+.preview-composer-cards {
+  font-size: 0.9rem;
+}
+.preview-composer-cards p {
+  max-height: 100px;
+  overflow: auto;
+  margin: 4px 0;
+}
+@media (max-width: 600px) {
+  .project-preview-panel {
+    padding: 12px;
+  }
+  .preview-toolbar {
+    align-items: stretch;
+  }
+  .preview-toolbar > label {
+    flex: 1 1 180px;
+  }
+}

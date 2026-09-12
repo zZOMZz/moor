@@ -87,6 +87,16 @@ import {
   githubWriteAbandonSchema,
   githubWriteReceiptSchema,
 } from '../github-write-protocol';
+import {
+  PREVIEW_FEATURE,
+  previewReadSchema,
+  previewReadResultSchema,
+  previewActionSchema,
+  previewInspectSchema,
+  previewCloseSchema,
+  previewReceiptSchema,
+} from '../preview-protocol';
+import { validatePreviewFrame } from '../preview-validation';
 export function createApp(
   store: Store,
   options: {
@@ -264,6 +274,7 @@ export function createApp(
           'fork-options',
           'github-read',
           'github-write-read',
+          'preview-read',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -360,12 +371,14 @@ export function createApp(
         path = url.pathname;
       scopedActionRequest =
         req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:(git|fork|github|github-write)\/action|github\/abandon)$/.test(
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:(git|fork|github|github-write|preview)\/action|github\/abandon)$/.test(
           path,
         );
       scopedRecoveryRequest =
         req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/github-write\/(inspect|abandon)$/.test(path);
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:github-write\/(inspect|abandon)|preview\/(inspect|close))$/.test(
+          path,
+        );
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
@@ -556,6 +569,147 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'preview' &&
+            ['read', 'action', 'inspect', 'close'].includes(parts[6] ?? '') &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            const kind = parts[6]!,
+              value = await body(req, 32 * 1024);
+            const readInput = kind === 'read' ? previewReadSchema.parse(value) : undefined;
+            const recovered =
+              kind === 'inspect'
+                ? previewInspectSchema.parse(value)
+                : kind === 'close'
+                  ? previewCloseSchema.parse(value)
+                  : undefined;
+            const actionInput =
+              kind === 'action' ? previewActionSchema.parse(value) : recovered?.request;
+            const input = readInput ?? actionInput!;
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '预览请求与项目副本不匹配',
+            );
+            assert(runtime, 409, '执行电脑暂时不可用');
+            assert(runtime.features?.includes(PREVIEW_FEATURE), 409, '请先升级执行电脑上的 Moor');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const r = store.catalog.replica(owner!, workspaceId, replica.id);
+              const w = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                r.host.device_id === host.device_id &&
+                  r.host.runtime_id === input.workspaceId &&
+                  r.local_id === input.localProjectId &&
+                  r.project_id === replica.project_id &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  w?.userId === runtime.userId &&
+                  w?.machineId === runtime.machineId &&
+                  w.features?.includes(PREVIEW_FEATURE) &&
+                  w.projects.some((p) => p.id === input.localProjectId),
+                409,
+                '预览请求的执行范围已变化，请重新读取',
+              );
+            };
+            current();
+            scopedActionDispatched = kind === 'action';
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                'preview-' + kind,
+                host.runtime_id,
+                readInput ?? recovered ?? actionInput,
+                replica.local_id,
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            current();
+            if (failed) throw failed.error;
+            assert(
+              Buffer.byteLength(JSON.stringify(raw)) <= 6 * 1024 * 1024,
+              502,
+              '预览响应超过限制',
+            );
+            const parsed = readInput
+              ? previewReadResultSchema.safeParse(raw)
+              : previewReceiptSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行电脑返回的预览响应不可验证');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId,
+              502,
+              '预览响应不属于当前会话',
+            );
+            if (readInput) {
+              assert('view' in result && result.view === readInput.view, 502, '预览响应种类不匹配');
+              if (readInput.view !== 'options')
+                assert(
+                  'clientId' in result &&
+                    'previewId' in result &&
+                    result.clientId === readInput.clientId &&
+                    result.previewId === readInput.previewId,
+                  502,
+                  '预览响应不属于当前连接',
+                );
+              if (readInput.view === 'locate')
+                assert(
+                  result.view === 'locate' &&
+                    result.frameId === readInput.frameId &&
+                    (!result.element || result.element.frameId === readInput.frameId),
+                  502,
+                  '预览元素不属于原画面',
+                );
+            } else {
+              assert(
+                'operationId' in result &&
+                  result.operationId === actionInput!.operationId &&
+                  result.clientId === actionInput!.clientId &&
+                  result.action === actionInput!.action &&
+                  result.requestVersion ===
+                    'sha256:' +
+                      createHash('sha256').update(JSON.stringify(actionInput!)).digest('hex'),
+                502,
+                '预览回执不属于原操作',
+              );
+              if (actionInput!.action !== 'open')
+                assert(
+                  !result.previewId || result.previewId === actionInput!.previewId,
+                  502,
+                  '预览回执连接不匹配',
+                );
+              if (kind === 'close')
+                assert(result.closed && result.phase === 'closed', 502, '预览关闭未确认');
+            }
+            if ('frame' in result && result.frame) {
+              const frame = validatePreviewFrame(result.frame);
+              assert(
+                'previewId' in result && frame.previewId === result.previewId,
+                502,
+                '画面不属于此预览连接',
+              );
+              if (
+                actionInput &&
+                ['open', 'resize'].includes(actionInput.action) &&
+                'viewport' in actionInput
+              )
+                assert(
+                  isDeepStrictEqual(frame.viewport, actionInput.viewport),
+                  502,
+                  '预览响应视口不匹配',
+                );
+            }
+            return json(res, 200, result);
+          }
           if (
             parts[5] === 'github-write' &&
             ['read', 'action', 'inspect', 'abandon'].includes(parts[6] ?? '') &&

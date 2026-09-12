@@ -77,6 +77,8 @@ GitHub 测试使用注入的 HTTP 响应、临时项目和虚构 token，不读�
 
 GitHub 配置入口只属于本机。远端读取接受类型化的项目与会话请求，不接受 token、任意服务地址、原始 HTTP 路径或 shell。provider 正文只存在于当前读取响应和页面内存，显式加入草稿才按普通会话规则持久化。撤权后确认旧关联操作只返回脱敏回执，不借去重返回旧上下文；外部写操作应在 M4.4 单独设计授权与重试语义。当前范围见[GitHub 文档](github.md)。
 
+网页预览的默认测试不启动图形应用，4 项原生专项明确跳过。有可用图形会话的开发机可执行 `MOOR_TEST_ELECTRON_PREVIEW=1 node --import tsx --test tests/preview-renderer.test.ts tests/desktop-entry.test.ts`；也可设置 `MOOR_TEST_PREVIEW_WORKER` 为最终构建的绝对 worker 路径。专项只启动锁定 Electron 和回环合成 HTTP/WS/TCP/UDP 服务，用事件信号检查输入画面、视口、节点变化与网络隔离，不访问真实网页、凭据或 Agent。包入口测试在 macOS 临时克隆的 Electron.app 中加载合成主模块与 worker，验证固定入口选择，不读取 Moor 用户数据。宿主环境若不允许 Electron 自身沙箱启动，应报告该环境不可用，不能关闭 Chromium 沙箱来使测试通过。实现入口及测试文件见[项目网页预览](preview.md)。
+
 ## 发布与真实设备验证
 
 macOS 包需在目标架构的 Mac 上构建；中转包应只包含打包后的程序文件。发布步骤与数据备份见[项目首页](../README.md)和[部署与迁移](../deploy/README.md)，不要把会话记录、凭据、数据库、生成包或内部任务记录提交进 Git。提交主题使用 Conventional Commits，例如 `docs: explain session delivery and recovery`。

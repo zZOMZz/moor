@@ -31,6 +31,7 @@ const hostBuild = await build({
   entryPoints: ['src/bridge/host-main.ts'],
   outfile: 'dist/bridge.mjs',
 });
+await cp('src/desktop/preview-renderer.cjs', 'dist/preview-renderer.cjs');
 await writeFile(
   'dist/THIRD_PARTY_NOTICES.txt',
   await browserNotices(

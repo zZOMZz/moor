@@ -1,4 +1,18 @@
 import { GITHUB_WRITE_FEATURE } from '../github-write-protocol';
+import { PREVIEW_FEATURE } from '../preview-protocol';
+import {
+  ProjectPreviewController,
+  PreviewAnnotationStore,
+  previewAnnotationKey,
+  previewAnnotationSubmissionSchema,
+  pendingPreviewMutationSchema,
+  type PreviewAnnotationSubmission,
+} from './project-preview';
+import {
+  showProjectPreviewControl,
+  showProjectPreviewPanel,
+  showPreviewAnnotationCards,
+} from './project-preview-ui';
 import { GithubWriteController, githubWriteKey } from './github-write';
 import { showGithubWritePanel } from './github-write-ui';
 import { GITHUB_FEATURE } from '../github-protocol';
@@ -278,6 +292,9 @@ let events: WebSocket | null = null,
   refreshTimer: ReturnType<typeof setTimeout> | undefined,
   pending: Mutation | undefined,
   sending = false;
+let pendingAnnotationDelivery:
+  | { operationId: string; submission: PreviewAnnotationSubmission }
+  | undefined;
 let sessionList: SessionSummary[] = [];
 let archived = false,
   listLoading = false,
@@ -804,6 +821,282 @@ function renderGithubWrite() {
   });
 }
 
+let projectPreview: ProjectPreviewController | undefined,
+  previewAnnotations: PreviewAnnotationStore | undefined,
+  projectPreviewGeneration = 0,
+  projectPreviewPanelOpen = false,
+  previewHeartbeat: ReturnType<typeof setTimeout> | undefined;
+function currentProjectPreview() {
+  const target = gitTarget();
+  return target &&
+    projectPreview &&
+    previewAnnotationKey(target) === previewAnnotationKey(projectPreview.target)
+    ? projectPreview
+    : undefined;
+}
+function currentPreviewAnnotations() {
+  const target = gitTarget();
+  return target &&
+    previewAnnotations &&
+    previewAnnotationKey(target) === previewAnnotationKey(previewAnnotations.target)
+    ? previewAnnotations
+    : undefined;
+}
+function resetProjectPreview() {
+  const old = projectPreview;
+  projectPreviewGeneration++;
+  projectPreview = undefined;
+  previewAnnotations = undefined;
+  projectPreviewPanelOpen = false;
+  if (previewHeartbeat) clearTimeout(previewHeartbeat);
+  previewHeartbeat = undefined;
+  void old?.dispose();
+  showProjectPreviewPanel();
+  showProjectPreviewControl();
+  showPreviewAnnotationCards();
+}
+function projectPreviewReason() {
+  if (!authenticated || !connected || !navigator.onLine || !selected?.online || !replica?.available)
+    return '执行电脑离线，预览画面已清除。标注草稿仍保留，连接后请手动操作。';
+  if (!workspace?.features?.includes(PREVIEW_FEATURE))
+    return '执行电脑尚不支持网页预览，请更新 Moor。';
+  return sessionPersistenceError;
+}
+async function loadProjectPreview() {
+  const target = gitTarget(),
+    generation = ++projectPreviewGeneration;
+  projectPreview = undefined;
+  previewAnnotations = undefined;
+  if (!target) return;
+  const controller: ProjectPreviewController = new ProjectPreviewController(target, {
+    read: cache.read,
+    compareWrite: cache.compareWrite,
+    request: api,
+    online: () => !projectPreviewReason(),
+    current: () =>
+      generation === projectPreviewGeneration && currentProjectPreview() === controller,
+    changed: () => {
+      if (generation === projectPreviewGeneration) updateComposer();
+    },
+  });
+  const store: PreviewAnnotationStore = new PreviewAnnotationStore(target, {
+    read: cache.read,
+    compareWrite: cache.compareWrite,
+    current: () => generation === projectPreviewGeneration && currentPreviewAnnotations() === store,
+    changed: () => {
+      if (generation === projectPreviewGeneration) updateComposer();
+    },
+  });
+  projectPreview = controller;
+  previewAnnotations = store;
+  await Promise.all([controller.load(), store.load()]);
+  if (
+    pendingAnnotationDelivery &&
+    pending?.operationId === pendingAnnotationDelivery.operationId &&
+    previewAnnotationKey(pendingAnnotationDelivery.submission.target) !==
+      previewAnnotationKey(target)
+  ) {
+    store.loadError = '待确认指令的标注不属于此会话，请重新打开原执行目标。';
+    throw new Error(store.loadError);
+  }
+}
+async function previewOperation(
+  work: (
+    controller: ProjectPreviewController,
+    annotations: PreviewAnnotationStore,
+  ) => Promise<unknown>,
+) {
+  const controller = currentProjectPreview(),
+    store = currentPreviewAnnotations(),
+    generation = projectPreviewGeneration;
+  if (!controller || !store) throw new Error('网页预览与标注尚未恢复。');
+  try {
+    await work(controller, store);
+  } catch (cause) {
+    if (generation === projectPreviewGeneration && controller === currentProjectPreview())
+      throw cause;
+  }
+}
+async function openProjectPreview() {
+  projectPreviewPanelOpen = true;
+  if (!currentProjectPreview()) await loadProjectPreview();
+  renderProjectPreview();
+  if (!projectPreviewReason() && currentProjectPreview()?.loaded)
+    await previewOperation(async (controller) => {
+      await controller.refreshOptions();
+    });
+}
+function previewAnnotationLocked() {
+  return (
+    sending ||
+    !!pending ||
+    attachmentWorking ||
+    !!currentAttachments()?.busyId ||
+    !!sessionPersistenceError
+  );
+}
+function previewScreenshotReason() {
+  if (!currentAgent()?.inputCapabilities?.image)
+    return '当前 Agent 不支持图片输入，可先只发送文字标注。';
+  if ((currentAttachments()?.items.length ?? 8) >= 8)
+    return '本次指令已有 8 个附件，请先移除一个。';
+  return '';
+}
+async function addPreviewScreenshot(id: string) {
+  const store = currentPreviewAnnotations(),
+    controller = currentAttachments(),
+    generation = projectPreviewGeneration;
+  if (!store || !controller || previewAnnotationLocked()) throw new Error('请先完成当前草稿操作。');
+  const reason = previewScreenshotReason();
+  if (reason) throw new Error(reason);
+  const item = store.items.find((value) => value.id === id),
+    image = item?.snapshot.image;
+  if (!image) throw new Error('此标注未保存截图。');
+  const bytes = attachmentBytes(image.data);
+  if (generation !== projectPreviewGeneration || store !== currentPreviewAnnotations()) return;
+  await controller.add([
+    new File([bytes], `网页标注-${id.slice(0, 32)}.png`, { type: 'image/png' }),
+  ]);
+}
+function renderProjectPreview() {
+  const c = currentProjectPreview(),
+    annotations = currentPreviewAnnotations(),
+    generation = projectPreviewGeneration;
+  const act = (
+    work: (controller: ProjectPreviewController, store: PreviewAnnotationStore) => Promise<unknown>,
+  ) =>
+    run(async () => {
+      if (generation !== projectPreviewGeneration || c !== currentProjectPreview()) return;
+      await previewOperation(work);
+    });
+  if (c?.frame && projectPreviewReason()) {
+    void c.dispose();
+    return;
+  }
+  const keepAlive =
+    projectPreviewPanelOpen &&
+    c?.active &&
+    !c.closing &&
+    !c.pending &&
+    !c.busy &&
+    !projectPreviewReason();
+  if (!keepAlive && previewHeartbeat) {
+    clearTimeout(previewHeartbeat);
+    previewHeartbeat = undefined;
+  }
+  if (keepAlive && !previewHeartbeat)
+    previewHeartbeat = setTimeout(() => {
+      previewHeartbeat = undefined;
+      if (
+        generation === projectPreviewGeneration &&
+        projectPreviewPanelOpen &&
+        c === currentProjectPreview()
+      )
+        act(async (value) => {
+          await value.status();
+        });
+    }, 12000);
+  showProjectPreviewControl({ onOpen: () => run(openProjectPreview), disabled: !gitTarget() });
+  showPreviewAnnotationCards(
+    annotations
+      ? {
+          store: annotations,
+          disabled: previewAnnotationLocked() || annotations.busy,
+          onOpen: () => run(openProjectPreview),
+          onRemove: (id) =>
+            act(async (_value, store) => {
+              if (previewAnnotationLocked()) return;
+              await store.select(id, false);
+            }),
+        }
+      : undefined,
+  );
+  if (!projectPreviewPanelOpen) {
+    showProjectPreviewPanel();
+    return;
+  }
+  const local = async (store: PreviewAnnotationStore, work: () => Promise<unknown>) => {
+    if (previewAnnotationLocked() || store !== currentPreviewAnnotations())
+      throw new Error('请先确认当前指令，再更改标注草稿。');
+    await work();
+  };
+  showProjectPreviewPanel({
+    controller: c,
+    annotations,
+    reason: projectPreviewReason(),
+    location: selected?.name,
+    annotationLocked: previewAnnotationLocked(),
+    screenshotReason: previewScreenshotReason(),
+    onDismiss: () => {
+      if (generation !== projectPreviewGeneration) return;
+      projectPreviewPanelOpen = false;
+      if (previewHeartbeat) clearTimeout(previewHeartbeat);
+      previewHeartbeat = undefined;
+      showProjectPreviewPanel();
+      act(async (value) => {
+        await value.close();
+      });
+    },
+    onOptions: () =>
+      act(async (value) => {
+        await value.refreshOptions();
+      }),
+    onConnect: (id, viewport) =>
+      act(async (value) => {
+        await value.open(id, viewport);
+      }),
+    onClose: () =>
+      act(async (value) => {
+        await value.close();
+      }),
+    onCapture: () =>
+      act(async (value) => {
+        await value.capture();
+      }),
+    onInspect: () =>
+      act(async (value) => {
+        await value.inspect();
+      }),
+    onLocate: (x, y) =>
+      act(async (value) => {
+        await value.locate(x, y);
+      }),
+    onInteract: (action) =>
+      act(async (value) => {
+        await value.interact(action);
+      }),
+    onSave: async (note, image) => {
+      if (generation !== projectPreviewGeneration || c !== currentProjectPreview()) return;
+      try {
+        await previewOperation(async (value, store) => {
+          await local(store, () => store.save(value.annotation(note, image)));
+        });
+      } catch (cause) {
+        error(cause);
+        throw cause;
+      }
+    },
+    onSelect: (id, selected) =>
+      act(async (_value, store) => {
+        await local(store, () => store.select(id, selected));
+      }),
+    onRemove: (id) =>
+      act(async (_value, store) => {
+        await local(store, () => store.remove(id));
+      }),
+    onEdit: (id, note) =>
+      act(async (_value, store) => {
+        const item = store.items.find((value) => value.id === id);
+        if (item) await local(store, () => store.save({ ...item.snapshot, note }, id));
+      }),
+    onImage: (id) =>
+      run(async () => {
+        if (generation === projectPreviewGeneration && c === currentProjectPreview())
+          await addPreviewScreenshot(id);
+      }),
+  });
+}
+
 let github: GithubController | undefined;
 let githubGeneration = 0,
   githubPanelOpen = false,
@@ -1284,6 +1577,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetProjectPreview();
   resetGithub();
   resetSessionFork();
   gitGeneration++;
@@ -1551,6 +1845,8 @@ async function loadAttachmentDraft() {
     if (token === attachmentGeneration && generation === sessionGeneration) await loadSessionFork();
     if (token === attachmentGeneration && generation === sessionGeneration) await loadGithub();
     if (token === attachmentGeneration && generation === sessionGeneration) await loadGithubWrite();
+    if (token === attachmentGeneration && generation === sessionGeneration)
+      await loadProjectPreview();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -2309,6 +2605,7 @@ function pairComputer() {
   });
 }
 function logout() {
+  resetProjectPreview();
   resetGithub();
   resetSessionFork();
   notificationAccountGeneration++;
@@ -2388,6 +2685,7 @@ function connect() {
     connected = false;
     currentGithub()?.invalidate();
     currentGithubWrite()?.invalidate();
+    void currentProjectPreview()?.dispose();
     renderNavigation();
     renderTarget();
     updateComposer();
@@ -2399,6 +2697,13 @@ function connect() {
     if (events !== ws) return;
     try {
       const message = JSON.parse(event.data);
+      if (
+        message.type === 'changed' &&
+        message.room?.scope === 'preview' &&
+        message.deviceId === selected?.id &&
+        message.workspaceId === workspace?.id
+      )
+        void currentProjectPreview()?.dispose();
       if (
         message.type === 'changed' &&
         message.room?.scope === 'github' &&
@@ -3152,9 +3457,14 @@ async function openSession(id: string, replicaId?: string, keepNavigation = fals
   meta = null;
   pendingAction = undefined;
   actionError = '';
-  const restored = await cache.read<Mutation>(key('pending'));
+  const restored = await cache.read<Mutation | { previewDraftVersion: 1 }>(key('pending'));
   if (generation !== sessionGeneration) return;
-  pending = restored;
+  pendingAnnotationDelivery = undefined;
+  if (restored && 'previewDraftVersion' in restored) {
+    const saved = pendingPreviewMutationSchema.parse(restored);
+    pending = saved.mutation;
+    pendingAnnotationDelivery = saved.annotationDelivery;
+  } else pending = restored;
   const scope = currentActionScope();
   if (scope) {
     const saved = await cache.read<PendingSessionAction>(sessionActionKey(scope));
@@ -3508,6 +3818,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderProjectPreview();
   renderGithubWrite();
   renderGithub();
   renderGitWorkspace();
@@ -3531,6 +3842,8 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    !!currentPreviewAnnotations()?.busy ||
+    (!!currentPreviewAnnotations()?.loadError && !pending) ||
     !!currentGithubWrite()?.blocksExecution ||
     githubBlocksComposer() ||
     gitBlocksComposer() ||
@@ -3599,20 +3912,46 @@ function updateComposer() {
   $<HTMLButtonElement>('#cancel').hidden = !active;
   $<HTMLButtonElement>('#cancel').disabled = !connected || !selected?.online;
 }
-async function submit(m: Mutation) {
+async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
   if (sending) return;
   const generation = sessionGeneration,
     pendingKey = key('pending'),
     draftKey = key('draft'),
     endpoint = prefix() + '/mutations' + query();
   const attachmentController = currentAttachments();
+  const annotationController = currentPreviewAnnotations();
+  const annotationDelivery = annotations
+    ? {
+        operationId: m.operationId,
+        submission: previewAnnotationSubmissionSchema.parse(annotations),
+      }
+    : pendingAnnotationDelivery?.operationId === m.operationId
+      ? pendingAnnotationDelivery
+      : undefined;
+  if (
+    annotationDelivery &&
+    (!annotationController ||
+      previewAnnotationKey(annotationController.target) !==
+        previewAnnotationKey(annotationDelivery.submission.target))
+  )
+    throw new Error('指令标注与当前执行范围不匹配。');
   const creatingSession = !sessionId;
   pending = m;
+  pendingAnnotationDelivery = annotationDelivery;
   sending = true;
   updateComposer();
   let durable = false;
   try {
-    await cache.write(pendingKey, m);
+    await cache.write(
+      pendingKey,
+      annotationDelivery
+        ? pendingPreviewMutationSchema.parse({
+            previewDraftVersion: 1,
+            mutation: m,
+            annotationDelivery,
+          })
+        : m,
+    );
     durable = true;
     const confirmation = await api(endpoint, m);
     if (
@@ -3621,6 +3960,11 @@ async function submit(m: Mutation) {
       confirmation.operationId !== m.operationId
     )
       throw new Error('指令尚未获得有效的主机确认，请使用原请求手动重试。');
+    if (annotationDelivery) {
+      // Keep the original outbox until its own page can finish local confirmation cleanup.
+      if (generation !== sessionGeneration) return;
+      await annotationController!.confirmSent(annotationDelivery.submission);
+    }
     if (m.kind === 'turn' && attachmentController?.scope.sessionId === m.sessionId) {
       await attachmentController.forget(
         attachmentController.items.map((item) => item.reference.attachmentId),
@@ -3634,6 +3978,7 @@ async function submit(m: Mutation) {
     if (m.kind === 'turn') await cache.write(draftKey, '');
     if (generation !== sessionGeneration) return;
     pending = undefined;
+    pendingAnnotationDelivery = undefined;
     if (m.kind === 'turn') $<HTMLTextAreaElement>('#prompt').value = '';
     await openSession(m.sessionId);
     await loadSessions();
@@ -3643,6 +3988,7 @@ async function submit(m: Mutation) {
     if (!durable || (e instanceof ApiError && e.rejected)) {
       await cache.write(pendingKey, undefined);
       if (generation === sessionGeneration) pending = undefined;
+      if (generation === sessionGeneration) pendingAnnotationDelivery = undefined;
     }
     throw e;
   } finally {
@@ -3670,7 +4016,14 @@ async function sendTurn() {
     throw new Error('请先确认或关闭原交互记录。');
   if (meta?.isArchived) throw new Error('请先恢复会话，再发送新的指令。');
   if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
-  const prompt = $<HTMLTextAreaElement>('#prompt').value.trim();
+  const annotationStore = currentPreviewAnnotations();
+  if (
+    annotationStore &&
+    (!annotationStore.loaded || annotationStore.loadError || annotationStore.busy)
+  )
+    throw new Error(annotationStore.loadError || '请等待标注草稿恢复或保存。');
+  const composed = annotationStore?.compose($<HTMLTextAreaElement>('#prompt').value.trim()),
+    prompt = composed?.prompt ?? $<HTMLTextAreaElement>('#prompt').value.trim();
   const attachmentController = currentAttachments();
   if (!prompt && !attachmentController?.items.length) return;
   const generation = sessionGeneration;
@@ -3768,15 +4121,18 @@ async function sendTurn() {
         lastMessageAt: Date.now(),
       };
   putMeta(localFlock, 'session-' + id, fields);
-  await submit({
-    operationId: crypto.randomUUID(),
-    workspaceId: workspace.id,
-    sessionId: id,
-    kind: 'turn',
-    expectedTurnId: meta?.latestUserMsgId ?? null,
-    update: delta(candidate, before),
-    metaBundle: localFlock.exportJson(metaVersion),
-  });
+  await submit(
+    {
+      operationId: crypto.randomUUID(),
+      workspaceId: workspace.id,
+      sessionId: id,
+      kind: 'turn',
+      expectedTurnId: meta?.latestUserMsgId ?? null,
+      update: delta(candidate, before),
+      metaBundle: localFlock.exportJson(metaVersion),
+    },
+    composed?.submission.selection.length ? composed.submission : undefined,
+  );
 }
 async function respondPermission(requestId: string, optionId: string) {
   if (sending || pending) throw new Error('请先确认上一次提交结果');
@@ -3824,4 +4180,7 @@ window.addEventListener('online', () => {
     if (authenticated) connect();
     else run(() => boot());
   }
+});
+window.addEventListener('offline', () => {
+  void currentProjectPreview()?.dispose();
 });
