@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { RuntimeStore } from '../src/runtime/store';
+import { GitHubConfig } from '../src/runtime/github-config';
 import { DesktopGitHubSettings } from '../src/desktop/github-settings.cjs';
 
 const entry = resolve('src/bridge/host-main.ts');
@@ -21,6 +22,11 @@ function fixture(t: { after(fn: () => unknown): void }) {
     githubFile = join(privatePath, 'github-v1.json');
   const store = new RuntimeStore(runtimeFile),
     projectId = store.registerProject(root);
+  const identity = {
+    workspaceId: store.workspace.id,
+    machineId: store.workspace.machineId,
+    userId: store.workspace.userId,
+  };
   store.close();
   const children: { process: ChildProcess; closed: Promise<unknown> }[] = [];
   t.after(async () => {
@@ -112,8 +118,96 @@ function fixture(t: { after(fn: () => unknown): void }) {
       },
     };
   }
-  return { runtimeFile, githubFile, projectId, cli, desktop };
+  return {
+    runtimeFile,
+    githubFile,
+    projectId,
+    cli,
+    desktop,
+    async seedVerifiedProject() {
+      const config = new GitHubConfig(githubFile, {
+        identity,
+        projects: () => [{ id: projectId, name: 'Synthetic project', rootPath: root }],
+        verifier: {
+          async getUser() {
+            return { login: 'synthetic' };
+          },
+          async getRepository(_token, owner, repo) {
+            return { id: 42, owner, repo };
+          },
+        },
+      });
+      const saved = await config.handle({
+        action: 'credential-save',
+        expectedRevision: 0,
+        label: 'Synthetic opt-in',
+        token: 'synthetic_opt_in_token',
+      });
+      return config.handle({
+        action: 'project-bind',
+        expectedRevision: saved.revision,
+        localProjectId: projectId,
+        credentialId: saved.credentials[0]!.id,
+        owner: 'synthetic-owner',
+        repo: 'synthetic-repo',
+      });
+    },
+  };
 }
+
+test(
+  'actual CLI and desktop private IPC persist project write opt-in with revision conflicts and no automatic replay',
+  { timeout: 15000 },
+  async (t) => {
+    const f = fixture(t),
+      seeded = await f.seedVerifiedProject();
+    const initial = await f.cli({ action: 'read' });
+    assert.equal(initial.code, 0, initial.stderr);
+    assert.equal(initial.json().projects[0].binding.writesEnabled, false);
+    const enabled = await f.cli({
+      action: 'project-writes',
+      localProjectId: f.projectId,
+      expectedRevision: seeded.revision,
+      enabled: true,
+    });
+    assert.equal(enabled.code, 0, enabled.stderr);
+    assert.equal(enabled.json().projects[0].binding.writesEnabled, true);
+    assert.equal(enabled.stdout.includes('synthetic_opt_in_token'), false);
+    const host = f.desktop();
+    await host.wait((message) => message.type === 'local-ready');
+    const read = await host.request({ action: 'read' });
+    assert.equal(read.state.projects[0].binding.writesEnabled, true);
+    const disabled = await host.request({
+      action: 'project-writes',
+      localProjectId: f.projectId,
+      expectedRevision: read.state.revision,
+      enabled: false,
+    });
+    assert.equal(disabled.ok, true);
+    assert.equal(disabled.state.projects[0].binding.writesEnabled, false);
+    const stale = await host.request({
+      action: 'project-writes',
+      localProjectId: f.projectId,
+      expectedRevision: read.state.revision,
+      enabled: true,
+    });
+    assert.equal(stale.ok, false);
+    const invalid = await host.request({
+      action: 'project-writes',
+      localProjectId: f.projectId,
+      expectedRevision: disabled.state.revision,
+      enabled: 'true',
+    });
+    assert.equal(invalid.ok, false);
+    assert.equal(JSON.stringify(host.messages).includes('synthetic_opt_in_token'), false);
+    host.child.kill('SIGTERM');
+    await host.closed;
+    const restarted = await f.cli({ action: 'read' });
+    assert.equal(restarted.json().revision, disabled.state.revision);
+    assert.equal(restarted.json().projects[0].binding.writesEnabled, false);
+    assert.equal(statSync(f.githubFile).mode & 0o777, 0o600);
+  },
+);
 
 test(
   'actual host CLI manages private GitHub tokens without echo and rejects oversized stdin or concurrent host ownership',

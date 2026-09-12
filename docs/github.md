@@ -2,7 +2,7 @@
 
 Moor 可以读取执行电脑明确登记的 GitHub.com 仓库、分支、Issue、PR、会话评论和指定提交的 CI 状态，并将仓库、分支及 Issue/PR 关联到 Moor 会话。关联只修改 Moor 的本机记录，不会创建评论、推送提交、合并 PR 或启动 Agent。
 
-这是 M4.3 的实现范围。配置、读取和关联边界已实现，四项仓库检查与 612 项自动测试通过，并完成合成浏览器检查。尚未使用真实 GitHub 账号或 API 验收，也不表示后续外部写入已完成。
+本页介绍 M4.3 的配置、读取与会话关联；该阶段四项仓库检查与 612 项自动测试通过，并完成合成浏览器检查。M4.4 的评论、PR 操作、本地提交与推送另见[审阅与代码发布](github-writes.md)，外部写入默认关闭。真实 GitHub 账号和设备体验尚未验收，各批最新检查状态见[设备验收](validation.md)。
 
 ## 在执行电脑配置
 
@@ -12,18 +12,22 @@ Moor 可以读取执行电脑明确登记的 GitHub.com 仓库、分支、Issue�
 4. 选择本地项目、凭据并明确填写 `owner/repo`，保存并验证仓库。主机先保存未验证配置，再查询所选仓库；验证成功后固定其数字仓库 ID，远端才可读取。仓库同名重建或身份改变时，需要操作者重新确认绑定。
 5. 删除凭据时同时移除使用它的项目配置；也可单独解除某项目的 GitHub 配置。配置变化会使访问页面清除已有 GitHub 内容，用户手动重新读取。
 
+需要发布评论、操作 PR 或推送代码时，验证仓库后再在执行电脑明确开启该项目的外部写入，并为 token 配置相应权限。只读配置不会自动开启写入；重新绑定项目仓库也会恢复为关闭状态。本地提交不需要 GitHub 配置，具体流程见[写入设置](github-writes.md#开启外部写入)。
+
 建议使用限定所需仓库的 fine-grained personal access token，并按使用的视图授予只读权限：Contents、Issues、Pull requests、Checks 和 Commit statuses。组织审批和仓库权限仍由 GitHub 管理；Moor 不会提高权限或自动寻找其他 token。权限选择见 GitHub 的[个人访问令牌说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)及[细粒度权限表](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens)。
 
 配置只在执行电脑的本机设置或本机 CLI 中管理。手机和其他电脑可以使用已验证的项目绑定，但没有读取、替换或删除主机凭据的远程接口。每个本地项目当前只配置一个仓库。同一个逻辑项目在两台电脑上的配置分别保存，不从 Git remote、浏览器登录或 Agent 凭据推断授权。
 
 ## 数据保存范围
 
-| 位置                        | 保存内容                                                                                |
-| --------------------------- | --------------------------------------------------------------------------------------- |
-| 执行电脑的 `github-v1.json` | token、凭据备注、验证状态、明确的项目仓库配置及主机身份；文件权限为 `0600`              |
-| 执行电脑的 Moor SQLite      | 会话关联的仓库/分支/Issue 或 PR 标识、版本与操作去重凭据；不保存 GitHub 正文            |
-| 中转                        | 转发读取结果和本地关联请求，不持久保存 token、GitHub 正文或关联正文副本                 |
-| 浏览器                      | GitHub 读取结果仅在内存中；待确认关联只保存完整目标、版本和原操作，不保存 provider 正文 |
+| 位置                        | 保存内容                                                                                 |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| 执行电脑的 `github-v1.json` | token、凭据备注、验证状态、明确的项目仓库配置及主机身份；文件权限为 `0600`               |
+| 执行电脑的 Moor SQLite      | 会话关联标识、版本、操作去重凭据与最小写入结果；本地提交计划还保存代码字节及索引前后内容 |
+| 中转                        | 转发读取、关联与明确写入请求，不持久保存 token、GitHub 正文或写入回执                    |
+| 浏览器                      | 读取结果仅在内存中；另保存关联请求、手工写入草稿、原待确认请求与最小回执                 |
+
+仅浏览不会持久保存 GitHub 正文。主动加入聊天草稿，或主动复制 PR 正文创建编辑草稿后，复制的文本适用对应草稿的保存规则；详见[写入数据范围](github-writes.md#数据和读取上限)。
 
 token 使用本机私有 JSON 保存，当前没有 Keychain 或额外文件加密。文件默认在主机数据库旁，可用 `--github-config-dir` 指定其他私有目录；该目录必须位于**所有已登记项目之外**。保存、读取配置和使用凭据时都会检查这一边界；后来把其父目录登记为项目也会使配置不可用。
 
@@ -70,14 +74,15 @@ print(json.dumps({
 
 其余动作通过同一 stdin JSON 接口提交：
 
-| `action`            | 除 `action` 外的字段                                                  | 行为                              |
-| ------------------- | --------------------------------------------------------------------- | --------------------------------- |
-| `credential-save`   | `expectedRevision`、`label`、`token`；替换时加 `credentialId`         | 新增或替换 token，不自动检查连接  |
-| `credential-check`  | `expectedRevision`、`credentialId`                                    | 检查账号连接                      |
-| `credential-remove` | `expectedRevision`、`credentialId`                                    | 删除凭据及使用它的项目配置        |
-| `project-bind`      | `expectedRevision`、`localProjectId`、`credentialId`、`owner`、`repo` | 明确配置项目仓库并验证数字仓库 ID |
-| `project-check`     | `expectedRevision`、`localProjectId`                                  | 重新验证原仓库身份                |
-| `project-unbind`    | `expectedRevision`、`localProjectId`                                  | 移除项目的 GitHub 配置            |
+| `action`            | 除 `action` 外的字段                                                  | 行为                                   |
+| ------------------- | --------------------------------------------------------------------- | -------------------------------------- |
+| `credential-save`   | `expectedRevision`、`label`、`token`；替换时加 `credentialId`         | 新增或替换 token，不自动检查连接       |
+| `credential-check`  | `expectedRevision`、`credentialId`                                    | 检查账号连接                           |
+| `credential-remove` | `expectedRevision`、`credentialId`                                    | 删除凭据及使用它的项目配置             |
+| `project-bind`      | `expectedRevision`、`localProjectId`、`credentialId`、`owner`、`repo` | 明确配置项目仓库并验证数字仓库 ID      |
+| `project-check`     | `expectedRevision`、`localProjectId`                                  | 重新验证原仓库身份                     |
+| `project-unbind`    | `expectedRevision`、`localProjectId`                                  | 移除项目的 GitHub 配置                 |
+| `project-writes`    | `expectedRevision`、`localProjectId`、`enabled`                       | 在执行电脑明确开启或关闭该项目外部写入 |
 
 stdin 最多 16 KiB，一次接收一个完整 JSON。成功退出码为 `0`，输入或配置失败为 `1`，主机锁被占用或不可用为 `3`；输出和错误不回显 token。`--github-config-stdin` 不能与 `--desktop` 或 `--pair` 同用。后续正常启动主机时，仍需使用同一个 `--github-config-dir`；该参数不改变主机数据库或项目目录。
 
@@ -101,19 +106,19 @@ PR 的 **head** 是待合入内容，**base** 是目标仓库及分支。来自 
 
 CI 读取绑定刚刚确认的 PR head SHA。主机读取该 SHA 的 check runs 与 commit statuses，并再次核对 PR；期间 head 或 base 改变则拒绝过期结果，要求重新读取。没有记录、只读到部分页或结果缺失都不能解释为全部 CI 通过。GitHub 将这两类数据分别作为[检查运行](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)和[提交状态](https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference)提供。
 
-| 边界       | 当前范围                                                                                                      |
-| ---------- | ------------------------------------------------------------------------------------------------------------- |
-| 服务       | 仅固定的 `api.github.com` HTTPS GET；API 版本 `2026-03-10`，不跟随重定向，不支持 GitHub Enterprise 自定义域名 |
-| 分页       | 每页最多 20 项，手动查看，最多第 100 页；当前页及后续内容不完整时有明确提示                                   |
-| 正文       | 每条正文最多 16,000 个字符，超限标明截断                                                                      |
-| HTTP       | 每次 HTTP 响应最多 2 MiB、10 秒，整个主机读取最多 25 秒；超限、权限或限流错误由用户手动重试                   |
-| Issue 列表 | GitHub 返回的 PR 项会被过滤，过滤页标为部分结果；空页不能证明整个仓库没有 Issue                               |
-| 评论       | Issue/PR 会话评论；不含代码行 review 评论同步                                                                 |
-| CI         | 精确提交的 check runs 和 commit statuses；不含工作流日志、重跑或取消                                          |
+| 边界       | 当前范围                                                                                                              |
+| ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| 服务       | 读取仅使用固定的 `api.github.com` HTTPS GET；API 版本 `2026-03-10`，不跟随重定向，不支持 GitHub Enterprise 自定义域名 |
+| 分页       | 每页最多 20 项，手动查看，最多第 100 页；当前页及后续内容不完整时有明确提示                                           |
+| 正文       | 每条正文最多 16,000 个字符，超限标明截断                                                                              |
+| HTTP       | 每次 HTTP 响应最多 2 MiB、10 秒，整个主机读取最多 25 秒；超限、权限或限流错误由用户手动重试                           |
+| Issue 列表 | GitHub 返回的 PR 项会被过滤，过滤页标为部分结果；空页不能证明整个仓库没有 Issue                                       |
+| 评论       | 本页包含 Issue/PR 会话评论；PR 文件与行评论同步见[审阅面板](github-writes.md#审阅草稿与最终确认)                      |
+| CI         | 精确提交的 check runs 和 commit statuses；不含工作流日志、重跑或取消                                                  |
 
 检查运行使用 `filter=latest`，只显示各检查的最新结果。GitHub 的该接口最多覆盖同一提交最近的 1,000 个 check suites；分页结束也不代表读取了所有历史检查，详见[检查运行接口限制](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)。
 
-本批不提供提交、推送、发布评论、创建/编辑/合并 PR 或其他 GitHub 写入。M4.4 外部写入、后续网页预览、M5 配置与协作以及按需求启动的 M6 继续按 [roadmap](roadmap.md)推进。
+提交、推送、发布评论和创建/编辑/合并 PR 通过独立的[审阅与代码发布](github-writes.md)流程进行，不由关联动作触发。后续网页预览、M5 配置与协作以及按需求启动的 M6 继续按 [roadmap](roadmap.md)推进。
 
 ## 验收与实现入口
 

@@ -9,6 +9,7 @@ import {
   rmSync,
   symlinkSync,
   renameSync,
+  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -192,6 +193,169 @@ test('private GitHub credentials persist without renderer token echo, and projec
   assert.deepEqual(f.config.read().credentials, []);
   assert.equal(f.config.read().projects[0]!.binding, undefined);
   assert.equal(readFileSync(f.file, 'utf8').includes('synthetic_token'), false);
+});
+
+test('project external writes default off for old and new config, require verification, and use local revision CAS', async (t) => {
+  const f = fixture(t),
+    credentialId = (await f.save()).credentials[0]!.id;
+  f.deny = true;
+  await f.bind(credentialId);
+  assert.equal(f.config.read().projects[0]!.binding!.writesEnabled, false);
+  const uncheckedRevision = f.config.read().revision;
+  await assert.rejects(
+    f.config.handle({
+      action: 'project-writes',
+      localProjectId: 'project',
+      expectedRevision: uncheckedRevision,
+      enabled: true,
+    }),
+    /先验证/,
+  );
+  assert.equal(f.config.read().revision, uncheckedRevision);
+  f.deny = false;
+  await f.config.handle({
+    action: 'project-check',
+    localProjectId: 'project',
+    expectedRevision: uncheckedRevision,
+  });
+  const oldFile = JSON.parse(readFileSync(f.file, 'utf8'));
+  delete oldFile.projects[0].writesEnabled;
+  delete oldFile.projects[0].writeGeneration;
+  writeFileSync(f.file, JSON.stringify(oldFile));
+  f.restart();
+  const readOnly = f.config.getProject('project');
+  assert.equal(
+    readOnly.writesEnabled,
+    false,
+    'legacy mappings never implicitly enable external writes',
+  );
+  const originalRevision = f.config.read().revision,
+    calls = f.calls.length,
+    notices = f.notices;
+  const enabled = await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: originalRevision,
+    enabled: true,
+  });
+  assert.equal(enabled.projects[0]!.binding!.writesEnabled, true);
+  assert.equal(enabled.revision, originalRevision + 1);
+  assert.equal(
+    f.calls.length,
+    calls,
+    'local opt-in never sends a GitHub write or verification request',
+  );
+  assert.equal(f.notices, notices + 1);
+  assert.equal(f.config.isCurrent(readOnly), false);
+  const writable = f.config.getProject('project');
+  assert.notEqual(writable.version, readOnly.version);
+  await assert.rejects(
+    f.config.handle({
+      action: 'project-writes',
+      localProjectId: 'project',
+      expectedRevision: originalRevision,
+      enabled: false,
+    }),
+    /已变化/,
+  );
+  assert.equal(f.config.getProject('project').writesEnabled, true);
+  await assert.rejects(
+    f.config.handle({
+      action: 'project-writes',
+      localProjectId: 'project',
+      expectedRevision: enabled.revision,
+      enabled: 'true',
+    }),
+    /无效/,
+  );
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: enabled.revision,
+    enabled: false,
+  });
+  assert.equal(f.config.isCurrent(writable), false);
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: true,
+  });
+  assert.equal(
+    f.config.isCurrent(writable),
+    false,
+    're-enabling cannot revive a lease captured before disabling',
+  );
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: false,
+  });
+  f.restart();
+  assert.equal(f.config.getProject('project').writesEnabled, false);
+  assert.equal(JSON.stringify(f.config.read()).includes('synthetic_token'), false);
+});
+
+test('disabling external writes invalidates pending checks and explicit repository rebind resets opt-in', async (t) => {
+  const f = fixture(t),
+    credentialId = (await f.save()).credentials[0]!.id;
+  await f.bind(credentialId);
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: true,
+  });
+  const waiting = gate();
+  f.waitUser = waiting;
+  const checking = f.config.handle({
+      action: 'credential-check',
+      credentialId,
+      expectedRevision: f.config.read().revision,
+    }),
+    stale = assert.rejects(checking, /已变化/);
+  await f.calledUser.promise;
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: false,
+  });
+  waiting.release();
+  await stale;
+  assert.equal(f.config.getProject('project').writesEnabled, false);
+  f.waitUser = undefined;
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: true,
+  });
+  await f.save('synthetic_replaced_token', credentialId);
+  assert.throws(() => f.config.getProject('project'), /尚未验证/);
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: false,
+  });
+  assert.equal(
+    f.config.read().projects[0]!.binding!.writesEnabled,
+    false,
+    'turning off never requires renewed repository access',
+  );
+  await f.bind(credentialId);
+  await f.config.handle({
+    action: 'project-writes',
+    localProjectId: 'project',
+    expectedRevision: f.config.read().revision,
+    enabled: true,
+  });
+  f.repositoryId = 43;
+  await f.bind(credentialId);
+  assert.equal(f.config.getProject('project').repositoryId, 43);
+  assert.equal(f.config.getProject('project').writesEnabled, false);
 });
 
 test('late account verification cannot revive a replaced token or overwrite a newer config revision', async (t) => {

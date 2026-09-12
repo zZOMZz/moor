@@ -69,6 +69,7 @@ export type GithubPanelProps = {
   onRetry(): void;
   onAbandon(): void;
   onAdd(): void;
+  onWrite?(): void;
 };
 export function GithubPanel(p: GithubPanelProps) {
   const [branch, setBranch] = useState(''),
@@ -103,6 +104,11 @@ export function GithubPanel(p: GithubPanelProps) {
             查看执行电脑授权仓库的 Issue、PR 和 CI。绑定保存在 Moor
             主机，不会推送代码、发表评论或发送指令。
           </Dialog.Description>
+          {p.onWrite && (
+            <button disabled={busy} onClick={p.onWrite}>
+              审查、评论与发布
+            </button>
+          )}
           {p.reason && <p role="status">{p.reason}</p>}
           {controller?.loadError && <p role="alert">{controller.loadError}</p>}
           {controller?.error && <p role="alert">{controller.error}</p>}

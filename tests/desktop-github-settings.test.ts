@@ -71,6 +71,7 @@ const state = {
         repo: 'repo',
         repositoryId: 42,
         current: true,
+        writesEnabled: true,
         status: { state: 'connected' },
         token: 'synthetic_saved_secret',
       },
@@ -99,6 +100,7 @@ test('desktop GitHub control binds replies to the current child and settings fra
   const result = await request;
   assert.equal(JSON.stringify(result).includes('synthetic_saved_secret'), false);
   assert.equal(result.projects[0]!.binding!.repositoryId, 42);
+  assert.equal(result.projects[0]!.binding!.writesEnabled, true);
   assert.equal(f.timers.size, 0);
   const switched = f.bridge.request({ action: 'read' }, () => f.current),
     switchedRejection = assert.rejects(switched, /窗口已变化/);
@@ -167,6 +169,19 @@ test('desktop GitHub control binds replies to the current child and settings fra
   assert.throws(
     () => f.bridge.request({ action: 'read', token: 'should-not-be-sent' }, () => true),
     /请求无效/,
+  );
+  assert.throws(
+    () =>
+      f.bridge.request(
+        {
+          action: 'project-writes',
+          localProjectId: 'project',
+          expectedRevision: 1,
+          enabled: 'true',
+        },
+        () => true,
+      ),
+    /字段无效/,
   );
   const closed = f.bridge.request({ action: 'read' }, () => true),
     closedRejection = assert.rejects(closed, /已退出/);
@@ -265,6 +280,7 @@ test('the actual desktop settings UI and preload add, replace, verify and remove
   const click = (id: string) => (element(id).onclick as any)(new dom.window.MouseEvent('click'));
   assert.equal(f.sent.length, 0, 'loading the settings window never checks credentials');
   await click('github-refresh');
+  assert.equal(element('github-project-writes').disabled, true);
   element('github-label').value = 'Synthetic account';
   element('github-token').value = 'synthetic_ui_token_1';
   const saving = click('github-credential-save');
@@ -280,7 +296,20 @@ test('the actual desktop settings UI and preload add, replace, verify and remove
   element('github-repo').value = 'synthetic-repo';
   await click('github-project-bind');
   assert.equal(config.getProject('project').repositoryId, 42);
+  assert.equal(config.getProject('project').writesEnabled, false);
   assert.match(element('github-project-status').textContent!, /42/);
+  assert.equal(element('github-project-writes').disabled, false);
+  assert.match(element('github-project-writes').textContent!, /启用/);
+  const beforeOptInRequests = network;
+  await click('github-project-writes');
+  assert.equal(config.getProject('project').writesEnabled, true);
+  assert.equal(f.sent.at(-1).action.action, 'project-writes');
+  assert.equal(f.sent.at(-1).action.localProjectId, 'project');
+  assert.equal(f.sent.at(-1).action.enabled, true);
+  assert.match(element('github-project-writes').textContent!, /停用/);
+  await click('github-project-writes');
+  assert.equal(config.getProject('project').writesEnabled, false);
+  assert.equal(network, beforeOptInRequests);
   element('github-token').value = 'synthetic_ui_token_2';
   await click('github-credential-save');
   assert.equal(element('github-token').value, '');

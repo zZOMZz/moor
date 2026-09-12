@@ -5,6 +5,7 @@ import type { AttachmentAction, AttachmentReceipt } from '../attachment-protocol
 import type { GitAction, GitActionReceipt } from '../git-protocol';
 import type { SessionFork, ForkReceipt } from '../fork-protocol';
 import type { GithubAction, GithubReceipt } from '../github-protocol';
+import type { GithubWriteAction } from '../github-write-protocol';
 import type {
   QuestionAnswer,
   QuestionReceipt,
@@ -19,7 +20,8 @@ export type JournalOperation =
   | SteerRequest
   | GitAction
   | SessionFork
-  | GithubAction;
+  | GithubAction
+  | GithubWriteAction;
 export class Journal {
   db: DatabaseSync;
   constructor(file: string) {

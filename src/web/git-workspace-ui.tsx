@@ -14,6 +14,7 @@ export type GitWorkspacePanelProps = {
   onDetach?(): void;
   onRetry(): void;
   onNewDraft(): void;
+  onWrite?(): void;
 };
 export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
   const [baseline, setBaseline] = useState(''),
@@ -49,6 +50,11 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
           <Dialog.Description>
             查看当前会话的工作目录与 Git 状态。创建和清理目录都需要手动操作，不会自动运行 Agent。
           </Dialog.Description>
+          {p.onWrite && (
+            <button disabled={blocked} onClick={p.onWrite}>
+              提交与推送
+            </button>
+          )}
           {p.reason && <p role="status">{p.reason}</p>}
           {controller?.loadError && <p role="alert">{controller.loadError}</p>}
           {controller?.error && <p role="alert">{controller.error}</p>}

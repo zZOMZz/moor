@@ -68,6 +68,9 @@ export const githubConfigActionSchema = z.discriminatedUnion('action', [
     .strict(),
   edit.extend({ action: z.literal('project-unbind'), localProjectId: id }).strict(),
   edit.extend({ action: z.literal('project-check'), localProjectId: id }).strict(),
+  edit
+    .extend({ action: z.literal('project-writes'), localProjectId: id, enabled: z.boolean() })
+    .strict(),
 ]);
 export type GitHubConfigAction = z.infer<typeof githubConfigActionSchema>;
 const identitySchema = z
@@ -95,6 +98,8 @@ const bindingSchema = z
     rootIdentity: z.string(),
     repositoryId: z.number().int().positive().safe().optional(),
     status: statusSchema,
+    writesEnabled: z.boolean().default(false),
+    writeGeneration: revision.default(0),
   })
   .strict();
 const configSchema = z
@@ -197,6 +202,7 @@ export type GitHubProjectConfig = {
   credentialId: string;
   repositoryId: number;
   version: string;
+  writesEnabled?: boolean;
 };
 export class GitHubConfig {
   private readonly file: string;
@@ -332,6 +338,7 @@ export class GitHubConfig {
                   repositoryId: binding.repositoryId,
                   status: current ? binding.status : { state: 'unavailable' as const },
                   current,
+                  writesEnabled: binding.writesEnabled,
                 },
               }
             : {}),
@@ -359,6 +366,7 @@ export class GitHubConfig {
       token: credential.token,
       credentialId: credential.id,
       repositoryId: binding.repositoryId,
+      writesEnabled: binding.writesEnabled,
       version: hash([
         config.identity,
         binding.localProjectId,
@@ -368,6 +376,8 @@ export class GitHubConfig {
         binding.rootIdentity,
         credential.id,
         credential.generation,
+        binding.writesEnabled,
+        binding.writeGeneration,
       ]),
     };
   }
@@ -416,6 +426,21 @@ export class GitHubConfig {
       this.project(action.localProjectId);
       config.projects = config.projects.filter((p) => p.localProjectId !== action.localProjectId);
       this.commit(config, action.expectedRevision);
+    } else if (action.action === 'project-writes') {
+      const project = this.project(action.localProjectId);
+      const binding = config.projects.find((p) => p.localProjectId === project.id);
+      assert(binding, 404, '项目 GitHub 登记不存在');
+      if (action.enabled)
+        assert(
+          binding.status.state === 'connected' &&
+            binding.repositoryId &&
+            binding.rootIdentity === rootIdentity(project.rootPath),
+          409,
+          '启用外部写入前请先验证项目仓库',
+        );
+      binding.writesEnabled = action.enabled;
+      binding.writeGeneration = config.revision + 1;
+      this.commit(config, action.expectedRevision);
     } else if (action.action === 'credential-check') {
       const credential = config.credentials.find((c) => c.id === action.credentialId);
       assert(credential, 404, 'GitHub 凭据不存在');
@@ -462,6 +487,8 @@ export class GitHubConfig {
           repo: action.repo,
           rootIdentity: rootIdentity(project.rootPath),
           status: { state: 'unchecked' },
+          writesEnabled: false,
+          writeGeneration: config.revision + 1,
         });
         config = this.commit(config, action.expectedRevision);
       }

@@ -2982,3 +2982,81 @@ dialog pre {
     width: 100%;
   }
 }
+
+.github-write-panel {
+  width: min(940px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.github-write-panel section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.github-write-panel button {
+  white-space: normal;
+  margin: 4px;
+}
+.github-write-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.github-write-panel label:has(input[type='checkbox']) {
+  flex-direction: row;
+  align-items: flex-start;
+}
+.github-write-panel input:not([type='checkbox']),
+.github-write-panel textarea,
+.github-write-panel select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px;
+}
+.github-write-panel textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+.github-write-panel code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.github-write-diff {
+  overflow: auto;
+  font-size: 12px;
+}
+.github-write-diff > div {
+  display: grid;
+  grid-template-columns: 44px 44px minmax(0, 1fr);
+}
+.github-write-diff pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 4px;
+}
+.github-write-diff .diff-add {
+  background: color-mix(in srgb, #3fa862 14%, transparent);
+}
+.github-write-diff .diff-remove {
+  background: color-mix(in srgb, #ce5555 14%, transparent);
+}
+.github-write-file {
+  margin-top: 10px;
+}
+.github-write-confirm {
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+.github-write-panel [role='alert'] {
+  color: var(--danger);
+}
+@media (max-width: 480px) {
+  .github-write-panel {
+    padding: 16px;
+  }
+}

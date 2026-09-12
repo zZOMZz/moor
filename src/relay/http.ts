@@ -78,6 +78,15 @@ import {
   githubActionSchema,
   githubReceiptSchema,
 } from '../github-protocol';
+import {
+  GITHUB_WRITE_FEATURE,
+  githubWriteReadSchema,
+  githubWriteReadResultSchema,
+  githubWriteActionSchema,
+  githubWriteInspectSchema,
+  githubWriteAbandonSchema,
+  githubWriteReceiptSchema,
+} from '../github-write-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -254,6 +263,7 @@ export function createApp(
           'git-state',
           'fork-options',
           'github-read',
+          'github-write-read',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -337,7 +347,8 @@ export function createApp(
   });
   const server = createServer(async (req, res) => {
     let scopedActionRequest = false,
-      scopedActionDispatched = false;
+      scopedActionDispatched = false,
+      scopedRecoveryRequest = false;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader(
@@ -349,9 +360,12 @@ export function createApp(
         path = url.pathname;
       scopedActionRequest =
         req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:(git|fork|github)\/action|github\/abandon)$/.test(
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:(git|fork|github|github-write)\/action|github\/abandon)$/.test(
           path,
         );
+      scopedRecoveryRequest =
+        req.method === 'POST' &&
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/github-write\/(inspect|abandon)$/.test(path);
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
@@ -542,6 +556,159 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'github-write' &&
+            ['read', 'action', 'inspect', 'abandon'].includes(parts[6] ?? '') &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            const kind = parts[6]!,
+              value = await body(req, kind === 'read' ? 3 * 1024 * 1024 : 256 * 1024);
+            const readInput = kind === 'read' ? githubWriteReadSchema.parse(value) : undefined;
+            const inspected =
+              kind === 'inspect' ? githubWriteInspectSchema.parse(value) : undefined;
+            const abandoned =
+              kind === 'abandon' ? githubWriteAbandonSchema.parse(value) : undefined;
+            const actionInput =
+              kind === 'action'
+                ? githubWriteActionSchema.parse(value)
+                : (inspected?.request ?? abandoned?.request);
+            const input = readInput ?? actionInput!;
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              'GitHub 写入请求与项目副本不匹配',
+            );
+            assert(runtime, 409, '执行电脑暂时不可用');
+            assert(
+              runtime.features?.includes(GITHUB_WRITE_FEATURE),
+              409,
+              '请先升级执行电脑上的 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const r = store.catalog.replica(owner!, workspaceId, replica.id);
+              const w = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                r.host.device_id === host.device_id &&
+                  r.host.runtime_id === input.workspaceId &&
+                  r.local_id === input.localProjectId &&
+                  r.project_id === replica.project_id &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  w?.userId === runtime.userId &&
+                  w?.machineId === runtime.machineId &&
+                  w.features?.includes(GITHUB_WRITE_FEATURE) &&
+                  w.projects.some((p) => p.id === input.localProjectId),
+                409,
+                'GitHub 写入请求的执行范围已变化，请重新读取',
+              );
+            };
+            current();
+            scopedActionDispatched = kind === 'action';
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                'github-write-' + kind,
+                host.runtime_id,
+                readInput ?? inspected ?? abandoned ?? actionInput,
+                replica.local_id,
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            current();
+            if (failed) throw failed.error;
+            if (readInput) {
+              const parsed = githubWriteReadResultSchema.safeParse(raw);
+              assert(parsed.success, 502, '执行电脑返回的 GitHub 写入预览不可验证');
+              const result = parsed.data;
+              assert(
+                Buffer.byteLength(JSON.stringify(result)) <= 3 * 1024 * 1024,
+                502,
+                'GitHub 写入预览超过限制',
+              );
+              assert(
+                result.workspaceId === input.workspaceId &&
+                  result.localProjectId === input.localProjectId &&
+                  result.sessionId === input.sessionId &&
+                  result.view === readInput.view,
+                502,
+                'GitHub 写入预览范围不匹配',
+              );
+              if ('repositoryId' in readInput)
+                assert(
+                  'repository' in result &&
+                    result.repository?.id === readInput.repositoryId &&
+                    result.configVersion === readInput.configVersion,
+                  502,
+                  'GitHub 仓库或授权版本不匹配',
+                );
+              if ('page' in readInput)
+                assert(
+                  'result' in result && result.result.page === readInput.page,
+                  502,
+                  'GitHub 写入分页不匹配',
+                );
+              if (readInput.view === 'files' || readInput.view === 'review-comments')
+                assert(
+                  'number' in result &&
+                    result.number === readInput.number &&
+                    result.headSha === readInput.headSha &&
+                    result.baseSha === readInput.baseSha,
+                  502,
+                  'GitHub 审阅预览不属于当前 PR 提交',
+                );
+              if (readInput.view === 'push-preview')
+                assert(
+                  result.view === 'push-preview' &&
+                    result.branch === readInput.branch &&
+                    result.headOid === readInput.headOid,
+                  502,
+                  'GitHub 推送预览不属于所选本地分支',
+                );
+              if (readInput.view === 'commit-preview')
+                assert(
+                  result.view === 'commit-preview' &&
+                    result.files.length === readInput.paths.length &&
+                    new Set(result.files.map((file) => file.path)).size === result.files.length &&
+                    result.files.every((file) => readInput.paths.includes(file.path)),
+                  502,
+                  'Git 提交预览包含未选择的文件',
+                );
+              return json(res, 200, result);
+            }
+            const parsed = githubWriteReceiptSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行电脑返回的 GitHub 写入回执不可验证');
+            const result = parsed.data;
+            assert(
+              Buffer.byteLength(JSON.stringify(result)) <= 16 * 1024,
+              502,
+              'GitHub 写入回执超过限制',
+            );
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId &&
+                result.operationId === actionInput!.operationId &&
+                result.action === actionInput!.action &&
+                result.requestVersion ===
+                  'sha256:' +
+                    createHash('sha256').update(JSON.stringify(actionInput!)).digest('hex'),
+              502,
+              'GitHub 写入回执不属于原操作',
+            );
+            if ('number' in actionInput! && result.result?.number !== undefined)
+              assert(result.result.number === actionInput.number, 502, 'GitHub 写入回执编号不匹配');
+            if (actionInput!.action === 'push' && result.result?.sha !== undefined)
+              assert(result.result.sha === actionInput!.headOid, 502, 'GitHub 推送回执提交不匹配');
+            return json(res, 200, result);
+          }
           if (
             parts[5] === 'github' &&
             ['read', 'action', 'abandon'].includes(parts[6] ?? '') &&
@@ -1487,8 +1654,9 @@ export function createApp(
                 ? '请求格式无效'
                 : '服务暂时不可用',
           rejected:
-            (scopedActionRequest && !scopedActionDispatched) ||
-            (e instanceof AppError && e.rejected),
+            !scopedRecoveryRequest &&
+            ((scopedActionRequest && !scopedActionDispatched) ||
+              (e instanceof AppError && e.rejected)),
         });
       else res.end();
     }

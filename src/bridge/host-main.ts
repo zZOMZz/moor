@@ -24,6 +24,12 @@ import { NotificationDispatcher, relayNotificationChannel } from './notification
 import { gitStateReadSchema, gitActionSchema } from '../git-protocol';
 import { forkOptionsReadSchema, sessionForkSchema } from '../fork-protocol';
 import { githubReadSchema, githubActionSchema } from '../github-protocol';
+import {
+  githubWriteReadSchema,
+  githubWriteActionSchema,
+  githubWriteInspectSchema,
+  githubWriteAbandonSchema,
+} from '../github-write-protocol';
 import { GitHubConfig } from '../runtime/github-config';
 const { values } = parseArgs({
   options: {
@@ -311,7 +317,23 @@ function connect(target: Target) {
             result = await workspace.refreshAgentOptions(m.params.agentId, m.localProjectId);
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
-          else if (m.method === 'github-read') {
+          else if (m.method === 'github-write-read') {
+            const input = githubWriteReadSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readGithubWrite(input, m.localProjectId);
+          } else if (m.method === 'github-write-action') {
+            const input = githubWriteActionSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.githubWriteAction(input, m.localProjectId);
+          } else if (m.method === 'github-write-inspect') {
+            const input = githubWriteInspectSchema.parse(m.params);
+            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.inspectGithubWrite(input, m.localProjectId);
+          } else if (m.method === 'github-write-abandon') {
+            const input = githubWriteAbandonSchema.parse(m.params);
+            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.abandonGithubWrite(input, m.localProjectId);
+          } else if (m.method === 'github-read') {
             const input = githubReadSchema.parse(m.params);
             assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.readGithub(input, m.localProjectId);
@@ -402,6 +424,7 @@ function connect(target: Target) {
                   'fork-action',
                   'github-action',
                   'github-abandon',
+                  'github-write-action',
                 ].includes(m.method) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
