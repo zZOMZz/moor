@@ -58,6 +58,16 @@ const browserBuild = await build({
   outdir: 'dist/public',
 });
 await cp('src/web/public', 'dist/public', { recursive: true });
+const notificationWorkerBuild = await build({
+  entryPoints: ['src/web/notification-worker.ts'],
+  outfile: 'dist/public/notification-worker.js',
+  platform: 'browser',
+  format: 'iife',
+  target: ['safari17', 'chrome120'],
+  bundle: true,
+  minify: true,
+  metafile: true,
+});
 const scripts = Object.keys(browserBuild.metafile.outputs).filter((file) =>
   /\.(js|wasm)$/.test(file),
 );
@@ -91,7 +101,10 @@ for (const file of ['index.html', 'startup.js'])
   );
 await writeFile(
   'dist/public/THIRD_PARTY_NOTICES.txt',
-  await browserNotices(browserBuild.metafile.inputs),
+  await browserNotices({
+    ...browserBuild.metafile.inputs,
+    ...notificationWorkerBuild.metafile.inputs,
+  }),
 );
 const utilities = await postcss([tailwind()]).process(
   await readFile('src/web/utilities.css', 'utf8'),
@@ -105,6 +118,7 @@ await writeFile(
 const { createHash } = await import('node:crypto');
 const assets = [
   ...scripts.map((file) => file.replace('dist/public/', '')),
+  'notification-worker.js',
   'startup.js',
   'index.html',
   'style.css',

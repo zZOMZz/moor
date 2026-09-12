@@ -10,6 +10,8 @@ import { ProjectHistoryStore } from './project-history';
 import { projectDiffReferenceSchema } from '../project-content-protocol';
 import { SessionSearchIndex, type SearchScope } from './session-search';
 import { expireSessionInteractions } from '../bridge/session-interactions';
+import { HostNotifications } from './host-notifications';
+import { notificationScopeSchema } from '../notification-protocol';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -30,6 +32,7 @@ export class RuntimeStore {
   journal: Journal;
   projectHistory: ProjectHistoryStore;
   sessionSearch: SessionSearchIndex;
+  notifications: HostNotifications;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
@@ -69,6 +72,7 @@ export class RuntimeStore {
       PRAGMA user_version=1;
     `);
     this.sessionSearch = new SessionSearchIndex(this.journal.db);
+    this.notifications = new HostNotifications(this.journal.db, options);
     const identity = this.load('identity');
     this.workspace = identity
       ? JSON.parse(Buffer.from(identity).toString())
@@ -89,6 +93,7 @@ export class RuntimeStore {
       this.attention = new AttentionStore(this, options.now);
       this.transaction(() => {
         this.attention.invalidatePermissions();
+        this.notifications.resolveAllApprovals();
         for (const row of this.journal.db.prepare('SELECT id FROM session').all()) {
           const id = String(row.id),
             doc = this.doc(id),
@@ -103,38 +108,56 @@ export class RuntimeStore {
             localProjectId: typeof localProjectId === 'string' ? localProjectId : '',
             sessionId: id,
           };
-          view.setState((state) => {
-            for (const turn of state.history) {
-              if (turn.role === 'assistant')
-                interactionsChanged = expireSessionInteractions(turn) || interactionsChanged;
-              if (turn.role === 'assistant' && !turn.finished) {
-                turn.finished = true;
-                turn.status = 'failed';
-                if (projectDiffReferenceSchema.safeParse(turn.fileDiff).success) {
-                  const reference = this.projectHistory.interrupt(scope, turn.id);
-                  if (reference) turn.fileDiff = reference;
-                }
-                (turn.items ??= []).push({
-                  type: 'system_notice',
-                  name: 'chat_failed',
-                  message: '执行主机已重启；回合已中断，请手动发送新的指令。',
-                });
-                if (typeof localProjectId === 'string')
-                  this.attention.recordOutcome({
-                    sessionId: id,
-                    assistantTurnId: turn.id,
-                    userTurnId: turn.userTurnId ?? '',
-                    localProjectId,
-                    cause: 'host_restarted',
-                    summary: this.attention.summary(turn.items),
+          const registered = this.machine.get(['localProject', scope.localProjectId]) as
+            | { id?: string }
+            | undefined;
+          const canNotify =
+            registered?.id === scope.localProjectId &&
+            this.meta.get(['m', 'session-' + id, 'id']) === id &&
+            this.meta.get(['m', 'session-' + id, 'userId']) === scope.userId &&
+            this.meta.get(['m', 'session-' + id, 'machineId']) === scope.machineId &&
+            this.attachmentScopeMatches(scope);
+          try {
+            view.setState((state) => {
+              for (const turn of state.history) {
+                if (turn.role === 'assistant')
+                  interactionsChanged = expireSessionInteractions(turn) || interactionsChanged;
+                if (turn.role === 'assistant' && !turn.finished) {
+                  turn.finished = true;
+                  turn.status = 'failed';
+                  if (projectDiffReferenceSchema.safeParse(turn.fileDiff).success) {
+                    const reference = this.projectHistory.interrupt(scope, turn.id);
+                    if (reference) turn.fileDiff = reference;
+                  }
+                  (turn.items ??= []).push({
+                    type: 'system_notice',
+                    name: 'chat_failed',
+                    message: '执行主机已重启；回合已中断，请手动发送新的指令。',
                   });
-                interrupted = true;
+                  if (typeof localProjectId === 'string')
+                    this.attention.recordOutcome({
+                      sessionId: id,
+                      assistantTurnId: turn.id,
+                      userTurnId: turn.userTurnId ?? '',
+                      localProjectId,
+                      cause: 'host_restarted',
+                      summary: this.attention.summary(turn.items),
+                    });
+                  interrupted = true;
+                  const notificationScope = notificationScopeSchema.safeParse({
+                    ...scope,
+                    turnId: turn.id,
+                  });
+                  if (canNotify && notificationScope.success)
+                    this.notifications.record(notificationScope.data, 'failed');
+                }
               }
-            }
-          });
-          view.dispose();
-          if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-          if (interrupted || interactionsChanged) this.persist(id, doc);
+            });
+            if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+            if (interrupted || interactionsChanged) this.persist(id, doc);
+          } finally {
+            view.dispose();
+          }
         }
       });
     } catch (error) {

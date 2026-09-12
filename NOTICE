@@ -12,3 +12,7 @@ Moor's interface uses React, Base UI and Lucide, with Tailwind CSS utilities.
 Their original license and copyright notices, including bundled transitive
 dependencies, are collected in public/THIRD_PARTY_NOTICES.txt during builds.
 Moor's component wrappers and visual design are maintained in this repository.
+
+Web Push encryption and VAPID request generation use web-push 3.6.7 (MPL-2.0).
+Upstream source: https://github.com/web-push-libs/web-push/tree/v3.6.7
+Its copyright and license notices are retained in the bundled notices and licenses.

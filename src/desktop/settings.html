@@ -18,6 +18,23 @@
       <div id="health-cards" aria-live="polite"></div>
       <small>重新连接不会重启仍在运行的 Agent，也不会重放之前的指令。</small>
     </section>
+    <section class="health-panel" aria-label="本机通知">
+      <strong>本机任务通知</strong>
+      <p>通知默认关闭。启用后，关闭窗口仍可接收本机任务通知；退出 Moor 后停止。</p>
+      <fieldset id="notification-kinds">
+        <legend>提醒内容</legend>
+        <label class="check"><input type="checkbox" id="notify-completed" />任务完成</label>
+        <label class="check"><input type="checkbox" id="notify-failed" />任务失败</label>
+        <label class="check"><input type="checkbox" id="notify-approvals" />等待审批</label>
+      </fieldset>
+      <div class="actions">
+        <button type="button" id="notifications-enable">启用本机通知</button>
+        <button type="button" id="notifications-disable" hidden>关闭本机通知</button>
+        <button type="button" id="notifications-test" disabled>测试系统通知</button>
+      </div>
+      <p id="notifications-status" role="status"></p>
+      <small>通知仅提醒查看状态，不提供批准操作。系统权限、专注设置与应用签名会影响显示。</small>
+    </section>
     <form id="settings">
       <label>电脑名称<input id="name" maxlength="100" required /></label
       ><label

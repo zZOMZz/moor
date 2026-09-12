@@ -8,6 +8,7 @@ import { Select } from '@base-ui/react/select';
 import { Popover } from '@base-ui/react/popover';
 import {
   ArrowUp,
+  Bell,
   Archive,
   ArchiveRestore,
   Bot,
@@ -261,6 +262,7 @@ export function Shell({
       <Content name="#project-content-view" />
       <Content name="#session-search-view" />
       <Content name="#interaction-view" />
+      <Content name="#notification-view" />
     </div>
   );
 }
@@ -453,6 +455,7 @@ type NavigationProps = {
   onManage: () => void;
   onPair: () => void;
   onLogout: () => void;
+  onNotifications?: () => void;
 };
 const sessionKey = (session: SessionSummary) =>
   JSON.stringify([session.replicaId ?? '', session.id]);
@@ -859,6 +862,12 @@ export function Navigation(p: NavigationProps) {
               <Settings2 />
               管理工作区
             </Menu.Item>
+            {p.onNotifications && (
+              <Menu.Item className="menu-item" onClick={p.onNotifications}>
+                <Bell />
+                通知设置
+              </Menu.Item>
+            )}
             {!p.localOnly && (
               <Menu.Item className="menu-item" onClick={p.onLogout}>
                 <LogOut />

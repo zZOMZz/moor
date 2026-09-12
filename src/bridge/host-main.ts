@@ -36,6 +36,7 @@ import {
 } from '../project-content-protocol';
 import { questionAnswerSchema, steerRequestSchema } from '../interaction-protocol';
 import { sessionSearchRequestSchema } from '../search-protocol';
+import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -117,6 +118,9 @@ process.once('exit', releaseRuntime);
 const runtime = new RuntimeStore(runtimeFile);
 const workspaces = new Map<string, HostWorkspace>(),
   journal = runtime.journal;
+const notifications = new NotificationDispatcher({ hosts: () => workspaces.values() });
+const nativeGeneration = {},
+  nativeChannel = 'native:' + runtime.workspace.machineId;
 type Target = {
   config: Config;
   local: boolean;
@@ -190,9 +194,10 @@ async function refresh() {
   try {
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
-      host = new HostWorkspace(runtime, acpDriver, hello, (sessionId) =>
-        broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId }),
-      );
+      host = new HostWorkspace(runtime, acpDriver, hello, (sessionId) => {
+        broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId });
+        notifications.drain();
+      });
       host.setAttentionListener(attentionChanged);
       workspaces.set(runtime.workspace.id, host);
     }
@@ -220,6 +225,7 @@ async function refresh() {
     host.updateCatalogue();
     ready = true;
     hello();
+    notifications.drain();
   } catch {
     ready = false;
     broadcast({ type: 'unavailable' });
@@ -290,7 +296,7 @@ async function connect(target: Target) {
   });
   ws.on('message', async (raw) => {
     try {
-      if (target.socket !== ws || target.revoked) return;
+      if (stopped || target.socket !== ws || target.revoked) return;
       const m = JSON.parse(raw.toString());
       if (m.type === 'ready') {
         target.attentionReady = false;
@@ -306,6 +312,35 @@ async function connect(target: Target) {
               Array.isArray(m.attentionFeatures) && m.attentionFeatures.includes(feature),
           );
         }
+      }
+      if (m.type === 'ready' && ready && !target.local) {
+        notifications.connect(
+          relayNotificationChannel(target.config.id, target.config.server),
+          ws,
+          'relay',
+          (event) => {
+            if (
+              stopped ||
+              target.revoked ||
+              target.socket !== ws ||
+              ws.readyState !== WebSocket.OPEN ||
+              ws.bufferedAmount > 1024 * 1024
+            )
+              return false;
+            ws.send(JSON.stringify({ type: 'notification', event }), () => {});
+            return true;
+          },
+        );
+        notifications.drain();
+      }
+      if (m.type === 'notification-ack' && !target.local) {
+        notifications.acknowledge(
+          relayNotificationChannel(target.config.id, target.config.server),
+          ws,
+          m,
+        );
+        notifications.drain();
+        return;
       }
       if (m.type === 'watch' || m.type === 'unwatch') {
         if (m.type === 'watch' && m.localProjectId)
@@ -505,6 +540,11 @@ async function connect(target: Target) {
     }
   });
   ws.on('close', (code) => {
+    if (!target.local)
+      notifications.disconnect(
+        relayNotificationChannel(target.config.id, target.config.server),
+        ws,
+      );
     if (target.socket !== ws) return;
     target.attentionReady = false;
     const watches = [...target.watches.values()];
@@ -564,6 +604,16 @@ if (values.desktop) {
     revoked: false,
   });
   process.send!({ type: 'local-ready', origin, secret });
+  notifications.connect(nativeChannel, nativeGeneration, 'native', (event) => {
+    if (stopped || !process.connected || !process.send) return false;
+    process.send({ type: 'notification', event }, undefined, undefined, () => {});
+    return true;
+  });
+  process.on('message', (message) => {
+    notifications.acknowledge(nativeChannel, nativeGeneration, message);
+    notifications.drain();
+  });
+  process.on('disconnect', () => notifications.disconnect(nativeChannel, nativeGeneration));
 }
 if (
   config &&
@@ -573,11 +623,14 @@ if (
   targets.push({ config, local: false, watches: new Map(), revoked: false });
 reportHealth();
 const refreshTimer = setInterval(() => void refresh(), 10000);
+const notificationTimer = setInterval(() => notifications.drain(), 2000);
 for (const target of targets) void connect(target);
 async function stop() {
   if (stopped) return;
   stopped = true;
   clearInterval(refreshTimer);
+  clearInterval(notificationTimer);
+  notifications.close();
   for (const target of targets) {
     clearTimeout(target.retry);
     target.socket?.terminate();
