@@ -15,6 +15,7 @@ const {
 const { createAttachmentSaver } = require('./attachment-save.cjs');
 const { DesktopGitHubSettings } = require('./github-settings.cjs');
 const { DesktopPreviewSettings } = require('./preview-settings.cjs');
+const { DesktopSkillsSettings } = require('./skills-settings.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -52,6 +53,7 @@ let localReadyGeneration = 0,
   localReadyChain = Promise.resolve();
 const githubSettings = new DesktopGitHubSettings({ bridge: () => bridge });
 const previewSettings = new DesktopPreviewSettings({ bridge: () => bridge });
+const skillsSettings = new DesktopSkillsSettings({ bridge: () => bridge });
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -225,6 +227,7 @@ function showSettings() {
     settingsWindow = null;
     githubSettings.invalidate();
     previewSettings.invalidate();
+    skillsSettings.invalidate();
   });
   void settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
 }
@@ -292,6 +295,7 @@ function startBridge() {
     if (bridge !== child) return;
     if (githubSettings.receive(child, message)) return;
     if (previewSettings.receive(child, message)) return;
+    if (skillsSettings.receive(child, message)) return;
     if (message?.type === 'notification') {
       let status = 'failed';
       try {
@@ -374,6 +378,7 @@ function startBridge() {
   child.on('exit', () => {
     githubSettings.disconnect(child);
     previewSettings.disconnect(child);
+    skillsSettings.disconnect(child);
     if (bridge !== child) return;
     bridge = null;
     localOrigin = '';
@@ -406,6 +411,7 @@ async function restartBridgeOnce() {
   const old = bridge;
   if (old) githubSettings.disconnect(old);
   if (old) previewSettings.disconnect(old);
+  if (old) skillsSettings.disconnect(old);
   bridge = null;
   if (old && old.exitCode === null && old.signalCode === null) {
     await new Promise((resolve) => {
@@ -459,6 +465,19 @@ ipcMain.handle('personal:preview-config', (event, value) => {
     }
   });
 });
+ipcMain.handle('personal:skills-config', (event, value) => {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  return skillsSettings.request(value, () => {
+    try {
+      trusted({ sender, senderFrame: frame });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+});
 ipcMain.handle('personal:recover', async (event) => {
   trusted(event);
   if (recovering) return health();
@@ -476,6 +495,17 @@ ipcMain.handle('personal:project', async (event) => {
     properties: ['openDirectory'],
     title: '选择本机项目',
   });
+  return result.canceled ? null : result.filePaths[0];
+});
+ipcMain.handle('personal:skills-directory', async (event) => {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  const result = await dialog.showOpenDialog(settingsWindow, {
+    properties: ['openDirectory'],
+    title: '选择 Skills 根目录',
+  });
+  trusted({ sender, senderFrame: frame });
   return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.handle('personal:save', async (event, value) => {
@@ -595,6 +625,7 @@ else {
     nativeNotifications.close();
     githubSettings.close();
     previewSettings.close();
+    skillsSettings.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

@@ -160,6 +160,51 @@
         >
       </fieldset>
     </details>
+    <details id="skills-settings" class="health-panel">
+      <summary>全局 Skills 目录</summary>
+      <p>
+        在这台执行电脑上登记自己的 Skills 根目录，最多 20 个。保存登记不会扫描目录、读取 Skill
+        内容或启动 Agent。
+      </p>
+      <button type="button" id="skills-refresh">刷新 Skills 设置</button>
+      <p id="skills-status" role="status">展开后读取本机登记。</p>
+      <fieldset id="skills-controls" disabled>
+        <legend>登记 Skills 根目录</legend>
+        <label
+          >已登记目录<select id="skills-source">
+            <option value="">新增目录</option>
+          </select></label
+        >
+        <label
+          >目录名称<input
+            id="skills-label"
+            maxlength="100"
+            autocomplete="off"
+            placeholder="我的 Skills"
+        /></label>
+        <label
+          >本机绝对路径<input
+            id="skills-root"
+            maxlength="4096"
+            autocomplete="off"
+            placeholder="选择 Skills 根目录"
+        /></label>
+        <button type="button" id="skills-choose">选择目录</button>
+        <label class="check"
+          ><input id="skills-enabled" type="checkbox" />允许自己的设备从此目录选择 Skills</label
+        >
+        <p id="skills-source-status"></p>
+        <div class="actions">
+          <button type="button" id="skills-save">登记目录</button>
+          <button type="button" id="skills-toggle" disabled>启用目录</button>
+          <button type="button" id="skills-remove" disabled>删除登记</button>
+        </div>
+        <small
+          >目录路径仅保存在本机配置中。请选择实际目录，不能包含或位于 Moor
+          私有数据目录。目录被替换后需重新登记；停用或删除只撤销访问，不删除 Skill 文件。</small
+        >
+      </fieldset>
+    </details>
     <form id="settings">
       <label>电脑名称<input id="name" maxlength="100" required /></label
       ><label

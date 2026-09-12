@@ -105,6 +105,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     }
   }
   let dialogResult: any = { canceled: true };
+  let directoryGate: ReturnType<typeof gate> | undefined;
   const electron = {
     app: application,
     BrowserWindow: Window,
@@ -112,7 +113,15 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     ipcMain: { handle: (name: string, fn: any) => handlers.set(name, fn) },
     dialog: {
       showSaveDialog: async () => dialogResult,
-      showOpenDialog: async () => ({ canceled: true }),
+      showOpenDialog: async () => {
+        const waiting = directoryGate;
+        directoryGate = undefined;
+        if (waiting) {
+          waiting.enter();
+          await waiting.waiting;
+        }
+        return { canceled: !waiting, filePaths: [directory] };
+      },
       showMessageBox: async () => ({ response: 0 }),
     },
     Menu: { setApplicationMenu() {}, buildFromTemplate: (value: any) => value },
@@ -230,10 +239,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       senderFrame: { ...settingsWindow.webContents.mainFrame },
     },
   ])
-    assert.throws(
-      () => invoke('personal:preview-config', { action: 'read' }, event),
-      /无效的本机设置请求/,
-    );
+    for (const method of ['personal:preview-config', 'personal:skills-config'])
+      assert.throws(() => invoke(method, { action: 'read' }, event), /无效的本机设置请求/);
   const previewReading = invoke('personal:preview-config', { action: 'read' });
   const previewRequest = children[0].sent.at(-1);
   assert.equal(previewRequest.type, 'preview-config');
@@ -246,6 +253,29 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   const previewState = await previewReading;
   assert.equal(previewState.revision, 0);
   assert.equal('privateMetadata' in previewState, false);
+  const skillsReading = invoke('personal:skills-config', { action: 'read' });
+  const skillsRequest = children[0].sent.at(-1);
+  assert.equal(skillsRequest.type, 'skills-config');
+  children[0].emit('message', {
+    type: 'skills-config-result',
+    requestId: skillsRequest.requestId,
+    ok: true,
+    state: { revision: 0, sources: [], privateMetadata: 'not-public' },
+  });
+  const skillsState = await skillsReading;
+  assert.equal(skillsState.revision, 0);
+  assert.equal('privateMetadata' in skillsState, false);
+  assert.equal(await invoke('personal:skills-directory'), null);
+  const choosingGate = gate();
+  directoryGate = choosingGate;
+  const choosing = invoke('personal:skills-directory');
+  const staleChoice = assert.rejects(choosing, /无效的本机设置请求/);
+  await choosingGate.entered;
+  const originalSettingsFrame = settingsWindow.webContents.mainFrame;
+  settingsWindow.webContents.mainFrame = { ...originalSettingsFrame };
+  choosingGate.release();
+  await staleChoice;
+  settingsWindow.webContents.mainFrame = originalSettingsFrame;
   assert.throws(
     () =>
       invoke(
@@ -469,8 +499,11 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   await clearing.entered;
   const previewBeforeRestart = invoke('personal:preview-config', { action: 'read' });
   const previewRestartRejection = assert.rejects(previewBeforeRestart, /已重启/);
+  const skillsBeforeRestart = invoke('personal:skills-config', { action: 'read' });
+  const skillsRestartRejection = assert.rejects(skillsBeforeRestart, /已重启/);
   await invoke('personal:recover');
   await previewRestartRejection;
+  await skillsRestartRejection;
   const replacementReady = emitMessage(children.at(-1), {
     type: 'local-ready',
     origin: 'http://127.0.0.1:4532',

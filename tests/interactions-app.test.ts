@@ -395,7 +395,7 @@ test('actual app keeps question delivery exactly once, rejects late answers, pre
           builder.onLoad({ filter: /.*/, namespace: 'synthetic' }, () => ({
             loader: 'js',
             contents:
-              'export const read=async key=>structuredClone(globalThis.__moorAppCache.get(key)); export const write=async(key,value)=>{globalThis.__moorAppCache.set(key,structuredClone(value));}; export const compareWrite=async(key,expectedRevision,value,current)=>{if(!current())throw new Error("stale Git target");const cache=globalThis.__moorAppCache;if((cache.get(key)?.cacheRevision??0)!==expectedRevision)return false;cache.set(key,structuredClone(value));return true;}; export const clear=async()=>globalThis.__moorAppCache.clear();',
+              'export const read=async key=>structuredClone(globalThis.__moorAppCache.get(key)); export const write=async(key,value)=>{globalThis.__moorAppCache.set(key,structuredClone(value));}; export const compareText=async(key,expected,value,current,signal)=>{if(signal?.aborted||!current())throw new Error("stale draft");const cache=globalThis.__moorAppCache;if(cache.get(key)!==expected)return false;cache.set(key,value);return true;}; export const compareWrite=async(key,expectedRevision,value,current)=>{if(!current())throw new Error("stale Git target");const cache=globalThis.__moorAppCache;if((cache.get(key)?.cacheRevision??0)!==expectedRevision)return false;cache.set(key,structuredClone(value));return true;}; export const clear=async()=>globalThis.__moorAppCache.clear();',
           }));
           builder.onLoad({ filter: /\/src\/web\/app\.ts$/ }, async (args) => ({
             loader: 'ts',

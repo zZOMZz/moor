@@ -1,5 +1,8 @@
 import { GITHUB_WRITE_FEATURE } from '../github-write-protocol';
 import { PREVIEW_FEATURE } from '../preview-protocol';
+import { SKILLS_FEATURE } from '../skills-protocol';
+import { SkillsController, skillsKey, agentCommandText } from './skills';
+import { showSkillsControl, showSkillsPanel } from './skills-ui';
 import {
   ProjectPreviewController,
   PreviewAnnotationStore,
@@ -549,6 +552,7 @@ async function fillAgentCommand(command: string) {
     !snapshot.information.commands?.some((item) => item.name === command) ||
     sending ||
     pending ||
+    skillsDraftAppending ||
     attachmentWorking ||
     sessionPersistenceError
   )
@@ -556,8 +560,8 @@ async function fillAgentCommand(command: string) {
   const field = $<HTMLTextAreaElement>('#prompt'),
     generation = sessionGeneration,
     draftKey = key('draft');
-  const text = '/' + command.replace(/^\/+/, '') + (field.value ? ' ' + field.value : ' ');
-  await cache.write(draftKey, text);
+  const text = agentCommandText(command) + (field.value ? ' ' + field.value : ' ');
+  await persistComposerDraft(draftKey, text);
   if (generation !== sessionGeneration) return;
   field.value = text;
   resizeComposer();
@@ -614,7 +618,12 @@ function renderInteractions() {
     const generation = sessionGeneration;
     showInformationPanel({
       state: snapshot.information,
-      canFill: !sending && !pending && !attachmentWorking && !sessionPersistenceError,
+      canFill:
+        !sending &&
+        !pending &&
+        !skillsDraftAppending &&
+        !attachmentWorking &&
+        !sessionPersistenceError,
       onFill: (command) => {
         if (generation !== sessionGeneration) throw new Error('命令所属会话已改变。');
         return fillAgentCommand(command);
@@ -680,6 +689,177 @@ function renderInteractions() {
     onSubmit: (prompt) => {
       assertInteractionController(controller);
       return submitSteer(prompt, panel.expectedTurnId);
+    },
+  });
+}
+
+let composerDraftWrites: Promise<void> = Promise.resolve();
+function persistComposerDraft(draftKey: string, value: string) {
+  const actor = attentionActor;
+  const marker = actor ? { scope: draftActorScope(actor), text: value } : undefined;
+  const writing = composerDraftWrites
+    .catch(() => {})
+    .then(async () => {
+      await cache.write(draftKey, value);
+      await cache.write(draftKey + '/actor', marker);
+    });
+  composerDraftWrites = writing;
+  return writing;
+}
+let skills: SkillsController | undefined;
+let skillsGeneration = 0,
+  skillsPanelOpen = false,
+  skillsDraftAppending = false,
+  skillsDraftSaving = false;
+let skillsDraftAbort: AbortController | undefined;
+function currentSkills() {
+  const target = gitTarget();
+  return target && skills && skillsKey(target) === skillsKey(skills.target) ? skills : undefined;
+}
+function skillsReason() {
+  return !authenticated ||
+    !connected ||
+    !selected?.online ||
+    !replica?.available ||
+    navigator.onLine === false
+    ? '执行电脑离线；Skills 正文不保留离线副本，请连接后手动读取。'
+    : !workspace?.features?.includes(SKILLS_FEATURE)
+      ? '此执行电脑尚不支持 Skills 读取，请升级 Moor。'
+      : '';
+}
+function resetSkills() {
+  skillsGeneration++;
+  skillsDraftAbort?.abort();
+  skillsDraftAbort = undefined;
+  skills?.invalidate();
+  skills = undefined;
+  skillsPanelOpen = false;
+  skillsDraftAppending = skillsDraftSaving = false;
+  showSkillsPanel();
+}
+function invalidateSkills(message: string) {
+  skillsDraftAbort?.abort();
+  skills?.invalidate(message);
+}
+async function openSkills() {
+  resetSkills();
+  const target = gitTarget();
+  if (!target) return;
+  skillsPanelOpen = true;
+  const generation = skillsGeneration;
+  const controller: SkillsController = new SkillsController(target, {
+    request: api,
+    current: () =>
+      generation === skillsGeneration && currentSkills() === controller && skillsPanelOpen,
+    online: () => !skillsReason(),
+    changed: renderSkills,
+  });
+  skills = controller;
+  renderSkills();
+  if (!skillsReason()) await controller.refresh();
+}
+function canAppendSkill() {
+  return (
+    !attentionVisible &&
+    !sending &&
+    !pending &&
+    !attachmentWorking &&
+    !sessionPersistenceError &&
+    !githubDraftAppending
+  );
+}
+async function appendSkillDraft() {
+  const controller = currentSkills(),
+    generation = skillsGeneration;
+  if (!controller || skillsDraftAppending || !canAppendSkill() || skillsReason()) return;
+  const abort = new AbortController();
+  skillsDraftAbort = abort;
+  const current = () =>
+    !abort.signal.aborted &&
+    generation === skillsGeneration &&
+    controller === currentSkills() &&
+    skillsPanelOpen &&
+    !skillsReason() &&
+    canAppendSkill();
+  skillsDraftAppending = true;
+  updateComposer();
+  try {
+    const instruction = await controller.instructionForDraft();
+    if (!current()) return;
+    // Keep typing available during the host read. Only the short durable append
+    // window locks the composer; synthetic/input events still abort the transaction.
+    skillsDraftSaving = true;
+    updateComposer();
+    for (;;) {
+      const writing = composerDraftWrites;
+      await writing;
+      if (!current()) return;
+      if (writing === composerDraftWrites) break;
+    }
+    const field = $<HTMLTextAreaElement>('#prompt'),
+      original = field.value,
+      draftKey = key('draft'),
+      expected = await cache.read<string>(draftKey);
+    if (!current() || field.value !== original) return;
+    if ((expected ?? '') !== original)
+      throw new Error('草稿已在其他页面改变；当前输入已保留，请先确认草稿后重新加入。');
+    const text = original + (original ? '\n\n' : '') + instruction;
+    const actor = attentionActor;
+    const marker = actor ? { scope: draftActorScope(actor), text } : undefined;
+    if (text.length > 100000) throw new Error('加入后的指令超过 100000 字符，请缩短草稿后重试。');
+    const saved = await cache.compareText(
+      draftKey,
+      expected,
+      text,
+      () => current() && field.value === original,
+      abort.signal,
+    );
+    if (!current() || field.value !== original) return;
+    if (!saved) throw new Error('草稿已在其他页面改变；当前输入已保留，未加入 Skill 说明。');
+    const writing = cache.write(draftKey + '/actor', marker);
+    composerDraftWrites = writing;
+    await writing;
+    if (!current() || field.value !== original) return;
+    field.value = text;
+    resizeComposer();
+  } finally {
+    if (generation === skillsGeneration) {
+      skillsDraftAbort = undefined;
+      skillsDraftAppending = skillsDraftSaving = false;
+      updateComposer();
+    }
+  }
+}
+function renderSkills() {
+  showSkillsControl(
+    attentionVisible ? undefined : { disabled: !gitTarget(), onOpen: () => run(openSkills) },
+  );
+  if (!skillsPanelOpen) return;
+  const controller = currentSkills(),
+    generation = skillsGeneration,
+    reason = skillsReason();
+  if (reason && (controller?.list || controller?.detail || controller?.busy)) {
+    invalidateSkills(reason);
+    return;
+  }
+  const operate = (work: (value: SkillsController) => Promise<void>) =>
+    run(async () => {
+      if (generation === skillsGeneration && controller === currentSkills() && controller)
+        await work(controller);
+    });
+  showSkillsPanel({
+    controller,
+    reason,
+    canAdd: canAppendSkill(),
+    adding: skillsDraftAppending,
+    onClose: () => {
+      resetSkills();
+      updateComposer();
+    },
+    onRefresh: () => operate((value) => value.refresh()),
+    onSelect: (id) => operate((value) => value.select(id)),
+    onAdd: () => {
+      if (generation === skillsGeneration && controller === currentSkills()) run(appendSkillDraft);
     },
   });
 }
@@ -1211,6 +1391,7 @@ function canAppendGithubDraft() {
     !attentionVisible &&
     !sending &&
     !pending &&
+    !skillsDraftAppending &&
     !attachmentWorking &&
     !githubDraftAppending &&
     !sessionPersistenceError
@@ -1592,6 +1773,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetSkills();
   resetProjectPreview();
   resetGithub();
   resetSessionFork();
@@ -1818,11 +2000,7 @@ function draftActorScope(actor: AttentionActor) {
   return JSON.stringify([location.origin, actorKey(actor)]);
 }
 async function saveComposerDraft(value: string) {
-  const draftKey = key('draft'),
-    actor = attentionActor;
-  const marker = actor ? { scope: draftActorScope(actor), text: value } : undefined;
-  await cache.write(draftKey, value);
-  await cache.write(draftKey + '/actor', marker);
+  await persistComposerDraft(key('draft'), value);
 }
 function assertAttentionRoute(route: AttentionRoute) {
   const target = activeWorkspace?.replicas.find((row) => row.id === route.replicaId);
@@ -1887,6 +2065,7 @@ function setAttentionVisible(visible: boolean) {
   const persistenceState = document.querySelector<HTMLElement>('#session-persistence-state');
   if (persistenceState) persistenceState.hidden = visible || !sessionPersistenceError;
   if (visible) {
+    resetSkills();
     projectPreviewPanelOpen = false;
     if (previewHeartbeat) clearTimeout(previewHeartbeat);
     previewHeartbeat = undefined;
@@ -2803,6 +2982,7 @@ function shell() {
   showShell({
     onSend: () => run(sendTurn),
     onDraft: (value) => {
+      if (skillsDraftSaving) skillsDraftAbort?.abort();
       void saveComposerDraft(value).catch(error);
     },
     onCancel: cancelTurn,
@@ -2821,6 +3001,7 @@ function pairComputer() {
   });
 }
 function logout() {
+  resetSkills();
   resetProjectPreview();
   resetGithub();
   resetSessionFork();
@@ -2901,6 +3082,7 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
+    invalidateSkills('执行电脑连接已关闭，请手动重新读取 Skills。');
     currentGithub()?.invalidate();
     currentGithubWrite()?.invalidate();
     void currentProjectPreview()?.dispose();
@@ -2917,6 +3099,13 @@ function connect() {
     if (events !== ws) return;
     try {
       const message = JSON.parse(event.data);
+      if (
+        message.type === 'changed' &&
+        message.room?.scope === 'skills' &&
+        message.deviceId === selected?.id &&
+        message.workspaceId === workspace?.id
+      )
+        invalidateSkills('执行电脑的 Skills 配置已变化，请手动重新读取。');
       if (
         message.type === 'changed' &&
         message.room?.scope === 'preview' &&
@@ -3114,6 +3303,7 @@ function renderNewSessionControls() {
 }
 function renderTarget() {
   renderProjectControls();
+  renderSkills();
   renderProjectPreview();
   renderGithubWrite();
   renderGithub();
@@ -4060,6 +4250,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderSkills();
   renderProjectPreview();
   renderGithubWrite();
   renderGithub();
@@ -4084,6 +4275,7 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    skillsDraftAppending ||
     !!currentPreviewAnnotations()?.busy ||
     (!!currentPreviewAnnotations()?.loadError && !pending) ||
     !!currentGithubWrite()?.blocksExecution ||
@@ -4119,7 +4311,7 @@ function updateComposer() {
   send.setAttribute('aria-label', sending ? '提交中' : pending ? '重试确认' : '发送指令');
   send.classList.toggle('pending', !!pending);
   $<HTMLTextAreaElement>('#prompt').readOnly =
-    sending || !!pending || attachmentWorking || githubDraftAppending;
+    sending || !!pending || attachmentWorking || githubDraftAppending || skillsDraftSaving;
   const state = document.querySelector('#draft-state');
   if (state)
     state.textContent = currentGithubWrite()?.blocksExecution
@@ -4217,7 +4409,7 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
       }
     }
     await cache.write(pendingKey, undefined);
-    if (m.kind === 'turn') await cache.write(draftKey, '');
+    if (m.kind === 'turn') await persistComposerDraft(draftKey, '');
     if (generation !== sessionGeneration) return;
     pending = undefined;
     pendingAnnotationDelivery = undefined;
@@ -4239,6 +4431,7 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
   }
 }
 async function sendTurn() {
+  if (skillsDraftAppending) throw new Error('请等待 Skill 说明保存到草稿。');
   if (currentGithubWrite()?.blocksExecution) throw new Error('请先核查原提交或推送操作。');
   if (githubBlocksComposer()) throw new Error('请先完成或确认 GitHub 上下文操作。');
   if (forkBlocksComposer()) throw new Error('请先在会话副本中确认原 Fork 操作。');
@@ -4286,6 +4479,7 @@ async function prepareTurnMutation(
   // Only the composer selects its attachment draft for this turn. Continuing an
   // attention item sends its reviewed text and preserves separate composer attachments and annotations.
   const generation = sessionGeneration;
+  if (skillsDraftAppending) throw new Error('请等待 Skill 说明保存到草稿。');
   const annotationStore = currentPreviewAnnotations();
   if (
     annotationStore &&
@@ -4463,5 +4657,6 @@ window.addEventListener('online', () => {
   }
 });
 window.addEventListener('offline', () => {
+  invalidateSkills('当前离线；Skills 正文已清除，连接后可手动重新读取。');
   void currentProjectPreview()?.dispose();
 });

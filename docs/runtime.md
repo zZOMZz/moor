@@ -49,21 +49,24 @@ flowchart TD
 
 ## 数据文件与版本
 
-| 内容         | 当前位置或名称                               | 用途                                             |
-| ------------ | -------------------------------------------- | ------------------------------------------------ |
-| 主机数据     | 默认在配对配置同目录的 `runtime-v1.sqlite`   | Moor 身份、会话、项目和操作凭据                  |
-| 主机锁       | 主机数据库路径追加 `.ownership.sqlite`       | 独占执行主机所有权                               |
-| GitHub 配置  | 默认在主机数据库同目录的 `github-v1.json`    | 本机 token、项目仓库及验证身份；必须位于项目之外 |
-| 预览配置     | 主机数据库同目录的 `preview-v1.json`         | 本机服务、执行目录与启用版本；项目外私有存储     |
-| 远程配对     | 默认 `bridge-v3.json`                        | 服务地址与设备凭据，属于私有数据                 |
-| 本机组织目录 | 配对配置路径追加 `.catalog.sqlite`           | 本机模式的账号与组织关系                         |
-| 浏览器存储   | 当前 origin 下的 `moor-runtime-v1` IndexedDB | 草稿、待确认请求与会话缓存                       |
+| 内容         | 当前位置或名称                               | 用途                                              |
+| ------------ | -------------------------------------------- | ------------------------------------------------- |
+| 主机数据     | 默认在配对配置同目录的 `runtime-v1.sqlite`   | Moor 身份、会话、项目和操作凭据                   |
+| 主机锁       | 主机数据库路径追加 `.ownership.sqlite`       | 独占执行主机所有权                                |
+| GitHub 配置  | 默认在主机数据库同目录的 `github-v1.json`    | 本机 token、项目仓库及验证身份；必须位于项目之外  |
+| 预览配置     | 主机数据库同目录的 `preview-v1.json`         | 本机服务、执行目录与启用版本；项目外私有存储      |
+| Skills 配置  | 主机数据库同目录的 `skills-v1.json`          | 本机全局 Skill 目录登记及启用版本；项目外私有存储 |
+| 远程配对     | 默认 `bridge-v3.json`                        | 服务地址与设备凭据，属于私有数据                  |
+| 本机组织目录 | 配对配置路径追加 `.catalog.sqlite`           | 本机模式的账号与组织关系                          |
+| 浏览器存储   | 当前 origin 下的 `moor-runtime-v1` IndexedDB | 草稿、待确认请求与会话缓存                        |
 
 命令行 `--runtime-data` 或环境变量 `MOOR_RUNTIME_DATA` 可以指定主机数据库，前者优先。桌面调试可用 `MOOR_DESKTOP_DATA_DIR` 选择隔离目录。主机数据与配对文件都不应进入仓库或程序包。
 
 GitHub 配置目录可单独用 `--github-config-dir` 指定，后续启动时需沿用同一目录。文件使用 `0600` 权限和原子替换，当前为本机私有 JSON，没有 Keychain 或额外文件加密。该目录必须在所有登记项目之外；项目文件接口也拒绝保留的配置文件名。桌面配置经私有 IPC 处理，CLI 需先停止主机，通过 stdin 提交，不能把 token 放进参数。具体步骤见[GitHub 本机配置](github.md)。
 
 网页预览的服务登记另存于 `preview-v1.json`，跟随主机数据库目录，权限为 `0600`。实际渲染与 Cookie 是临时的；数据库只保留操作指纹和最小回执，不持久保存画面或输入文字。主机重启不会恢复预览连接。显式保存的标注与截图属于访问端草稿，只有普通发送才进入会话历史。详见[预览范围与关闭](preview.md)。
+
+Skills 全局目录另存于同目录的 `skills-v1.json`；只读发现不启动 Agent，也不持久保存正文。明确加入指令后才进入普通草稿与发送流程。来源目录由本机操作者授权，登记名称可在远端显示，绝对目录保留在执行电脑。详见 [Skills 发现与引用](skills.md)。
 
 Moor 桥接协议当前为 v3，会话格式为 v1；ACP 使用锁定 SDK 的协议版本，两者独立。升级中转和客户端时需保持桥接协议一致，旧协议连接会被拒绝。
 
@@ -90,6 +93,7 @@ moor_bridge_config='/absolute/path/to/moor-host-data/bridge-v3.json'
 moor_settings_file='/absolute/path/to/moor-host-data/settings.json'
 moor_github_config='/absolute/path/to/private-github-data/github-v1.json'
 moor_preview_config='/absolute/path/to/moor-host-data/preview-v1.json'
+moor_skills_config='/absolute/path/to/moor-host-data/skills-v1.json'
 moor_backup_dir='/absolute/path/to/private-backups/moor-host-backup-unique'
 test -f "$moor_host_db" || exit 1
 mkdir "$moor_backup_dir" || exit 1
@@ -113,6 +117,9 @@ fi
 if test -f "$moor_preview_config"; then
   cp "$moor_preview_config" "$moor_backup_dir/preview-v1.json" || exit 1
 fi
+if test -f "$moor_skills_config"; then
+  cp "$moor_skills_config" "$moor_backup_dir/skills-v1.json" || exit 1
+fi
 ```
 
 本机未配对或纯 CLI 使用时，部分配置文件可能不存在。保留配对配置、组织目录、桌面设置和本机端口记录，可保留原服务关系、项目设置及本机页面 origin；这些文件可能含设备凭据，只保存在私有备份中。主机所有权锁是运行时互斥设施，无需备份或复制到目标目录。
@@ -134,7 +141,7 @@ moor_restore_dir='/absolute/path/to/moor-restored-host-unique'
 test -f "$moor_backup_dir/runtime-v1.sqlite" || exit 1
 mkdir "$moor_restore_dir" || exit 1
 cp "$moor_backup_dir/runtime-v1.sqlite" "$moor_restore_dir/runtime-v1.sqlite" || exit 1
-for moor_name in runtime-v1.sqlite-wal runtime-v1.sqlite-shm bridge-v3.json bridge-v3.json.catalog.sqlite bridge-v3.json.catalog.sqlite-wal bridge-v3.json.catalog.sqlite-shm bridge-v3.json.local-port settings.json github-v1.json preview-v1.json; do
+for moor_name in runtime-v1.sqlite-wal runtime-v1.sqlite-shm bridge-v3.json bridge-v3.json.catalog.sqlite bridge-v3.json.catalog.sqlite-wal bridge-v3.json.catalog.sqlite-shm bridge-v3.json.local-port settings.json github-v1.json preview-v1.json skills-v1.json; do
   if test -f "$moor_backup_dir/$moor_name"; then
     cp "$moor_backup_dir/$moor_name" "$moor_restore_dir/$moor_name" || exit 1
   fi
