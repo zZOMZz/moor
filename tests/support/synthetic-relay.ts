@@ -1,10 +1,17 @@
 import { syntheticCapabilities } from './agent-capabilities';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { Store } from '../../src/relay/accounts';
 import { createApp } from '../../src/relay/http';
 import { PROTOCOL, sessionActionSchema, type RuntimeWorkspace } from '../../src/protocol';
 import { Flock, LoroDoc, decode, delta, metas, mirror, putMeta } from '../../src/model';
+import {
+  CONTENT_VERSION,
+  FILE_CONTENT_FEATURE,
+  projectFileReadSchema,
+  type ProjectFileResult,
+} from '../../src/content-protocol';
 
 // In-memory integration fixture: never starts a runtime, reads a project, or contacts a model.
 // The real IPC delivery and mutation checks are exercised separately in host.test.ts.
@@ -44,12 +51,19 @@ export async function syntheticRelay(port = 0) {
           runConfig: syntheticCapabilities,
         },
       ],
-      features: ['session-actions'],
+      features: ['session-actions', FILE_CONTENT_FEATURE],
     };
     const meta = new Flock(),
       docs = new Map<string, LoroDoc>(),
       operations = new Set<string>(),
       sessionActions = new Map<string, { input: string; result: unknown }>();
+    const fileContents = new Map([
+      ['README.md', Buffer.from(`Synthetic file from host ${label}\n`)],
+    ]);
+    const fileResponse: {
+      transform?: (result: ProjectFileResult) => unknown;
+      beforeSend?: () => Promise<void>;
+    } = {};
     const sessionId = 'same-session-id';
     const doc = new LoroDoc(),
       view = mirror(doc, sessionId);
@@ -84,7 +98,7 @@ export async function syntheticRelay(port = 0) {
     });
     const messages: any[] = [];
     const ready = new Promise<void>((resolve) =>
-      socket.on('message', (raw) => {
+      socket.on('message', async (raw) => {
         const m = JSON.parse(raw.toString());
         messages.push(m);
         if (m.type === 'ready') resolve();
@@ -162,7 +176,39 @@ export async function syntheticRelay(port = 0) {
               sessionActions.set(action.operationId, { input: JSON.stringify(action), result });
             }
           }
+        } else if (m.method === 'file-content') {
+          const parsed = projectFileReadSchema.safeParse(m.params);
+          if (!parsed.success) error = { status: 400, message: '请求格式无效' };
+          else {
+            const input = parsed.data;
+            const bytes = fileContents.get(input.path);
+            if (
+              input.workspaceId !== runtime.id ||
+              !current ||
+              (current.project as any).localProjectId !== input.localProjectId ||
+              m.localProjectId !== input.localProjectId
+            )
+              error = { status: 404, message: '会话不属于该项目副本' };
+            else if (!bytes) error = { status: 404, message: '文件不可用' };
+            else {
+              const version = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+              const response: ProjectFileResult = {
+                contentVersion: CONTENT_VERSION,
+                workspaceId: runtime.id,
+                localProjectId: input.localProjectId,
+                sessionId: input.sessionId,
+                path: input.path,
+                confirmed: true,
+                content: { version, byteLength: bytes.byteLength, mediaType: 'text/plain' },
+                ...(input.knownVersion === version
+                  ? { status: 'not-modified' }
+                  : { status: 'content', encoding: 'base64', data: bytes.toString('base64') }),
+              };
+              result = fileResponse.transform ? fileResponse.transform(response) : response;
+            }
+          }
         } else if (m.method === 'cancel') result = { success: true };
+        if (m.method === 'file-content') await fileResponse.beforeSend?.();
         socket.send(JSON.stringify({ type: 'response', requestId: m.requestId, result, error }));
         if (m.method === 'mutate' || (m.method === 'session-action' && !error))
           socket.send(
@@ -184,7 +230,16 @@ export async function syntheticRelay(port = 0) {
       }),
     );
     await ready;
-    hosts.push({ device, runtime, socket, messages, operations, sessionActions });
+    hosts.push({
+      device,
+      runtime,
+      socket,
+      messages,
+      operations,
+      sessionActions,
+      fileContents,
+      fileResponse,
+    });
   }
   const api = async (path: string, body?: unknown) =>
     fetch(origin + path, {

@@ -27,6 +27,7 @@ import {
   type AttentionActor,
   type AttentionContext,
 } from '../attention';
+import { projectFileReadSchema } from '../content-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -181,13 +182,10 @@ async function refresh() {
   try {
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
-      host = new HostWorkspace(
-        runtime,
-        acpDriver,
-        hello,
-        (sessionId) => broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId }),
-        attentionChanged,
+      host = new HostWorkspace(runtime, acpDriver, hello, (sessionId) =>
+        broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId }),
       );
+      host.setAttentionListener(attentionChanged);
       workspaces.set(runtime.workspace.id, host);
     }
     if (!projectsRegistered) {
@@ -405,6 +403,10 @@ async function connect(target: Target) {
             const body = sessionActionSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.sessionAction(body, m.localProjectId);
+          } else if (m.method === 'file-content') {
+            const body = projectFileReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readProjectFile(body, m.localProjectId);
           } else if (m.method === 'cancel')
             result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');

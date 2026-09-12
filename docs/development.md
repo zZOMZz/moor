@@ -26,15 +26,16 @@ corepack pnpm exec prettier --write docs README.md deploy/README.md
 
 下面是阅读入口；具体语义以专题文档和行为测试共同说明，文件名不代替设计解释。
 
-| 要理解或修改的行为     | 主要入口                                                                                                                                | 对应测试                                                                                                    |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 会话结构与文档操作     | [session-schema](../src/session-schema.ts)、[model](../src/model.ts)                                                                    | [host](../tests/host.test.ts)、[runtime](../tests/runtime.test.ts)                                          |
-| 接受、去重、审批与取消 | [HostWorkspace](../src/bridge/host-workspace.ts)、[校验器](../src/bridge/validate-mutation.ts)、[RuntimeStore](../src/runtime/store.ts) | [host](../tests/host.test.ts)                                                                               |
-| 项目归组与跨主机路由   | [Catalog](../src/relay/catalog.ts)、[HTTP 入口](../src/relay/http.ts)                                                                   | [catalog](../tests/catalog.test.ts)、[relay](../tests/relay.test.ts)                                        |
-| Agent 接入与运行设置   | [AgentDriver](../src/runtime/agent.ts)、[ACP 实现](../src/runtime/acp.ts)、[运行选项](../src/run-config.ts)                             | [acp](../tests/acp.test.ts)、[runtime](../tests/runtime.test.ts)、[run-config](../tests/run-config.test.ts) |
-| 导航、缓存与输出阅读   | [Web 应用](../src/web/app.ts)、[缓存](../src/web/cache.ts)、[内容展示](../src/web/content.ts)                                           | [web](../tests/web.test.ts)、[ui](../tests/ui.test.ts)、[startup](../tests/startup.test.ts)                 |
-| 进程恢复与主机独占     | [恢复控制](../src/desktop/recovery.cjs)、[所有权锁](../src/runtime/lock.ts)                                                             | [recovery](../tests/recovery.test.ts)、[runtime-lock](../tests/runtime-lock.test.ts)                        |
-| 打包与中转发布         | [程序包](../scripts/relay-package.mjs)、[部署入口](../scripts/deploy-relay.mjs)                                                         | [package](../tests/package.test.ts)、[deploy](../tests/deploy.test.ts)                                      |
+| 要理解或修改的行为     | 主要入口                                                                                                                                | 对应测试                                                                                                                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 会话结构与文档操作     | [session-schema](../src/session-schema.ts)、[model](../src/model.ts)                                                                    | [host](../tests/host.test.ts)、[runtime](../tests/runtime.test.ts)                                                                                                                         |
+| 接受、去重、审批与取消 | [HostWorkspace](../src/bridge/host-workspace.ts)、[校验器](../src/bridge/validate-mutation.ts)、[RuntimeStore](../src/runtime/store.ts) | [host](../tests/host.test.ts)                                                                                                                                                              |
+| 项目归组与跨主机路由   | [Catalog](../src/relay/catalog.ts)、[HTTP 入口](../src/relay/http.ts)                                                                   | [catalog](../tests/catalog.test.ts)、[relay](../tests/relay.test.ts)                                                                                                                       |
+| Agent 接入与运行设置   | [AgentDriver](../src/runtime/agent.ts)、[ACP 实现](../src/runtime/acp.ts)、[运行选项](../src/run-config.ts)                             | [acp](../tests/acp.test.ts)、[runtime](../tests/runtime.test.ts)、[run-config](../tests/run-config.test.ts)                                                                                |
+| 导航、缓存与输出阅读   | [Web 应用](../src/web/app.ts)、[缓存](../src/web/cache.ts)、[内容展示](../src/web/content.ts)                                           | [web](../tests/web.test.ts)、[ui](../tests/ui.test.ts)、[startup](../tests/startup.test.ts)                                                                                                |
+| 文件范围与内容版本     | [内容协议](../src/content-protocol.ts)、[主机文件读取](../src/runtime/project-files.ts)、[文件缓存](../src/web/file-content.ts)         | [协议](../tests/content-protocol.test.ts)、[文件主机](../tests/project-files-host.test.ts)、[文件路由](../tests/file-content-relay.test.ts)、[文件缓存](../tests/file-content-web.test.ts) |
+| 进程恢复与主机独占     | [恢复控制](../src/desktop/recovery.cjs)、[所有权锁](../src/runtime/lock.ts)                                                             | [recovery](../tests/recovery.test.ts)、[runtime-lock](../tests/runtime-lock.test.ts)                                                                                                       |
+| 打包与中转发布         | [程序包](../scripts/relay-package.mjs)、[部署入口](../scripts/deploy-relay.mjs)                                                         | [package](../tests/package.test.ts)、[deploy](../tests/deploy.test.ts)                                                                                                                     |
 
 ## 用合成信号验证故障
 
@@ -57,6 +58,8 @@ corepack pnpm exec prettier --write docs README.md deploy/README.md
 会话整理测试覆盖主机确认、元数据版本竞争、响应丢失后的原编号重试和重启后去重；旧格式缺少版本或置顶字段时使用兼容默认值。归档不能绕过活动回合校验，已归档会话拒绝新 prompt，恢复不得调用 Agent。测试同时检查会话正文和原生会话映射没有被整理操作改变，并将关闭后的合成数据库复制到新目录，验证身份、元数据、去重凭据与原生会话 ID 保留。
 
 浏览器待确认请求先持久化再发送，刷新恢复只读取请求，手动重试沿用原操作内容和 operationId。产品工作区归属变化时，路由可以更新，但必须先核对账号、设备、执行工作区、本地项目和会话身份未变；合成测试验证其中任意身份改变都会被拒绝。导航使用 2,000 条合成会话验证首批渲染上限和当前选择保留，不据此推断真实手机性能。
+
+文件读取测试使用临时合成项目，覆盖路径穿越、符号链接与文件替换、大小限制和读取中增长；通过注入检查点产生竞争，不使用等待猜测文件状态。中转测试验证范围变更和权限失效时不返回内容，缓存测试验证摘要、离线版本隔离和晚到响应。协议能力及普通 Node 文件接口的隔离限制见[文件与内容协议](content.md)。
 
 ## 增加能力时先守住边界
 
