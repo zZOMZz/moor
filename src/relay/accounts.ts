@@ -17,6 +17,7 @@ export type Device = {
 export class Store {
   db: DatabaseSync;
   catalog: Catalog;
+  readonly authorityId: string;
   constructor(
     file: string,
     public now: () => number = Date.now,
@@ -27,7 +28,14 @@ export class Store {
       CREATE TABLE IF NOT EXISTS login(token TEXT PRIMARY KEY,owner TEXT,expires INTEGER);
       CREATE TABLE IF NOT EXISTS pair(code TEXT PRIMARY KEY,owner TEXT,expires INTEGER);
       CREATE TABLE IF NOT EXISTS device(id TEXT PRIMARY KEY,owner TEXT,name TEXT,token TEXT UNIQUE,revoked INTEGER DEFAULT 0,machine_id TEXT,catalog TEXT DEFAULT '[]');
+      CREATE TABLE IF NOT EXISTS service_identity(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
+    this.db
+      .prepare('INSERT OR IGNORE INTO service_identity VALUES(?,?)')
+      .run('authority', crypto.randomUUID());
+    this.authorityId = String(
+      this.db.prepare('SELECT value FROM service_identity WHERE key=?').get('authority')!.value,
+    );
     this.catalog = new Catalog(this.db);
     for (const table of ['pair', 'device'])
       if (
@@ -106,7 +114,7 @@ export class Store {
       this.db.exec('ROLLBACK');
       throw e;
     }
-    return { id, token: secret };
+    return { id, token: secret, authorityId: this.authorityId, accountId: String(pair.owner) };
   }
   deviceToken(secret: string) {
     const d = this.db

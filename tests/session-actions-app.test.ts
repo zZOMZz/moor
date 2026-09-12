@@ -267,6 +267,11 @@ test('confirmed session actions survive stale reads and preserve draft and archi
             contents: `
         export const read = async key => structuredClone(globalThis.__moorAppCache.get(key));
         export const write = async (key, value) => { globalThis.__moorAppCache.set(key, structuredClone(value)); };
+        export const compareAndSet = async (key, expected, value) => {
+          if (JSON.stringify(globalThis.__moorAppCache.get(key)) !== JSON.stringify(expected)) return false;
+          globalThis.__moorAppCache.set(key, structuredClone(value));
+          return true;
+        };
         export const clear = async () => { globalThis.__moorAppCache.clear(); };
       `,
           }));

@@ -10,7 +10,12 @@ import {
   closeNavigation,
   resizeComposer,
   sendIcon,
+  paint,
 } from './ui';
+import { createElement } from 'react';
+import { actorKey, actorSchema, type AttentionActor } from '../attention';
+import { AttentionController, type AttentionRoute } from './attention';
+import { AttentionWorkbench } from './attention-ui';
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
 import { agentSchema, type Mutation, type RuntimeWorkspace, type SessionAction } from '../protocol';
 import {
@@ -67,6 +72,166 @@ let pendingAction: PendingSessionAction | undefined;
 let newProjectId = '',
   newAgentId = '',
   newSessionControlsReady = false;
+let attentionActor: AttentionActor | undefined,
+  attentionVisible = false;
+const attention = new AttentionController({
+  request: api,
+  read: cache.read,
+  write: cache.write,
+  compareAndSet: cache.compareAndSet,
+  now: Date.now,
+  uuid: () => crypto.randomUUID(),
+  changed: () => {
+    renderAttention();
+    renderNavigation();
+  },
+  readSessionDraft: async (route, id) => {
+    assertAttentionRoute(route);
+    const draftKey = [owner, route.executionDeviceId, route.runtimeWorkspaceId, id, 'draft'].join(
+      '/',
+    );
+    const text = (await cache.read<string>(draftKey)) ?? '';
+    if (!text) return '';
+    const marker = await cache.read<{ scope: string; text: string }>(draftKey + '/actor');
+    if (marker?.scope !== draftActorScope(route.actor)) return { text: '', unscoped: true };
+    return marker.text === text ? text : { text: '', unscoped: true };
+  },
+  prepareTurn: async (route, id, text) => {
+    assertAttentionRoute(route);
+    const generation = bootGeneration;
+    await openSession(id, route.replicaId, true, true);
+    if (generation !== bootGeneration) throw new Error('登录状态已改变，草稿未发送。');
+    assertAttentionRoute(route);
+    if (sessionId !== id || replica?.id !== route.replicaId)
+      throw new Error('原会话已改变，草稿未发送。');
+    return prepareTurnMutation(text);
+  },
+  continued: async (route, id, text) => {
+    assertAttentionRoute(route);
+    const draftKey = [owner, route.executionDeviceId, route.runtimeWorkspaceId, id, 'draft'].join(
+      '/',
+    );
+    const marker = await cache.read<{ scope: string; text: string }>(draftKey + '/actor');
+    const canClear =
+      marker?.scope === draftActorScope(route.actor) &&
+      marker.text === text &&
+      (await cache.read<string>(draftKey)) === text;
+    const cleared = canClear && (await cache.compareAndSet(draftKey, text, ''));
+    if (sessionId === id && replica?.id === route.replicaId) {
+      if (cleared && $<HTMLTextAreaElement>('#prompt').value === text)
+        $<HTMLTextAreaElement>('#prompt').value = '';
+      await loadSession();
+    }
+    await loadSessions();
+  },
+});
+function draftActorScope(actor: AttentionActor) {
+  return JSON.stringify([location.origin, actorKey(actor)]);
+}
+async function saveComposerDraft(value: string) {
+  const draftKey = key('draft'),
+    actor = attentionActor;
+  const marker = actor ? { scope: draftActorScope(actor), text: value } : undefined;
+  await cache.write(draftKey, value);
+  await cache.write(draftKey + '/actor', marker);
+}
+function assertAttentionRoute(route: AttentionRoute) {
+  const target = activeWorkspace?.replicas.find((row) => row.id === route.replicaId);
+  const host = activeWorkspace?.hosts.find((row) => row.id === target?.hostId);
+  if (
+    !attentionActor ||
+    actorKey(attentionActor) !== actorKey(route.actor) ||
+    location.origin !== route.origin ||
+    activeWorkspace?.id !== route.catalogWorkspaceId ||
+    target?.localProjectId !== route.localProjectId ||
+    target?.projectId !== route.projectId ||
+    host?.deviceId !== route.executionDeviceId ||
+    host?.machineId !== route.machineId ||
+    host?.runtimeWorkspaceId !== route.runtimeWorkspaceId
+  )
+    throw new Error('待办的账号或执行范围已改变，请重新打开原事项。');
+}
+function configureAttention() {
+  const space = activeWorkspace;
+  attention.configure(
+    attentionActor && space
+      ? {
+          origin: location.origin,
+          actor: attentionActor,
+          workspaceId: space.id,
+          workspaceName: space.name,
+          connected: authenticated && connected,
+          targets: space.replicas.flatMap((copy) => {
+            const host = space.hosts.find((row) => row.id === copy.hostId);
+            if (!host) return [];
+            const runtime = devices
+              .find((row) => row.id === host.deviceId)
+              ?.workspaces.find((row) => row.id === host.runtimeWorkspaceId);
+            return [
+              {
+                origin: location.origin,
+                actor: attentionActor!,
+                catalogWorkspaceId: space.id,
+                projectId: copy.projectId,
+                replicaId: copy.id,
+                executionDeviceId: host.deviceId,
+                machineId: host.machineId,
+                runtimeWorkspaceId: host.runtimeWorkspaceId,
+                localProjectId: copy.localProjectId,
+                hostName: host.name,
+                projectName:
+                  space.projects.find((row) => row.id === copy.projectId)?.name ?? '项目',
+                online: host.online && copy.available,
+                features: runtime?.features ?? [],
+              },
+            ];
+          }),
+        }
+      : undefined,
+  );
+}
+function setAttentionVisible(visible: boolean) {
+  attentionVisible = visible;
+  document.querySelector('.workspace-main')?.classList.toggle('attention-mode', visible);
+  const container = document.querySelector<HTMLElement>('#attention-view');
+  if (container) container.hidden = !visible;
+  if (visible) closeNavigation();
+  renderTarget();
+}
+function renderAttention() {
+  if (!document.querySelector('#attention-view')) return;
+  paint(
+    '#attention-view',
+    createElement(AttentionWorkbench, {
+      controller: attention,
+      onOpenSession: async (route, id, turnId) => {
+        assertAttentionRoute(route);
+        await openSession(id, route.replicaId);
+        if (turnId)
+          Array.from(document.querySelectorAll<HTMLElement>('[data-turn-id]'))
+            .find((row) => row.dataset.turnId === turnId)
+            ?.scrollIntoView?.({ block: 'start' });
+      },
+    }),
+  );
+}
+async function openAttention() {
+  configureAttention();
+  setAttentionVisible(true);
+  const notice = document.querySelector('#notice');
+  if (notice) {
+    notice.textContent = '';
+    notice.classList.remove('visible');
+  }
+  networkNotice = false;
+  renderAttention();
+  renderNavigation();
+  await attention.refresh();
+}
+async function refreshAttention() {
+  configureAttention();
+  if (attentionVisible) await attention.refresh();
+}
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!;
 const rendered = new WeakMap<HTMLElement, string>();
 function renderInto(selector: string, html: string) {
@@ -143,15 +308,23 @@ function resetWorkspace() {
   selectionLoading = 0;
   search = projectFilter = '';
   localOnly = false;
+  attentionActor = undefined;
+  attentionVisible = false;
+  attention.configure(undefined);
   doc = new LoroDoc();
   flock = new Flock();
 }
 async function restoreCachedWorkspace(cachedOwner: string, generation: number) {
-  const [savedDevices, savedCatalog] = await Promise.all([
+  const [savedDevices, savedCatalog, savedActor] = await Promise.all([
     cache.read<Device[]>(cachedOwner + '/devices').catch(() => undefined),
     cache.read<Workspace[]>(cachedOwner + '/workspaces').catch(() => undefined),
+    cache.read<AttentionActor>(cachedOwner + '/attention-actor').catch(() => undefined),
   ]);
   if (generation !== bootGeneration || owner !== cachedOwner) return;
+  if (!attentionActor) {
+    const parsed = actorSchema.safeParse(savedActor);
+    if (parsed.success) attentionActor = parsed.data;
+  }
   devices = (savedDevices ?? []).map((d) => ({ ...d, online: false }));
   catalog = (savedCatalog ?? []).map((w) => ({
     ...w,
@@ -209,6 +382,9 @@ export async function boot(
   }
   authenticated = true;
   localOnly = me.localOnly === true;
+  attentionActor = me.actor ? actorSchema.parse(me.actor) : undefined;
+  configureAttention();
+  void cache.write(owner + '/attention-actor', attentionActor).catch(error);
   void cache.write('last-owner', owner).catch(error);
   renderNavigation();
   connect();
@@ -227,7 +403,7 @@ function shell() {
   showShell({
     onSend: () => run(sendTurn),
     onDraft: (value) => {
-      void cache.write(key('draft'), value).catch(error);
+      void saveComposerDraft(value).catch(error);
     },
     onCancel: cancelTurn,
   });
@@ -254,6 +430,7 @@ function logout() {
 }
 function newSession() {
   return run(async () => {
+    setAttentionVisible(false);
     archived = false;
     const copies = activeWorkspace?.replicas.filter((r) => r.projectId === projectFilter) ?? [];
     const currentHost = activeWorkspace?.hosts.find(
@@ -304,6 +481,7 @@ function connect() {
         await loadSessions();
         if (sessionId) await loadSession();
       }
+      await refreshAttention();
     });
   };
   ws.onclose = () => {
@@ -312,6 +490,8 @@ function connect() {
     renderNavigation();
     renderTarget();
     updateComposer();
+    configureAttention();
+    renderAttention();
     setTimeout(() => {
       if (events === ws && owner) connect();
     }, 2000);
@@ -326,6 +506,7 @@ function connect() {
             await loadSessions();
             if (sessionId) await loadSession();
           }
+          await refreshAttention();
         });
       }, 200);
   };
@@ -468,6 +649,10 @@ function renderNewSessionControls() {
   });
 }
 function renderTarget() {
+  if (attentionVisible) {
+    showTarget({ project: activeWorkspace?.name, title: '待我处理', connected, online: connected });
+    return;
+  }
   const project = activeWorkspace?.projects.find((p) => p.id === replica?.projectId);
   const row = sessionList.find((s) => s.id === sessionId && s.replicaId === replica?.id);
   showTarget({
@@ -572,6 +757,7 @@ function showWorkspaceManager() {
   if (!dialog.open) dialog.showModal();
 }
 async function selectWorkspace(id: string, saved?: Partial<Selection>) {
+  const restoreAttention = attentionVisible;
   const target = catalog.find((w) => w.id === id);
   if (!target) return;
   activeWorkspace = target;
@@ -611,6 +797,8 @@ async function selectWorkspace(id: string, saved?: Partial<Selection>) {
     renderSessions();
     await persistSelection();
   }
+  configureAttention();
+  if (restoreAttention) await openAttention();
 }
 async function persistSelection() {
   if (!activeWorkspace) return;
@@ -864,6 +1052,7 @@ function renderSessionActionState() {
   }
 }
 function renderNavigation() {
+  configureAttention();
   showNavigation({
     catalog,
     space: activeWorkspace,
@@ -880,12 +1069,15 @@ function renderNavigation() {
     listError,
     actionPending: actionSending,
     actionError,
+    attentionActive: attentionVisible,
+    attentionCount: attention.state.view === 'pending' ? attention.total() : undefined,
+    onAttention: attentionActor ? () => run(openAttention) : undefined,
     actionSession: sessionList.find((row) => row.id === sessionId && row.replicaId === replica?.id),
     canManage: canManageSession,
     onAction: (row, action, title) => run(() => manageSession(row, action, title)),
     projectFilter,
     search,
-    selectedSession: sessionId,
+    selectedSession: attentionVisible ? '' : sessionId,
     selectedReplica: replica?.id,
     deviceId: selected?.id,
     runtimeWorkspaceId: workspace?.id,
@@ -972,7 +1164,13 @@ function renderSessions() {
   renderTarget();
 }
 
-async function openSession(id: string, replicaId?: string, keepNavigation = false) {
+async function openSession(
+  id: string,
+  replicaId?: string,
+  keepNavigation = false,
+  keepAttention = false,
+) {
+  if (!keepAttention) setAttentionVisible(false);
   const row = sessionList.find(
     (s) =>
       s.id === id &&
@@ -1135,7 +1333,7 @@ function renderHistory() {
     state.history
       .map(
         (turn) =>
-          `<article class="turn ${turn.role}"><div class="turn-label">${turn.role === 'user' ? '你' : esc(meta?.agentType ?? 'Agent')} <time>${new Date(turn.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>${(
+          `<article class="turn ${turn.role}" data-turn-id="${esc(turn.id)}"><div class="turn-label">${turn.role === 'user' ? '你' : esc(meta?.agentType ?? 'Agent')} <time>${new Date(turn.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>${(
             turn.items ?? []
           )
             .map((item: any, index: number) =>
@@ -1397,6 +1595,21 @@ async function sendTurn() {
       agent: newAgentId,
     });
   if (generation !== sessionGeneration) return;
+  await submit(prepareTurnMutation(prompt));
+}
+function prepareTurnMutation(prompt: string): Mutation {
+  if (actionSending || pendingAction || sending || pending)
+    throw new Error('请先确认原会话的上一次操作。');
+  if (meta?.isArchived) throw new Error('请先恢复会话，再发送新的指令。');
+  if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
+  if (sessionId) {
+    const current = mirror(doc, sessionId);
+    const active = current
+      .getState()
+      .history.some((turn) => turn.role === 'assistant' && !turn.finished);
+    current.dispose();
+    if (active) throw new Error('当前回合仍在执行，后续草稿已保留。');
+  }
   const id = sessionId || crypto.randomUUID(),
     agent = currentAgent();
   if (!agent) throw new Error('这台电脑还没有可用的 Agent 配置');
@@ -1455,7 +1668,7 @@ async function sendTurn() {
         lastMessageAt: Date.now(),
       };
   putMeta(localFlock, 'session-' + id, fields);
-  await submit({
+  return {
     operationId: crypto.randomUUID(),
     workspaceId: workspace.id,
     sessionId: id,
@@ -1463,7 +1676,7 @@ async function sendTurn() {
     expectedTurnId: meta?.latestUserMsgId ?? null,
     update: delta(candidate, before),
     metaBundle: localFlock.exportJson(metaVersion),
-  });
+  };
 }
 async function respondPermission(requestId: string, optionId: string) {
   if (sending || pending) throw new Error('请先确认上一次提交结果');
@@ -1503,6 +1716,7 @@ document.addEventListener('visibilitychange', () => {
       run(async () => {
         await loadDevices();
         if (sessionId) await loadSession();
+        await refreshAttention();
       });
   }
 });

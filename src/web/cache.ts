@@ -32,6 +32,30 @@ export async function write(key: string, value: unknown) {
     }),
   );
 }
+// A single IndexedDB transaction serializes tabs sharing the same request slot.
+// A late response can clear only the exact operation it originally persisted.
+export async function compareAndSet(key: string, expected: unknown, value: unknown) {
+  const d = await bounded(db);
+  return bounded(
+    new Promise<boolean>((resolve, reject) => {
+      const t = d.transaction('cache', 'readwrite');
+      const store = t.objectStore('cache');
+      const request = store.get(key);
+      let matched = false;
+      request.onsuccess = () => {
+        try {
+          matched = JSON.stringify(request.result) === JSON.stringify(expected);
+          if (matched) store.put(value, key);
+        } catch {
+          t.abort();
+        }
+      };
+      t.oncomplete = () => resolve(matched);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error ?? new Error('本地请求记录保存被中止'));
+    }),
+  );
+}
 export async function clear() {
   const d = await bounded(db);
   return bounded(

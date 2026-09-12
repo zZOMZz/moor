@@ -7,14 +7,34 @@ import { Store, type Device } from './accounts';
 import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
 import { workspaceInputSchema, projectInputSchema, replicaAssignmentSchema } from '../catalog';
+import {
+  ACTOR_FEATURE,
+  ATTENTION_FEATURE,
+  FOLLOWUP_FEATURE,
+  actorKey,
+  actorSchema,
+  attentionContextSchema,
+  attentionContinueSchema,
+  attentionDispositionSchema,
+  attentionListQuerySchema,
+  attentionPermissionSchema,
+  attentionSeenSchema,
+  type AttentionContext,
+} from '../attention';
 export function createApp(
   store: Store,
   options: { origin: string; setupToken: string; publicDir?: string; localOnly?: boolean },
 ) {
   let origin = new URL(options.origin).origin;
+  const attentionFeatures = [ATTENTION_FEATURE, ACTOR_FEATURE, FOLLOWUP_FEATURE];
+  const actor = (accountId: string) => ({
+    kind: options.localOnly ? ('local' as const) : ('relay' as const),
+    authorityId: store.authorityId,
+    accountId,
+  });
   const bridges = new Map<
     string,
-    { socket: WebSocket; ready: boolean; workspaces: RuntimeWorkspace[] }
+    { socket: WebSocket; ready: boolean; attentionReady: boolean; workspaces: RuntimeWorkspace[] }
   >();
   const viewers = new Map<
     WebSocket,
@@ -59,6 +79,7 @@ export function createApp(
     workspaceId: string,
     params: unknown,
     localProjectId?: string,
+    context?: AttentionContext,
   ): Promise<unknown> {
     assert(online(device), 409, '执行电脑不可达，指令未送达');
     assert(commands.size < 64, 429, '请求过多，请稍后再试');
@@ -76,6 +97,7 @@ export function createApp(
         workspaceId,
         params,
         localProjectId,
+        ...(context ? { context } : {}),
       });
     });
   }
@@ -145,6 +167,8 @@ export function createApp(
         } catch {}
         return json(res, 200, {
           owner,
+          actor: owner ? actor(owner) : null,
+          attentionFeatures,
           needsSetup: !store.hasAccount(),
           localOnly: options.localOnly === true,
         });
@@ -182,7 +206,16 @@ export function createApp(
           .object({ code: z.string().min(12).max(100), name: z.string().min(1).max(100) })
           .parse(await body(req));
         assert(bearer(req) === b.code, 401, '需要设备配对凭据');
-        return json(res, 200, store.redeem(b.code, b.name));
+        const paired = store.redeem(b.code, b.name);
+        return json(res, 200, { ...paired, actor: actor(paired.accountId) });
+      }
+      if (path === '/api/device-context' && req.method === 'GET') {
+        const device = store.deviceToken(bearer(req));
+        return json(res, 200, {
+          executionDeviceId: device.id,
+          actor: actor(device.owner),
+          attentionFeatures,
+        });
       }
       const owner = path.startsWith('/api/') ? store.owner(cookie(req)) : null;
       if (path === '/api/logout' && req.method === 'POST') {
@@ -279,10 +312,107 @@ export function createApp(
             .get(host.device_id)
             ?.workspaces.find((w) => w.id === host.runtime_id);
           assert(
-            runtime?.projects.some((p) => p.id === replica.local_id),
+            runtime && runtime.projects.some((p) => p.id === replica.local_id),
             409,
             '项目副本离线或已从主机移除',
           );
+          if (parts[5] === 'attention' || (parts[5] === 'sessions' && parts[7] === 'attention')) {
+            assert(
+              bridges.get(host.device_id)?.attentionReady &&
+                runtime.features?.includes(ATTENTION_FEATURE) &&
+                runtime.features?.includes(ACTOR_FEATURE),
+              409,
+              '请先升级并连接支持待办工作台的执行电脑',
+            );
+            const context = attentionContextSchema.parse({
+              actor: actor(owner!),
+              executionDeviceId: host.device_id,
+              machineId: runtime.machineId,
+              catalogWorkspaceId: workspaceId,
+              projectId: replica.project_id,
+              replicaId: replica.id,
+              runtimeWorkspaceId: host.runtime_id,
+              localProjectId: replica.local_id,
+              ...(parts[5] === 'sessions' ? { sessionId: decodeURIComponent(parts[6]) } : {}),
+            });
+            if (
+              ((parts[5] === 'attention' && parts.length === 6) ||
+                (parts[5] === 'sessions' && parts.length === 8)) &&
+              req.method === 'GET'
+            ) {
+              const query = Object.fromEntries(url.searchParams);
+              const input = attentionListQuerySchema.parse({
+                ...query,
+                ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
+              });
+              return json(
+                res,
+                200,
+                await request(
+                  host.device_id,
+                  context.sessionId ? 'attention-items' : 'attention-list',
+                  host.runtime_id,
+                  input,
+                  replica.local_id,
+                  context,
+                ),
+              );
+            }
+            assert(parts[5] === 'sessions' && parts[8], 404, '未找到待办操作');
+            const itemId = z.string().min(1).max(1024).parse(decodeURIComponent(parts[8]));
+            let method: string;
+            let input: unknown;
+            if (parts.length === 9 && req.method === 'GET') {
+              method = 'attention-detail';
+            } else {
+              assert(parts.length === 10 && req.method === 'POST', 404, '未找到待办操作');
+              switch (parts[9]) {
+                case 'seen':
+                  method = 'attention-seen';
+                  input = attentionSeenSchema.parse(await body(req));
+                  break;
+                case 'disposition':
+                  method = 'attention-disposition';
+                  input = attentionDispositionSchema.parse(await body(req));
+                  break;
+                case 'permission':
+                  method = 'attention-permission';
+                  input = attentionPermissionSchema.parse(await body(req));
+                  break;
+                case 'continue': {
+                  assert(
+                    runtime.features?.includes(FOLLOWUP_FEATURE),
+                    409,
+                    '请先升级支持后续关联的执行电脑',
+                  );
+                  method = 'attention-continue';
+                  const followup = attentionContinueSchema.parse(await body(req));
+                  assert(
+                    followup.mutation.workspaceId === context.runtimeWorkspaceId &&
+                      followup.mutation.sessionId === context.sessionId,
+                    400,
+                    '后续指令与原事项执行目标不匹配',
+                  );
+                  input = followup;
+                  break;
+                }
+                default:
+                  throw new AppError(404, '未找到待办操作');
+              }
+            }
+            return json(
+              res,
+              200,
+              await request(
+                host.device_id,
+                method,
+                host.runtime_id,
+                { itemId, input },
+                replica.local_id,
+                context,
+              ),
+            );
+          }
           if (parts[5] === 'agent-options' && req.method === 'POST') {
             const input = z
               .object({ agentId: z.string().min(1).max(160) })
@@ -442,7 +572,7 @@ export function createApp(
         wss.handleUpgrade(req, socket, head, (ws) => {
           const previous = bridges.get(d.id);
           previous?.socket.close(1008, 'replaced');
-          bridges.set(d.id, { socket: ws, ready: false, workspaces: [] });
+          bridges.set(d.id, { socket: ws, ready: false, attentionReady: false, workspaces: [] });
           ws.on('message', (raw) => {
             try {
               const current = store.deviceToken(bearer(req));
@@ -450,15 +580,62 @@ export function createApp(
               const message = JSON.parse(raw.toString());
               if (message.type === 'hello') {
                 const b = helloSchema.parse(message);
+                const attentionReady = message.attentionActor !== undefined;
+                if (attentionReady)
+                  assert(
+                    actorKey(actorSchema.parse(message.attentionActor)) ===
+                      actorKey(actor(current.owner)),
+                    403,
+                    '待办账号身份与设备配对不匹配',
+                  );
+                if (!attentionReady)
+                  for (const workspace of b.workspaces)
+                    workspace.features = workspace.features?.filter(
+                      (feature) => !attentionFeatures.includes(feature),
+                    );
                 store.bind(current, b.machineId, b.workspaces);
-                bridges.set(d.id, { socket: ws, ready: true, workspaces: b.workspaces });
+                bridges.set(d.id, {
+                  socket: ws,
+                  ready: true,
+                  attentionReady,
+                  workspaces: b.workspaces,
+                });
                 changed(d.owner, d.id);
-                send(ws, { type: 'ready' });
+                send(ws, { type: 'ready', actor: actor(current.owner), attentionFeatures });
                 for (const v of viewers.values())
                   if (v.watch?.deviceId === d.id) send(ws, { type: 'watch', ...v.watch });
               } else if (message.type === 'unavailable') {
-                bridges.set(d.id, { socket: ws, ready: false, workspaces: [] });
+                bridges.set(d.id, {
+                  socket: ws,
+                  ready: false,
+                  attentionReady: false,
+                  workspaces: [],
+                });
                 changed(d.owner, d.id);
+              } else if (message.type === 'attention-changed') {
+                const notice = z
+                  .object({
+                    type: z.literal('attention-changed'),
+                    actor: actorSchema,
+                    workspaceId: z.string().min(1).max(160),
+                    sessionId: z.string().min(1).max(160),
+                  })
+                  .strict()
+                  .parse(message);
+                assert(
+                  bridges.get(d.id)?.attentionReady &&
+                    actorKey(notice.actor) === actorKey(actor(current.owner)) &&
+                    bridges
+                      .get(d.id)
+                      ?.workspaces.some((workspace) => workspace.id === notice.workspaceId),
+                  403,
+                  '待办变更不属于当前授权连接',
+                );
+                changed(current.owner, d.id, notice.workspaceId, {
+                  scope: 'attention',
+                  docId: notice.sessionId,
+                  actor: notice.actor,
+                });
               } else if (message.type === 'changed') {
                 changed(d.owner, d.id, message.workspaceId, {
                   scope: 'doc',

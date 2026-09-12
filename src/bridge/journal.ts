@@ -19,31 +19,40 @@ export class Journal {
   has(id: string) {
     return Boolean(this.db.prepare('SELECT 1 FROM operation WHERE id=?').get(id));
   }
-  fingerprint(workspace: string, m: Mutation | SessionAction) {
+  fingerprint(workspace: string, m: Mutation | SessionAction, binding?: unknown) {
     return createHash('sha256')
-      .update(JSON.stringify([workspace, m]))
+      .update(JSON.stringify(binding === undefined ? [workspace, m] : [workspace, m, binding]))
       .digest('hex');
   }
-  lookup(workspace: string, m: Mutation | SessionAction) {
+  lookup(workspace: string, m: Mutation | SessionAction, binding?: unknown) {
     const r = this.db.prepare('SELECT * FROM operation WHERE id=?').get(m.operationId) as any;
-    if (r) assert(r.fingerprint === this.fingerprint(workspace, m), 409, '重复编号对应不同请求');
+    if (r)
+      assert(
+        r.fingerprint === this.fingerprint(workspace, m, binding),
+        409,
+        '重复编号对应不同请求',
+      );
     return r;
   }
-  stage(workspace: string, m: Mutation, turnId: string, approval?: unknown) {
+  stage(workspace: string, m: Mutation, turnId: string, approval?: unknown, binding?: unknown) {
     this.db
       .prepare(
         'INSERT OR IGNORE INTO operation(id,fingerprint,phase,turn_id,result,approval) VALUES(?,?,?,?,NULL,?)',
       )
       .run(
         m.operationId,
-        this.fingerprint(workspace, m),
+        this.fingerprint(workspace, m, binding),
         'staged',
         turnId,
         approval ? JSON.stringify(approval) : null,
       );
   }
   accept(m: Mutation) {
-    const result = { accepted: true, delivered: true, operationId: m.operationId };
+    const result = {
+      accepted: true as const,
+      delivered: true as const,
+      operationId: m.operationId,
+    };
     this.db
       .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
       .run('accepted', JSON.stringify(result), m.operationId);

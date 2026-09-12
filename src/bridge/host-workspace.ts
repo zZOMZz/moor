@@ -1,10 +1,31 @@
 import { randomUUID } from 'node:crypto';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta } from '../model';
+import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../model';
 import { assert, sessionActionSchema, type Mutation, type SessionAction } from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { RuntimeStore } from '../runtime/store';
 import type { AgentConfig, AgentDriver, AgentSession, PermissionOutcome } from '../runtime/agent';
 import { runCapabilitiesSchema } from '../run-config';
+import {
+  ACTOR_FEATURE,
+  ATTENTION_FEATURE,
+  FOLLOWUP_FEATURE,
+  attentionContextSchema,
+  attentionSeenSchema,
+  attentionDispositionSchema,
+  attentionPermissionSchema,
+  attentionContinueSchema,
+  attentionListQuerySchema,
+  type AttentionActor,
+  type AttentionContext,
+  type AttentionSeen,
+  type AttentionDisposition,
+  type AttentionPermission,
+  type AttentionContinue,
+  type AttentionListQuery,
+  type AttentionDetail,
+  type AttentionReceipt,
+  type AttentionCause,
+} from '../attention';
 
 type Active = {
   turnId: string;
@@ -15,7 +36,7 @@ type Active = {
   done?: Promise<void>;
   permissions: Map<
     string,
-    { options: any[]; resolve: (value: { outcome: PermissionOutcome }) => void }
+    { options: any[]; toolCall: unknown; resolve: (value: { outcome: PermissionOutcome }) => void }
   >;
 };
 export class HostWorkspace {
@@ -37,6 +58,7 @@ export class HostWorkspace {
     private driver: AgentDriver,
     private catalogue: () => void,
     private changed: (sessionId?: string) => void,
+    private attentionChanged: (actor: AttentionActor, sessionId: string) => void = () => {},
   ) {
     this.updateCatalogue();
   }
@@ -47,7 +69,12 @@ export class HostWorkspace {
     this.ensureConnected();
   }
   updateCatalogue() {
-    this.workspace.features = ['session-actions'];
+    this.workspace.features = [
+      'session-actions',
+      ATTENTION_FEATURE,
+      ACTOR_FEATURE,
+      FOLLOWUP_FEATURE,
+    ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
       .map((r) => r.value as any);
@@ -195,116 +222,368 @@ export class HostWorkspace {
       return result;
     });
   }
-  async mutate(m: Mutation, localProjectId?: string) {
-    return this.serial(m.sessionId, async () => {
-      this.ensureConnected();
-      assert(
-        m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
-        400,
-        '会话执行目标不匹配',
+  private attentionTarget(input: AttentionContext, session = false) {
+    this.ensureConnected();
+    const context = attentionContextSchema.parse(input);
+    assert(
+      context.machineId === this.workspace.machineId &&
+        context.runtimeWorkspaceId === this.workspace.id,
+      404,
+      '待办不属于这台执行电脑',
+    );
+    assert(
+      this.workspace.projects.some((p) => p.id === context.localProjectId),
+      404,
+      '项目副本已从主机移除',
+    );
+    if (session) {
+      assert(context.sessionId, 400, '缺少待办会话');
+      this.checkProject(context.sessionId, context.localProjectId);
+    }
+    return context;
+  }
+  private reconcileAttention(localProjectId: string) {
+    this.store.attention.reconcilePermissions(localProjectId, (item) => {
+      const run = this.active.get(item.sessionId);
+      return (
+        !!run &&
+        !run.stopped &&
+        run.turnId === item.assistantTurnId &&
+        !!item.requestId &&
+        run.permissions.has(item.requestId)
       );
-      const journal = this.store.journal;
-      const record = journal.lookup(this.workspace.id, m);
-      if (metas(this.meta)['session-' + m.sessionId] || record)
-        this.checkProject(m.sessionId, localProjectId);
-      if (record?.phase === 'accepted') return JSON.parse(record.result);
-      const active = this.active.get(m.sessionId);
-      const original = active?.doc ?? this.store.doc(m.sessionId);
-      const validated = validateMutation(original, this.meta, this.workspace, m);
-      const meta = metas(validated.flock)['session-' + m.sessionId];
-      if (!metas(this.meta)['session-' + m.sessionId])
-        putMeta(validated.flock, 'session-' + m.sessionId, {
-          metadataRevision: 0,
-          isPinned: false,
-          isArchived: false,
-        });
-      if (localProjectId)
-        assert(
-          (meta.project as any)?.localProjectId === localProjectId,
-          400,
-          '执行项目与副本不匹配',
-        );
-      const turnId = String(meta.latestUserMsgId);
-      let permission: Active['permissions'] extends Map<string, infer V> ? V : never;
-      let outcome: PermissionOutcome | undefined;
-      if (m.kind === 'permission') {
-        assert(active && !active.stopped, 409, '审批回合已失效');
-        const pending = active.permissions.get(m.requestId!);
-        assert(pending, 409, '审批请求已失效');
-        permission = pending;
-        const view = mirror(validated.doc, m.sessionId);
-        const turn = view.getState().history.find((t) => t.id === active.turnId);
-        outcome = (
-          turn?.items?.find((i: any) => i.permissionRequest?.requestId === m.requestId) as any
-        )?.permissionRequest.outcome;
-        view.dispose();
-        assert(outcome, 409, '审批不属于当前回合');
-      } else assert(!active && this.active.size < 32, 409, 'Agent 正在运行或并发会话过多');
-      const previousMeta = this.store.meta;
-      let result: ReturnType<typeof journal.accept>;
-      const assistantId = randomUUID();
-      if (m.kind === 'turn') {
-        const view = mirror(validated.doc, m.sessionId);
-        view.setState((s) => {
-          const user = s.history.find((t) => t.id === turnId)!;
-          user.read = true;
-          user.status = 'processing';
-          s.history.push({
-            userId: undefined,
-            status: undefined,
-            read: undefined,
-            inputConfig: undefined,
-            id: assistantId,
-            userTurnId: turnId,
-            role: 'assistant',
-            timestamp: new Date().toISOString(),
-            finished: false,
-            items: [],
-            fileDiff: null,
-          });
-        });
-        view.dispose();
-        putMeta(validated.flock, 'session-' + m.sessionId, {
-          lastHandledUserMsgId: turnId,
-          status: { type: 'working' },
-        });
-      }
-      try {
-        result = this.store.transaction(() => {
-          journal.stage(this.workspace.id, m, turnId);
-          this.store.meta = validated.flock;
-          this.store.persist(m.sessionId, validated.doc);
-          return journal.accept(m);
-        });
-      } catch (error) {
-        this.store.meta = previousMeta;
-        throw error;
-      }
-      if (m.kind === 'permission') {
-        active!.doc = validated.doc;
-        active!.permissions.delete(m.requestId!);
-        permission!.resolve({ outcome: outcome! });
-      } else {
-        const run: Active = {
-          turnId: assistantId,
-          userTurnId: turnId,
-          doc: validated.doc,
-          stopped: false,
-          permissions: new Map(),
-        };
-        this.active.set(m.sessionId, run);
-        run.done = this.execute(m.sessionId, run);
-      }
-      this.changed(m.sessionId);
+    });
+  }
+  attentionList(input: AttentionContext, query: AttentionListQuery) {
+    const context = this.attentionTarget(input);
+    this.reconcileAttention(context.localProjectId);
+    return this.store.attention.list(context, attentionListQuerySchema.parse(query));
+  }
+  attentionItems(input: AttentionContext, query: AttentionListQuery) {
+    const context = this.attentionTarget(input, true);
+    this.reconcileAttention(context.localProjectId);
+    return this.store.attention.sessionItems(context, attentionListQuerySchema.parse(query));
+  }
+  attentionDetail(input: AttentionContext, itemId: string): AttentionDetail {
+    const context = this.attentionTarget(input, true);
+    this.reconcileAttention(context.localProjectId);
+    const item = this.store.attention.get(context, itemId);
+    const run = this.active.get(item.sessionId);
+    const view = mirror(run?.doc ?? this.store.doc(item.sessionId), item.sessionId);
+    const state = view.getState();
+    const turn = state.history.find((t) => t.id === item.assistantTurnId);
+    const userTurn = state.history.find((t) => t.id === item.userTurnId);
+    view.dispose();
+    assert(turn, 404, '待办对应的回合不可用');
+    const meta = metas(this.meta)['session-' + item.sessionId];
+    const pending = item.requestId ? run?.permissions.get(item.requestId) : undefined;
+    const tool = turn.items?.find((i: any) => i.permissionRequest?.requestId === item.requestId);
+    return {
+      item,
+      title: String(meta.title ?? '未命名会话'),
+      isArchived: meta.isArchived === true,
+      turn,
+      userTurn,
+      permission:
+        item.kind === 'permission' &&
+        item.lifecycle === 'active' &&
+        run &&
+        !run.stopped &&
+        run.turnId === item.assistantTurnId &&
+        pending &&
+        tool
+          ? {
+              requestId: item.requestId!,
+              expectedTurnId: run.userTurnId,
+              options: pending.options,
+              toolCall: pending.toolCall,
+            }
+          : undefined,
+    };
+  }
+  async attentionSeen(input: AttentionContext, itemId: string, inputRequest: AttentionSeen) {
+    const request = attentionSeenSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      const result = this.store.attention.seen(context, itemId, request);
+      this.attentionChanged(context.actor, context.sessionId!);
       return result;
     });
   }
-  edit(id: string, run: Active, edit: (turn: any) => void) {
+  async attentionDisposition(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionDisposition,
+  ) {
+    const request = attentionDispositionSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      const result = this.store.attention.disposition(context, itemId, request);
+      this.attentionChanged(context.actor, context.sessionId!);
+      return result;
+    });
+  }
+  private attentionBinding(
+    context: AttentionContext,
+    itemId: string,
+    method: string,
+    request: unknown,
+  ) {
+    return {
+      method,
+      actor: context.actor,
+      executionDeviceId: context.executionDeviceId,
+      machineId: context.machineId,
+      runtimeWorkspaceId: context.runtimeWorkspaceId,
+      localProjectId: context.localProjectId,
+      sessionId: context.sessionId,
+      itemId,
+      request,
+    };
+  }
+  async attentionContinue(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionContinue,
+  ) {
+    const request = attentionContinueSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    assert(
+      request.mutation.sessionId === context.sessionId &&
+        request.mutation.workspaceId === context.runtimeWorkspaceId,
+      400,
+      '后续指令与原待办执行目标不匹配',
+    );
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      const previous = this.store.attention.lookupReceipt(
+        context,
+        itemId,
+        'continue',
+        request,
+        request.mutation.operationId,
+      );
+      if (previous) return previous;
+      this.store.attention.prepareContinue(context, itemId, request);
+      const result = await this.mutateAccepted(request.mutation, context.localProjectId, {
+        binding: this.attentionBinding(context, itemId, 'continue', request),
+        commit: (userTurnId) => this.store.attention.continue(context, itemId, request, userTurnId),
+      });
+      this.attentionChanged(context.actor, context.sessionId!);
+      return result;
+    });
+  }
+  async attentionPermission(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionPermission,
+  ) {
+    const request = attentionPermissionSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      const previous = this.store.attention.lookupReceipt(
+        context,
+        itemId,
+        'permission',
+        request,
+        request.operationId,
+      );
+      if (previous) return previous;
+      const detail = this.attentionDetail(context, itemId);
+      assert(
+        detail.item.eventRevision === request.eventRevision &&
+          detail.permission?.requestId === request.requestId &&
+          detail.permission.expectedTurnId === request.expectedTurnId,
+        409,
+        '审批请求已更新或失效',
+      );
+      assert(
+        request.optionId === null ||
+          detail.permission.options.some((o) => o.optionId === request.optionId),
+        400,
+        '审批选项无效',
+      );
+      const run = this.active.get(context.sessionId!)!;
+      const candidate = new LoroDoc();
+      candidate.import(run.doc.export({ mode: 'snapshot' }));
+      const before = vv(candidate),
+        view = mirror(candidate, context.sessionId!);
+      view.setState((s) => {
+        const turn = s.history.find((t) => t.id === detail.item.assistantTurnId)!;
+        const tool = turn.items?.find(
+          (i: any) => i.permissionRequest?.requestId === request.requestId,
+        ) as any;
+        tool.permissionRequest.outcome =
+          request.optionId === null
+            ? { outcome: 'cancelled' }
+            : { outcome: 'selected', optionId: request.optionId };
+      });
+      view.dispose();
+      const mutation: Mutation = {
+        operationId: request.operationId,
+        workspaceId: context.runtimeWorkspaceId,
+        sessionId: context.sessionId!,
+        kind: 'permission',
+        expectedTurnId: request.expectedTurnId,
+        requestId: request.requestId,
+        update: delta(candidate, before),
+      };
+      return this.mutateAccepted(mutation, context.localProjectId, {
+        binding: this.attentionBinding(context, itemId, 'permission', request),
+        commit: () =>
+          this.store.attention.acceptReceipt(
+            context,
+            itemId,
+            'permission',
+            request,
+            request.operationId,
+          ),
+      });
+    });
+  }
+  async mutate(m: Mutation, localProjectId?: string) {
+    return this.serial(m.sessionId, () => this.mutateAccepted(m, localProjectId));
+  }
+  private async mutateAccepted(
+    m: Mutation,
+    localProjectId?: string,
+    effect?: {
+      binding: unknown;
+      commit: (userTurnId: string) => AttentionReceipt;
+    },
+  ) {
+    this.ensureConnected();
+    assert(
+      m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
+      400,
+      '会话执行目标不匹配',
+    );
+    const journal = this.store.journal;
+    const record = journal.lookup(this.workspace.id, m, effect?.binding);
+    if (metas(this.meta)['session-' + m.sessionId] || record)
+      this.checkProject(m.sessionId, localProjectId);
+    if (record?.phase === 'accepted') return JSON.parse(record.result);
+    const active = this.active.get(m.sessionId);
+    const original = active?.doc ?? this.store.doc(m.sessionId);
+    const validated = validateMutation(original, this.meta, this.workspace, m);
+    const meta = metas(validated.flock)['session-' + m.sessionId];
+    if (!metas(this.meta)['session-' + m.sessionId])
+      putMeta(validated.flock, 'session-' + m.sessionId, {
+        metadataRevision: 0,
+        isPinned: false,
+        isArchived: false,
+      });
+    if (localProjectId)
+      assert((meta.project as any)?.localProjectId === localProjectId, 400, '执行项目与副本不匹配');
+    const turnId = String(meta.latestUserMsgId);
+    let permission: Active['permissions'] extends Map<string, infer V> ? V : never;
+    let outcome: PermissionOutcome | undefined;
+    if (m.kind === 'permission') {
+      assert(active && !active.stopped, 409, '审批回合已失效');
+      const pending = active.permissions.get(m.requestId!);
+      assert(pending, 409, '审批请求已失效');
+      permission = pending;
+      const view = mirror(validated.doc, m.sessionId);
+      const turn = view.getState().history.find((t) => t.id === active.turnId);
+      outcome = (
+        turn?.items?.find((i: any) => i.permissionRequest?.requestId === m.requestId) as any
+      )?.permissionRequest.outcome;
+      view.dispose();
+      assert(outcome, 409, '审批不属于当前回合');
+    } else assert(!active && this.active.size < 32, 409, 'Agent 正在运行或并发会话过多');
+    const previousMeta = this.store.meta;
+    let result: ReturnType<typeof journal.accept>;
+    const assistantId = randomUUID();
+    if (m.kind === 'turn') {
+      const view = mirror(validated.doc, m.sessionId);
+      view.setState((s) => {
+        const user = s.history.find((t) => t.id === turnId)!;
+        user.read = true;
+        user.status = 'processing';
+        s.history.push({
+          userId: undefined,
+          status: undefined,
+          read: undefined,
+          inputConfig: undefined,
+          id: assistantId,
+          userTurnId: turnId,
+          role: 'assistant',
+          timestamp: new Date().toISOString(),
+          finished: false,
+          items: [],
+          fileDiff: null,
+        });
+      });
+      view.dispose();
+      putMeta(validated.flock, 'session-' + m.sessionId, {
+        lastHandledUserMsgId: turnId,
+        status: { type: 'working' },
+      });
+    }
+    try {
+      result = this.store.transaction(() => {
+        journal.stage(this.workspace.id, m, turnId, undefined, effect?.binding);
+        this.store.meta = validated.flock;
+        this.store.persist(m.sessionId, validated.doc);
+        if (m.kind === 'permission')
+          this.store.attention.resolvePermission(
+            m.sessionId,
+            active!.turnId,
+            m.requestId!,
+            'resolved',
+          );
+        const accepted = journal.accept(m);
+        return effect?.commit(turnId) ?? accepted;
+      });
+    } catch (error) {
+      this.store.meta = previousMeta;
+      throw error;
+    }
+    if (m.kind === 'permission') {
+      active!.doc = validated.doc;
+      active!.permissions.delete(m.requestId!);
+      permission!.resolve({ outcome: outcome! });
+    } else {
+      const run: Active = {
+        turnId: assistantId,
+        userTurnId: turnId,
+        doc: validated.doc,
+        stopped: false,
+        permissions: new Map(),
+      };
+      this.active.set(m.sessionId, run);
+      run.done = this.execute(m.sessionId, run).catch((error) => {
+        // A background run has no awaiting HTTP caller after delivery. If its
+        // final state cannot be persisted, stop accepting work and close owned
+        // Agents instead of leaking an unhandled rejection or reporting idle.
+        console.error('执行回合状态无法保存，已停止本机工作区', error);
+        try {
+          this.close();
+        } catch (closeError) {
+          console.error(closeError);
+        }
+        this.catalogue();
+      });
+    }
+    this.changed(m.sessionId);
+    return result;
+  }
+  edit(id: string, run: Active, edit: (turn: any) => void, persist?: (turn: any) => void) {
     if (run.stopped || this.closed) return;
-    const view = mirror(run.doc, id);
+    const candidate = new LoroDoc();
+    candidate.import(run.doc.export({ mode: 'snapshot' }));
+    const view = mirror(candidate, id);
     view.setState((s) => edit(s.history.find((t) => t.id === run.turnId)!));
+    const turn = view.getState().history.find((t) => t.id === run.turnId)!;
     view.dispose();
-    this.store.transaction(() => this.store.persist(id, run.doc));
+    this.store.transaction(() => {
+      this.store.persist(id, candidate);
+      persist?.(turn);
+    });
+    run.doc = candidate;
     this.changed(id);
   }
   update(id: string, run: Active, update: any) {
@@ -319,7 +598,7 @@ export class HostWorkspace {
         if (last?.type === type) last.text += update.content.text;
         else items.push({ type, text: update.content.text });
       } else if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
-        let tool = items.find(
+        let tool = items.findLast(
           (i: any) => i.type === 'tool_call' && i.toolCallId === update.toolCallId,
         );
         if (!tool) items.push((tool = { type: 'tool_call', toolCallId: update.toolCallId }));
@@ -346,14 +625,45 @@ export class HostWorkspace {
               return Promise.resolve({ outcome: { outcome: 'cancelled' } });
             const requestId = randomUUID();
             return new Promise((resolve) => {
-              run.permissions.set(requestId, { options: value.options, resolve });
-              this.edit(id, run, (turn) => {
-                let item = turn.items.find(
-                  (i: any) => i.type === 'tool_call' && i.toolCallId === value.toolCall.toolCallId,
-                );
-                if (!item) turn.items.push((item = { ...value.toolCall, type: 'tool_call' }));
-                item.permissionRequest = { requestId, options: value.options };
+              const request = structuredClone(value);
+              run.permissions.set(requestId, {
+                options: request.options,
+                toolCall: request.toolCall,
+                resolve,
               });
+              try {
+                this.edit(
+                  id,
+                  run,
+                  (turn) => {
+                    let item = turn.items.findLast(
+                      (i: any) =>
+                        i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
+                    );
+                    // A tool may ask again or have concurrent permission requests.
+                    // Keep every request addressable by its own immutable id.
+                    if (!item || item.permissionRequest) turn.items.push((item = {}));
+                    Object.assign(item, request.toolCall, {
+                      type: 'tool_call',
+                      permissionRequest: { requestId, options: request.options },
+                    });
+                  },
+                  () => {
+                    this.store.attention.recordPermission({
+                      sessionId: id,
+                      assistantTurnId: run.turnId,
+                      userTurnId: run.userTurnId,
+                      localProjectId: project.id,
+                      requestId,
+                      summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
+                    });
+                  },
+                );
+              } catch (error) {
+                run.permissions.delete(requestId);
+                resolve({ outcome: { outcome: 'cancelled' } });
+                throw error;
+              }
             });
           },
         },
@@ -378,14 +688,45 @@ export class HostWorkspace {
       if (this.active.get(id) === run) this.active.delete(id);
     }
   }
-  finish(id: string, run: Active, status: string, message?: string) {
+  finish(id: string, run: Active, status: string, message?: string, cause?: AttentionCause) {
     if (run.stopped || this.closed) return;
+    const previous = this.store.meta;
+    this.store.meta = Flock.fromFile(previous.exportFile());
     putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-    this.edit(id, run, (turn) => {
-      turn.finished = true;
-      turn.status = status;
-      if (message) turn.items.push({ type: 'system_notice', name: 'chat_failed', message });
-    });
+    try {
+      this.edit(
+        id,
+        run,
+        (turn) => {
+          turn.finished = true;
+          turn.status = status;
+          if (message) turn.items.push({ type: 'system_notice', name: 'chat_failed', message });
+        },
+        (turn) => {
+          const project = metas(this.meta)['session-' + id]?.project as { localProjectId: string };
+          const text = [...(turn.items ?? [])].reverse().find((i: any) => i.type === 'text')?.text;
+          this.store.attention.recordOutcome({
+            sessionId: id,
+            assistantTurnId: run.turnId,
+            userTurnId: run.userTurnId,
+            localProjectId: project.localProjectId,
+            cause:
+              cause ??
+              (status === 'handled'
+                ? 'agent_returned'
+                : status === 'canceled'
+                  ? 'user_canceled'
+                  : 'execution_failed'),
+            summary: String(
+              message ?? text ?? (status === 'handled' ? '本轮执行结束' : '本轮执行未完成'),
+            ).slice(0, 240),
+          });
+        },
+      );
+    } catch (error) {
+      this.store.meta = previous;
+      throw error;
+    }
     run.stopped = true;
   }
   async cancel(sessionId: string, turnId: string, localProjectId?: string) {
@@ -414,13 +755,28 @@ export class HostWorkspace {
   }
   close() {
     if (this.closed) return;
+    const errors: unknown[] = [];
     for (const [id, run] of this.active) {
-      this.finish(id, run, 'failed', '执行主机已停止；请手动发送新的指令。');
-      for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
-      run.session?.close();
+      try {
+        this.finish(id, run, 'failed', '执行主机已停止；请手动发送新的指令。', 'host_stopped');
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        // Failure to persist the terminal fact must never keep our Agent alive.
+        // The unfinished persisted turn is recovered on the next host startup.
+        run.stopped = true;
+        for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
+        run.permissions.clear();
+        try {
+          void Promise.resolve(run.session?.close()).catch((error) => console.error(error));
+        } catch (error) {
+          errors.push(error);
+        }
+      }
     }
     this.closed = true;
     this.active.clear();
     this.watches.clear();
+    if (errors.length) throw new AggregateError(errors, '主机已停止，但部分回合状态未能保存');
   }
 }

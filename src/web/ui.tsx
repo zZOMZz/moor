@@ -30,6 +30,7 @@ import {
   SquarePen,
   X,
   RefreshCw,
+  Inbox,
 } from 'lucide-react';
 import type { Workspace } from '../catalog';
 import type { RunCapabilities, RunSelection } from '../run-config';
@@ -141,6 +142,9 @@ export function Shell({
             </div>
           </header>
           <div id="notice" role="alert" />
+          <section id="attention-view" aria-label="待我处理工作台" hidden>
+            <Content name="#attention-view" />
+          </section>
           <div id="history" aria-label="会话内容">
             <div className="welcome">
               <div className="welcome-mark">
@@ -395,6 +399,9 @@ type NavigationProps = {
   actionSession?: SessionSummary;
   listLoading?: boolean;
   listError?: string;
+  attentionActive?: boolean;
+  attentionCount?: number;
+  onAttention?: () => void;
   onWorkspace: (id: string) => void;
   onHost: (id: string) => void;
   onSearch: (value: string) => void;
@@ -492,6 +499,18 @@ export function Navigation(p: NavigationProps) {
           </Menu.Item>
         </PopupMenu>
       </div>
+      {p.onAttention && (
+        <button
+          type="button"
+          className={`attention-entry ${p.attentionActive ? 'selected' : ''}`}
+          aria-current={p.attentionActive ? 'page' : undefined}
+          onClick={p.onAttention}
+        >
+          <Inbox />
+          待我处理
+          {p.attentionCount !== undefined && <span>{p.attentionCount}</span>}
+        </button>
+      )}
       <button id="new" className="new-session" disabled={!p.canCreate} onClick={p.onNew}>
         <SquarePen />
         新会话<span className="shortcut">＋</span>

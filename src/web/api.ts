@@ -1,7 +1,11 @@
+import type { AttentionActor } from '../attention';
+
 export interface Identity {
   owner: string | null;
   needsSetup: boolean;
   localOnly?: boolean;
+  actor?: AttentionActor;
+  attentionFeatures?: string[];
 }
 
 export class ApiError extends Error {

@@ -9,6 +9,7 @@ import { RuntimeStore } from '../src/runtime/store';
 import type { AgentDriver } from '../src/runtime/agent';
 import { Store } from '../src/relay/accounts';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../src/model';
+import type { AttentionContext, AttentionListQuery } from '../src/attention';
 import {
   sessionActionSchema,
   type Mutation,
@@ -181,6 +182,7 @@ test('relay database contains only identity and organization records, never sess
       'pair',
       'project',
       'project_replica',
+      'service_identity',
       'workspace',
     ],
   );
@@ -428,7 +430,7 @@ test('session action schema permits only explicit scoped metadata operations', (
 test('session actions preserve transcript, files, native context and lifecycle without an Agent prompt', async (t) => {
   const f = fixture();
   t.after(f.close);
-  strict.deepEqual(f.host.workspace.features, ['session-actions']);
+  strict.ok(f.host.workspace.features?.includes('session-actions'));
   await f.host.mutate(request(f));
   await f.started;
   const before = metas(f.meta)['session-session-a'];
@@ -642,4 +644,223 @@ test('legacy sessions receive metadata defaults on first action and browser CRDT
   }
   strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 1);
   strict.equal(f.dispatches(), 1);
+});
+
+const attentionQuery: AttentionListQuery = { view: 'pending', limit: 50 };
+function attentionContext(f: ReturnType<typeof fixture>, sessionId?: string): AttentionContext {
+  return {
+    actor: { kind: 'relay', authorityId: 'authority-a', accountId: 'account-a' },
+    executionDeviceId: 'device-a',
+    machineId: f.host.workspace.machineId,
+    runtimeWorkspaceId: f.host.workspace.id,
+    localProjectId: 'project-a',
+    catalogWorkspaceId: 'catalog-a',
+    projectId: 'logical-a',
+    replicaId: 'replica-a',
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
+test('attention approval reads never approve; exact scoped retry responds only once', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  const waiting = f.permission();
+  const list = f.host.attentionList(attentionContext(f), attentionQuery);
+  strict.equal(list.total, 1);
+  const item = list.sessions[0].items[0],
+    context = attentionContext(f, item.sessionId);
+  const detail = f.host.attentionDetail(context, item.itemId);
+  strict.equal(detail.permission?.requestId, item.requestId);
+  await f.host.attentionSeen(context, item.itemId, {
+    operationId: crypto.randomUUID(),
+    eventRevision: item.eventRevision,
+  });
+  strict.equal(f.host.active.get(item.sessionId)!.permissions.size, 1);
+  await strict.rejects(
+    f.host.attentionDisposition(context, item.itemId, {
+      operationId: crypto.randomUUID(),
+      eventRevision: item.eventRevision,
+      observationRevision: 0,
+      disposition: 'checked',
+    }),
+  );
+  const choice = {
+    operationId: crypto.randomUUID(),
+    eventRevision: item.eventRevision,
+    requestId: item.requestId!,
+    expectedTurnId: item.userTurnId,
+    optionId: 'allow',
+  };
+  const receipt = await f.host.attentionPermission(context, item.itemId, choice);
+  strict.deepEqual(await waiting, { outcome: { outcome: 'selected', optionId: 'allow' } });
+  strict.deepEqual(await f.host.attentionPermission(context, item.itemId, choice), receipt);
+  await strict.rejects(
+    f.host.attentionPermission(context, item.itemId, { ...choice, optionId: 'deny' }),
+  );
+  await strict.rejects(
+    f.host.attentionPermission(
+      { ...context, executionDeviceId: 'new-device' },
+      item.itemId,
+      choice,
+    ),
+  );
+  strict.equal(f.host.attentionList(attentionContext(f), attentionQuery).total, 0);
+  strict.equal(f.dispatches(), 1);
+});
+
+test('attention observations are actor scoped and old checked results do not clear new turns', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  await f.finish();
+  const item = f.host.attentionList(attentionContext(f), attentionQuery).sessions[0].items[0];
+  const context = attentionContext(f, item.sessionId);
+  const decision = {
+    operationId: crypto.randomUUID(),
+    eventRevision: item.eventRevision,
+    observationRevision: 0,
+    disposition: 'checked' as const,
+  };
+  await f.host.attentionDisposition(context, item.itemId, decision);
+  strict.equal(f.host.attentionList(attentionContext(f), attentionQuery).total, 0);
+  const another = attentionContext(f);
+  another.actor = { ...another.actor, authorityId: 'authority-b' };
+  strict.equal(f.host.attentionList(another, attentionQuery).total, 1);
+  await strict.rejects(
+    f.host.attentionDisposition({ ...context, localProjectId: 'other' }, item.itemId, decision),
+  );
+  await f.host.mutate(request(f));
+  await f.finish();
+  const next = f.host.attentionList(attentionContext(f), attentionQuery).sessions[0].items;
+  strict.equal(next.length, 1);
+  strict.notEqual(next[0].itemId, item.itemId);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'checked');
+});
+
+test('attention continuation commits the new turn and original disposition atomically', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  await f.finish();
+  const item = f.host.attentionList(attentionContext(f), attentionQuery).sessions[0].items[0];
+  const context = attentionContext(f, item.sessionId);
+  await f.host.attentionDisposition(context, item.itemId, {
+    operationId: crypto.randomUUID(),
+    eventRevision: item.eventRevision,
+    observationRevision: 0,
+    disposition: 'needs_followup',
+  });
+  const continuation = {
+    mutation: request(f),
+    eventRevision: item.eventRevision,
+    observationRevision: 1,
+  };
+  f.journal.db.exec(
+    "CREATE TRIGGER fail_attention_receipt BEFORE INSERT ON attention_receipt BEGIN SELECT RAISE(ABORT, 'synthetic receipt failure'); END",
+  );
+  await strict.rejects(f.host.attentionContinue(context, item.itemId, continuation));
+  strict.equal(f.dispatches(), 1);
+  strict.equal(f.journal.has(continuation.mutation.operationId), false);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
+  const doc = mirror(f.store.doc(item.sessionId), item.sessionId);
+  strict.equal(doc.getState().history.length, 2);
+  doc.dispose();
+  f.journal.db.exec('DROP TRIGGER fail_attention_receipt');
+  const receipt = await f.host.attentionContinue(context, item.itemId, continuation);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'continued');
+  strict.deepEqual(await f.host.attentionContinue(context, item.itemId, continuation), receipt);
+  await strict.rejects(f.host.mutate(continuation.mutation));
+  await f.finish();
+  strict.equal(f.dispatches(), 2);
+  strict.deepEqual(await f.host.attentionContinue(context, item.itemId, continuation), receipt);
+  strict.equal(f.dispatches(), 2);
+});
+
+test('attention permission persistence failure leaves no actionable memory request or partial tool card', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  f.journal.db.exec(
+    "CREATE TRIGGER fail_attention_fact BEFORE INSERT ON attention_item BEGIN SELECT RAISE(ABORT, 'synthetic fact failure'); END",
+  );
+  strict.deepEqual(await f.permission(), { outcome: { outcome: 'cancelled' } });
+  strict.equal(f.host.active.get('session-a')!.permissions.size, 0);
+  const view = mirror(f.store.doc('session-a'), 'session-a');
+  strict.equal(view.getState().history.at(-1)!.items!.length, 0);
+  view.dispose();
+  strict.equal(f.host.attentionList(attentionContext(f), attentionQuery).total, 0);
+  f.journal.db.exec('DROP TRIGGER fail_attention_fact');
+});
+
+test('attention keeps repeated requests for the same tool independently addressable', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  const first = f.permission(),
+    second = f.permission();
+  const items = f.host.attentionList(attentionContext(f), attentionQuery).sessions[0].items;
+  strict.equal(items.length, 2);
+  strict.notEqual(items[0].requestId, items[1].requestId);
+  for (const [index, item] of items.entries()) {
+    const context = attentionContext(f, item.sessionId);
+    const detail = f.host.attentionDetail(context, item.itemId);
+    strict.equal((detail.permission!.toolCall as any).toolCallId, 'tool-1');
+    await f.host.attentionPermission(context, item.itemId, {
+      operationId: crypto.randomUUID(),
+      eventRevision: item.eventRevision,
+      requestId: item.requestId!,
+      expectedTurnId: item.userTurnId,
+      optionId: index === 0 ? 'allow' : 'deny',
+    });
+  }
+  strict.deepEqual(await first, { outcome: { outcome: 'selected', optionId: 'allow' } });
+  strict.deepEqual(await second, { outcome: { outcome: 'selected', optionId: 'deny' } });
+  strict.equal(f.host.attentionList(attentionContext(f), attentionQuery).total, 0);
+});
+
+test('host shutdown releases Agent and permissions even when terminal fact persistence fails', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  const permission = f.permission();
+  const run = f.host.active.get('session-a')!;
+  f.journal.db.exec(
+    "CREATE TRIGGER fail_attention_shutdown BEFORE INSERT ON attention_item BEGIN SELECT RAISE(ABORT, 'synthetic shutdown failure'); END",
+  );
+  strict.throws(() => f.host.close(), /部分回合状态未能保存/);
+  strict.equal(f.host.closed, true);
+  strict.equal(f.host.active.size, 0);
+  strict.equal(run.stopped, true);
+  strict.equal(run.permissions.size, 0);
+  strict.deepEqual(await permission, { outcome: { outcome: 'cancelled' } });
+  await run.done;
+  const view = mirror(f.store.doc('session-a'), 'session-a');
+  strict.equal(view.getState().history.at(-1)!.finished, false);
+  view.dispose();
+});
+
+test('background terminal persistence failure closes the host through a handled failure path', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const errors = t.mock.method(console, 'error', () => {});
+  await f.host.mutate(request(f));
+  await f.started;
+  f.journal.db.exec(
+    "CREATE TRIGGER fail_attention_finish BEFORE INSERT ON attention_item BEGIN SELECT RAISE(ABORT, 'synthetic terminal failure'); END",
+  );
+  await f.finish();
+  strict.equal(f.host.closed, true);
+  strict.equal(f.host.active.size, 0);
+  strict.equal(errors.mock.callCount(), 1);
+  await strict.rejects(f.host.mutate(request(f)), /本机执行服务已停止/);
+  const view = mirror(f.store.doc('session-a'), 'session-a');
+  strict.equal(view.getState().history.at(-1)!.finished, false);
+  view.dispose();
 });

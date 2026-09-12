@@ -591,6 +591,348 @@ textarea::placeholder {
   min-width: 0;
   overflow: hidden;
 }
+.attention-entry {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: transparent;
+  text-align: left;
+}
+.attention-entry.selected,
+.attention-entry:hover {
+  background: var(--surface-muted);
+}
+.attention-entry span {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.attention-mode > #history,
+.attention-mode > #composer,
+.attention-mode > #session-action-state {
+  display: none !important;
+}
+#attention-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  container: attention / inline-size;
+}
+.attention-workbench {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.attention-heading {
+  padding: 22px 28px 14px;
+}
+.attention-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 500;
+}
+.attention-heading p,
+.attention-coverage,
+.attention-help {
+  color: var(--muted);
+  font-size: 12px;
+}
+.attention-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--border);
+}
+.attention-tabs {
+  display: flex;
+  gap: 20px;
+}
+.attention-tabs button {
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 11px 0;
+  color: var(--muted);
+}
+.attention-tabs button[aria-pressed='true'] {
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+}
+.attention-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 28px 0;
+}
+.attention-filters label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+.attention-filters select {
+  max-width: 190px;
+  min-width: 0;
+  padding: 6px 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.attention-coverage,
+.attention-error {
+  margin: 12px 28px;
+}
+.attention-error {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 13px;
+}
+.attention-columns {
+  display: grid;
+  grid-template-columns: minmax(230px, 34%) minmax(0, 1fr);
+  border-top: 1px solid var(--border);
+}
+.attention-list {
+  border-right: 1px solid var(--border);
+  padding: 18px 10px 28px;
+  min-width: 0;
+}
+.attention-group + .attention-group {
+  margin-top: 22px;
+}
+.attention-group h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.attention-group h2 span {
+  font-size: 11px;
+}
+.attention-row {
+  display: block;
+  width: 100%;
+  padding: 14px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+}
+.attention-row:hover,
+.attention-row[aria-current='true'] {
+  background: var(--surface-muted);
+}
+.attention-row-title,
+.attention-detail-status,
+.attention-help:has(svg) {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.attention-row-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+.attention-workbench svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+}
+.attention-row small,
+.attention-row-summary {
+  display: block;
+  margin-top: 6px;
+  padding-left: 24px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.attention-row-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  font-size: 12px;
+}
+.attention-source-state {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 0 12px;
+}
+.attention-source-state button {
+  max-width: 100%;
+}
+.attention-detail {
+  padding: 22px 28px 35px;
+  min-width: 0;
+}
+.attention-detail > h2 {
+  margin: 10px 0;
+  font-size: 20px;
+  font-weight: 500;
+}
+.attention-detail > p {
+  font-size: 13px;
+}
+.attention-detail-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+.attention-facts {
+  display: grid;
+  grid-template-columns: 65px minmax(0, 1fr);
+  gap: 10px 14px;
+  margin: 22px 0 12px;
+  font-size: 12px;
+}
+.attention-facts dt {
+  color: var(--muted);
+}
+.attention-facts dd {
+  margin: 0;
+}
+.attention-text-button,
+.attention-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.attention-back {
+  display: none;
+}
+.attention-context,
+.attention-draft {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.attention-context h3,
+.attention-draft > label {
+  font-size: 13px;
+  font-weight: 500;
+}
+.attention-context summary {
+  font-size: 12px;
+  cursor: pointer;
+  padding: 8px 0;
+}
+.attention-context pre,
+.attention-draft-insertion pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.attention-context small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.attention-actions,
+.attention-item-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.attention-actions button,
+.attention-receipt button,
+.attention-item-picker button,
+.attention-source-state button,
+.attention-draft-insertion button {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+}
+.attention-receipt {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 18px;
+  font-size: 12px;
+}
+.attention-draft textarea {
+  width: 100%;
+  min-height: 130px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+.attention-empty {
+  color: var(--muted);
+  padding: 28px 14px;
+  font-size: 13px;
+}
+.attention-draft-insertion {
+  font-size: 12px;
+}
+@container attention (max-width: 590px) {
+  .attention-columns {
+    display: block;
+  }
+  .attention-list {
+    border: 0;
+  }
+  .attention-detail {
+    display: none;
+    padding: 14px 18px 28px;
+  }
+  .attention-workbench.detail-open .attention-list {
+    display: none;
+  }
+  .attention-workbench.detail-open .attention-detail {
+    display: block;
+  }
+  .attention-back {
+    display: inline-flex;
+    margin-bottom: 14px;
+  }
+  .attention-heading {
+    padding: 16px 18px 12px;
+  }
+  .attention-toolbar,
+  .attention-filters {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  .attention-coverage,
+  .attention-error {
+    margin-left: 18px;
+    margin-right: 18px;
+  }
+  .attention-workbench button {
+    min-height: 44px;
+  }
+  .attention-draft textarea {
+    font-size: 16px;
+  }
+}
 .session-toolbar {
   display: flex;
   align-items: center;

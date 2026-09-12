@@ -1,9 +1,10 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, chmodSync, statSync, realpathSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
-import { Flock, LoroDoc, mirror, putMeta } from '../model';
+import { Flock, LoroDoc, metas, mirror, putMeta } from '../model';
 import { Journal } from '../bridge/journal';
 import type { RuntimeWorkspace } from '../protocol';
+import { AttentionStore } from './attention-store';
 
 // One host-owned database commits documents, metadata and delivery receipts together.
 export class RuntimeStore {
@@ -11,7 +12,8 @@ export class RuntimeStore {
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
-  constructor(file: string) {
+  attention: AttentionStore;
+  constructor(file: string, options: { now?: () => number } = {}) {
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.journal = new Journal(file);
     if (file !== ':memory:') chmodSync(file, 0o600);
@@ -35,30 +37,50 @@ export class RuntimeStore {
     this.meta = this.loadFlock('meta');
     this.machine = this.loadFlock('machine');
     this.save('identity', Buffer.from(JSON.stringify(this.workspace)));
-    // A restart settles interrupted turns, but never starts a queued prompt.
-    for (const row of this.journal.db.prepare('SELECT id FROM session').all()) {
-      const id = String(row.id),
-        doc = this.doc(id),
-        view = mirror(doc, id);
-      let interrupted = false;
-      view.setState((state) => {
-        for (const turn of state.history)
-          if (turn.role === 'assistant' && !turn.finished) {
-            turn.finished = true;
-            turn.status = 'failed';
-            (turn.items ??= []).push({
-              type: 'system_notice',
-              name: 'chat_failed',
-              message: '执行主机已重启；回合已中断，请手动发送新的指令。',
-            });
-            interrupted = true;
+    try {
+      // Establish the historical boundary before interrupted turns become new
+      // terminal facts. A restart never recreates an executable permission.
+      this.attention = new AttentionStore(this, options.now);
+      this.transaction(() => {
+        this.attention.invalidatePermissions();
+        for (const row of this.journal.db.prepare('SELECT id FROM session').all()) {
+          const id = String(row.id),
+            doc = this.doc(id),
+            view = mirror(doc, id),
+            localProjectId = (metas(this.meta)['session-' + id]?.project as any)?.localProjectId;
+          let interrupted = false;
+          view.setState((state) => {
+            for (const turn of state.history)
+              if (turn.role === 'assistant' && !turn.finished) {
+                turn.finished = true;
+                turn.status = 'failed';
+                (turn.items ??= []).push({
+                  type: 'system_notice',
+                  name: 'chat_failed',
+                  message: '执行主机已重启；回合已中断，请手动发送新的指令。',
+                });
+                if (typeof localProjectId === 'string')
+                  this.attention.recordOutcome({
+                    sessionId: id,
+                    assistantTurnId: turn.id,
+                    userTurnId: turn.userTurnId ?? '',
+                    localProjectId,
+                    cause: 'host_restarted',
+                    summary: this.attention.summary(turn.items),
+                  });
+                interrupted = true;
+              }
+          });
+          view.dispose();
+          if (interrupted) {
+            putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+            this.persist(id, doc);
           }
+        }
       });
-      view.dispose();
-      if (interrupted) {
-        putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-        this.persist(id, doc);
-      }
+    } catch (error) {
+      this.journal.close();
+      throw error;
     }
   }
   load(key: string) {
