@@ -47,6 +47,7 @@ let settingsWindow,
   bridgeStatus = '正在启动',
   hostStatus = { state: 'starting', message: '正在启动本机执行组件', attempt: 0 },
   bridgeHealth = { local: 'unavailable', relay: 'unpaired', workspaces: 0 },
+  cliUnavailable = false,
   recovering = false,
   restart;
 let requestedView = 'local';
@@ -265,6 +266,15 @@ function health() {
     },
     recovering,
     notifications: nativeNotifications.state(),
+    ...(cliUnavailable
+      ? {
+          cli: {
+            state: 'unavailable',
+            message:
+              '本机 CLI 不可用：请将私有配置目录移到项目和程序发行目录外，并确保仅本用户可写。本机界面仍可使用。',
+          },
+        }
+      : {}),
   };
 }
 function startBridge() {
@@ -287,6 +297,7 @@ function startBridge() {
     windowsHide: true,
   });
   bridge = child;
+  cliUnavailable = false;
   bridgeStatus = '正在连接本机执行组件';
   bridgeHealth = {
     local: 'unavailable',
@@ -296,6 +307,10 @@ function startBridge() {
   child.stderr.on('data', () => {}); // Do not surface raw process logs or local secrets in settings.
   child.on('message', async (message) => {
     if (bridge !== child) return;
+    if (message?.type === 'cli-unavailable') {
+      cliUnavailable = true;
+      return;
+    }
     if (githubSettings.receive(child, message)) return;
     if (previewSettings.receive(child, message)) return;
     if (skillsSettings.receive(child, message)) return;

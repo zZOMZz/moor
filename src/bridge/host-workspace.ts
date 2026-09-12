@@ -34,6 +34,8 @@ import { SKILLS_FEATURE, type SkillsRead } from '../skills-protocol';
 import { SessionSkillsManager, type SessionSkillsOptions } from '../runtime/session-skills';
 import { ROLE_FEATURE, type RolesRead, type RolesActionRequest } from '../role-protocol';
 import { SessionRolesManager } from '../runtime/session-roles';
+import { SessionControlManager } from '../runtime/session-control';
+import { SESSION_CONTROL_FEATURE } from '../session-control-protocol';
 import {
   normalizeAgentContent,
   normalizeAgentToolContent,
@@ -160,6 +162,7 @@ export class HostWorkspace {
   previewManager: SessionPreviewManager;
   skillsManager: SessionSkillsManager;
   rolesManager: SessionRolesManager;
+  controlManager: SessionControlManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -188,6 +191,7 @@ export class HostWorkspace {
     this.previewManager = new SessionPreviewManager(this, preview);
     this.skillsManager = new SessionSkillsManager(this, skills);
     this.rolesManager = new SessionRolesManager(this);
+    this.controlManager = new SessionControlManager(this);
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -231,6 +235,7 @@ export class HostWorkspace {
       SKILLS_FEATURE,
       ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
+      SESSION_CONTROL_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -378,6 +383,7 @@ export class HostWorkspace {
           name.startsWith('session-') &&
           m.id &&
           m.machineId === this.workspace.machineId &&
+          m.userId === this.workspace.userId &&
           (!localProjectId || (m.project as any)?.localProjectId === localProjectId),
       )
       .map(([, m]) => m)
@@ -414,7 +420,15 @@ export class HostWorkspace {
         ? { agent: this.agentDescriptor(agent) }
         : {}),
       meta: metas(this.meta)['session-' + sessionId],
-      metaBundle: this.meta.exportJson(),
+      metaBundle: {
+        ...this.meta.exportJson(),
+        entries: Object.fromEntries(
+          Object.entries(this.meta.exportJson().entries).filter(([key]) => {
+            const parts = JSON.parse(key);
+            return parts[1] === 'session-' + sessionId && ['e', 'm'].includes(parts[0]);
+          }),
+        ),
+      },
       update: delta(
         this.active.get(sessionId)?.doc ??
           this.settlementFailures.get(sessionId) ??
@@ -448,7 +462,8 @@ export class HostWorkspace {
       this.checkProject(action.sessionId, action.localProjectId);
       const journal = this.store.journal;
       const receipt = journal.lookup(this.workspace.id, action);
-      if (receipt?.phase === 'accepted') return JSON.parse(receipt.result);
+      if (receipt && ['accepted', 'operation-abandoned'].includes(receipt.phase))
+        return JSON.parse(receipt.result);
       const name = 'session-' + action.sessionId,
         current = metas(this.meta)[name],
         revision = current.metadataRevision ?? 0;
@@ -1097,7 +1112,8 @@ export class HostWorkspace {
       const record = journal.lookup(this.workspace.id, m);
       if (metas(this.meta)['session-' + m.sessionId] || record)
         this.checkProject(m.sessionId, localProjectId);
-      if (record?.phase === 'accepted') return JSON.parse(record.result);
+      if (record && ['accepted', 'operation-abandoned'].includes(record.phase))
+        return JSON.parse(record.result);
       assert(
         !this.settlementFailures.has(m.sessionId),
         409,
@@ -1548,20 +1564,25 @@ export class HostWorkspace {
     run.stopped = true;
   }
   async cancel(sessionId: string, turnId: string, localProjectId?: string) {
-    return this.serial(sessionId, async () => {
-      this.ensureConnected();
-      this.checkProject(sessionId, localProjectId);
-      const run = this.active.get(sessionId);
-      assert(run && !run.stopped && run.turnId === turnId, 409, '该回合已经结束');
-      run.terminal = { status: 'canceled' };
-      run.stopped = true;
-      this.interactions.cancelPending(sessionId, run);
-      for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
-      await run.session?.cancel().catch(() => {});
-      await run.session?.close();
-      await run.done;
-      return { success: true };
-    });
+    return this.serial(sessionId, () => this.cancelLocked(sessionId, turnId, localProjectId));
+  }
+  sessionChanged(sessionId: string) {
+    this.changed(sessionId);
+  }
+  // Called only while holding the session serial lock, including durable control.
+  async cancelLocked(sessionId: string, turnId: string, localProjectId?: string) {
+    this.ensureConnected();
+    this.checkProject(sessionId, localProjectId);
+    const run = this.active.get(sessionId);
+    assert(run && !run.stopped && run.turnId === turnId, 409, '该回合已经结束');
+    run.terminal = { status: 'canceled' };
+    run.stopped = true;
+    this.interactions.cancelPending(sessionId, run);
+    for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
+    await run.session?.cancel().catch(() => {});
+    await run.session?.close();
+    await run.done;
+    return { success: true };
   }
   async serial<T>(id: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(id) ?? Promise.resolve();

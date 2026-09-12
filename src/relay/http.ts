@@ -29,6 +29,26 @@ import {
   sessionActionSchema,
 } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
+import {
+  SESSION_CONTROL_FEATURE,
+  SESSION_CONTROL_LIMITS,
+  sessionControlActionSchema,
+  sessionOperationSchema,
+  validateSessionControlReceipt,
+  validateSessionOperationResult,
+} from '../session-control-protocol';
+import {
+  SESSION_RESPONSE_LIMITS,
+  sessionBase64Schema,
+  sessionListSchema,
+  sessionReadResponseSchema,
+  mutationReceiptSchema,
+  sessionCancelSchema,
+  sessionCancelReceiptSchema,
+  validateSessionActionReceipt,
+  validateSessionBundle,
+  type SessionMetadata,
+} from '../session-responses';
 import { workspaceInputSchema, projectInputSchema, replicaAssignmentSchema } from '../catalog';
 import {
   FILE_CONTENT_FEATURE,
@@ -122,10 +142,13 @@ export function createApp(
     setupToken: string;
     publicDir?: string;
     localOnly?: boolean;
+    localInstanceId?: string;
+    localInstanceProof?: (challenge: string) => string;
     pushTransport?: WebPushTransport;
   },
 ) {
   let origin = new URL(options.origin).origin;
+  const localInstanceId = options.localInstanceId;
   const bridges = new Map<
     string,
     { socket: WebSocket; ready: boolean; workspaces: RuntimeWorkspace[] }
@@ -297,6 +320,13 @@ export function createApp(
           'roles-read',
           'roles-action',
           'agent-options',
+          'sessions',
+          'session',
+          'mutate',
+          'session-action',
+          'cancel',
+          'session-control',
+          'session-operations',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -401,6 +431,41 @@ export function createApp(
         /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:github-write\/(inspect|abandon)|preview\/(inspect|close))$/.test(
           path,
         );
+      const instanceHeader = req.headers['x-moor-instance'];
+      if (instanceHeader !== undefined)
+        assert(
+          options.localOnly === true &&
+            typeof localInstanceId === 'string' &&
+            instanceHeader === localInstanceId,
+          409,
+          '本机执行服务实例已变化，请重新连接',
+        );
+      if (path === '/api/local-instance' && req.method === 'GET') {
+        assert(
+          options.localOnly === true && typeof localInstanceId === 'string' && !closing,
+          404,
+          '未找到',
+        );
+        const queries = [...url.searchParams.entries()];
+        if (queries.length === 0) return json(res, 200, { instanceId: localInstanceId });
+        assert(queries.length === 1 && queries[0]![0] === 'challenge', 400, '本机实例挑战格式无效');
+        const challenge = queries[0]![1];
+        assert(
+          /^[A-Za-z0-9_-]{43}$/.test(challenge) &&
+            Buffer.from(challenge, 'base64url').toString('base64url') === challenge,
+          400,
+          '本机实例挑战格式无效',
+        );
+        assert(options.localInstanceProof, 404, '本机实例挑战不可用');
+        let proof: string;
+        try {
+          proof = options.localInstanceProof(challenge);
+        } catch {
+          throw new AppError(404, '本机实例挑战不可用');
+        }
+        assert(/^[a-f0-9]{64}$/.test(proof), 502, '本机实例证明不可用');
+        return json(res, 200, { instanceId: localInstanceId, challenge, proof });
+      }
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
@@ -515,6 +580,169 @@ export function createApp(
             workspaces: bridges.get(d.id)?.workspaces ?? [],
           })),
         );
+      function sessionBoundary(
+        deviceId: string,
+        runtime: RuntimeWorkspace,
+        localProjectId?: string,
+        catalogueCurrent?: () => void,
+      ) {
+        const snapshot = structuredClone(runtime),
+          socket = bridges.get(deviceId)?.socket;
+        // Legacy device and host-wide list requests have no single project route.
+        // Pin every registered project and its current catalogue assignment.
+        const mappings = () =>
+          store.catalog
+            .list(owner!, (device) => (online(device) ? bridges.get(device)!.workspaces : []))
+            .flatMap((space) =>
+              space.hosts
+                .filter(
+                  (host) => host.deviceId === deviceId && host.runtimeWorkspaceId === snapshot.id,
+                )
+                .flatMap((host) =>
+                  space.replicas
+                    .filter(
+                      (replica) =>
+                        replica.hostId === host.id &&
+                        (!localProjectId || replica.localProjectId === localProjectId),
+                    )
+                    .map((replica) => [
+                      space.id,
+                      host.id,
+                      replica.id,
+                      replica.projectId,
+                      replica.localProjectId,
+                    ]),
+                ),
+            );
+        const originalMappings = mappings();
+        const current = (feature?: string) => {
+          assert(!closing, 409, '执行服务正在关闭');
+          assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+          const device = store.device(owner!, deviceId);
+          const active = bridges.get(deviceId)?.workspaces.find((w) => w.id === snapshot.id);
+          const projects = (w: RuntimeWorkspace) =>
+            w.projects.filter((p) => !localProjectId || p.id === localProjectId);
+          assert(
+            online(deviceId) &&
+              bridges.get(deviceId)?.socket === socket &&
+              active?.userId === snapshot.userId &&
+              active?.machineId === snapshot.machineId &&
+              device.machine_id === snapshot.machineId &&
+              isDeepStrictEqual(projects(active), projects(snapshot)) &&
+              (!localProjectId || active.projects.some((p) => p.id === localProjectId)) &&
+              (!feature || active.features?.includes(feature)),
+            409,
+            '会话请求的执行范围已变化，请重新读取',
+          );
+          catalogueCurrent?.();
+          assert(
+            isDeepStrictEqual(mappings(), originalMappings),
+            409,
+            '会话请求的项目归属已变化，请重新读取',
+          );
+        };
+        current();
+        return { deviceId, runtime: snapshot, current };
+      }
+      function readSessionInput(sessionId: string) {
+        id.parse(sessionId);
+        const version = url.searchParams.get('version');
+        if (version !== null)
+          sessionBase64Schema.refine((value) => value.length <= 64 * 1024).parse(version);
+        return { sessionId, version: version ?? undefined };
+      }
+      async function sessionResponse(
+        boundary: ReturnType<typeof sessionBoundary>,
+        method: 'sessions' | 'session' | 'mutate' | 'session-action' | 'cancel',
+        input: any,
+        localProjectId?: string,
+      ) {
+        const feature = method === 'session-action' ? 'session-actions' : undefined;
+        boundary.current(feature);
+        let raw: unknown, failed: { error: unknown } | undefined;
+        try {
+          raw = await request(
+            boundary.deviceId,
+            method,
+            boundary.runtime.id,
+            input,
+            localProjectId,
+          );
+        } catch (error) {
+          failed = { error };
+        }
+        // Errors are deliveries too: no raw host diagnostic crosses a revoked scope.
+        boundary.current(feature);
+        if (failed) {
+          const error = failed.error;
+          throw new AppError(
+            error instanceof AppError &&
+              [400, 401, 403, 404, 409, 413, 429, 504].includes(error.status)
+              ? error.status
+              : 502,
+            method === 'session' || method === 'sessions'
+              ? '会话读取失败，请手动重新读取'
+              : '会话操作未能确认，请手动查询或重试原操作',
+            method !== 'cancel' && error instanceof AppError && error.rejected,
+          );
+        }
+        const limit =
+          method === 'session'
+            ? SESSION_RESPONSE_LIMITS.readBytes
+            : method === 'sessions'
+              ? SESSION_RESPONSE_LIMITS.listBytes
+              : SESSION_RESPONSE_LIMITS.receiptBytes;
+        assert(Buffer.byteLength(JSON.stringify(raw) ?? '') <= limit, 502, '会话响应超过限制');
+        const checkMeta = (meta: SessionMetadata) => {
+          assert(
+            meta.userId === boundary.runtime.userId &&
+              meta.machineId === boundary.runtime.machineId &&
+              boundary.runtime.projects.some((p) => p.id === meta.project.localProjectId) &&
+              (!localProjectId || meta.project.localProjectId === localProjectId) &&
+              (!input.sessionId || meta.id === input.sessionId),
+            502,
+            '会话响应与执行范围不匹配',
+          );
+        };
+        try {
+          if (method === 'sessions') {
+            const result = sessionListSchema.parse(raw);
+            assert(
+              new Set(result.map((meta) => meta.id)).size === result.length,
+              502,
+              '会话列表包含重复编号',
+            );
+            result.forEach(checkMeta);
+            return result;
+          }
+          if (method === 'session') {
+            const result = sessionReadResponseSchema.parse(raw);
+            checkMeta(result.meta);
+            validateSessionBundle(result);
+            assert(
+              !result.agent ||
+                (result.agent.id === result.meta.agentConfigId &&
+                  result.agent.cliType === result.meta.cliType &&
+                  result.agent.agentType === result.meta.agentType),
+              502,
+              '会话 Agent 版本不匹配',
+            );
+            return result;
+          }
+          if (method === 'session-action') {
+            const result = validateSessionActionReceipt(input, raw);
+            if (result.accepted) checkMeta(result.meta);
+            return result;
+          }
+          if (method === 'cancel') return sessionCancelReceiptSchema.parse(raw);
+          const result = mutationReceiptSchema.parse(raw);
+          assert(result.operationId === input.operationId, 502, '送达确认不属于原操作');
+          return result;
+        } catch (error) {
+          if (error instanceof AppError) throw error;
+          throw new AppError(502, '执行电脑返回的会话响应不可验证');
+        }
+      }
       const parts = path.split('/').filter(Boolean);
       if (path === '/api/workspaces') {
         if (req.method === 'GET')
@@ -565,13 +793,19 @@ export function createApp(
             changed(owner!, host.device_id);
             return json(res, 200, { ok: true });
           }
-          if (parts[5] === 'sessions' && req.method === 'GET') {
-            assert(
-              bridges.get(host.device_id)?.workspaces.some((w) => w.id === host.runtime_id),
-              409,
-              '本地主机工作区不可用',
-            );
-            return json(res, 200, await request(host.device_id, 'sessions', host.runtime_id, {}));
+          if (parts[5] === 'sessions' && parts.length === 6 && req.method === 'GET') {
+            const runtime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === host.runtime_id);
+            assert(runtime, 409, '本地主机工作区不可用');
+            const boundary = sessionBoundary(host.device_id, runtime, undefined, () => {
+              assert(
+                isDeepStrictEqual(store.catalog.binding(owner!, workspaceId, host.id), host),
+                409,
+                '主机工作区已变化',
+              );
+            });
+            return json(res, 200, await sessionResponse(boundary, 'sessions', {}, undefined));
           }
         }
         if (parts[3] === 'replicas' && parts[4]) {
@@ -1559,52 +1793,127 @@ export function createApp(
             );
             return json(res, 200, result);
           }
-          if (parts[5] === 'sessions' && req.method === 'GET')
-            return json(
-              res,
-              200,
-              parts[6]
-                ? await request(
-                    host.device_id,
-                    'session',
-                    host.runtime_id,
-                    { sessionId: parts[6], version: url.searchParams.get('version') ?? undefined },
-                    replica.local_id,
-                  )
-                : await request(host.device_id, 'sessions', host.runtime_id, {}, replica.local_id),
-            );
-          if (parts[5] === 'mutations' && req.method === 'POST') {
-            const mutation = mutationSchema.parse(await body(req));
-            assert(mutation.workspaceId === host.runtime_id, 400, '本地工作区不匹配');
-            return json(
-              res,
-              200,
-              await request(host.device_id, 'mutate', host.runtime_id, mutation, replica.local_id),
-            );
-          }
-          if (parts[5] === 'session-actions' && parts.length === 6 && req.method === 'POST') {
-            const action = sessionActionSchema.parse(await body(req));
+          if (
+            ['session-control', 'session-operations'].includes(parts[5] ?? '') &&
+            parts.length === 6 &&
+            req.method === 'POST'
+          ) {
+            const recovering = parts[5] === 'session-operations';
+            if (recovering) scopedRecoveryRequest = true;
+            const boundary = sessionBoundary(host.device_id, runtime!, replica.local_id, () => {
+              assert(
+                isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
+                409,
+                '会话请求的项目副本已变化',
+              );
+            });
+            const value = await body(req, SESSION_CONTROL_LIMITS.requestBytes);
+            const action = recovering ? undefined : sessionControlActionSchema.parse(value);
+            const recovery = recovering ? sessionOperationSchema.parse(value) : undefined;
+            const input = action ?? recovery!;
             assert(
-              action.workspaceId === host.runtime_id && action.localProjectId === replica.local_id,
+              input.workspaceId === host.runtime_id &&
+                input.localProjectId === replica.local_id &&
+                input.userId === runtime!.userId &&
+                input.machineId === runtime!.machineId,
               400,
-              '会话操作与项目副本不匹配',
+              '会话操作与执行范围不匹配',
             );
-            assert(
-              runtime?.features?.includes('session-actions'),
-              409,
-              '请先升级执行电脑上的 Moor',
-            );
-            return json(
-              res,
-              200,
-              await request(
+            boundary.current(SESSION_CONTROL_FEATURE);
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
                 host.device_id,
-                'session-action',
+                parts[5]!,
                 host.runtime_id,
-                action,
+                input,
                 replica.local_id,
-              ),
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            boundary.current(SESSION_CONTROL_FEATURE);
+            if (failed) {
+              const error = failed.error;
+              throw new AppError(
+                error instanceof AppError &&
+                  [400, 401, 403, 404, 409, 413, 429, 504].includes(error.status)
+                  ? error.status
+                  : 502,
+                '会话操作未能确认，请手动查询原操作',
+                !recovering && error instanceof AppError && error.rejected,
+              );
+            }
+            assert(
+              Buffer.byteLength(JSON.stringify(raw) ?? '') <= SESSION_CONTROL_LIMITS.responseBytes,
+              502,
+              '会话操作响应超过限制',
             );
+            let result;
+            try {
+              result = recovery
+                ? validateSessionOperationResult(raw, recovery)
+                : validateSessionControlReceipt(raw, input, { kind: 'control', value: action! });
+            } catch {
+              throw new AppError(502, '会话操作响应与原请求不匹配');
+            }
+            return json(res, 200, result);
+          }
+          const sessionRoute = ['sessions', 'mutations', 'session-actions', 'cancel'].includes(
+            parts[5] ?? '',
+          );
+          if (sessionRoute) {
+            const boundary = sessionBoundary(host.device_id, runtime!, replica.local_id, () => {
+              assert(
+                isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
+                409,
+                '会话请求的项目副本已变化',
+              );
+            });
+            if (parts[5] === 'sessions' && [6, 7].includes(parts.length) && req.method === 'GET') {
+              const input = parts.length === 7 ? readSessionInput(parts[6]!) : {};
+              return json(
+                res,
+                200,
+                await sessionResponse(
+                  boundary,
+                  parts.length === 7 ? 'session' : 'sessions',
+                  input,
+                  replica.local_id,
+                ),
+              );
+            }
+            if (parts[5] === 'mutations' && parts.length === 6 && req.method === 'POST') {
+              const mutation = mutationSchema.strict().parse(await body(req));
+              assert(mutation.workspaceId === host.runtime_id, 400, '本地工作区不匹配');
+              return json(
+                res,
+                200,
+                await sessionResponse(boundary, 'mutate', mutation, replica.local_id),
+              );
+            }
+            if (parts[5] === 'session-actions' && parts.length === 6 && req.method === 'POST') {
+              const action = sessionActionSchema.parse(await body(req, 4096));
+              assert(
+                action.workspaceId === host.runtime_id &&
+                  action.localProjectId === replica.local_id,
+                400,
+                '会话操作与项目副本不匹配',
+              );
+              return json(
+                res,
+                200,
+                await sessionResponse(boundary, 'session-action', action, replica.local_id),
+              );
+            }
+            if (parts[5] === 'cancel' && parts.length === 6 && req.method === 'POST') {
+              const input = sessionCancelSchema.parse(await body(req, 4096));
+              return json(
+                res,
+                200,
+                await sessionResponse(boundary, 'cancel', input, replica.local_id),
+              );
+            }
           }
           if (parts[5] === 'file-content' && parts.length === 6 && req.method === 'POST') {
             const input = projectFileReadSchema.parse(await body(req, 16 * 1024));
@@ -1972,16 +2281,6 @@ export function createApp(
               );
             return json(res, 200, result);
           }
-          if (parts[5] === 'cancel' && req.method === 'POST') {
-            const input = z
-              .object({ sessionId: z.string(), turnId: z.string() })
-              .parse(await body(req));
-            return json(
-              res,
-              200,
-              await request(host.device_id, 'cancel', host.runtime_id, input, replica.local_id),
-            );
-          }
         }
       }
       if (parts[0] === 'api' && parts[1] === 'devices' && parts[2]) {
@@ -1999,40 +2298,37 @@ export function createApp(
           .get(d.id)!
           .workspaces.find((w) => w.id === url.searchParams.get('workspace'));
         assert(ws, 404, '工作区不可用');
-        if (parts[3] === 'sessions' && parts.length === 4 && req.method === 'GET')
-          return json(res, 200, await request(d.id, 'sessions', ws.id, {}));
-        if (parts[3] === 'sessions' && parts[4] && req.method === 'GET')
+        const boundary = sessionBoundary(d.id, ws);
+        if (parts[3] === 'sessions' && [4, 5].includes(parts.length) && req.method === 'GET') {
+          const input = parts.length === 5 ? readSessionInput(parts[4]!) : {};
           return json(
             res,
             200,
-            await request(d.id, 'session', ws.id, {
-              sessionId: parts[4],
-              version: url.searchParams.get('version') ?? undefined,
-            }),
+            await sessionResponse(boundary, parts.length === 5 ? 'session' : 'sessions', input),
           );
-        if (parts[3] === 'mutations' && req.method === 'POST') {
-          const b = mutationSchema.parse(await body(req));
-          assert(ws.id === b.workspaceId, 400, '工作区不匹配');
-          return json(res, 200, await request(d.id, 'mutate', ws.id, b));
+        }
+        if (parts[3] === 'mutations' && parts.length === 4 && req.method === 'POST') {
+          const input = mutationSchema.strict().parse(await body(req));
+          assert(ws.id === input.workspaceId, 400, '工作区不匹配');
+          return json(res, 200, await sessionResponse(boundary, 'mutate', input));
         }
         if (parts[3] === 'session-actions' && parts.length === 4 && req.method === 'POST') {
-          const action = sessionActionSchema.parse(await body(req));
-          assert(ws.id === action.workspaceId, 400, '工作区不匹配');
+          const input = sessionActionSchema.parse(await body(req, 4096));
+          assert(ws.id === input.workspaceId, 400, '工作区不匹配');
           assert(
-            ws.projects.some((project) => project.id === action.localProjectId),
+            ws.projects.some((project) => project.id === input.localProjectId),
             404,
             '项目副本不可用',
           );
-          assert(ws.features?.includes('session-actions'), 409, '请先升级执行电脑上的 Moor');
           return json(
             res,
             200,
-            await request(d.id, 'session-action', ws.id, action, action.localProjectId),
+            await sessionResponse(boundary, 'session-action', input, input.localProjectId),
           );
         }
-        if (parts[3] === 'cancel' && req.method === 'POST') {
-          const b = z.object({ sessionId: z.string(), turnId: z.string() }).parse(await body(req));
-          return json(res, 200, await request(d.id, 'cancel', ws.id, b));
+        if (parts[3] === 'cancel' && parts.length === 4 && req.method === 'POST') {
+          const input = sessionCancelSchema.parse(await body(req, 4096));
+          return json(res, 200, await sessionResponse(boundary, 'cancel', input));
         }
       }
       assert(req.method === 'GET' && !path.startsWith('/api/'), 404, '未找到');

@@ -94,6 +94,11 @@ test('Moor GitHub credential and temporary files are reserved even when their pa
     'preview-v1.json',
     'src/preview-v1.json.tmp-synthetic',
     'skills-v1.json',
+    'bridge.json.cli.json',
+    'src/custom.CLI.JSON.tmp-synthetic',
+    'moor-cli-v1.sqlite',
+    'src/moor-cli-v1.sqlite-wal',
+    'src/moor-cli-v1.sqlite-shm',
     'src/SKILLS-v1.JSON.tmp-synthetic',
     'src/PREVIEW-V1.JSON',
   ]) {

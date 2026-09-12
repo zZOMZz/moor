@@ -71,12 +71,12 @@ $('remote').onclick = () => window.personal.open('remote');
 function renderHealth(value) {
   if (value.notifications && !notificationsBusy) renderNotifications(value.notifications);
   const cards = $('health-cards');
-  const labels = { host: '执行组件', local: '本机工作区', relay: '中转服务' };
+  const labels = { host: '执行组件', local: '本机工作区', relay: '中转服务', cli: '本机 CLI' };
   const signature = JSON.stringify(value);
   if (cards.dataset.state === signature) return;
   cards.dataset.state = signature;
   cards.replaceChildren();
-  for (const key of ['host', 'local', 'relay']) {
+  for (const key of ['host', 'local', 'relay', ...(value.cli ? ['cli'] : [])]) {
     const item = value[key],
       card = document.createElement('div'),
       heading = document.createElement('strong'),

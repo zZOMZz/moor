@@ -8,7 +8,7 @@ Moor 是独立的本地 Agent 执行主机，通过标准 [ACP](https://agentcli
 
 当前是个人使用的开发预览版：macOS Apple Silicon + Web/PWA。Windows、团队权限和公司 SSO 留待后续版本；macOS 安装包尚未完成开发者签名与公证。
 
-想了解设计与实现，可以从[文档目录](docs/README.md)开始：[概念与身份](docs/concepts.md)、[核心架构](docs/core.md)、[会话与回合](docs/session.md)、[同步与送达](docs/sync.md)、[运行与恢复](docs/runtime.md)。开发检查见[开发与验证](docs/development.md)，真机安排见[设备验收](docs/validation.md)，服务部署见[部署与迁移](deploy/README.md)。
+想了解设计与实现，可以从[文档目录](docs/README.md)开始：[概念与身份](docs/concepts.md)、[核心架构](docs/core.md)、[会话与回合](docs/session.md)、[同步与送达](docs/sync.md)、[运行与恢复](docs/runtime.md)。终端与脚本用法见[会话 CLI](docs/cli.md)，开发检查见[开发与验证](docs/development.md)，真机安排见[设备验收](docs/validation.md)，服务部署见[部署与迁移](deploy/README.md)。
 
 ## 0.2 的三个改进
 

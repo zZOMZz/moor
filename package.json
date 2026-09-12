@@ -10,6 +10,7 @@
     "build": "node scripts/build.mjs",
     "start": "node dist/server.mjs",
     "bridge": "node dist/bridge.mjs",
+    "cli": "node dist/cli.mjs",
     "dev": "tsx src/relay/main.ts",
     "deploy:check": "node scripts/deploy-relay.mjs check",
     "deploy:relay": "node scripts/deploy-relay.mjs deploy",

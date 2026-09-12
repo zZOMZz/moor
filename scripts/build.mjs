@@ -31,12 +31,17 @@ const hostBuild = await build({
   entryPoints: ['src/bridge/host-main.ts'],
   outfile: 'dist/bridge.mjs',
 });
+const cliBuild = await build({
+  ...nodeOptions,
+  entryPoints: ['src/cli/main.ts'],
+  outfile: 'dist/cli.mjs',
+});
 await cp('src/desktop/preview-renderer.cjs', 'dist/preview-renderer.cjs');
 await writeFile(
   'dist/THIRD_PARTY_NOTICES.txt',
   await browserNotices(
-    { ...relayBuild.metafile.inputs, ...hostBuild.metafile.inputs },
-    'host and relay',
+    { ...relayBuild.metafile.inputs, ...hostBuild.metafile.inputs, ...cliBuild.metafile.inputs },
+    'host, relay and CLI',
   ),
 );
 const browserBuild = await build({

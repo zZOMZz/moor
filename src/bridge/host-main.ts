@@ -1,7 +1,9 @@
 import { parseArgs } from 'node:util';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname, join, basename } from 'node:path';
 import { WebSocket } from 'ws';
 import { HostWorkspace } from './host-workspace';
 import { acquireRuntimeLock } from '../runtime/lock';
@@ -35,8 +37,14 @@ import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-confi
 import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
 import { AgentSettings } from '../runtime/agent-settings';
+import { sessionControlActionSchema, sessionOperationSchema } from '../session-control-protocol';
 import { skillsReadSchema } from '../skills-protocol';
 import { rolesReadSchema, rolesActionRequestSchema } from '../role-protocol';
+import {
+  assertLocalCliConnectionPath,
+  publishLocalCliConnection,
+  localCliProof,
+} from './local-cli-connection';
 import {
   previewReadSchema,
   previewActionSchema,
@@ -53,6 +61,7 @@ const { values } = parseArgs({
     project: { type: 'string', multiple: true },
     'builtin-agent': { type: 'string', multiple: true },
     desktop: { type: 'boolean' },
+    local: { type: 'boolean' },
     'public-dir': { type: 'string' },
     'github-config-dir': { type: 'string' },
     'github-config-stdin': { type: 'boolean' },
@@ -66,6 +75,16 @@ const configurationOnly =
   values['preview-config-stdin'] ||
   values['skills-config-stdin'] ||
   values['agent-config-stdin'];
+if (
+  values.local &&
+  (values.desktop || values.pair || values.server !== undefined || configurationOnly)
+) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({ error: '--local 不能同时使用桌面、远程连接、配对或本机配置命令' }) + '\n',
+  );
+  process.exit(1);
+}
 const configurationLabel = values['agent-config-stdin']
   ? 'Agent'
   : values['skills-config-stdin']
@@ -138,7 +157,7 @@ if (values.pair) {
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8'));
   } catch (e) {
-    if (!values.desktop && !configurationOnly) throw e;
+    if (!values.desktop && !values.local && !configurationOnly) throw e;
   }
 }
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
@@ -506,6 +525,16 @@ function connect(target: Target) {
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
           else if (m.method === 'roles-read')
             result = await workspace.readRoles(rolesReadSchema.parse(m.params), m.localProjectId);
+          else if (m.method === 'session-control')
+            result = await workspace.controlManager.control(
+              sessionControlActionSchema.parse(m.params),
+              m.localProjectId,
+            );
+          else if (m.method === 'session-operations')
+            result = await workspace.controlManager.recover(
+              sessionOperationSchema.parse(m.params),
+              m.localProjectId,
+            );
           else if (m.method === 'roles-action')
             result = await workspace.roleAction(
               rolesActionRequestSchema.parse(m.params),
@@ -673,46 +702,145 @@ function connect(target: Target) {
   });
 }
 let localApp: ReturnType<typeof createApp> | undefined, localStore: Store | undefined;
-if (values.desktop) {
-  // A loopback-only relay keeps the same UI usable without a public server.
-  // Persist product organization across restarts; session data belongs to the Moor execution host.
-  // Native main receives its credential over the private child-process IPC channel.
-  assert(Boolean(process.send), 500, '本机界面必须由客户端启动');
-  localStore = new Store(configPath + '.catalog.sqlite');
-  chmodSync(configPath + '.catalog.sqlite', 0o600);
-  localStore.db.prepare('DELETE FROM login').run();
-  const secret = localStore.hasAccount()
-    ? localStore.createLogin('local-desktop')
-    : await localStore.setup('local@localhost.invalid', token(), 'local-desktop');
-  const owner = localStore.owner(secret),
-    device = localStore.localDevice(owner, values.name ?? hostname());
-  localApp = createApp(localStore, {
-    origin: 'http://127.0.0.1:0',
-    setupToken: token(),
-    publicDir: values['public-dir'],
-    localOnly: true,
-  });
-  let localPort = 0;
+let cliConnection: ReturnType<typeof publishLocalCliConnection> | undefined;
+if (values.desktop || values.local) {
   try {
-    localPort = Number(readFileSync(configPath + '.local-port', 'utf8'));
-  } catch {}
-  await new Promise<void>((resolve, reject) => {
-    localApp!.server.once('error', reject);
-    localApp!.server.listen(localPort, '127.0.0.1', resolve);
-  });
-  const address = localApp.server.address();
-  assert(address && typeof address === 'object', 500, '无法启动本机界面');
-  writeFileSync(configPath + '.local-port', String(address.port), { mode: 0o600 });
-  const origin = 'http://127.0.0.1:' + address.port;
-  previewBlockedOrigins.add(origin);
-  localApp.setOrigin(origin);
-  targets.push({
-    config: { server: origin, ...device },
-    local: true,
-    watches: new Map(),
-    revoked: false,
-  });
-  process.send!({ type: 'local-ready', origin, secret });
+    // A loopback-only relay keeps the same UI usable without a public server.
+    // Persist product organization across restarts; session data belongs to the Moor execution host.
+    // Native main receives its credential over the private child-process IPC channel.
+    if (values.desktop) assert(Boolean(process.send), 500, '本机界面必须由客户端启动');
+    const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+    const applicationRoots: string[] = [];
+    for (let path = moduleDirectory; dirname(path) !== path; path = dirname(path))
+      if (basename(path).toLowerCase().endsWith('.app')) applicationRoots.push(path);
+    const connectionOptions = {
+      projectRoots: () => [
+        ...(values.project ?? []).map((path) => resolve(path)),
+        // Managed execution directories are private runtime children, not
+        // separately registered projects; credentials must stay outside them too.
+        join(dirname(runtimeFile), 'worktrees'),
+        ...runtime.machine
+          .scan({ prefix: ['localProject'] })
+          .map((row) => (row.value as { rootPath: string }).rootPath),
+      ],
+      distributionRoots: [
+        moduleDirectory,
+        ...applicationRoots,
+        ...(basename(moduleDirectory) === 'runtime' ? [dirname(moduleDirectory)] : []),
+      ],
+    };
+    let cliEnabled = true;
+    const cliUnavailable = () => {
+      const message =
+        '本机 CLI 不可用：请将私有配置目录移到项目和程序发行目录外，并确保仅本用户可写。';
+      console.error(message);
+      if (values.desktop && process.connected) process.send?.({ type: 'cli-unavailable' });
+    };
+    try {
+      assertLocalCliConnectionPath(configPath + '.cli.json', connectionOptions);
+    } catch (error) {
+      if (!values.desktop) throw error;
+      cliEnabled = false;
+      cliUnavailable();
+    }
+    const instanceId = 'instance_' + randomUUID();
+    localStore = new Store(configPath + '.catalog.sqlite');
+    chmodSync(configPath + '.catalog.sqlite', 0o600);
+    localStore.db.prepare('DELETE FROM login').run();
+    const secret = localStore.hasAccount()
+      ? localStore.createLogin('local-desktop')
+      : await localStore.setup('local@localhost.invalid', token(), 'local-desktop');
+    const owner = localStore.owner(secret),
+      device = localStore.localDevice(owner, values.name ?? hostname());
+    let cliProofSecret: string | undefined;
+    localApp = createApp(localStore, {
+      origin: 'http://127.0.0.1:0',
+      setupToken: token(),
+      publicDir: values['public-dir'],
+      localOnly: true,
+      localInstanceId: instanceId,
+      localInstanceProof: (challenge) => {
+        assert(cliProofSecret, 404, '本机 CLI 连接不可用');
+        assert(localStore?.owner(cliProofSecret) === owner, 404, '本机 CLI 连接不可用');
+        return localCliProof(instanceId, challenge, cliProofSecret);
+      },
+    });
+    let localPort = 0;
+    try {
+      localPort = Number(readFileSync(configPath + '.local-port', 'utf8'));
+    } catch {}
+    await new Promise<void>((resolve, reject) => {
+      localApp!.server.once('error', reject);
+      localApp!.server.listen(localPort, '127.0.0.1', resolve);
+    });
+    const address = localApp.server.address();
+    assert(address && typeof address === 'object', 500, '无法启动本机界面');
+    writeFileSync(configPath + '.local-port', String(address.port), { mode: 0o600 });
+    const origin = 'http://127.0.0.1:' + address.port;
+    previewBlockedOrigins.add(origin);
+    localApp.setOrigin(origin);
+    targets.push({
+      config: { server: origin, ...device },
+      local: true,
+      watches: new Map(),
+      revoked: false,
+    });
+    if (cliEnabled) {
+      const cliSecret = localStore.createLogin(owner);
+      cliProofSecret = cliSecret;
+      try {
+        cliConnection = publishLocalCliConnection(
+          configPath + '.cli.json',
+          {
+            version: 1,
+            instanceId,
+            origin,
+            secret: cliSecret,
+            ownerId: owner,
+            deviceId: device.id,
+            runtimeWorkspaceId: runtime.workspace.id,
+            machineId: runtime.workspace.machineId,
+            userId: runtime.workspace.userId,
+          },
+          connectionOptions,
+        );
+      } catch (error) {
+        cliProofSecret = undefined;
+        localStore.logout(cliSecret);
+        if (!values.desktop) throw error;
+        cliUnavailable();
+      }
+    }
+    process.once('exit', () => cliConnection?.remove());
+    if (values.desktop) process.send!({ type: 'local-ready', origin, secret });
+    else console.log('本机 CLI 连接已就绪');
+  } catch (error) {
+    stopped = true;
+    cliConnection?.remove();
+    // Startup has not connected a host socket or exposed the native credential.
+    // Revoke every bootstrap login even if listening or publication failed.
+    try {
+      localStore?.db.prepare('DELETE FROM login').run();
+    } catch {}
+    notifications.close();
+    for (const workspace of workspaces.values()) workspace.close();
+    await Promise.allSettled([
+      agentSettings.close(),
+      previewRenderer.closeAll(),
+      localApp?.close(),
+    ]);
+    try {
+      localStore?.close();
+    } catch {}
+    try {
+      runtime.close();
+    } catch {}
+    throw error instanceof AppError
+      ? error
+      : new AppError(500, '本机连接启动失败，请检查本机私有目录和端口');
+  }
+}
+if (values.desktop) {
   notifications.connect(nativeChannel, nativeGeneration, 'native', (event) => {
     if (stopped || !process.connected || !process.send) return false;
     process.send({ type: 'notification', event }, undefined, undefined, () => {});
@@ -853,6 +981,7 @@ if (values.desktop) {
 }
 if (
   config &&
+  !values.local &&
   (values.server === undefined ||
     (values.server && config.server === new URL(values.server).origin))
 )
@@ -864,6 +993,7 @@ for (const target of targets) connect(target);
 async function stop() {
   if (stopped) return;
   stopped = true;
+  cliConnection?.remove();
   const checksClosed = agentSettings.close();
   clearInterval(refreshTimer);
   clearInterval(notificationTimer);
