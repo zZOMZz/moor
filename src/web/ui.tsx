@@ -163,6 +163,7 @@ export function Shell({
               <Content name="#git-workspace-control" />
               <Content name="#session-fork-control" />
               <Content name="#github-control" />
+              <Content name="#project-preview-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -198,6 +199,7 @@ export function Shell({
             <div id="attachment-controls">
               <Content name="#attachment-controls" />
             </div>
+            <Content name="#preview-annotation-cards" />
             <div className="prompt-surface">
               <label className="sr-only" htmlFor="prompt">
                 发送给 Agent 的指令
@@ -271,6 +273,7 @@ export function Shell({
       <Content name="#session-fork-view" />
       <Content name="#github-view" />
       <Content name="#github-write-view" />
+      <Content name="#project-preview-view" />
     </div>
   );
 }

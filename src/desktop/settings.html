@@ -104,6 +104,62 @@
         >
       </fieldset>
     </details>
+    <details id="preview-settings" class="health-panel">
+      <summary>项目网页预览</summary>
+      <p>
+        先自行启动开发服务器，再选择它对应的执行目录并登记回环地址。Moor 不启动服务，也不扫描端口。
+      </p>
+      <button type="button" id="preview-refresh">刷新预览设置</button>
+      <p id="preview-status" role="status">展开后读取本机登记。</p>
+      <fieldset id="preview-controls" disabled>
+        <legend>登记本机预览服务</legend>
+        <label
+          >已登记服务<select id="preview-service">
+            <option value="">新增服务</option>
+          </select></label
+        >
+        <label>执行目录<select id="preview-target"></select></label>
+        <p id="preview-root"></p>
+        <label
+          >服务名称<input
+            id="preview-label"
+            maxlength="100"
+            autocomplete="off"
+            placeholder="项目前端"
+        /></label>
+        <label
+          >回环地址<select id="preview-address">
+            <option value="127.0.0.1">127.0.0.1</option>
+            <option value="::1">::1</option>
+          </select></label
+        >
+        <label
+          >端口<input
+            id="preview-port"
+            type="number"
+            min="1"
+            max="65535"
+            inputmode="numeric"
+            placeholder="例如 5173"
+        /></label>
+        <label
+          >起始路径<input id="preview-path" maxlength="2048" value="/" autocomplete="off"
+        /></label>
+        <label class="check"
+          ><input id="preview-enabled" type="checkbox" />允许自己的设备查看和操作此服务的页面</label
+        >
+        <p id="preview-service-status"></p>
+        <div class="actions">
+          <button type="button" id="preview-save">登记服务</button>
+          <button type="button" id="preview-toggle" disabled>停用服务</button>
+          <button type="button" id="preview-remove" disabled>删除登记</button>
+        </div>
+        <small
+          >保存表示你已确认此服务属于所选目录；端口连通不代表目录已验证。新 worktree
+          需要单独登记，不能沿用原目录服务。停用或删除会关闭相关预览，不停止开发服务器。</small
+        >
+      </fieldset>
+    </details>
     <form id="settings">
       <label>电脑名称<input id="name" maxlength="100" required /></label
       ><label

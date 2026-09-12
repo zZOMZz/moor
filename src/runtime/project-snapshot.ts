@@ -51,6 +51,8 @@ export const PROJECT_SNAPSHOT_EXCLUDES = [
   '.env.*',
   'github-v1.json',
   'github-v1.json.tmp-*',
+  'preview-v1.json',
+  'preview-v1.json.tmp-*',
 ] as const;
 export type ProjectSnapshotIssue = {
   reason:

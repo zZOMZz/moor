@@ -14,6 +14,7 @@ const {
 } = require('./notifications.cjs');
 const { createAttachmentSaver } = require('./attachment-save.cjs');
 const { DesktopGitHubSettings } = require('./github-settings.cjs');
+const { DesktopPreviewSettings } = require('./preview-settings.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -50,6 +51,7 @@ let requestedView = 'local';
 let localReadyGeneration = 0,
   localReadyChain = Promise.resolve();
 const githubSettings = new DesktopGitHubSettings({ bridge: () => bridge });
+const previewSettings = new DesktopPreviewSettings({ bridge: () => bridge });
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -222,6 +224,7 @@ function showSettings() {
   settingsWindow.on('closed', () => {
     settingsWindow = null;
     githubSettings.invalidate();
+    previewSettings.invalidate();
   });
   void settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
 }
@@ -288,6 +291,7 @@ function startBridge() {
   child.on('message', async (message) => {
     if (bridge !== child) return;
     if (githubSettings.receive(child, message)) return;
+    if (previewSettings.receive(child, message)) return;
     if (message?.type === 'notification') {
       let status = 'failed';
       try {
@@ -369,6 +373,7 @@ function startBridge() {
   });
   child.on('exit', () => {
     githubSettings.disconnect(child);
+    previewSettings.disconnect(child);
     if (bridge !== child) return;
     bridge = null;
     localOrigin = '';
@@ -400,6 +405,7 @@ async function restartBridgeOnce() {
   localOrigin = '';
   const old = bridge;
   if (old) githubSettings.disconnect(old);
+  if (old) previewSettings.disconnect(old);
   bridge = null;
   if (old && old.exitCode === null && old.signalCode === null) {
     await new Promise((resolve) => {
@@ -432,6 +438,19 @@ ipcMain.handle('personal:github-config', (event, value) => {
   const sender = event.sender,
     frame = event.senderFrame;
   return githubSettings.request(value, () => {
+    try {
+      trusted({ sender, senderFrame: frame });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+});
+ipcMain.handle('personal:preview-config', (event, value) => {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  return previewSettings.request(value, () => {
     try {
       trusted({ sender, senderFrame: frame });
       return true;
@@ -575,6 +594,7 @@ else {
     quitting = true;
     nativeNotifications.close();
     githubSettings.close();
+    previewSettings.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

@@ -17,7 +17,9 @@ type Directory = { path: string; identity: BigIntStats };
 export function isHostPrivateProjectPath(path: string) {
   return path.split('/').some((part) => {
     const name = part.toLowerCase();
-    return name === 'github-v1.json' || name.startsWith('github-v1.json.tmp-');
+    return ['github-v1.json', 'preview-v1.json'].some(
+      (privateName) => name === privateName || name.startsWith(privateName + '.tmp-'),
+    );
   });
 }
 

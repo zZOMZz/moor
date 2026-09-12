@@ -348,3 +348,134 @@ window.addEventListener('beforeunload', () => {
   githubRevision++;
   $('github-token').value = '';
 });
+
+let previewState,
+  previewBusy = false,
+  previewRevision = 0,
+  previewClosed = false;
+const previewTargetKey = (target) => JSON.stringify([target.localProjectId, target.executionId]);
+function renderPreviewRoot() {
+  const target = previewState?.targets.find(
+    (t) => previewTargetKey(t) === $('preview-target').value,
+  );
+  $('preview-root').textContent = target
+    ? target.rootPath
+    : '此执行目录当前不可用，请刷新或删除旧登记。';
+  $('preview-save').disabled = !target;
+}
+function renderPreviewService() {
+  const service = previewState?.services.find((s) => s.id === $('preview-service').value);
+  optionsFor(
+    'preview-target',
+    previewState?.targets.map((t) => ({ id: previewTargetKey(t), label: t.label })) ?? [],
+    service ? previewTargetKey(service) : $('preview-target').value,
+  );
+  // Do not silently replace a removed worktree with the first available target.
+  if (
+    service &&
+    !previewState.targets.some((t) => previewTargetKey(t) === previewTargetKey(service))
+  )
+    $('preview-target').value = '';
+  $('preview-target').disabled = !!service;
+  $('preview-label').value = service?.label ?? '';
+  $('preview-address').value = service?.address ?? '127.0.0.1';
+  $('preview-port').value = service ? String(service.port) : '';
+  $('preview-path').value = service?.startPath ?? '/';
+  $('preview-enabled').checked = service?.enabled ?? false;
+  $('preview-service-status').textContent = !service
+    ? '填写服务地址，并确认它由所选目录启动。'
+    : !service.current
+      ? '原执行目录或地址已变化；此登记不可用于预览。'
+      : service.enabled
+        ? '登记已启用。连接与目录对应关系由你确认。'
+        : '登记已停用。';
+  $('preview-save').textContent = service ? '保存服务登记' : '登记服务';
+  $('preview-remove').disabled = !service;
+  $('preview-toggle').disabled = !service || (!service.enabled && !service.current);
+  $('preview-toggle').textContent = service?.enabled ? '停用服务' : '启用服务';
+  renderPreviewRoot();
+}
+function renderPreview(value, action) {
+  previewState = value;
+  const selected =
+    $('preview-service').value ||
+    (action.action === 'service-save' ? value.services.at(-1)?.id : '');
+  optionsFor(
+    'preview-service',
+    value.services.map((s) => ({
+      id: s.id,
+      label: s.label + (s.enabled ? '（启用）' : '（停用）'),
+    })),
+    selected,
+    '新增服务',
+  );
+  renderPreviewService();
+  $('preview-status').textContent =
+    action.action === 'read'
+      ? '已读取本机登记；未探测端口或启动服务。'
+      : '本机登记已保存，旧预览已失效。';
+}
+async function previewAction(action) {
+  if (previewBusy || previewClosed) return;
+  previewBusy = true;
+  const revision = ++previewRevision;
+  $('preview-controls').disabled = true;
+  $('preview-refresh').disabled = true;
+  $('preview-status').textContent = '正在处理本机预览设置…';
+  try {
+    const value = await window.personal.previewConfig(action);
+    if (previewClosed || previewRevision !== revision) return;
+    renderPreview(value, action);
+  } catch (error) {
+    if (previewClosed || previewRevision !== revision) return;
+    previewState = undefined;
+    $('preview-status').textContent =
+      (error.message || '操作结果尚未确认') + '。请刷新后检查；不会自动重试。';
+  } finally {
+    if (!previewClosed && previewRevision === revision) {
+      previewBusy = false;
+      $('preview-controls').disabled = !previewState;
+      $('preview-refresh').disabled = false;
+    }
+  }
+}
+function previewEdit(action) {
+  if (!previewState || previewBusy) return;
+  return previewAction({ expectedRevision: previewState.revision, ...action });
+}
+$('preview-settings').ontoggle = () => {
+  if ($('preview-settings').open && !previewState && !previewBusy)
+    void previewAction({ action: 'read' });
+};
+$('preview-refresh').onclick = () => previewAction({ action: 'read' });
+$('preview-service').onchange = renderPreviewService;
+$('preview-target').onchange = renderPreviewRoot;
+$('preview-save').onclick = () => {
+  const target = previewState?.targets.find(
+    (t) => previewTargetKey(t) === $('preview-target').value,
+  );
+  if (!target) return;
+  const id = $('preview-service').value;
+  return previewEdit({
+    action: 'service-save',
+    ...(id ? { id } : {}),
+    localProjectId: target.localProjectId,
+    executionId: target.executionId,
+    label: $('preview-label').value.trim(),
+    address: $('preview-address').value,
+    port: Number($('preview-port').value),
+    startPath: $('preview-path').value,
+    enabled: $('preview-enabled').checked,
+  });
+};
+$('preview-remove').onclick = () =>
+  previewEdit({ action: 'service-remove', id: $('preview-service').value });
+$('preview-toggle').onclick = () => {
+  const service = previewState?.services.find((s) => s.id === $('preview-service').value);
+  if (service)
+    return previewEdit({ action: 'service-enabled', id: service.id, enabled: !service.enabled });
+};
+window.addEventListener('beforeunload', () => {
+  previewClosed = true;
+  previewRevision++;
+});

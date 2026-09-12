@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('personal', {
   notificationSettings: (value) => ipcRenderer.invoke('personal:notification-settings', value),
   notificationTest: () => ipcRenderer.invoke('personal:notification-test'),
   githubConfig: (value) => ipcRenderer.invoke('personal:github-config', value),
+  previewConfig: (value) => ipcRenderer.invoke('personal:preview-config', value),
   open: (mode) => ipcRenderer.invoke('personal:open', mode),
 });
