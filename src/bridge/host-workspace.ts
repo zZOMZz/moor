@@ -32,6 +32,8 @@ import {
 import { readProjectFileBytes } from '../runtime/project-files';
 import { SKILLS_FEATURE, type SkillsRead } from '../skills-protocol';
 import { SessionSkillsManager, type SessionSkillsOptions } from '../runtime/session-skills';
+import { ROLE_FEATURE, type RolesRead, type RolesActionRequest } from '../role-protocol';
+import { SessionRolesManager } from '../runtime/session-roles';
 import {
   normalizeAgentContent,
   normalizeAgentToolContent,
@@ -157,6 +159,7 @@ export class HostWorkspace {
   githubWriteManager: SessionGithubWriteManager;
   previewManager: SessionPreviewManager;
   skillsManager: SessionSkillsManager;
+  rolesManager: SessionRolesManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -184,6 +187,7 @@ export class HostWorkspace {
     this.forkManager = new SessionForkManager(this, driver);
     this.previewManager = new SessionPreviewManager(this, preview);
     this.skillsManager = new SessionSkillsManager(this, skills);
+    this.rolesManager = new SessionRolesManager(this);
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -225,6 +229,7 @@ export class HostWorkspace {
       GITHUB_WRITE_FEATURE,
       PREVIEW_FEATURE,
       SKILLS_FEATURE,
+      ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
     ];
     this.workspace.projects = this.machine
@@ -236,7 +241,8 @@ export class HostWorkspace {
       .filter(
         (a) =>
           a.machineId === this.workspace.machineId &&
-          this.machine.get(['retiredAgent', a.id]) !== true,
+          this.machine.get(['retiredAgent', a.id]) !== true &&
+          this.machine.get(['disabledAgent', a.id]) !== true,
       )
       .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
     this.catalogue();
@@ -543,6 +549,14 @@ export class HostWorkspace {
   }
   readSkills(input: SkillsRead, localProjectId?: string) {
     return this.skillsManager.read(input, localProjectId);
+  }
+  readRoles(input: RolesRead, localProjectId?: string) {
+    return this.rolesManager.read(input, localProjectId);
+  }
+  async roleAction(input: RolesActionRequest, localProjectId?: string) {
+    const result = await this.rolesManager.action(input, localProjectId);
+    if (input.action !== 'inspect') this.changed();
+    return result;
   }
   previewAction(input: PreviewAction, localProjectId?: string) {
     return this.previewManager.action(input, localProjectId);

@@ -171,6 +171,104 @@ export const compareText = createCacheCompareText({
   schedule: (callback) => setTimeout(callback, 5000),
   cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 });
+export type DraftBundleEntry = { key: string; expected: unknown; value: unknown };
+function sameDraftValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = Object.keys(a),
+    right = Object.keys(b);
+  return (
+    left.length === right.length &&
+    left.every(
+      (key) =>
+        Object.hasOwn(b, key) &&
+        sameDraftValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
+    )
+  );
+}
+/** Role application changes the draft, run options and frozen marker as one transaction. */
+export function createCacheCompareDraftBundle(deps: {
+  database(): Promise<IDBDatabase>;
+  schedule(callback: () => void): unknown;
+  cancel(timer: unknown): void;
+}) {
+  return async (
+    input: readonly DraftBundleEntry[],
+    current: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    if (
+      input.length < 3 ||
+      input.length > 4 ||
+      new Set(input.map((entry) => entry.key)).size !== input.length
+    )
+      throw new Error('角色草稿保存范围无效。');
+    const entries = structuredClone(input);
+    const requireCurrent = () => {
+      if (signal?.aborted || !current()) throw new Error('草稿或执行目标已改变，请重新确认角色。');
+    };
+    requireCurrent();
+    const database = await deps.database();
+    requireCurrent();
+    return new Promise<boolean>((resolve, reject) => {
+      const tx = database.transaction('cache', 'readwrite');
+      let settled = false,
+        written = false,
+        remaining = entries.length;
+      const values = new Map<string, unknown>();
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        deps.cancel(timer);
+        signal?.removeEventListener('abort', cancelled);
+        if (error) reject(error);
+        else resolve(written);
+      };
+      const abort = (error: unknown) => {
+        finish(error);
+        try {
+          tx.abort();
+        } catch {
+          /* Already complete. */
+        }
+      };
+      const cancelled = () => abort(new Error('草稿或执行目标已改变，请重新确认角色。'));
+      const timer = deps.schedule(() => abort(new Error('角色草稿保存超时，请重新确认。')));
+      signal?.addEventListener('abort', cancelled, { once: true });
+      const store = tx.objectStore('cache');
+      for (const entry of entries) {
+        const request = store.get(entry.key);
+        request.onsuccess = () => {
+          if (settled) return;
+          try {
+            requireCurrent();
+            values.set(entry.key, request.result);
+            if (--remaining) return;
+            if (entries.some((value) => !sameDraftValue(values.get(value.key), value.expected)))
+              return;
+            for (const value of entries) {
+              requireCurrent();
+              store.put(value.value, value.key);
+            }
+            written = true;
+          } catch (error) {
+            abort(error);
+          }
+        };
+        request.onerror = () => abort(request.error ?? new Error('角色草稿无法读取。'));
+      }
+      tx.oncomplete = () => finish();
+      tx.onerror = () => abort(tx.error ?? new Error('角色草稿未保存。'));
+      tx.onabort = () => finish(tx.error ?? new Error('角色草稿保存被中止。'));
+    });
+  };
+}
+export const compareDraftBundle = createCacheCompareDraftBundle({
+  database: () => bounded(db),
+  schedule: (callback) => setTimeout(callback, 5000),
+  cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+});
 export async function clear() {
   const d = await bounded(db);
   return bounded(

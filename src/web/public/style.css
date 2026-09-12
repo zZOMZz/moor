@@ -3235,3 +3235,78 @@ dialog pre {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.roles-panel {
+  width: min(940px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+}
+.roles-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.roles-columns {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 2fr);
+  gap: 20px;
+}
+.roles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.roles-list button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  gap: 4px;
+}
+.roles-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.roles-detail form {
+  display: grid;
+  gap: 12px;
+}
+.roles-detail label {
+  display: grid;
+  gap: 5px;
+}
+.roles-detail input,
+.roles-detail textarea,
+.roles-detail select {
+  width: 100%;
+  min-width: 0;
+}
+.roles-detail button,
+.roles-pending button {
+  white-space: normal;
+  margin: 4px;
+}
+.roles-instructions {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow: auto;
+}
+.roles-pending {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .roles-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .roles-list {
+    max-height: 180px;
+    overflow: auto;
+  }
+}

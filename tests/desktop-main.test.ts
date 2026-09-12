@@ -239,7 +239,11 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       senderFrame: { ...settingsWindow.webContents.mainFrame },
     },
   ])
-    for (const method of ['personal:preview-config', 'personal:skills-config'])
+    for (const method of [
+      'personal:preview-config',
+      'personal:skills-config',
+      'personal:agent-config',
+    ])
       assert.throws(() => invoke(method, { action: 'read' }, event), /无效的本机设置请求/);
   const previewReading = invoke('personal:preview-config', { action: 'read' });
   const previewRequest = children[0].sent.at(-1);
@@ -265,6 +269,27 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   const skillsState = await skillsReading;
   assert.equal(skillsState.revision, 0);
   assert.equal('privateMetadata' in skillsState, false);
+  const agentReading = invoke('personal:agent-config', { action: 'read' });
+  const agentRequest = children[0].sent.at(-1);
+  assert.equal(agentRequest.type, 'agent-config');
+  children[0].emit('message', {
+    type: 'agent-config-result',
+    requestId: agentRequest.requestId,
+    ok: true,
+    state: { revision: 0, presets: [], privateMetadata: 'not-public' },
+  });
+  assert.deepEqual(await agentReading, { revision: 0, presets: [] });
+  assert.equal(await invoke('personal:agent-executable'), null);
+  const executableGate = gate();
+  directoryGate = executableGate;
+  const executable = invoke('personal:agent-executable');
+  const staleExecutable = assert.rejects(executable, /无效的本机设置请求/);
+  await executableGate.entered;
+  const executableFrame = settingsWindow.webContents.mainFrame;
+  settingsWindow.webContents.mainFrame = { ...executableFrame };
+  executableGate.release();
+  await staleExecutable;
+  settingsWindow.webContents.mainFrame = executableFrame;
   assert.equal(await invoke('personal:skills-directory'), null);
   const choosingGate = gate();
   directoryGate = choosingGate;

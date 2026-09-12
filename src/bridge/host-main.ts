@@ -34,7 +34,9 @@ import { GitHubConfig } from '../runtime/github-config';
 import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
 import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
+import { AgentSettings } from '../runtime/agent-settings';
 import { skillsReadSchema } from '../skills-protocol';
+import { rolesReadSchema, rolesActionRequestSchema } from '../role-protocol';
 import {
   previewReadSchema,
   previewActionSchema,
@@ -56,15 +58,35 @@ const { values } = parseArgs({
     'github-config-stdin': { type: 'boolean' },
     'preview-config-stdin': { type: 'boolean' },
     'skills-config-stdin': { type: 'boolean' },
+    'agent-config-stdin': { type: 'boolean' },
   },
 });
 const configurationOnly =
-  values['github-config-stdin'] || values['preview-config-stdin'] || values['skills-config-stdin'];
-const configurationLabel = values['skills-config-stdin']
-  ? 'Skills'
-  : values['preview-config-stdin']
-    ? '预览'
-    : 'GitHub';
+  values['github-config-stdin'] ||
+  values['preview-config-stdin'] ||
+  values['skills-config-stdin'] ||
+  values['agent-config-stdin'];
+const configurationLabel = values['agent-config-stdin']
+  ? 'Agent'
+  : values['skills-config-stdin']
+    ? 'Skills'
+    : values['preview-config-stdin']
+      ? '预览'
+      : 'GitHub';
+if (
+  values['agent-config-stdin'] &&
+  (values.desktop ||
+    values.pair ||
+    values['github-config-stdin'] ||
+    values['preview-config-stdin'] ||
+    values['skills-config-stdin'])
+) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({ error: 'Agent 本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
+  );
+  process.exit(1);
+}
 if (
   values['skills-config-stdin'] &&
   (values.desktop || values.pair || values['github-config-stdin'] || values['preview-config-stdin'])
@@ -134,6 +156,12 @@ try {
 }
 process.once('exit', releaseRuntime);
 const runtime = new RuntimeStore(runtimeFile);
+const agentSettings = new AgentSettings(runtime, acpDriver, () => {
+  if (!configurationOnly) {
+    for (const host of workspaces.values()) host.updateCatalogue();
+    hello();
+  }
+});
 const githubConfig = new GitHubConfig(
   join(resolve(values['github-config-dir'] ?? dirname(runtimeFile)), 'github-v1.json'),
   {
@@ -259,15 +287,21 @@ if (configurationOnly) {
     for await (const value of process.stdin) {
       const chunk = Buffer.from(value);
       bytes += chunk.length;
-      assert(bytes <= 16 * 1024, 413, configurationLabel + ' 本机配置请求过大');
+      assert(
+        bytes <= (values['agent-config-stdin'] ? 64 : 16) * 1024,
+        413,
+        configurationLabel + ' 本机配置请求过大',
+      );
       chunks.push(chunk);
     }
     const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    const result = values['skills-config-stdin']
-      ? skillsConfig.handle(input)
-      : values['preview-config-stdin']
-        ? previewConfig.handle(input)
-        : await githubConfig.handle(input);
+    const result = values['agent-config-stdin']
+      ? await agentSettings.handle(input)
+      : values['skills-config-stdin']
+        ? skillsConfig.handle(input)
+        : values['preview-config-stdin']
+          ? previewConfig.handle(input)
+          : await githubConfig.handle(input);
     writeFileSync(process.stdout.fd, JSON.stringify(result) + '\n');
   } catch (error) {
     exitCode = 1;
@@ -278,6 +312,7 @@ if (configurationOnly) {
       }) + '\n',
     );
   } finally {
+    await agentSettings.close();
     runtime.close();
   }
   process.exit(exitCode);
@@ -366,6 +401,8 @@ async function refresh() {
       for (const agentType of values['builtin-agent'] ?? []) {
         assert(['codex', 'claude'].includes(agentType), 400, '仅支持 Codex 或 Claude');
         const id = 'personal-' + agentType;
+        // A local toggle/removal takes precedence over repeated startup flags.
+        if (agentSettings.wasConfigured(id)) continue;
         const base = {
           id,
           name: agentType === 'codex' ? 'Codex' : 'Claude',
@@ -467,6 +504,13 @@ function connect(target: Target) {
             );
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
+          else if (m.method === 'roles-read')
+            result = await workspace.readRoles(rolesReadSchema.parse(m.params), m.localProjectId);
+          else if (m.method === 'roles-action')
+            result = await workspace.roleAction(
+              rolesActionRequestSchema.parse(m.params),
+              m.localProjectId,
+            );
           else if (m.method === 'skills-read') {
             const input = skillsReadSchema.parse(m.params);
             assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
@@ -679,6 +723,39 @@ if (values.desktop) {
       message &&
       typeof message === 'object' &&
       'type' in message &&
+      message.type === 'agent-config'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+        stopped ||
+        !process.connected
+      )
+        return;
+      const requestId = request.requestId;
+      void agentSettings.handle(request.action).then(
+        (state) => {
+          if (!stopped && process.connected)
+            process.send?.({ type: 'agent-config-result', requestId, ok: true, state });
+        },
+        (error) => {
+          if (!stopped && process.connected)
+            process.send?.({
+              type: 'agent-config-result',
+              requestId,
+              ok: false,
+              error:
+                error instanceof AppError ? error.message : 'Agent 本机设置操作未完成，请重新读取',
+            });
+        },
+      );
+      return;
+    }
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
       message.type === 'skills-config'
     ) {
       const request = message as { requestId?: unknown; action?: unknown };
@@ -769,6 +846,7 @@ if (values.desktop) {
     notifications.drain();
   });
   process.on('disconnect', () => {
+    void agentSettings.close();
     notifications.disconnect(nativeChannel, nativeGeneration);
     for (const host of workspaces.values()) host.previewManager.invalidate();
   });
@@ -786,6 +864,7 @@ for (const target of targets) connect(target);
 async function stop() {
   if (stopped) return;
   stopped = true;
+  const checksClosed = agentSettings.close();
   clearInterval(refreshTimer);
   clearInterval(notificationTimer);
   notifications.close();
@@ -797,6 +876,7 @@ async function stop() {
   await previewRenderer.closeAll();
   await localApp?.close();
   localStore?.close();
+  await checksClosed;
   runtime.close();
   process.disconnect?.();
 }

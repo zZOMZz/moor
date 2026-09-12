@@ -11,5 +11,7 @@ contextBridge.exposeInMainWorld('personal', {
   previewConfig: (value) => ipcRenderer.invoke('personal:preview-config', value),
   skillsConfig: (value) => ipcRenderer.invoke('personal:skills-config', value),
   skillsDirectory: () => ipcRenderer.invoke('personal:skills-directory'),
+  agentConfig: (value) => ipcRenderer.invoke('personal:agent-config', value),
+  agentExecutable: () => ipcRenderer.invoke('personal:agent-executable'),
   open: (mode) => ipcRenderer.invoke('personal:open', mode),
 });

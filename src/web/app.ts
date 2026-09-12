@@ -1,3 +1,14 @@
+import { ROLE_FEATURE, type RoleView } from '../role-protocol';
+import {
+  RolesController,
+  rolesKey,
+  roleAppliedKey,
+  roleAppliedSchema,
+  roleInstruction,
+  roleSelection,
+  type RoleApplied,
+} from './roles';
+import { showRolesControl, showRolesPanel } from './roles-ui';
 import { GITHUB_WRITE_FEATURE } from '../github-write-protocol';
 import { PREVIEW_FEATURE } from '../preview-protocol';
 import { SKILLS_FEATURE } from '../skills-protocol';
@@ -572,6 +583,7 @@ async function fillAgentCommand(command: string) {
     sending ||
     pending ||
     skillsDraftAppending ||
+    roleApplying ||
     attachmentWorking ||
     sessionPersistenceError
   )
@@ -718,6 +730,364 @@ function persistComposerDraft(draftKey: string, value: string) {
   composerDraftWrites = writing;
   return writing;
 }
+
+let roles: RolesController | undefined;
+let rolesGeneration = 0,
+  rolesPanelOpen = false,
+  roleApplying = false,
+  roleDraftSaving = false;
+let roleDraftAbort: AbortController | undefined, roleApplied: RoleApplied | undefined;
+let roleApplyLoadError = '',
+  rolePanelSelection = '';
+let runOptionWrites: Promise<void> = Promise.resolve();
+function persistRunOptions(optionKey: string, value: unknown) {
+  const writing = runOptionWrites.catch(() => {}).then(() => cache.write(optionKey, value));
+  runOptionWrites = writing;
+  return writing;
+}
+function currentRoles() {
+  const target = gitTarget();
+  return target && roles && rolesKey(target) === rolesKey(roles.target) ? roles : undefined;
+}
+function rolesReason() {
+  return !authenticated ||
+    !connected ||
+    !selected?.online ||
+    !replica?.available ||
+    navigator.onLine === false
+    ? '执行电脑离线，请连接后手动读取角色。'
+    : !workspace?.features?.includes(ROLE_FEATURE)
+      ? '此执行电脑尚不支持角色预设，请升级 Moor。'
+      : '';
+}
+function resetRoles() {
+  rolesGeneration++;
+  roleDraftAbort?.abort();
+  roleDraftAbort = undefined;
+  rolesPanelOpen = false;
+  roles?.invalidate();
+  roles = undefined;
+  roleApplying = roleDraftSaving = false;
+  roleApplied = undefined;
+  roleApplyLoadError = '';
+  rolePanelSelection = '';
+  showRolesPanel();
+}
+function invalidateRoles(reason: string) {
+  roleDraftAbort?.abort();
+  roles?.invalidate(reason);
+}
+async function openRoles(selectedId = '') {
+  resetRoles();
+  const target = gitTarget();
+  if (!target) return;
+  rolesPanelOpen = true;
+  rolePanelSelection = selectedId;
+  const generation = rolesGeneration;
+  const controller: RolesController = new RolesController(target, {
+    read: cache.read,
+    compareWrite: cache.compareWrite,
+    request: api,
+    current: () =>
+      generation === rolesGeneration && currentRoles() === controller && rolesPanelOpen,
+    online: () => !rolesReason(),
+    changed: renderRoles,
+  });
+  roles = controller;
+  renderRoles();
+  await controller.load();
+  const saved = await cache.read(roleAppliedKey(target));
+  if (generation !== rolesGeneration || currentRoles() !== controller) return;
+  try {
+    if (saved !== undefined) {
+      const parsed = roleAppliedSchema.parse(saved);
+      if (roleAppliedKey(parsed.target) !== roleAppliedKey(target)) throw Error('wrong role scope');
+      roleApplied = parsed;
+    }
+  } catch {
+    roleApplyLoadError = '已应用角色的草稿记录无法读取，请重新打开原会话。';
+  }
+  if (!rolesReason()) await controller.refresh();
+  renderRoles();
+}
+function roleAgent(id: string) {
+  return sessionId
+    ? currentAgent()?.id === id
+      ? currentAgent()
+      : undefined
+    : workspace?.agents.find((agent) => agent.id === id);
+}
+function canApplyRole() {
+  return (
+    !sending &&
+    !pending &&
+    !attachmentWorking &&
+    !sessionPersistenceError &&
+    !sessionAgentError &&
+    !githubDraftAppending &&
+    !skillsDraftAppending &&
+    !currentGitWorkspace()?.pending &&
+    !gitBlocksComposer() &&
+    !forkBlocksComposer() &&
+    !githubBlocksComposer() &&
+    !currentGithubWrite()?.blocksExecution &&
+    !meta?.isArchived &&
+    runOptionsReady &&
+    !runOptionsLoading
+  );
+}
+function roleApplyReason(role: RoleView) {
+  if (roleApplyLoadError) return roleApplyLoadError;
+  if (!canApplyRole()) return '请先完成当前草稿或待确认操作，再应用角色。';
+  if (sessionId && currentAgent()?.id !== role.agentId)
+    return '已有会话已固定另一 Agent 版本；可明确创建新会话后应用此角色。';
+  const agent = roleAgent(role.agentId);
+  if (!agent) return '此角色的 Agent 版本当前不可选择。';
+  if (
+    roleApplied?.base === currentRunInput().base &&
+    roleApplied.applied.some((item) => item.roleId === role.id && item.revision === role.revision)
+  )
+    return '此角色版本已应用到当前草稿，刷新不会重复追加。';
+  try {
+    roleSelection(role, runSelection, agent.runConfig);
+  } catch (error) {
+    return (error as Error).message + '；当前草稿和运行选项保持不变，可手动读取模型选项后再试。';
+  }
+  return '';
+}
+async function refreshRoleAgent(id: string) {
+  const controller = currentRoles(),
+    generation = rolesGeneration,
+    optionsGeneration = runOptionsGeneration,
+    session = sessionGeneration,
+    agent = roleAgent(id);
+  if (
+    !controller ||
+    !agent ||
+    rolesReason() ||
+    roleApplying ||
+    controller.busy ||
+    runOptionsLoading ||
+    pending ||
+    sending
+  )
+    return;
+  runOptionsLoading = true;
+  updateComposer();
+  try {
+    const updated = agentSchema.parse(
+      await api(prefix() + '/agent-options', {
+        agentId: id,
+        ...(sessionId && workspace?.features?.includes(AGENT_VERSIONS_FEATURE)
+          ? { sessionId }
+          : {}),
+      }),
+    );
+    if (
+      generation !== rolesGeneration ||
+      controller !== currentRoles() ||
+      !rolesPanelOpen ||
+      rolesReason()
+    )
+      return;
+    if (
+      updated.id !== id ||
+      updated.cliType !== agent.cliType ||
+      updated.agentType !== agent.agentType
+    )
+      throw Error('模型选项不属于所选角色的 Agent 版本。');
+    Object.assign(agent, updated);
+  } finally {
+    if (optionsGeneration === runOptionsGeneration && session === sessionGeneration) {
+      runOptionsLoading = false;
+      updateComposer();
+    }
+  }
+}
+async function applyRoleDraft(selectedRole: RoleView) {
+  const controller = currentRoles(),
+    generation = rolesGeneration,
+    initialSelection = runSelection;
+  if (!controller || roleApplying || roleApplyReason(selectedRole) || rolesReason()) return;
+  const abort = new AbortController();
+  roleDraftAbort = abort;
+  roleApplying = true;
+  const current = () =>
+    !abort.signal.aborted &&
+    generation === rolesGeneration &&
+    controller === currentRoles() &&
+    rolesPanelOpen &&
+    !rolesReason() &&
+    canApplyRole() &&
+    runSelection === initialSelection;
+  updateComposer();
+  try {
+    const role = await controller.freshRole(selectedRole);
+    if (!current()) return;
+    const agent = roleAgent(role.agentId);
+    if (!agent) throw Error('角色 Agent 当前不可选择。');
+    const selection = roleSelection(role, initialSelection, agent.runConfig);
+    roleDraftSaving = true;
+    updateComposer();
+    for (;;) {
+      const textWriting = composerDraftWrites,
+        optionsWriting = runOptionWrites;
+      await Promise.all([textWriting, optionsWriting]);
+      if (!current()) return;
+      if (textWriting === composerDraftWrites && optionsWriting === runOptionWrites) break;
+    }
+    const field = $<HTMLTextAreaElement>('#prompt'),
+      original = field.value,
+      draftKey = key('draft'),
+      optionKey = key('run-options') + '/' + agent.id,
+      markerKey = roleAppliedKey(controller.target),
+      newOptionsKey = key('options'),
+      base = currentRunInput().base;
+    const [expected, oldRun, oldMarker, oldOptions] = await Promise.all([
+      cache.read<string>(draftKey),
+      cache.read(optionKey),
+      cache.read(markerKey),
+      sessionId ? Promise.resolve(undefined) : cache.read(newOptionsKey),
+    ]);
+    if (!current() || field.value !== original) return;
+    if ((expected ?? '') !== original)
+      throw Error('草稿已在其他页面改变；当前输入已保留，请重新确认角色。');
+    const marker = oldMarker === undefined ? undefined : roleAppliedSchema.parse(oldMarker);
+    if (marker && roleAppliedKey(marker.target) !== markerKey)
+      throw Error('已应用角色的执行范围不匹配。');
+    const applied = marker?.base === base ? marker.applied : [];
+    if (applied.some((item) => item.roleId === role.id && item.revision === role.revision))
+      throw Error('此角色版本已应用到当前草稿，未重复追加。');
+    if (applied.length >= 50) throw Error('当前草稿已达到 50 个角色版本记录，请先完成此指令。');
+    const instruction = roleInstruction(role),
+      text = original + (instruction ? (original ? '\n\n' : '') + instruction : '');
+    if (text.length > 100000) throw Error('加入后的指令超过 100000 字符，请缩短草稿。');
+    const updated = roleAppliedSchema.parse({
+      version: 1,
+      target: controller.target,
+      base,
+      applied: [...applied, { roleId: role.id, revision: role.revision }],
+    });
+    const saved = await cache.compareDraftBundle(
+      [
+        { key: draftKey, expected, value: text },
+        { key: optionKey, expected: oldRun, value: { base, selection } },
+        { key: markerKey, expected: oldMarker, value: updated },
+        ...(!sessionId
+          ? [
+              {
+                key: newOptionsKey,
+                expected: oldOptions,
+                value: { project: newProjectId, agent: agent.id },
+              },
+            ]
+          : []),
+      ],
+      () => current() && field.value === original,
+      abort.signal,
+    );
+    if (!current() || field.value !== original) return;
+    if (!saved) throw Error('草稿或运行选项已在其他页面改变；当前输入已保留，角色未应用。');
+    field.value = text;
+    runSelection = selection;
+    runSelectionTouched = true;
+    roleApplied = updated;
+    if (!sessionId) newAgentId = agent.id;
+    resizeComposer();
+  } catch (error) {
+    if (generation === rolesGeneration && controller === currentRoles()) throw error;
+  } finally {
+    if (generation === rolesGeneration) {
+      roleApplying = roleDraftSaving = false;
+      roleDraftAbort = undefined;
+      updateComposer();
+    }
+  }
+}
+function renderRoles() {
+  showRolesControl({ disabled: !gitTarget(), onOpen: () => run(() => openRoles()) });
+  if (!rolesPanelOpen) return;
+  const controller = currentRoles(),
+    generation = rolesGeneration,
+    reason = rolesReason();
+  if (reason && (controller?.list || controller?.busy)) {
+    invalidateRoles(reason);
+    return;
+  }
+  const operate = (work: (value: RolesController) => Promise<unknown>) =>
+    run(async () => {
+      if (generation === rolesGeneration && controller && controller === currentRoles()) {
+        try {
+          await work(controller);
+        } catch (error) {
+          if (generation === rolesGeneration && controller === currentRoles()) throw error;
+        }
+      }
+    });
+  const agents = [...(workspace?.agents ?? [])];
+  const bound = currentAgent();
+  if (bound && !agents.some((agent) => agent.id === bound.id)) agents.push(bound);
+  showRolesPanel({
+    controller,
+    reason,
+    agents,
+    currentAgentId: currentAgent()?.id,
+    existing: !!sessionId,
+    selectedId: rolePanelSelection,
+    applying: roleApplying,
+    applyReason: roleApplyReason,
+    effective: (role) => roleSelection(role, runSelection, roleAgent(role.agentId)?.runConfig),
+    onClose: () => {
+      resetRoles();
+      updateComposer();
+    },
+    onRefresh: () => operate((value) => value.refresh()),
+    onSave: (edit) => operate((value) => value.saveRole(edit)),
+    onRemove: (id) => operate((value) => value.remove(id)),
+    onInspect: () => operate((value) => value.inspect()),
+    onRetry: () => operate((value) => value.retry()),
+    onAbandon: () => operate((value) => value.abandon()),
+    onApply: (role) => {
+      if (generation === rolesGeneration) run(() => applyRoleDraft(role));
+    },
+    onNew: (role) =>
+      run(async () => {
+        if (
+          generation !== rolesGeneration ||
+          !workspace?.agents.some((agent) => agent.id === role.agentId)
+        )
+          return;
+        const source = controller?.target;
+        if (!source) return;
+        const expectedSession = sessionGeneration + 1;
+        await openSession('');
+        const sameNewSession = () =>
+          sessionGeneration === expectedSession &&
+          !sessionId &&
+          owner === source.owner &&
+          selected?.id === source.deviceId &&
+          workspace?.id === source.workspaceId &&
+          workspace?.userId === source.userId &&
+          workspace?.machineId === source.machineId;
+        if (
+          !sameNewSession() ||
+          !workspace?.projects.some((project) => project.id === source.localProjectId)
+        )
+          return;
+        // The old new-session draft may have selected another project. Keep its text,
+        // but bind this explicit role flow back to the source project's own stable ID.
+        if (newProjectId !== source.localProjectId) {
+          newProjectId = source.localProjectId;
+          selectReplica(source.localProjectId);
+          await loadAttachmentDraft();
+        }
+        if (!sameNewSession() || gitTarget()?.localProjectId !== source.localProjectId) return;
+        await openRoles(role.id);
+      }),
+    onRefreshAgent: (id) => run(() => refreshRoleAgent(id)),
+  });
+}
+
 let skills: SkillsController | undefined;
 let skillsGeneration = 0,
   skillsPanelOpen = false,
@@ -772,7 +1142,12 @@ async function openSkills() {
 }
 function canAppendSkill() {
   return (
-    !sending && !pending && !attachmentWorking && !sessionPersistenceError && !githubDraftAppending
+    !sending &&
+    !pending &&
+    !roleApplying &&
+    !attachmentWorking &&
+    !sessionPersistenceError &&
+    !githubDraftAppending
   );
 }
 async function appendSkillDraft() {
@@ -1767,6 +2142,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetRoles();
   resetSkills();
   resetProjectPreview();
   resetGithub();
@@ -2780,6 +3156,7 @@ function shell() {
   showShell({
     onSend: () => run(sendTurn),
     onDraft: (value) => {
+      if (roleDraftSaving) roleDraftAbort?.abort();
       if (skillsDraftSaving) skillsDraftAbort?.abort();
       void persistComposerDraft(key('draft'), value).catch(error);
     },
@@ -2799,6 +3176,7 @@ function pairComputer() {
   });
 }
 function logout() {
+  resetRoles();
   sessionAgent = undefined;
   sessionAgentError = '';
   resetSkills();
@@ -2880,6 +3258,7 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
+    invalidateRoles('执行电脑连接已关闭，请手动重新读取角色。');
     invalidateSkills('执行电脑连接已关闭，请手动重新读取 Skills。');
     currentGithub()?.invalidate();
     currentGithubWrite()?.invalidate();
@@ -2895,6 +3274,17 @@ function connect() {
     if (events !== ws) return;
     try {
       const message = JSON.parse(event.data);
+      if (
+        message.type === 'changed' &&
+        message.room?.scope === 'doc' &&
+        !message.room.docId &&
+        message.deviceId === selected?.id &&
+        message.workspaceId === workspace?.id
+      ) {
+        roleDraftAbort?.abort();
+        currentRoles()?.catalogChanged();
+      }
+
       if (
         message.type === 'changed' &&
         message.room?.scope === 'skills' &&
@@ -3055,6 +3445,7 @@ function renderNewSessionControls() {
       pending ||
       attachmentWorking ||
       githubDraftAppending ||
+      roleApplying ||
       gitLoading ||
       currentGitWorkspace()?.busy ||
       currentGitWorkspace()?.pending ||
@@ -3090,6 +3481,7 @@ function renderNewSessionControls() {
       !!pending ||
       attachmentWorking ||
       githubDraftAppending ||
+      roleApplying ||
       gitLoading ||
       !!currentGitWorkspace()?.busy ||
       !!currentGitWorkspace()?.pending ||
@@ -3978,7 +4370,7 @@ async function restoreRunOptions() {
   const attempt = [owner, selected?.id, workspace?.id, currentAgent()?.id].join('/');
   if (
     !currentAgent()?.runConfig &&
-    currentAgent() &&
+    currentAgent()?.cliType === 'builtin' &&
     connected &&
     selected?.online &&
     replica?.available &&
@@ -4043,12 +4435,19 @@ function renderRunOptions() {
     capabilities,
     selection: runSelection,
     agentType: currentAgent()?.agentType,
-    disabled: sending || !!pending || attachmentWorking || runOptionsLoading || !runOptionsReady,
+    disabled:
+      sending ||
+      !!pending ||
+      roleApplying ||
+      attachmentWorking ||
+      runOptionsLoading ||
+      !runOptionsReady,
     loading: runOptionsLoading,
     canRefresh: connected && !!selected?.online && !!replica?.available,
     validation,
     existing: !!sessionId,
     onChange: (property, value) => {
+      if (roleApplying) roleDraftAbort?.abort();
       runSelectionTouched = true;
       runSelection = { ...runSelection, [property]: value || undefined };
       if (
@@ -4058,9 +4457,10 @@ function renderRunOptions() {
           ?.efforts.includes(runSelection.reasoningEffort ?? '')
       )
         runSelection.reasoningEffort = undefined;
-      void cache
-        .write(runOptionsKey(), { base: currentRunInput().base, selection: { ...runSelection } })
-        .catch(error);
+      void persistRunOptions(runOptionsKey(), {
+        base: currentRunInput().base,
+        selection: { ...runSelection },
+      }).catch(error);
       updateComposer();
     },
     onRefresh: () => run(refreshRunOptions),
@@ -4069,6 +4469,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderRoles();
   renderSkills();
   renderProjectPreview();
   renderGithubWrite();
@@ -4095,6 +4496,7 @@ function updateComposer() {
   send.disabled =
     sending ||
     skillsDraftAppending ||
+    roleApplying ||
     !!currentPreviewAnnotations()?.busy ||
     (!!currentPreviewAnnotations()?.loadError && !pending) ||
     !!currentGithubWrite()?.blocksExecution ||
@@ -4131,7 +4533,12 @@ function updateComposer() {
   send.setAttribute('aria-label', sending ? '提交中' : pending ? '重试确认' : '发送指令');
   send.classList.toggle('pending', !!pending);
   $<HTMLTextAreaElement>('#prompt').readOnly =
-    sending || !!pending || attachmentWorking || githubDraftAppending || skillsDraftSaving;
+    sending ||
+    !!pending ||
+    attachmentWorking ||
+    githubDraftAppending ||
+    skillsDraftSaving ||
+    roleDraftSaving;
   const state = document.querySelector('#draft-state');
   if (state)
     state.textContent = currentGithubWrite()?.blocksExecution
@@ -4251,6 +4658,7 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
   }
 }
 async function sendTurn() {
+  if (roleApplying) throw new Error('请等待角色草稿保存完成。');
   if (skillsDraftAppending) throw new Error('请等待 Skill 说明保存到草稿。');
   if (currentGithubWrite()?.blocksExecution) throw new Error('请先核查原提交或推送操作。');
   if (githubBlocksComposer()) throw new Error('请先完成或确认 GitHub 上下文操作。');
@@ -4438,6 +4846,7 @@ window.addEventListener('online', () => {
   }
 });
 window.addEventListener('offline', () => {
+  invalidateRoles('当前离线，请连接后手动重新读取角色。');
   invalidateSkills('当前离线；Skills 正文已清除，连接后可手动重新读取。');
   void currentProjectPreview()?.dispose();
 });

@@ -304,7 +304,7 @@ export class RuntimeStore {
     }
   }
   // Local registration advances a private preset pointer; sessions keep version IDs.
-  registerAgent(presetId: string, config: AgentConfig) {
+  registerAgent(presetId: string, config: AgentConfig, registered?: (next: AgentConfig) => void) {
     const previous = this.machine;
     this.machine = Flock.fromFile(previous.exportFile());
     try {
@@ -327,6 +327,7 @@ export class RuntimeStore {
           !this.machine.scan({ prefix: ['agentPreset'] }).some((row) => row.value === current.id)
         )
           this.machine.set(['retiredAgent', current.id], true);
+        registered?.(next);
         this.saveMachine();
         return next;
       });

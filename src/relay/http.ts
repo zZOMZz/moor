@@ -106,6 +106,15 @@ import {
 } from '../preview-protocol';
 import { validatePreviewFrame } from '../preview-validation';
 import { SKILLS_FEATURE, skillsReadSchema, validateSkillsRead } from '../skills-protocol';
+import {
+  ROLE_FEATURE,
+  ROLE_LIMITS,
+  rolesReadSchema,
+  rolesActionRequestSchema,
+  validateRolesRead,
+  validateRoleReceipt,
+  validateRolesInspect,
+} from '../role-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -285,6 +294,8 @@ export function createApp(
           'github-write-read',
           'preview-read',
           'skills-read',
+          'roles-read',
+          'roles-action',
           'agent-options',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
@@ -580,6 +591,97 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'roles' &&
+            ['read', 'action'].includes(parts[6] ?? '') &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            const reading = parts[6] === 'read';
+            const value = await body(req, reading ? 4096 : ROLE_LIMITS.requestBytes);
+            const readInput = reading ? rolesReadSchema.parse(value) : undefined;
+            const actionInput = reading ? undefined : rolesActionRequestSchema.parse(value);
+            const mutation =
+              actionInput?.action === 'inspect' || actionInput?.action === 'abandon'
+                ? actionInput.request
+                : actionInput;
+            const input = readInput ?? mutation!;
+            if (actionInput?.action === 'inspect' || actionInput?.action === 'abandon')
+              scopedRecoveryRequest = true;
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '角色请求与项目副本不匹配',
+            );
+            assert(runtime, 409, '执行电脑暂时不可用');
+            assert(runtime.features?.includes(ROLE_FEATURE), 409, '请先升级执行电脑上的 Moor');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const r = store.catalog.replica(owner!, workspaceId, replica.id);
+              const w = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                r.host.device_id === host.device_id &&
+                  r.host.runtime_id === input.workspaceId &&
+                  r.local_id === input.localProjectId &&
+                  r.project_id === replica.project_id &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  w?.userId === runtime.userId &&
+                  w?.machineId === runtime.machineId &&
+                  w.features?.includes(ROLE_FEATURE) &&
+                  w.projects.some((p) => p.id === input.localProjectId),
+                409,
+                '角色请求的执行范围已变化，请重新读取',
+              );
+            };
+            current();
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                reading ? 'roles-read' : 'roles-action',
+                host.runtime_id,
+                readInput ?? actionInput,
+                replica.local_id,
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            current();
+            if (failed) {
+              const error = failed.error;
+              throw new AppError(
+                error instanceof AppError &&
+                  [400, 401, 403, 404, 409, 413, 429, 504].includes(error.status)
+                  ? error.status
+                  : 502,
+                reading ? '角色目录读取失败，请手动重新读取' : '角色操作未能确认，请手动查询原操作',
+                (actionInput?.action === 'save' || actionInput?.action === 'remove') &&
+                  error instanceof AppError &&
+                  error.rejected,
+              );
+            }
+            assert(
+              Buffer.byteLength(JSON.stringify(raw) ?? '') <= ROLE_LIMITS.responseBytes,
+              502,
+              '角色响应超过限制',
+            );
+            let result;
+            try {
+              result = readInput
+                ? validateRolesRead(raw, readInput)
+                : actionInput?.action === 'inspect'
+                  ? validateRolesInspect(raw, actionInput.request)
+                  : validateRoleReceipt(raw, mutation!);
+            } catch {
+              throw new AppError(502, '执行电脑返回的角色响应不可验证');
+            }
+            return json(res, 200, result);
+          }
           if (
             parts[5] === 'skills' &&
             parts[6] === 'read' &&
