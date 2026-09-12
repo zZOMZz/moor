@@ -21,6 +21,7 @@ function fixture() {
     calls: { path: string; body: any }[] = [];
   let execution: SessionExecution = { mode: 'shared', status: 'ready', revision: 0 },
     canRemove = true,
+    canDetach = false,
     phase: 'accepted' | 'unknown' | 'rejected' = 'accepted',
     wrongReceipt = false,
     wrongExecution = false,
@@ -35,7 +36,10 @@ function fixture() {
     confirmed: true,
     execution,
     canPrepare: execution.mode === 'shared',
-    canRemove: execution.mode === 'worktree' && execution.status === 'ready' && canRemove,
+    canRemove:
+      execution.mode === 'worktree' && execution.status === 'ready' && canRemove && !canDetach,
+    canDetach,
+    boundSessions: canDetach ? 2 : 1,
     repository: {
       kind: 'git',
       branch: 'main',
@@ -95,7 +99,12 @@ function fixture() {
                   branch: action.newBranch,
                   baseOid: action.expectedOid,
                 }
-              : { ...execution, status: 'removed', revision: 2 };
+              : {
+                  ...execution,
+                  status: 'removed',
+                  revision: 2,
+                  disposition: action.action === 'detach' ? 'detached' : 'removed',
+                };
         if (transportFails) throw new Error('response lost');
         const result = {
           gitVersion: 1,
@@ -141,6 +150,9 @@ function fixture() {
     },
     set canRemove(v: boolean) {
       canRemove = v;
+    },
+    set canDetach(v: boolean) {
+      canDetach = v;
     },
   };
 }
@@ -389,5 +401,28 @@ test('two active pages competing to stage preserve the winning original request 
   const restored = f.create();
   await restored.load();
   assert.equal(restored.pending?.request.operationId, 'winning-operation');
+  assert.equal(restored.blocked, true);
+});
+
+test('shared worktrees detach only with host permission and preserve the exact unknown detach action on retry', async () => {
+  const f = fixture(),
+    c = f.create();
+  await c.load();
+  await c.prepare('main', oid, 'feature/shared');
+  await assert.rejects(c.detach(), /不能脱离/);
+  f.canDetach = true;
+  await assert.rejects(c.remove(), /不能清理/);
+  f.transportFails = true;
+  await assert.rejects(c.detach(), /response lost/);
+  const original = structuredClone(c.pending!.request);
+  assert.equal(original.action, 'detach');
+  assert.equal('expectedStateVersion' in original, false);
+  const restored = f.create();
+  await restored.load();
+  assert.equal(restored.blocked, true);
+  f.transportFails = false;
+  await restored.retry();
+  assert.deepEqual(f.calls.findLast((call) => call.path.endsWith('/action'))!.body, original);
+  assert.equal(restored.execution?.disposition, 'detached');
   assert.equal(restored.blocked, true);
 });

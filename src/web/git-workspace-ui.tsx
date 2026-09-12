@@ -11,6 +11,7 @@ export type GitWorkspacePanelProps = {
   onRefresh(): void;
   onPrepare(branch: string, oid: string, name: string): void;
   onRemove(): void;
+  onDetach?(): void;
   onRetry(): void;
   onNewDraft(): void;
 };
@@ -54,7 +55,12 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
           {controller?.pending && (
             <div className="git-pending" role="status">
               <p>
-                原{controller.pending.request.action === 'prepare' ? '创建' : '清理'}
+                原
+                {controller.pending.request.action === 'prepare'
+                  ? '创建'
+                  : controller.pending.request.action === 'detach'
+                    ? '脱离'
+                    : '清理'}
                 操作结果待确认。刷新和重连不会发送。手动重试沿用原请求；主机已记录的操作只核查结果，不重复执行。
               </p>
               <button disabled={Boolean(p.reason) || controller.busy} onClick={p.onRetry}>
@@ -65,7 +71,7 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
           {execution && (
             <p>
               <strong>{execution.mode === 'worktree' ? '独立工作目录' : '项目原目录'}</strong> ·{' '}
-              {labels[execution.status]}
+              {execution.disposition === 'detached' ? '已脱离' : labels[execution.status]}
               {execution.branch ? ` · ${execution.branch}` : ''}
               {execution.baseOid && <code className="git-oid">基线 {execution.baseOid}</code>}
             </p>
@@ -73,6 +79,9 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
           {execution?.reason && <p>{execution.reason}</p>}
           {state && (
             <>
+              {(state.boundSessions ?? 1) > 1 && (
+                <p>此目录由 {state.boundSessions} 份会话共用；不能直接清理目录。</p>
+              )}
               <p>
                 {controller?.source === 'cache'
                   ? '上次读取的缓存状态；操作前会重新检查。'
@@ -169,12 +178,35 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
               )}
               {execution?.mode === 'worktree' && execution.status !== 'removed' && (
                 <section>
-                  <h3>清理独立工作目录</h3>
-                  <p>
-                    只清理 Moor
-                    管理且无未提交改动、无活动回合的目录。分支和提交历史会保留，当前会话之后不能再发送指令。
-                  </p>
-                  {state.canRemove ? (
+                  <h3>{state.canDetach ? '脱离共享工作目录' : '清理独立工作目录'}</h3>
+                  {!state.canDetach && (
+                    <p>
+                      只清理 Moor
+                      管理且无未提交改动、无活动回合的目录。分支和提交历史会保留，当前会话之后不能再发送指令。
+                    </p>
+                  )}
+                  {state.canDetach ? (
+                    <>
+                      <p>
+                        脱离仅结束当前会话与目录的绑定。其他会话继续使用目录，文件与分支保留；当前会话之后不能再发送指令。
+                      </p>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={confirmRemove}
+                          disabled={blocked}
+                          onChange={(event) => setConfirmRemove(event.target.checked)}
+                        />
+                        我确认脱离此会话，保留其他会话目录
+                      </label>
+                      <button
+                        disabled={blocked || !confirmRemove || !p.onDetach}
+                        onClick={p.onDetach}
+                      >
+                        脱离此会话，保留目录
+                      </button>
+                    </>
+                  ) : state.canRemove ? (
                     <>
                       <label>
                         <input
@@ -197,7 +229,12 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
             </>
           )}
           {execution?.status === 'removed' && (
-            <p>工作目录已清理。会话历史与分支仍保留；新指令需要另一份新会话。</p>
+            <p>
+              {execution.disposition === 'detached'
+                ? '此会话已脱离共享目录，其他会话的目录仍保留。'
+                : '工作目录已清理。'}
+              会话历史与分支仍保留；新指令需要另一份新会话。
+            </p>
           )}
           {execution?.status === 'removed' && p.newSession && (
             <button disabled={blocked} onClick={p.onNewDraft}>

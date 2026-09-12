@@ -22,6 +22,7 @@ async function fixture() {
   const controls = {
     transform: undefined as undefined | ((value: any) => unknown),
     hold: undefined as undefined | (() => Promise<void>),
+    error: undefined as undefined | { status: number; message: string; rejected: boolean },
   };
   for (const synthetic of relay.hosts) {
     synthetic.runtime.features!.push(GIT_WORKTREE_FEATURE);
@@ -47,6 +48,12 @@ async function fixture() {
         canRemove: false,
       };
       await controls.hold?.();
+      if (controls.error) {
+        synthetic.socket.send(
+          JSON.stringify({ type: 'response', requestId: m.requestId, error: controls.error }),
+        );
+        return;
+      }
       return controls.transform?.(result) ?? result;
     });
     synthetic.responses.set('git-action', async (m) => {
@@ -69,6 +76,12 @@ async function fixture() {
         },
       };
       await controls.hold?.();
+      if (controls.error) {
+        synthetic.socket.send(
+          JSON.stringify({ type: 'response', requestId: m.requestId, error: controls.error }),
+        );
+        return;
+      }
       return controls.transform?.(result) ?? result;
     });
     const pong = once(synthetic.socket, 'pong');
@@ -374,4 +387,73 @@ test('a Git action that was dispatched is not called rejected after logout, regr
         release.resolve();
       }
     });
+});
+
+test('shared-directory detach receipts cannot be confused with physical removal', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const detach = {
+    ...f.scope,
+    operationId: 'synthetic-detach',
+    action: 'detach',
+    expectedRevision: 1,
+    executionId: 'execution-synthetic',
+  };
+  f.controls.transform = (value) => ({
+    ...value,
+    execution: { ...value.execution, disposition: 'detached' },
+  });
+  assert.equal((await f.api(f.path('action'), detach)).status, 200);
+  const wrongRemove = await f.api(f.path('action'), f.remove);
+  assert.equal(wrongRemove.status, 502);
+  assert.equal((await wrongRemove.json()).rejected, false);
+  f.controls.transform = (value) => ({
+    ...value,
+    execution: { ...value.execution, disposition: 'removed' },
+  });
+  const wrongDetach = await f.api(f.path('action'), detach);
+  assert.equal(wrongDetach.status, 502);
+  assert.equal((await wrongDetach.json()).rejected, false);
+  assert.equal((await f.api(f.path('action'), f.remove)).status, 200);
+});
+
+test('Git rechecks authorization before returning either a state error or an action error', async (t) => {
+  for (const kind of ['state', 'action'] as const)
+    for (const change of ['none', 'logout', 'move'] as const)
+      await t.test(`${kind} ${change}`, async (t) => {
+        const f = await fixture();
+        t.after(f.close);
+        const entered = deferred(),
+          release = deferred();
+        f.controls.error = { status: 409, message: 'synthetic-private-git-error', rejected: true };
+        f.controls.hold = async () => {
+          entered.resolve();
+          await release.promise;
+        };
+        const pending = f.api(f.path(kind), kind === 'action' ? f.prepare : f.scope);
+        await entered.promise;
+        try {
+          if (change === 'logout') await f.api('/api/logout', {});
+          if (change === 'move') {
+            const workspace = f.store.catalog.create(f.owner, 'Synthetic moved Git error');
+            f.store.catalog.moveHost(f.owner, f.space.id, f.host.id, workspace.id);
+          }
+          release.resolve();
+          const response = await pending,
+            body = await response.json();
+          assert.equal(response.status, change === 'none' ? 409 : change === 'logout' ? 401 : 404);
+          if (change === 'none')
+            assert.deepEqual(body, { error: f.controls.error.message, rejected: true });
+          else {
+            assert.doesNotMatch(JSON.stringify(body), /synthetic-private-git-error/);
+            assert.equal(body.rejected, false);
+          }
+          assert.equal(
+            f.synthetic.messages.filter((message) => message.method === 'git-' + kind).length,
+            1,
+          );
+        } finally {
+          release.resolve();
+        }
+      });
 });

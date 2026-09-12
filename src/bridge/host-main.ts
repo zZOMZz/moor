@@ -38,6 +38,7 @@ import { questionAnswerSchema, steerRequestSchema } from '../interaction-protoco
 import { sessionSearchRequestSchema } from '../search-protocol';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
 import { gitStateReadSchema, gitActionSchema } from '../git-protocol';
+import { forkOptionsReadSchema, sessionForkSchema } from '../fork-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -491,6 +492,14 @@ async function connect(target: Target) {
             const body = gitActionSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.gitAction(body, m.localProjectId);
+          } else if (m.method === 'fork-options') {
+            const body = forkOptionsReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readForkOptions(body, m.localProjectId);
+          } else if (m.method === 'fork-action') {
+            const body = sessionForkSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.forkSession(body, m.localProjectId);
           } else if (m.method === 'cancel')
             result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');
@@ -537,9 +546,13 @@ async function connect(target: Target) {
               rejected:
                 (e instanceof AppError && e.rejected) ||
                 attentionRejected ||
-                (['mutate', 'session-action', 'attachment-action', 'git-action'].includes(
-                  m.method,
-                ) &&
+                ([
+                  'mutate',
+                  'session-action',
+                  'attachment-action',
+                  'git-action',
+                  'fork-action',
+                ].includes(m.method) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
             },

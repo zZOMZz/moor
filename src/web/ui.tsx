@@ -161,12 +161,14 @@ export function Shell({
             <div id="project-content-controls">
               <Content name="#project-content-controls" />
               <Content name="#git-workspace-control" />
+              <Content name="#session-fork-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
           <section id="attention-view" aria-label="待我处理工作台" hidden>
             <Content name="#attention-view" />
           </section>
+          <Content name="#session-fork-origin" />
           <div id="history" aria-label="会话内容">
             <div className="welcome">
               <div className="welcome-mark">
@@ -265,6 +267,7 @@ export function Shell({
       <Content name="#interaction-view" />
       <Content name="#notification-view" />
       <Content name="#git-workspace-view" />
+      <Content name="#session-fork-view" />
     </div>
   );
 }

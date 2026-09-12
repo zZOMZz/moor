@@ -122,6 +122,16 @@ export class SessionExecutionStore {
   info(scope: AttachmentScope) {
     return this.get(scope)?.execution ?? shared();
   }
+  boundSessions(scope: AttachmentScope, executionId?: string) {
+    if (!executionId || executionId === 'shared') return 1;
+    return Number(
+      this.db
+        .prepare(
+          `SELECT count(*) AS n FROM session_execution WHERE workspace_id=? AND user_id=? AND machine_id=? AND project_id=? AND json_extract(record,'$.execution.executionId')=? AND json_extract(record,'$.execution.status')!='removed'`,
+        )
+        .get(...values(scope).slice(0, 4), executionId)!.n,
+    );
+  }
   target(executionId: string) {
     assert(this.worktreeRoot, 409, '当前主机未配置可持久化的会话工作目录');
     mkdirSync(this.worktreeRoot, { recursive: true, mode: 0o700 });
@@ -268,6 +278,7 @@ export class SessionExecutionManager {
       this.current(lease);
     }
     const latest = this.host.store.executions.info(scope);
+    const boundSessions = this.host.store.executions.boundSessions(scope, execution.executionId);
     assert(
       latest.revision === (record?.execution.revision ?? 0) &&
         latest.status === (record?.execution.status ?? 'ready'),
@@ -279,8 +290,17 @@ export class SessionExecutionManager {
       confirmed: true,
       repository,
       execution,
+      boundSessions,
+      canDetach:
+        !!record?.managed &&
+        execution.status === 'ready' &&
+        boundSessions > 1 &&
+        !this.busy.has(scope.sessionId) &&
+        this.idle(scope.sessionId) &&
+        !this.host.store.forks.blocked(scope.sessionId),
       canPrepare:
         !record &&
+        !this.host.store.forks.blocked(scope.sessionId) &&
         !this.busy.has(scope.sessionId) &&
         this.fresh(scope) &&
         this.idle(scope.sessionId) &&
@@ -293,15 +313,27 @@ export class SessionExecutionManager {
         repository.writeSupported &&
         !repository.dirty &&
         !repository.partial &&
-        !repository.outsideProjectChanges,
+        !repository.outsideProjectChanges &&
+        boundSessions === 1 &&
+        !this.host.store.forks.blocked(scope.sessionId),
     });
   }
   async action(input: GitAction, localProjectId?: string): Promise<GitActionReceipt> {
     const action = gitActionSchema.parse(input);
+    assert(
+      this.host.store.forks.allowsGit(action.sessionId, action.operationId),
+      409,
+      'Fork 尚未确认，请处理原 Fork 操作',
+    );
     assert(!this.busy.has(action.sessionId), 409, '此会话正在处理 Git 操作，请等待确认');
     this.busy.add(action.sessionId);
     try {
       return await this.host.serial(action.sessionId, async () => {
+        assert(
+          this.host.store.forks.allowsGit(action.sessionId, action.operationId),
+          409,
+          'Fork 尚未确认，请处理原 Fork 操作',
+        );
         const lease = this.host.projectRootLease(action, localProjectId),
           scope = this.scope(lease),
           store = this.host.store;
@@ -381,6 +413,37 @@ export class SessionExecutionManager {
         return repositorySerial(record.repository.id, async () => {
           this.current(lease);
           assert(this.idle(scope.sessionId), 409, '活动会话不能清理工作目录');
+          const bindings = store.executions.boundSessions(scope, info.executionId);
+          if (action.action === 'detach') {
+            assert(bindings > 1, 409, '这是最后一个会话绑定，请检查后清理工作目录');
+            const detached: ExecutionRecord = {
+              ...record,
+              operationId: action.operationId,
+              execution: {
+                ...record.execution,
+                status: 'removed',
+                disposition: 'detached',
+                revision: action.expectedRevision + 1,
+              },
+            };
+            return store.transaction(() => {
+              store.journal.stageGit(journalScope, action, detached);
+              const result = gitActionReceiptSchema.parse({
+                gitVersion: 1,
+                workspaceId: action.workspaceId,
+                localProjectId: action.localProjectId,
+                sessionId: action.sessionId,
+                operationId: action.operationId,
+                phase: 'accepted',
+                confirmed: true,
+                execution: detached.execution,
+              });
+              store.executions.put(detached);
+              store.journal.settleGit(journalScope, action, result);
+              return result;
+            });
+          }
+          assert(bindings === 1, 409, '此工作目录仍被其它会话引用，请先解除当前会话绑定');
           const inspected = await this.git.inspectProjectWorktree(
             record.repository,
             record.managed!,
@@ -413,7 +476,10 @@ export class SessionExecutionManager {
             this.current(lease);
             return this.accept(
               action,
-              { ...staged, execution: { ...staged.execution, status: 'removed' } },
+              {
+                ...staged,
+                execution: { ...staged.execution, status: 'removed', disposition: 'removed' },
+              },
               journalScope,
             );
           } catch (error) {
@@ -537,7 +603,7 @@ export class SessionExecutionManager {
       if (action.action === 'remove' && result.status === 'missing')
         return this.accept(
           action,
-          { ...record, execution: { ...execution, status: 'removed' } },
+          { ...record, execution: { ...execution, status: 'removed', disposition: 'removed' } },
           journalScope,
         );
     } catch {
