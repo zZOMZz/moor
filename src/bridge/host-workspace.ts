@@ -100,6 +100,8 @@ import {
 import { GIT_WORKTREE_FEATURE, type GitAction, type GitStateRead } from '../git-protocol';
 import { SessionExecutionManager, type ExecutionLease } from '../runtime/session-execution';
 import { SessionForkManager } from '../runtime/session-fork';
+import { SessionGithubManager, type SessionGithubOptions } from '../runtime/session-github';
+import { GITHUB_FEATURE, type GithubRead, type GithubAction } from '../github-protocol';
 import { SESSION_FORK_FEATURE, type ForkOptionsRead, type SessionFork } from '../fork-protocol';
 
 type Active = {
@@ -129,6 +131,7 @@ export class HostWorkspace {
   interactions: SessionInteractions<Active>;
   executionManager: SessionExecutionManager;
   forkManager: SessionForkManager;
+  githubManager: SessionGithubManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -147,9 +150,11 @@ export class HostWorkspace {
     private fileReader = readProjectFileBytes,
     private projectContent = { capture: captureProjectSnapshot, tree: enumerateProjectFiles },
     git?: ConstructorParameters<typeof SessionExecutionManager>[1],
+    github?: SessionGithubOptions,
   ) {
     this.executionManager = new SessionExecutionManager(this, git);
     this.forkManager = new SessionForkManager(this, driver);
+    this.githubManager = new SessionGithubManager(this, github);
     this.interactions = new SessionInteractions<Active>({
       journal: store.journal,
       getRun: (sessionId) => this.active.get(sessionId),
@@ -182,6 +187,7 @@ export class HostWorkspace {
       NOTIFICATIONS_FEATURE,
       GIT_WORKTREE_FEATURE,
       SESSION_FORK_FEATURE,
+      GITHUB_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -394,6 +400,24 @@ export class HostWorkspace {
   }
   readGitState(input: GitStateRead, localProjectId?: string) {
     return this.executionManager.read(input, localProjectId);
+  }
+  async readGithub(input: GithubRead, localProjectId?: string) {
+    try {
+      return await this.githubManager.read(input, localProjectId);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(502, 'GitHub 内容暂时不可读取，请重新检查执行电脑的授权');
+    }
+  }
+  async githubAction(input: GithubAction, localProjectId?: string) {
+    const result = await this.githubManager.action(input, localProjectId);
+    this.changed(input.sessionId);
+    return result;
+  }
+  async abandonGithub(input: GithubAction, localProjectId?: string) {
+    const result = await this.githubManager.abandon(input, localProjectId);
+    this.changed(input.sessionId);
+    return result;
   }
   async readForkOptions(input: ForkOptionsRead, localProjectId?: string) {
     try {

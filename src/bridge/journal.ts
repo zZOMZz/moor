@@ -4,6 +4,7 @@ import { assert, type Mutation, type SessionAction } from '../protocol';
 import type { AttachmentAction, AttachmentReceipt } from '../attachment-protocol';
 import type { GitAction, GitActionReceipt } from '../git-protocol';
 import type { SessionFork, ForkReceipt } from '../fork-protocol';
+import type { GithubAction, GithubReceipt } from '../github-protocol';
 import type {
   QuestionAnswer,
   QuestionReceipt,
@@ -17,7 +18,8 @@ export type JournalOperation =
   | QuestionAnswer
   | SteerRequest
   | GitAction
-  | SessionFork;
+  | SessionFork
+  | GithubAction;
 export class Journal {
   db: DatabaseSync;
   constructor(file: string) {
@@ -64,6 +66,28 @@ export class Journal {
     this.db
       .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
       .run('accepted', JSON.stringify(result), m.operationId);
+    return result;
+  }
+  acceptGithub(scope: string, action: GithubAction, result: GithubReceipt) {
+    this.db
+      .prepare('INSERT INTO operation(id,fingerprint,phase,turn_id,result) VALUES(?,?,?,NULL,?)')
+      .run(
+        action.operationId,
+        this.fingerprint(scope, action),
+        'github-accepted',
+        JSON.stringify(result),
+      );
+    return result;
+  }
+  abandonGithub(scope: string, action: GithubAction, result: GithubReceipt) {
+    this.db
+      .prepare('INSERT INTO operation(id,fingerprint,phase,turn_id,result) VALUES(?,?,?,NULL,?)')
+      .run(
+        action.operationId,
+        this.fingerprint(scope, action),
+        'github-abandoned',
+        JSON.stringify(result),
+      );
     return result;
   }
   acceptSessionAction(workspace: string, action: SessionAction, meta: Record<string, unknown>) {

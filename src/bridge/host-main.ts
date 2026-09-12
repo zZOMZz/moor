@@ -23,6 +23,8 @@ import { sessionSearchRequestSchema } from '../search-protocol';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
 import { gitStateReadSchema, gitActionSchema } from '../git-protocol';
 import { forkOptionsReadSchema, sessionForkSchema } from '../fork-protocol';
+import { githubReadSchema, githubActionSchema } from '../github-protocol';
+import { GitHubConfig } from '../runtime/github-config';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -34,8 +36,17 @@ const { values } = parseArgs({
     'builtin-agent': { type: 'string', multiple: true },
     desktop: { type: 'boolean' },
     'public-dir': { type: 'string' },
+    'github-config-dir': { type: 'string' },
+    'github-config-stdin': { type: 'boolean' },
   },
 });
+if (values['github-config-stdin'] && (values.desktop || values.pair)) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({ error: 'GitHub 本机配置命令不能同时启动桌面或配对' }) + '\n',
+  );
+  process.exit(1);
+}
 type Config = { server: string; id: string; token: string };
 const configPath = resolve(values.config ?? '.data/bridge-v3.json');
 let config: Config | undefined;
@@ -60,7 +71,7 @@ if (values.pair) {
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8'));
   } catch (e) {
-    if (!values.desktop) throw e;
+    if (!values.desktop && !values['github-config-stdin']) throw e;
   }
 }
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
@@ -78,6 +89,50 @@ try {
 }
 process.once('exit', releaseRuntime);
 const runtime = new RuntimeStore(runtimeFile);
+const githubConfig = new GitHubConfig(
+  join(resolve(values['github-config-dir'] ?? dirname(runtimeFile)), 'github-v1.json'),
+  {
+    identity: () => ({
+      workspaceId: runtime.workspace.id,
+      machineId: runtime.workspace.machineId,
+      userId: runtime.workspace.userId,
+    }),
+    projects: () =>
+      runtime.machine
+        .scan({ prefix: ['localProject'] })
+        .map((row) => row.value as { id: string; name: string; rootPath: string }),
+    changed: () => {
+      if (!values['github-config-stdin'])
+        broadcast({ type: 'github-changed', workspaceId: runtime.workspace.id });
+    },
+  },
+);
+if (values['github-config-stdin']) {
+  let exitCode = 0;
+  try {
+    let bytes = 0;
+    const chunks: Buffer[] = [];
+    for await (const value of process.stdin) {
+      const chunk = Buffer.from(value);
+      bytes += chunk.length;
+      assert(bytes <= 16 * 1024, 413, 'GitHub 本机配置请求过大');
+      chunks.push(chunk);
+    }
+    const result = await githubConfig.handle(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    writeFileSync(process.stdout.fd, JSON.stringify(result) + '\n');
+  } catch (error) {
+    exitCode = 1;
+    writeFileSync(
+      process.stdout.fd,
+      JSON.stringify({
+        error: error instanceof AppError ? error.message : 'GitHub 本机配置请求无效',
+      }) + '\n',
+    );
+  } finally {
+    runtime.close();
+  }
+  process.exit(exitCode);
+}
 const workspaces = new Map<string, HostWorkspace>(),
   journal = runtime.journal;
 const notifications = new NotificationDispatcher({ hosts: () => workspaces.values() });
@@ -138,10 +193,19 @@ async function refresh() {
   try {
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
-      host = new HostWorkspace(runtime, acpDriver, hello, (sessionId) => {
-        broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId });
-        notifications.drain();
-      });
+      host = new HostWorkspace(
+        runtime,
+        acpDriver,
+        hello,
+        (sessionId) => {
+          broadcast({ type: 'changed', workspaceId: runtime.workspace.id, sessionId });
+          notifications.drain();
+        },
+        undefined,
+        undefined,
+        undefined,
+        { config: githubConfig },
+      );
       workspaces.set(runtime.workspace.id, host);
     }
     if (!projectsRegistered) {
@@ -247,7 +311,17 @@ function connect(target: Target) {
             result = await workspace.refreshAgentOptions(m.params.agentId, m.localProjectId);
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
-          else if (m.method === 'mutate') {
+          else if (m.method === 'github-read') {
+            const input = githubReadSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readGithub(input, m.localProjectId);
+          } else if (m.method === 'github-action' || m.method === 'github-abandon') {
+            const input = githubActionSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await (m.method === 'github-abandon'
+              ? workspace.abandonGithub(input, m.localProjectId)
+              : workspace.githubAction(input, m.localProjectId));
+          } else if (m.method === 'mutate') {
             const body = mutationSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.mutate(body, m.localProjectId);
@@ -326,6 +400,8 @@ function connect(target: Target) {
                   'attachment-action',
                   'git-action',
                   'fork-action',
+                  'github-action',
+                  'github-abandon',
                 ].includes(m.method) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
@@ -403,6 +479,37 @@ if (values.desktop) {
     return true;
   });
   process.on('message', (message) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      message.type === 'github-config'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)
+      )
+        return;
+      const requestId = request.requestId;
+      void githubConfig.handle(request.action).then(
+        (state) => {
+          if (!stopped && process.connected)
+            process.send?.({ type: 'github-config-result', requestId, ok: true, state });
+        },
+        (error) => {
+          if (!stopped && process.connected)
+            process.send?.({
+              type: 'github-config-result',
+              requestId,
+              ok: false,
+              error:
+                error instanceof AppError ? error.message : 'GitHub 本机设置操作未完成，请重新读取',
+            });
+        },
+      );
+      return;
+    }
     notifications.acknowledge(nativeChannel, nativeGeneration, message);
     notifications.drain();
   });

@@ -45,6 +45,28 @@ const directoryOnly: ProjectSnapshotOptions = {
   },
 };
 
+test('automatic Git and directory snapshots exclude reserved GitHub credentials and temporary saves', async (t) => {
+  const p = project(t);
+  p.write('safe.txt', 'synthetic public source');
+  for (const path of [
+    'github-v1.json',
+    'private/github-v1.json.tmp-save',
+    'private/GITHUB-V1.JSON',
+  ])
+    p.write(path, '{"token":"synthetic-private-github-token"}');
+  for (const options of [directoryOnly, {}]) {
+    if (options !== directoryOnly) {
+      p.git('init', '--quiet');
+      p.git('add', '.');
+    }
+    const tree = await enumerateProjectFiles(p.root, options),
+      snapshot = await captureProjectSnapshot(p.root, options);
+    strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('github-v1.json')));
+    strict.ok(tree.issues.some((issue) => issue.reason === 'policy-excluded'));
+    strict.equal(JSON.stringify(snapshot).includes('synthetic-private-github-token'), false);
+  }
+});
+
 test('plain directory tree uses relative paths and explicitly reports filtered/unsupported entries', async (t) => {
   const p = project(t);
   p.write('src/file.txt', 'synthetic file');

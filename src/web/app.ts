@@ -1,3 +1,6 @@
+import { GITHUB_FEATURE } from '../github-protocol';
+import { GithubController, githubKey } from './github';
+import { showGithubControl, showGithubPanel } from './github-ui';
 import { GIT_WORKTREE_FEATURE } from '../git-protocol';
 import { GitWorkspaceController, gitWorkspaceKey, type GitTarget } from './git-workspace';
 import { showGitWorkspaceControl, showGitWorkspacePanel } from './git-workspace-ui';
@@ -655,6 +658,195 @@ function renderInteractions() {
   });
 }
 
+let github: GithubController | undefined;
+let githubGeneration = 0,
+  githubPanelOpen = false,
+  githubDraftAppending = false;
+function currentGithub() {
+  const target = gitTarget();
+  return target && github && githubKey(target) === githubKey(github.target) ? github : undefined;
+}
+function resetGithub() {
+  githubGeneration++;
+  github?.invalidate();
+  github = undefined;
+  githubPanelOpen = false;
+  githubDraftAppending = false;
+  showGithubPanel();
+  showGithubControl();
+}
+function githubReason() {
+  if (!authenticated || !connected || !selected?.online || !replica?.available)
+    return '执行电脑离线。GitHub 私有内容不会离线保存，请连接后手动重新读取。';
+  if (!workspace?.features?.includes(GITHUB_FEATURE))
+    return '执行电脑尚不支持 GitHub，请更新 Moor 后重试。';
+  if (sessionPersistenceError) return sessionPersistenceError;
+  return '';
+}
+function githubBlocksComposer() {
+  return githubDraftAppending || !!currentGithub()?.blocked;
+}
+async function loadGithub() {
+  const target = gitTarget(),
+    generation = ++githubGeneration;
+  github = undefined;
+  if (!target) return;
+  const controller: GithubController = new GithubController(target, {
+    read: cache.read,
+    compareWrite: cache.compareWrite,
+    request: api,
+    current: () => generation === githubGeneration && currentGithub() === controller,
+    online: () => !githubReason(),
+    changed: () => {
+      if (generation === githubGeneration) updateComposer();
+    },
+  });
+  github = controller;
+  try {
+    await controller.load();
+  } catch (cause) {
+    if (generation === githubGeneration) throw cause;
+  }
+}
+async function githubOperation<T>(work: (controller: GithubController) => Promise<T>) {
+  const controller = currentGithub(),
+    generation = githubGeneration;
+  if (!controller || githubReason()) throw new Error(githubReason() || 'GitHub 绑定记录尚未恢复。');
+  try {
+    return await work(controller);
+  } catch (cause) {
+    if (generation === githubGeneration && controller === currentGithub()) throw cause;
+  }
+}
+async function openGithub() {
+  githubPanelOpen = true;
+  const loading = loadGithub(),
+    generation = githubGeneration;
+  await loading;
+  if (!githubPanelOpen || generation !== githubGeneration) return;
+  renderGithub();
+  if (!githubReason()) await githubOperation((value) => value.refresh());
+}
+async function appendGithubDraft() {
+  const controller = currentGithub(),
+    generation = githubGeneration;
+  if (!controller || !canAppendGithubDraft()) return;
+  const content = await githubOperation((value) => value.contextForDraft());
+  if (
+    content === undefined ||
+    generation !== githubGeneration ||
+    controller !== currentGithub() ||
+    !canAppendGithubDraft()
+  )
+    return;
+  const field = $<HTMLTextAreaElement>('#prompt'),
+    draftKey = key('draft');
+  const value = field.value + (field.value ? '\n\n' : '') + content;
+  githubDraftAppending = true;
+  updateComposer();
+  try {
+    await cache.write(draftKey, value);
+    if (generation !== githubGeneration || controller !== currentGithub()) return;
+    field.value = value;
+    resizeComposer();
+  } finally {
+    if (generation === githubGeneration) {
+      githubDraftAppending = false;
+      updateComposer();
+    }
+  }
+}
+function canAppendGithubDraft() {
+  return (
+    !sending && !pending && !attachmentWorking && !githubDraftAppending && !sessionPersistenceError
+  );
+}
+function renderGithub() {
+  const controller = currentGithub(),
+    generation = githubGeneration;
+  if (controller?.overview && githubReason()) {
+    controller.invalidate();
+    return;
+  }
+  showGithubControl(
+    gitTarget()
+      ? {
+          onOpen: () => run(openGithub),
+          disabled: !controller?.loaded,
+          pending: !!controller?.pending,
+        }
+      : undefined,
+  );
+  if (!githubPanelOpen) {
+    showGithubPanel();
+    return;
+  }
+  const act = (work: (value: GithubController) => Promise<unknown>) =>
+    run(async () => {
+      if (generation !== githubGeneration || controller !== currentGithub()) return;
+      await githubOperation(work);
+    });
+  const writable = () => {
+    if (
+      sending ||
+      pending ||
+      actionSending ||
+      pendingAction ||
+      attachmentWorking ||
+      currentGitWorkspace()?.pending ||
+      currentGitWorkspace()?.busy ||
+      currentSessionFork()?.pending ||
+      currentSessionFork()?.busy
+    )
+      throw new Error('请先确认当前会话操作，再修改 GitHub 绑定。');
+  };
+  showGithubPanel({
+    controller,
+    reason: githubReason(),
+    canAdd: canAppendGithubDraft(),
+    adding: githubDraftAppending,
+    onClose: () => {
+      if (generation !== githubGeneration || controller !== currentGithub()) return;
+      githubPanelOpen = false;
+      controller?.invalidate();
+      showGithubPanel();
+    },
+    onRefresh: () => act((value) => value.refresh()),
+    onBranches: (page) => act((value) => value.loadBranches(page)),
+    onList: (view, state, page) => act((value) => value.loadList(view, state, page)),
+    onItem: (view, number) => act((value) => value.openItem(view, number)),
+    onComments: (page) => act((value) => value.loadComments(page)),
+    onChecks: (page) => act((value) => value.loadChecks(page)),
+    onClear: () => {
+      if (generation === githubGeneration) controller?.clearSelection();
+    },
+    onBind: (branch) =>
+      act((value) => {
+        writable();
+        return value.bind(branch);
+      }),
+    onUnbind: () =>
+      act((value) => {
+        writable();
+        return value.unbind();
+      }),
+    onRetry: () =>
+      act((value) => {
+        writable();
+        return value.retry();
+      }),
+    onAbandon: () =>
+      act((value) => {
+        writable();
+        return value.abandon();
+      }),
+    onAdd: () =>
+      run(async () => {
+        if (generation === githubGeneration) await appendGithubDraft();
+      }),
+  });
+}
+
 let sessionFork: SessionForkController | undefined;
 let forkGeneration = 0,
   forkPanelOpen = false,
@@ -944,6 +1136,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetGithub();
   resetSessionFork();
   gitGeneration++;
   gitWorkspace = undefined;
@@ -1207,6 +1400,7 @@ async function loadAttachmentDraft() {
     if (token === attachmentGeneration && generation === sessionGeneration)
       await loadGitWorkspace();
     if (token === attachmentGeneration && generation === sessionGeneration) await loadSessionFork();
+    if (token === attachmentGeneration && generation === sessionGeneration) await loadGithub();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -1965,6 +2159,7 @@ function pairComputer() {
   });
 }
 function logout() {
+  resetGithub();
   resetSessionFork();
   notificationAccountGeneration++;
   notificationController = undefined;
@@ -2041,6 +2236,7 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
+    currentGithub()?.invalidate();
     renderNavigation();
     renderTarget();
     updateComposer();
@@ -2048,7 +2244,20 @@ function connect() {
       if (events === ws && owner) connect();
     }, 2000);
   };
-  ws.onmessage = () => {
+  ws.onmessage = (event) => {
+    if (events !== ws) return;
+    try {
+      const message = JSON.parse(event.data);
+      if (
+        message.type === 'changed' &&
+        message.room?.scope === 'github' &&
+        message.deviceId === selected?.id &&
+        message.workspaceId === workspace?.id
+      )
+        currentGithub()?.invalidate('执行电脑的 GitHub 配置已变化，请手动重新读取授权。');
+    } catch {
+      /* Other refresh signals carry no provider content. */
+    }
     if (!refreshTimer)
       refreshTimer = setTimeout(() => {
         refreshTimer = undefined;
@@ -2180,6 +2389,7 @@ function renderNewSessionControls() {
       sending ||
       pending ||
       attachmentWorking ||
+      githubDraftAppending ||
       gitLoading ||
       currentGitWorkspace()?.busy ||
       currentGitWorkspace()?.pending ||
@@ -2214,6 +2424,7 @@ function renderNewSessionControls() {
       sending ||
       !!pending ||
       attachmentWorking ||
+      githubDraftAppending ||
       gitLoading ||
       !!currentGitWorkspace()?.busy ||
       !!currentGitWorkspace()?.pending ||
@@ -3144,6 +3355,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderGithub();
   renderGitWorkspace();
   renderSessionFork();
   const persistenceState = document.querySelector('#session-persistence-state');
@@ -3165,6 +3377,7 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    githubBlocksComposer() ||
     gitBlocksComposer() ||
     forkBlocksComposer() ||
     (!!sessionPersistenceError && !pending) ||
@@ -3195,22 +3408,25 @@ function updateComposer() {
   sendIcon(sending ? 'sending' : pending ? 'pending' : 'ready');
   send.setAttribute('aria-label', sending ? '提交中' : pending ? '重试确认' : '发送指令');
   send.classList.toggle('pending', !!pending);
-  $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending || attachmentWorking;
+  $<HTMLTextAreaElement>('#prompt').readOnly =
+    sending || !!pending || attachmentWorking || githubDraftAppending;
   const state = document.querySelector('#draft-state');
   if (state)
-    state.textContent = forkBlocksComposer()
-      ? '请先在会话副本中确认原 Fork 操作'
-      : gitBlocksComposer()
-        ? currentGitWorkspace()?.execution?.status === 'removed'
-          ? currentGitWorkspace()?.execution?.disposition === 'detached'
-            ? '此会话已脱离共享目录，请创建另一份新会话'
-            : '工作目录已清理，请创建另一份新会话'
-          : '请先在 Git 与工作目录中确认原操作'
-        : pending
-          ? '提交结果待确认，重试会使用同一编号'
-          : !connected || !selected?.online
-            ? '执行电脑离线 · 输入保留为草稿'
-            : '';
+    state.textContent = githubBlocksComposer()
+      ? '请先完成或确认 GitHub 上下文操作'
+      : forkBlocksComposer()
+        ? '请先在会话副本中确认原 Fork 操作'
+        : gitBlocksComposer()
+          ? currentGitWorkspace()?.execution?.status === 'removed'
+            ? currentGitWorkspace()?.execution?.disposition === 'detached'
+              ? '此会话已脱离共享目录，请创建另一份新会话'
+              : '工作目录已清理，请创建另一份新会话'
+            : '请先在 Git 与工作目录中确认原操作'
+          : pending
+            ? '提交结果待确认，重试会使用同一编号'
+            : !connected || !selected?.online
+              ? '执行电脑离线 · 输入保留为草稿'
+              : '';
   if (state) state.toggleAttribute('hidden', !state.textContent);
   let active = false;
   if (sessionId) {
@@ -3278,6 +3494,7 @@ async function submit(m: Mutation) {
   }
 }
 async function sendTurn() {
+  if (githubBlocksComposer()) throw new Error('请先完成或确认 GitHub 上下文操作。');
   if (forkBlocksComposer()) throw new Error('请先在会话副本中确认原 Fork 操作。');
   if (gitBlocksComposer())
     throw new Error(gitLoadError || '请先在 Git 与工作目录中确认当前目录状态。');

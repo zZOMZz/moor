@@ -2906,3 +2906,79 @@ dialog pre {
   min-width: 0;
   flex: 1;
 }
+
+.github-panel {
+  width: min(820px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.github-panel section {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.github-heading,
+.github-list-controls,
+.github-pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.github-heading {
+  justify-content: space-between;
+}
+.github-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  min-width: 0;
+}
+.github-panel select {
+  max-width: 100%;
+}
+.github-panel button {
+  margin: 4px 4px 4px 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.github-items {
+  list-style: none;
+  padding: 0;
+}
+.github-items button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: 6px;
+  padding: 10px;
+}
+.github-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 360px;
+  overflow: auto;
+}
+.github-panel .git-oid {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.github-panel [role='alert'] {
+  color: var(--danger);
+}
+@media (max-width: 480px) {
+  .github-panel {
+    padding: 16px;
+  }
+  .github-list-controls > label {
+    width: 100%;
+  }
+}

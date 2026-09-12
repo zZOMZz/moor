@@ -13,6 +13,7 @@ import { HostNotifications } from './host-notifications';
 import { notificationScopeSchema } from '../notification-protocol';
 import { SessionExecutionStore } from './session-execution';
 import { SessionForkStore } from './session-fork';
+import { SessionGithubStore } from './session-github';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -36,6 +37,7 @@ export class RuntimeStore {
   notifications: HostNotifications;
   executions: SessionExecutionStore;
   forks: SessionForkStore;
+  github: SessionGithubStore;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
@@ -76,6 +78,7 @@ export class RuntimeStore {
     this.sessionSearch = new SessionSearchIndex(this.journal.db);
     this.notifications = new HostNotifications(this.journal.db, options);
     this.forks = new SessionForkStore(this.journal.db);
+    this.github = new SessionGithubStore(this.journal.db);
     this.executions = new SessionExecutionStore(
       this.journal.db,
       options.worktreeRoot ??

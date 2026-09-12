@@ -223,6 +223,27 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     });
   const invoke = (name: string, value?: unknown, event = settingsEvent()) =>
     handlers.get(name)!(event, value);
+  assert.throws(
+    () =>
+      invoke(
+        'personal:github-config',
+        { action: 'read' },
+        { sender: {}, senderFrame: settingsWindow.webContents.mainFrame },
+      ),
+    /无效的本机设置请求/,
+  );
+  assert.throws(
+    () =>
+      invoke(
+        'personal:github-config',
+        { action: 'read' },
+        {
+          sender: settingsWindow.webContents,
+          senderFrame: { ...settingsWindow.webContents.mainFrame },
+        },
+      ),
+    /无效的本机设置请求/,
+  );
   assert.equal((await invoke('personal:settings')).notifications.enabled, false);
   assert.equal(notices.length, 0);
   const event = {

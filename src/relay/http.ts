@@ -71,6 +71,13 @@ import {
   sessionForkSchema,
   forkReceiptSchema,
 } from '../fork-protocol';
+import {
+  GITHUB_FEATURE,
+  githubReadSchema,
+  githubReadResultSchema,
+  githubActionSchema,
+  githubReceiptSchema,
+} from '../github-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -246,6 +253,7 @@ export function createApp(
           'search-sessions',
           'git-state',
           'fork-options',
+          'github-read',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -341,7 +349,9 @@ export function createApp(
         path = url.pathname;
       scopedActionRequest =
         req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(git|fork)\/action$/.test(path);
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:(git|fork|github)\/action|github\/abandon)$/.test(
+          path,
+        );
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
@@ -532,6 +542,175 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'github' &&
+            ['read', 'action', 'abandon'].includes(parts[6] ?? '') &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            const action = parts[6] !== 'read',
+              value = await body(req, 16 * 1024);
+            const actionInput = action ? githubActionSchema.parse(value) : undefined;
+            const readInput = action ? undefined : githubReadSchema.parse(value);
+            const input = actionInput ?? readInput!;
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              'GitHub 请求与项目副本不匹配',
+            );
+            assert(runtime, 409, '执行电脑暂时不可用');
+            assert(runtime.features?.includes(GITHUB_FEATURE), 409, '请先升级执行电脑上的 Moor');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const r = store.catalog.replica(owner!, workspaceId, replica.id);
+              const w = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                r.host.device_id === host.device_id &&
+                  r.host.runtime_id === input.workspaceId &&
+                  r.local_id === input.localProjectId &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  w?.userId === runtime.userId &&
+                  w?.machineId === runtime.machineId &&
+                  w.features?.includes(GITHUB_FEATURE) &&
+                  w.projects.some((p) => p.id === input.localProjectId),
+                409,
+                'GitHub 请求的执行范围已变化，请重新读取',
+              );
+            };
+            current();
+            scopedActionDispatched = action;
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                'github-' + parts[6],
+                host.runtime_id,
+                input,
+                replica.local_id,
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            current();
+            if (failed) throw failed.error;
+            const parsed = action
+              ? githubReceiptSchema.safeParse(raw)
+              : githubReadResultSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行电脑返回的 GitHub 内容不可验证');
+            const result = parsed.data;
+            assert(
+              Buffer.byteLength(JSON.stringify(result)) <= 2 * 1024 * 1024,
+              502,
+              'GitHub 内容超过限制',
+            );
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId,
+              502,
+              'GitHub 响应范围不匹配',
+            );
+            if (actionInput) {
+              assert(
+                'operationId' in result &&
+                  result.operationId === actionInput.operationId &&
+                  result.binding.revision ===
+                    actionInput.expectedRevision +
+                      ('abandoned' in result && result.abandoned ? 0 : 1),
+                502,
+                'GitHub 绑定确认不属于原操作',
+              );
+              if ('abandoned' in result && result.abandoned) {
+                assert(!result.binding.context, 502, '未执行确认不能包含 GitHub 上下文');
+              } else if (actionInput.action === 'unbind')
+                assert(
+                  !result.binding.context && !('redacted' in result && result.redacted),
+                  502,
+                  'GitHub 解绑尚未确认',
+                );
+              else if (!('redacted' in result && result.redacted))
+                assert(
+                  result.binding.context?.repository.id === actionInput.repositoryId &&
+                    result.binding.context.branch === actionInput.branch &&
+                    JSON.stringify(result.binding.context.subject) ===
+                      JSON.stringify(actionInput.subject),
+                  502,
+                  'GitHub 绑定确认与所选上下文不匹配',
+                );
+            } else {
+              assert(
+                'view' in result && result.view === readInput!.view,
+                502,
+                'GitHub 响应类型不匹配',
+              );
+              if (readInput!.view !== 'overview')
+                assert(
+                  'repository' in result &&
+                    result.repository?.id === readInput!.repositoryId &&
+                    result.configVersion === readInput!.configVersion,
+                  502,
+                  'GitHub 仓库或授权版本不匹配',
+                );
+              if ('page' in readInput!) {
+                assert(
+                  ('result' in result && result.result.page === readInput!.page) ||
+                    ('checks' in result &&
+                      result.checks.page === readInput!.page &&
+                      result.statuses.page === readInput!.page),
+                  502,
+                  'GitHub 分页响应不匹配',
+                );
+              }
+              if (readInput!.view === 'issues' || readInput!.view === 'pulls')
+                assert(
+                  'state' in result &&
+                    result.state === readInput!.state &&
+                    'result' in result &&
+                    result.result.items.every(
+                      (item) =>
+                        'kind' in item &&
+                        item.kind === (readInput!.view === 'issues' ? 'issue' : 'pull'),
+                    ),
+                  502,
+                  'GitHub 列表类型或筛选状态不匹配',
+                );
+              if (readInput!.view === 'issue' || readInput!.view === 'pull') {
+                assert(
+                  'item' in result && result.item.number === readInput!.number,
+                  502,
+                  'GitHub 上下文编号不匹配',
+                );
+                if ('item' in result && result.item.kind === 'pull')
+                  assert(
+                    result.item.base.repository.id === result.repository.id,
+                    502,
+                    'PR 不属于已登记仓库',
+                  );
+              }
+              if (readInput!.view === 'comments')
+                assert(
+                  'subject' in result &&
+                    result.subject === readInput!.subject &&
+                    result.number === readInput!.number,
+                  502,
+                  'GitHub 评论范围不匹配',
+                );
+              if (readInput!.view === 'checks')
+                assert(
+                  'checks' in result &&
+                    result.number === readInput!.number &&
+                    result.headSha === readInput!.headSha,
+                  502,
+                  'CI 不属于当前 PR 提交',
+                );
+            }
+            return json(res, 200, result);
+          }
           if (
             parts[5] === 'fork' &&
             ['options', 'action'].includes(parts[6] ?? '') &&
@@ -1347,6 +1526,37 @@ export function createApp(
                   scope: 'doc',
                   docId: message.sessionId,
                 });
+              } else if (message.type === 'github-changed') {
+                const event = z
+                  .object({
+                    type: z.literal('github-changed'),
+                    workspaceId: z.string().min(1).max(200),
+                  })
+                  .strict()
+                  .parse(message);
+                assert(
+                  bridges
+                    .get(d.id)
+                    ?.workspaces.some(
+                      (w) => w.id === event.workspaceId && w.features?.includes(GITHUB_FEATURE),
+                    ),
+                  409,
+                  'GitHub 配置事件范围不匹配',
+                );
+                for (const [viewer, identity] of viewers) {
+                  if (identity.owner !== d.owner) continue;
+                  try {
+                    assert(store.owner(identity.secret) === d.owner, 401, '请先登录');
+                    send(viewer, {
+                      type: 'changed',
+                      deviceId: d.id,
+                      workspaceId: event.workspaceId,
+                      room: { scope: 'github' },
+                    });
+                  } catch {
+                    viewer.close(1008, 'login expired');
+                  }
+                }
               } else if (message.type === 'notification') {
                 const event = hostNotificationEventSchema.parse(message.event);
                 void deliverNotification(current, ws, event);
