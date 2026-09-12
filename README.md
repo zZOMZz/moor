@@ -8,6 +8,8 @@ Moor 是独立的本地 Agent 执行主机，通过标准 [ACP](https://agentcli
 
 当前是个人使用的开发预览版：macOS Apple Silicon + Web/PWA。Windows、团队权限和公司 SSO 留待后续版本；macOS 安装包尚未完成开发者签名与公证。
 
+想了解设计与实现，可以从[文档目录](docs/README.md)开始：[概念与身份](docs/concepts.md)、[核心架构](docs/core.md)、[会话与回合](docs/session.md)、[同步与送达](docs/sync.md)、[运行与恢复](docs/runtime.md)。开发检查见[开发与验证](docs/development.md)，服务部署见[部署与迁移](deploy/README.md)。
+
 ## 0.2 的三个改进
 
 - **连接状态与恢复**：客户端分别显示执行组件、本机工作区和中转服务的实时状态。执行组件意外退出后最多尝试恢复三次，连续失败后可手动重试。已有运行实例不会被终止，恢复过程不重放指令。
@@ -65,7 +67,7 @@ Moor 的产品 `Workspace` 与执行主机的 `RuntimeWorkspace` 分开。执行
 
 旧运行时数据库、浏览器缓存与草稿、旧配对文件均保留原样。本版不自动导入旧会话或待确认操作，也不直接读取旧应用的数据库。旧历史需通过旧版本查看；新会话在 Moor 中创建。新版本不会在升级或重连时执行旧草稿。忽略目录 `.runtime/` 中的旧源码检出可以留存，但安装、测试和打包都不会使用它。
 
-架构边界、事务与恢复语义见 [独立执行架构](docs/runtime.md)。
+架构边界见[核心架构](docs/core.md)，事务与重试见[同步、送达与重试](docs/sync.md)，进程生命周期见[运行与恢复](docs/runtime.md)。
 
 ## 本地优先的数据模型
 
@@ -96,6 +98,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm check
 corepack pnpm test
 corepack pnpm build
+corepack pnpm format:check
 ```
 
 无需准备外部运行时仓库。ACP SDK、Codex/Claude 适配器和 Electron 直接锁定在 `package.json` / `pnpm-lock.yaml` 中。Agent 登录凭据仍由 Agent 在本机管理。
