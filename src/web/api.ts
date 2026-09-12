@@ -6,6 +6,7 @@ export interface Identity {
   localOnly?: boolean;
   actor?: AttentionActor;
   attentionFeatures?: string[];
+  google?: { enabled: boolean; linked?: { email: string } | null; hasPassword?: boolean };
 }
 
 export class ApiError extends Error {

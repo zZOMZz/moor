@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, LoaderCircle, Pause, Play } from 'lucide-react';
 import { startWater, type WaterSurface } from './login-water';
+import { GoogleStart } from './google-login';
 
 export interface LoginProps {
   setup: boolean;
+  googleEnabled?: boolean;
   onSubmit: (data: Record<string, FormDataEntryValue>) => Promise<void>;
 }
 
-export function Login({ setup, onSubmit }: LoginProps) {
+export function Login({ setup, onSubmit, googleEnabled }: LoginProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const water = useRef<WaterSurface | null>(null);
   const submitting = useRef(false);
@@ -111,6 +113,7 @@ export function Login({ setup, onSubmit }: LoginProps) {
             {busy ? <LoaderCircle className="auth-spinner" /> : <ArrowRight />}
           </button>
         </form>
+        {googleEnabled && <GoogleStart mode={setup ? 'setup' : 'login'} disabled={busy} />}
         <p className="auth-footnote">你的设备 · 你的项目 · 你的节奏</p>
       </section>
       <footer className="login-footer">

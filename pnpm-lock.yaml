@@ -23,6 +23,9 @@ importers:
       '@loro-dev/flock-wasm':
         specifier: 0.4.3
         version: 0.4.3
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
       loro-crdt:
         specifier: 1.15.1
         version: 1.15.1

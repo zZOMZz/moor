@@ -1,4 +1,13 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, session, Notification } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  Menu,
+  session,
+  Notification,
+  shell,
+} = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -18,6 +27,7 @@ const { DesktopPreviewSettings } = require('./preview-settings.cjs');
 const { DesktopSkillsSettings } = require('./skills-settings.cjs');
 const { DesktopAgentSettings } = require('./agent-settings.cjs');
 const { DesktopMcpSettings } = require('./mcp-settings.cjs');
+const { DesktopGoogleAuth } = require('./google-auth.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -85,6 +95,13 @@ const write = (file, value) => {
   }
 };
 const contentWindows = new Map();
+const googleAuth = new DesktopGoogleAuth({
+  registry: contentWindows,
+  remoteWindow: () => remoteWindow,
+  origin: () => settings.server,
+  openExternal: (url) => shell.openExternal(url),
+  confirm: (window, options) => dialog.showMessageBox(window, options),
+});
 const attachmentSaver = createAttachmentSaver({
   registry: contentWindows,
   showSaveDialog: (window, options) => dialog.showSaveDialog(window, options),
@@ -134,9 +151,13 @@ function lockedWindow(origin, partition) {
   const contents = window.webContents;
   contentWindows.set(contents, { window, origin });
   contents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
-    if (mainFrame) attachmentSaver.invalidate(contents);
+    if (mainFrame) {
+      attachmentSaver.invalidate(contents);
+      googleAuth.invalidate(contents);
+    }
   });
   window.on('closed', () => {
+    googleAuth.invalidate(contents);
     attachmentSaver.invalidate(contents);
     contentWindows.delete(contents);
   });
@@ -152,6 +173,7 @@ function lockedWindow(origin, partition) {
 function openPage(window, origin) {
   const registered = contentWindows.get(window.webContents);
   if (registered && registered.origin !== new URL(origin).origin) {
+    googleAuth.invalidate(window.webContents);
     attachmentSaver.invalidate(window.webContents);
     contentWindows.set(window.webContents, { window, origin: new URL(origin).origin });
   }
@@ -615,6 +637,7 @@ ipcMain.handle('personal:save', async (event, value) => {
     write(bridgeFile, { server, ...result });
   }
   const changed = settings.server !== server;
+  if (changed) googleAuth.invalidate();
   settings = {
     server,
     name,
@@ -644,6 +667,9 @@ ipcMain.handle('personal:notification-test', async (event) => {
   return nativeNotifications.state();
 });
 ipcMain.handle('moor:save-attachment', (event, value) => attachmentSaver.save(event, value));
+ipcMain.handle('moor:google-auth-begin', (event, value) => googleAuth.begin(event, value));
+ipcMain.handle('moor:google-auth-complete', (event, value) => googleAuth.complete(event, value));
+ipcMain.handle('moor:google-auth-cancel', (event, value) => googleAuth.cancel(event, value));
 ipcMain.handle('moor:cancel-attachment-save', (event) => attachmentSaver.cancel(event));
 ipcMain.handle('personal:open', async (event, mode) => {
   trusted(event);
@@ -701,6 +727,7 @@ else {
     skillsSettings.close();
     agentSettings.close();
     mcpSettings.close();
+    googleAuth.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

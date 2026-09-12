@@ -71,6 +71,10 @@ docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay 
 
 仅用于开发时可使用 Caddy 的 `tls internal`，但各访问端仍需信任其 CA；容器里的证书不会自动成为 iPhone 或 Mac 信任的证书。不要通过关闭证书校验来完成设备验收。
 
+## 配置个人 Google 登录
+
+中转可选启用 Google 登录。在 Google Cloud 登记 Web OAuth 客户端及准确的 `/api/auth/google/callback` 地址，将 `MOOR_GOOGLE_CLIENT_ID` 与 `MOOR_GOOGLE_CLIENT_SECRET` 留在服务器私有环境配置中，再重启服务。Mac 通过系统浏览器登录，客户端不保存 Google 密钥。已有密码账号需显式绑定，不能靠邮箱自动关联。建号、恢复命令和真实设备限制见[个人 Google 登录](../docs/google-login.md)。
+
 ## 配置 Web Push
 
 Web Push 默认未配置；桌面本机通知不依赖此配置。需要远端浏览器或 PWA 通知时，在私有配置目录生成一次 VAPID 密钥，使用真实的操作者联系地址替换示例：

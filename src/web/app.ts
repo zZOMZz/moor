@@ -89,6 +89,7 @@ import {
   showNewSessionControls,
   showRunControls,
   showAuth,
+  showGoogleAccountPanel,
   closeNavigation,
   resizeComposer,
   sendIcon,
@@ -2838,6 +2839,8 @@ function setAttentionVisible(visible: boolean) {
   if (persistenceState)
     persistenceState.hidden = visible || !(sessionPersistenceError || sessionAgentError);
   if (visible) {
+    googleAccountGeneration++;
+    showGoogleAccountPanel();
     mcpPanelOpen = false;
     currentMcp()?.invalidate();
     showMcpPanel();
@@ -3620,6 +3623,8 @@ async function api(path: string, body?: unknown) {
   return request(path, body);
 }
 function resetWorkspace() {
+  googleAccountGeneration++;
+  showGoogleAccountPanel();
   sessionAgent = undefined;
   sessionAgentError = '';
   resetGitWorkspace();
@@ -3703,7 +3708,7 @@ export async function boot(
     void cache.write('last-owner', undefined).catch(() => {});
     void reconcileNotificationAccount().catch(() => {});
     takeNotificationQuery();
-    showLogin(source.identity.needsSetup);
+    showLogin(source.identity.needsSetup, source.identity.google?.enabled);
     return;
   }
   owner =
@@ -3729,7 +3734,7 @@ export async function boot(
       void cache.write('last-owner', undefined).catch(() => {});
       void reconcileNotificationAccount().catch(() => {});
       takeNotificationQuery();
-      showLogin(me.needsSetup);
+      showLogin(me.needsSetup, me.google?.enabled);
     } else await boot(Promise.resolve(me), Promise.resolve(undefined));
     return;
   }
@@ -3752,9 +3757,10 @@ export async function boot(
   await openNotificationQuery();
   if (generation === bootGeneration) connect();
 }
-function showLogin(setup: boolean) {
+function showLogin(setup: boolean, googleEnabled = false) {
   showAuth({
     setup,
+    googleEnabled,
     onSubmit: async (data) => {
       await api(setup ? '/api/setup' : '/api/login', data);
       await boot();
@@ -3809,7 +3815,7 @@ function logout() {
     bootGeneration++;
     resetWorkspace();
     await cache.clear();
-    showLogin(false);
+    await boot();
   });
 }
 function newSession() {
@@ -4550,6 +4556,36 @@ function renderSessionActionState() {
     restore.onclick = () => row && run(() => manageSession(row, 'restore'));
   }
 }
+let googleAccountGeneration = 0;
+async function openGoogleAccount() {
+  const panelGeneration = ++googleAccountGeneration;
+  const expectedOwner = owner,
+    generation = bootGeneration;
+  const identity: Identity = await api('/api/me');
+  if (
+    generation !== bootGeneration ||
+    owner !== expectedOwner ||
+    panelGeneration !== googleAccountGeneration
+  )
+    return;
+  if (identity.owner !== expectedOwner || identity.localOnly)
+    throw new Error('当前登录已改变，请刷新后重新打开');
+  showGoogleAccountPanel({
+    identity,
+    onRefresh: async () => {
+      if (
+        generation === bootGeneration &&
+        owner === expectedOwner &&
+        panelGeneration === googleAccountGeneration
+      )
+        await openGoogleAccount();
+    },
+    onClose: () => {
+      googleAccountGeneration++;
+      showGoogleAccountPanel();
+    },
+  });
+}
 function renderNavigation() {
   configureAttention();
   showNavigation({
@@ -4610,6 +4646,10 @@ function renderNavigation() {
     onManage: showWorkspaceManager,
     onPair: pairComputer,
     onLogout: logout,
+    onGoogleAccount: () => {
+      closeNavigation();
+      run(openGoogleAccount);
+    },
     onNotifications: openNotifications,
   });
 }

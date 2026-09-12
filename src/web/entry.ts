@@ -4,6 +4,12 @@ import * as cache from './cache';
 
 // Fetch identity alongside the UI. Signing in never needs the session WASM runtime.
 export async function start() {
+  if (location.pathname === '/auth/google/complete') {
+    const { showGoogleComplete } = await import('./ui');
+    showGoogleComplete();
+    window.dispatchEvent(new Event('moor:ready'));
+    return;
+  }
   const identity = api('/api/me').catch(() => null) as Promise<Identity | null>;
   const cachedOwner = cache.read<string>('last-owner').catch(() => undefined);
   const [source, { showAuth }] = await Promise.all([
@@ -15,6 +21,7 @@ export async function start() {
     void cache.write('last-owner', undefined).catch(() => {});
     showAuth({
       setup: me.needsSetup,
+      googleEnabled: me.google?.enabled,
       onSubmit: async (data) => {
         await api(me.needsSetup ? '/api/setup' : '/api/login', data);
         await start();

@@ -1,4 +1,6 @@
 import { Login, type LoginProps } from './login';
+import { GoogleAccount, GoogleComplete } from './google-login';
+import type { Identity } from './api';
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
@@ -77,6 +79,16 @@ export function paint(selector: string, node: ReactNode) {
       listeners.forEach((listener) => listener());
     });
   }
+}
+export function showGoogleAccountPanel(props?: {
+  identity: Identity;
+  onRefresh: () => Promise<void>;
+  onClose: () => void;
+}) {
+  paint('#google-account-view', props ? <GoogleAccount {...props} /> : null);
+}
+export function showGoogleComplete() {
+  paint('#app', <GoogleComplete />);
 }
 export function disposeUI() {
   if (applicationRoot) flushSync(() => applicationRoot!.unmount());
@@ -285,6 +297,7 @@ export function Shell({
       <Content name="#roles-view" />
       <Content name="#tasks-view" />
       <Content name="#mcp-view" />
+      <Content name="#google-account-view" />
     </div>
   );
 }
@@ -477,6 +490,7 @@ type NavigationProps = {
   onManage: () => void;
   onPair: () => void;
   onLogout: () => void;
+  onGoogleAccount?: () => void;
   onNotifications?: () => void;
 };
 const sessionKey = (session: SessionSummary) =>
@@ -888,6 +902,11 @@ export function Navigation(p: NavigationProps) {
               <Menu.Item className="menu-item" onClick={p.onNotifications}>
                 <Bell />
                 通知设置
+              </Menu.Item>
+            )}
+            {!p.localOnly && (
+              <Menu.Item className="menu-item" onClick={p.onGoogleAccount}>
+                Google 登录设置
               </Menu.Item>
             )}
             {!p.localOnly && (
