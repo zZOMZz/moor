@@ -192,21 +192,25 @@ export function createCacheCompareDraftBundle(deps: {
   database(): Promise<IDBDatabase>;
   schedule(callback: () => void): unknown;
   cancel(timer: unknown): void;
+  minimumEntries?: 2 | 3;
+  subject?: '角色' | '任务计划';
 }) {
+  const subject = deps.subject ?? '角色';
   return async (
     input: readonly DraftBundleEntry[],
     current: () => boolean,
     signal?: AbortSignal,
   ): Promise<boolean> => {
     if (
-      input.length < 3 ||
+      input.length < (deps.minimumEntries ?? 3) ||
       input.length > 4 ||
       new Set(input.map((entry) => entry.key)).size !== input.length
     )
-      throw new Error('角色草稿保存范围无效。');
+      throw new Error(`${subject}草稿保存范围无效。`);
     const entries = structuredClone(input);
     const requireCurrent = () => {
-      if (signal?.aborted || !current()) throw new Error('草稿或执行目标已改变，请重新确认角色。');
+      if (signal?.aborted || !current())
+        throw new Error(`草稿或执行目标已改变，请重新确认${subject}。`);
     };
     requireCurrent();
     const database = await deps.database();
@@ -233,8 +237,8 @@ export function createCacheCompareDraftBundle(deps: {
           /* Already complete. */
         }
       };
-      const cancelled = () => abort(new Error('草稿或执行目标已改变，请重新确认角色。'));
-      const timer = deps.schedule(() => abort(new Error('角色草稿保存超时，请重新确认。')));
+      const cancelled = () => abort(new Error(`草稿或执行目标已改变，请重新确认${subject}。`));
+      const timer = deps.schedule(() => abort(new Error(`${subject}草稿保存超时，请重新确认。`)));
       signal?.addEventListener('abort', cancelled, { once: true });
       const store = tx.objectStore('cache');
       for (const entry of entries) {
@@ -256,11 +260,11 @@ export function createCacheCompareDraftBundle(deps: {
             abort(error);
           }
         };
-        request.onerror = () => abort(request.error ?? new Error('角色草稿无法读取。'));
+        request.onerror = () => abort(request.error ?? new Error(`${subject}草稿无法读取。`));
       }
       tx.oncomplete = () => finish();
-      tx.onerror = () => abort(tx.error ?? new Error('角色草稿未保存。'));
-      tx.onabort = () => finish(tx.error ?? new Error('角色草稿保存被中止。'));
+      tx.onerror = () => abort(tx.error ?? new Error(`${subject}草稿未保存。`));
+      tx.onabort = () => finish(tx.error ?? new Error(`${subject}草稿保存被中止。`));
     });
   };
 }
@@ -268,6 +272,14 @@ export const compareDraftBundle = createCacheCompareDraftBundle({
   database: () => bounded(db),
   schedule: (callback) => setTimeout(callback, 5000),
   cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+});
+/** A task-plan submission and the original mutation outbox must commit together. */
+export const compareTaskSubmission = createCacheCompareDraftBundle({
+  database: () => bounded(db),
+  schedule: (callback) => setTimeout(callback, 5000),
+  cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  minimumEntries: 2,
+  subject: '任务计划',
 });
 export async function clear() {
   const d = await bounded(db);

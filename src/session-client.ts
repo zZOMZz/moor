@@ -3,6 +3,7 @@ import { agentSchema, mutationSchema } from './protocol';
 import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from './model';
 import { resolveRunSelection, type RunSelection } from './run-config';
 import { sessionReadResponseSchema, validateSessionBundle } from './session-responses';
+import { taskPlanSchema, type TaskPlan } from './task-protocol';
 export type SessionClientScope = {
   userId: string;
   machineId: string;
@@ -45,9 +46,12 @@ export function buildSessionTurn(input: {
   turnId: string;
   peerId: string;
   now: string;
+  taskPlan?: TaskPlan;
 }) {
   const read = readClientSession(input.read, input.scope),
-    agent = agentSchema.parse(input.agent);
+    agent = agentSchema.parse(input.agent),
+    taskPlan = input.taskPlan === undefined ? undefined : taskPlanSchema.parse(input.taskPlan);
+  if (taskPlan && read.meta.taskOrigin) throw new Error('子任务不能创建下一层协作任务');
   if (read.persisted === false || read.persistenceError)
     throw new Error('主机结果尚未持久保存，不能据此发送新指令');
   if (read.meta.isArchived) throw new Error('请先恢复会话');
@@ -96,7 +100,8 @@ export function buildSessionTurn(input: {
           cliType: agent.cliType,
           agentType: agent.agentType,
           mcpServerIds: [],
-          taskToolsEnabled: false,
+          taskToolsEnabled: !!taskPlan,
+          ...(taskPlan ? { taskPlan } : {}),
         },
         items: [{ type: 'text', text: input.prompt }],
         fileDiff: null,

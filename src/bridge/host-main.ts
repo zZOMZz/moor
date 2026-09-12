@@ -38,6 +38,7 @@ import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
 import { AgentSettings } from '../runtime/agent-settings';
 import { sessionControlActionSchema, sessionOperationSchema } from '../session-control-protocol';
+import { taskAuthoritySchema, taskReadSchema, taskActionSchema } from '../task-protocol';
 import { skillsReadSchema } from '../skills-protocol';
 import { rolesReadSchema, rolesActionRequestSchema } from '../role-protocol';
 import {
@@ -535,6 +536,16 @@ function connect(target: Target) {
               sessionOperationSchema.parse(m.params),
               m.localProjectId,
             );
+          else if (m.method === 'tasks-read')
+            result = await workspace.taskManager.read(
+              taskReadSchema.parse(m.params),
+              m.localProjectId,
+            );
+          else if (m.method === 'tasks-action')
+            result = await workspace.taskManager.action(
+              taskActionSchema.parse(m.params),
+              m.localProjectId,
+            );
           else if (m.method === 'roles-action')
             result = await workspace.roleAction(
               rolesActionRequestSchema.parse(m.params),
@@ -589,7 +600,35 @@ function connect(target: Target) {
           } else if (m.method === 'mutate') {
             const body = mutationSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.mutate(body, m.localProjectId);
+            const authority =
+              m.authorityOwner === undefined
+                ? undefined
+                : taskAuthoritySchema.parse({
+                    serverOrigin: target.config.server,
+                    ownerId: m.authorityOwner,
+                    deviceId: target.config.id,
+                  });
+            result = await workspace.mutate(
+              body,
+              m.localProjectId,
+              authority
+                ? {
+                    ...authority,
+                    current: () => {
+                      assert(
+                        !stopped &&
+                          !target.revoked &&
+                          target.socket === ws &&
+                          ws.readyState === WebSocket.OPEN &&
+                          target.config.server === authority.serverOrigin &&
+                          target.config.id === authority.deviceId,
+                        409,
+                        '协作授权的原连接已失效',
+                      );
+                    },
+                  }
+                : undefined,
+            );
           } else if (m.method === 'session-action') {
             const body = sessionActionSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
@@ -687,7 +726,10 @@ function connect(target: Target) {
         ws,
       );
     if (target.socket !== ws) return;
-    for (const host of workspaces.values()) host.previewManager.invalidate();
+    for (const host of workspaces.values()) {
+      host.previewManager.invalidate();
+      host.taskManager.invalidateUnavailable();
+    }
     const watches = [...target.watches.values()];
     target.watches.clear();
     for (const w of watches) void syncWatch(w.workspaceId, w.sessionId).catch(() => {});

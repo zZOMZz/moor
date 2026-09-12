@@ -3310,3 +3310,73 @@ dialog pre {
     overflow: auto;
   }
 }
+
+.tasks-panel {
+  width: min(900px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+}
+.tasks-panel section,
+.tasks-panel .task-card,
+.task-review,
+.task-slot {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-block: 14px;
+}
+.tasks-panel .task-card,
+.task-review,
+.task-slot {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+.tasks-panel label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.tasks-panel input,
+.tasks-panel select,
+.tasks-panel textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.tasks-panel textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.tasks-panel p,
+.tasks-panel strong,
+.tasks-panel h4,
+.task-plan-card {
+  overflow-wrap: anywhere;
+}
+.tasks-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tasks-panel button {
+  max-width: 100%;
+  white-space: normal;
+}
+.tasks-limits {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.task-plan-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  font-size: 13px;
+}
+@media (max-width: 520px) {
+  .tasks-limits {
+    grid-template-columns: 1fr;
+  }
+}

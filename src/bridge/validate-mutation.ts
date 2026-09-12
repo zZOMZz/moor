@@ -3,6 +3,7 @@ import { resolveRunSelection, selectionFromInput } from '../run-config';
 import { assert, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '../model';
 import { promptAttachmentsSchema } from '../attachment-protocol';
+import { taskPlanSchema, SESSION_TASKS_FEATURE } from '../task-protocol';
 const clone = (source: LoroDoc) => {
   const d = new LoroDoc();
   d.import(source.export({ mode: 'snapshot' }));
@@ -149,6 +150,7 @@ export function validateMutation(
           'agentType',
           'mcpServerIds',
           'taskToolsEnabled',
+          'taskPlan',
           'modelId',
           'modeId',
           'configOptionValues',
@@ -173,12 +175,17 @@ export function validateMutation(
       400,
       '模型或审批设置包含不支持的选项',
     );
-    assert(
-      isDeepStrictEqual(turn.inputConfig.mcpServerIds, []) &&
-        turn.inputConfig.taskToolsEnabled === false,
-      400,
-      '初版远程会话不挂载额外 MCP',
-    );
+    assert(isDeepStrictEqual(turn.inputConfig.mcpServerIds, []), 400, '不允许远程注入额外 MCP');
+    if (turn.inputConfig.taskToolsEnabled === true) {
+      assert(ws.features?.includes(SESSION_TASKS_FEATURE), 409, '执行主机尚不支持受限子任务');
+      const plan = taskPlanSchema.safeParse(turn.inputConfig.taskPlan);
+      assert(plan.success, 400, '子任务授权清单无效，请重新审查');
+    } else
+      assert(
+        turn.inputConfig.taskToolsEnabled === false && turn.inputConfig.taskPlan === undefined,
+        400,
+        '子任务工具必须携带用户明确审查的清单',
+      );
   } else {
     assert(m.requestId && isDeepStrictEqual(beforeRows, afterRows), 400, '审批不能修改会话目标');
     let matched = false;

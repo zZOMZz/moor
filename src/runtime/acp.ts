@@ -61,7 +61,85 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
           .catch(() => {});
       }
     },
-    async open(config, cwd, nativeId, callbacks) {
+    async open(config, cwd, nativeId, callbacks, options) {
+      const taskTools = options?.taskTools;
+      let cleanTaskValue = <T>(value: T): T => value;
+      if (taskTools) {
+        // Native adapters can include MCP connection diagnostics in updates or
+        // errors. The ephemeral endpoint and bearer must stay outside Moor's
+        // shared documents even when the adapter echoes them back.
+        const clean = <T>(value: T): T => {
+          if (typeof value === 'string')
+            return value
+              .replaceAll(taskTools.token, '[已隐藏任务凭据]')
+              .replaceAll(taskTools.url, '[本机任务工具]') as T;
+          if (Array.isArray(value)) return value.map(clean) as T;
+          if (value && typeof value === 'object')
+            return Object.fromEntries(
+              Object.entries(value).map(([key, item]) => [clean(key), clean(item)]),
+            ) as T;
+          return value;
+        };
+        cleanTaskValue = clean;
+        const original = callbacks;
+        callbacks = {
+          ...original,
+          update: (value) => original.update(clean(value)),
+          permission: (value) => original.permission(clean(value)),
+          ...(original.event
+            ? { event: (event, binding) => original.event!(clean(event), binding) }
+            : {}),
+          ...(original.question
+            ? { question: (request) => original.question!(clean(request)) }
+            : {}),
+        };
+      }
+      const currentTaskTools = () => {
+        if (!taskTools) return;
+        try {
+          taskTools.assertCurrent();
+        } catch {
+          throw new AppError(409, '多 Agent 任务授权已失效，未继续执行');
+        }
+      };
+      currentTaskTools();
+      let taskServers: Array<{
+        type: 'http';
+        name: string;
+        url: string;
+        headers: Array<{ name: string; value: string }>;
+      }> = [];
+      if (taskTools) {
+        let url: URL;
+        try {
+          url = new URL(taskTools.url);
+        } catch {
+          throw new AppError(400, '本机任务工具连接无效');
+        }
+        assert(
+          url.protocol === 'http:' &&
+            url.hostname === '127.0.0.1' &&
+            Number(url.port) > 0 &&
+            url.pathname === '/mcp' &&
+            !url.username &&
+            !url.password &&
+            !url.search &&
+            !url.hash &&
+            url.href === taskTools.url &&
+            /^[A-Za-z0-9_-]{43}$/.test(taskTools.token) &&
+            Buffer.from(taskTools.token, 'base64url').toString('base64url') === taskTools.token,
+          400,
+          '本机任务工具连接无效',
+        );
+        taskServers = [
+          {
+            type: 'http',
+            name: 'moor_tasks',
+            url: url.href,
+            headers: [{ name: 'Authorization', value: 'Bearer ' + taskTools.token }],
+          },
+        ];
+      }
       const custom = config.customAcp;
       if (custom && !isAbsolute(custom.command)) throw new Error('ACP 启动程序必须为本机绝对路径');
       const entry =
@@ -263,12 +341,17 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             },
           }),
         );
+        currentTaskTools();
+        if (taskTools && init.agentCapabilities?.mcpCapabilities?.http !== true)
+          throw new AppError(409, '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务');
         if (nativeId && !init.agentCapabilities?.loadSession)
           throw new Error('该 Agent 不支持恢复会话；请创建新会话');
         const response = nativeId
-          ? await bounded(conn.loadSession({ sessionId: nativeId, cwd, mcpServers: [] }))
-          : await bounded(conn.newSession({ cwd, mcpServers: [] }));
+          ? await bounded(conn.loadSession({ sessionId: nativeId, cwd, mcpServers: taskServers }))
+          : await bounded(conn.newSession({ cwd, mcpServers: taskServers }));
+        currentTaskTools();
         const id = nativeId ?? (response as { sessionId: string }).sessionId;
+        assert(cleanTaskValue(id) === id, 502, 'Agent 返回的会话标识无效');
         activeSessionId = id;
         const initialCommands = startupCommands.get(id);
         if (initialCommands) observe(initialCommands);
@@ -300,7 +383,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         const nativeForkCapabilities = forkCapabilities(config, init);
         return {
           id,
-          capabilities: choices,
+          capabilities: cleanTaskValue(choices),
           inputCapabilities,
           interactionCapabilities,
           forkCapabilities: nativeForkCapabilities,
@@ -308,10 +391,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             return runtimeFeatureReport(init, eventState, observedQuestion);
           },
           get currentEvents() {
-            return eventState;
+            return cleanTaskValue(eventState);
           },
           close,
           async fork(input) {
+            assert(!taskTools, 409, '任务工具会话不能直接派生原生 Fork');
             validateForkInput(config, input);
             if (
               stopped ||
@@ -372,6 +456,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             }
           },
           async prompt(input, binding) {
+            currentTaskTools();
             assert(!stopped, 409, 'Agent 已停止');
             assert(!activeRun && !steeringPending, 409, 'Agent 已有活动回合或待确认追加指令');
             assert(!forking, 409, 'Agent 的原生 Fork 尚未确认');
@@ -396,13 +481,26 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                     value: input.modelId,
                   }),
                 );
+              currentTaskTools();
               if (input.modeId)
                 await bounded(conn.setSessionMode({ sessionId: id, modeId: input.modeId }));
-              for (const [configId, value] of Object.entries(input.configOptionValues ?? {}))
+              currentTaskTools();
+              for (const [configId, value] of Object.entries(input.configOptionValues ?? {})) {
                 await bounded(
                   conn.setSessionConfigOption({ sessionId: id, configId, value: String(value) }),
                 );
+                currentTaskTools();
+              }
+              currentTaskTools();
               assert(!run.cancelled && !stopped, 409, '回合在发送前已取消');
+              if (taskTools) {
+                try {
+                  taskTools.onPromptDispatch();
+                } catch {
+                  throw new AppError(409, '多 Agent 任务授权已失效，未派发父回合');
+                }
+                currentTaskTools();
+              }
               acceptingUpdates = true;
               const result = await Promise.race([
                 conn.prompt({ sessionId: id, prompt: content }),
@@ -425,6 +523,13 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                 const anchor = run.forkAnchor.complete(config, id);
                 if (anchor) callbacks.forkAnchor?.(anchor, { ...run.binding });
               }
+            } catch (error) {
+              if (taskTools && !(error instanceof AppError))
+                throw new AppError(
+                  502,
+                  '任务工具 Agent 回合结果未确认，请检查原回合；不会自动重发',
+                );
+              throw error;
             } finally {
               acceptingUpdates = false;
               cancelQuestions(run);
@@ -432,6 +537,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             }
           },
           async steer(input): Promise<AgentSteerResult> {
+            currentTaskTools();
             const request = steerInputSchema.parse(input),
               run = activeRun;
             assert(
@@ -457,6 +563,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                   claudeSteerParams(id, request.prompt),
                 ),
               );
+              currentTaskTools();
               if (response.outcome === 'injected') return { outcome: 'injected' };
               if (response.outcome === 'promptRequired' && response.reason === 'noRunningTurn')
                 return { outcome: 'promptRequired', reason: 'noRunningTurn' };
@@ -464,6 +571,10 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               // the requested turn. Stop the owned process to bound unexpected work.
               await close();
               throw new Error('Agent 未确认追加指令进入指定活动回合');
+            } catch (error) {
+              if (taskTools && !(error instanceof AppError))
+                throw new AppError(502, '任务工具 Agent 尚未确认追加指令，请检查原回合');
+              throw error;
             } finally {
               steeringPending = false;
             }
@@ -472,11 +583,19 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             acceptingUpdates = false;
             if (activeRun) activeRun.cancelled = true;
             cancelQuestions(activeRun);
-            await bounded(conn.cancel({ sessionId: id }));
+            try {
+              await bounded(conn.cancel({ sessionId: id }));
+            } catch (error) {
+              if (taskTools && !(error instanceof AppError))
+                throw new AppError(502, '任务工具 Agent 停止结果尚未确认');
+              throw error;
+            }
           },
         };
       } catch (error) {
         await close();
+        if (taskTools && !(error instanceof AppError))
+          throw new AppError(502, '无法连接支持任务工具的 Agent，请检查本机配置');
         throw error;
       }
     },

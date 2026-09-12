@@ -165,10 +165,12 @@ export function Shell({
               <Content name="#project-preview-control" />
               <Content name="#skills-control" />
               <Content name="#roles-control" />
+              <Content name="#tasks-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
           <Content name="#session-fork-origin" />
+          <Content name="#task-origin" />
           <div id="history" aria-label="会话内容">
             <div className="welcome">
               <div className="welcome-mark">
@@ -198,6 +200,7 @@ export function Shell({
               <Content name="#attachment-controls" />
             </div>
             <Content name="#preview-annotation-cards" />
+            <Content name="#task-plan-card" />
             <div className="prompt-surface">
               <label className="sr-only" htmlFor="prompt">
                 发送给 Agent 的指令
@@ -274,6 +277,7 @@ export function Shell({
       <Content name="#project-preview-view" />
       <Content name="#skills-view" />
       <Content name="#roles-view" />
+      <Content name="#tasks-view" />
     </div>
   );
 }
@@ -931,6 +935,7 @@ export function Target({
 }
 
 export type RunControlsProps = {
+  idPrefix?: string;
   capabilities?: RunCapabilities;
   selection: RunSelection;
   agentType?: string;
@@ -960,7 +965,7 @@ export function RunControls(p: RunControlsProps) {
     <>
       <div className="run-controls">
         <Picker
-          id="model"
+          id={(p.idPrefix ?? '') + 'model'}
           label="模型"
           icon={<Cpu />}
           value={p.selection.modelId}
@@ -992,7 +997,7 @@ export function RunControls(p: RunControlsProps) {
                 <div className="run-settings-row">
                   <span>思考强度</span>
                   <Picker
-                    id="effort"
+                    id={(p.idPrefix ?? '') + 'effort'}
                     label="思考强度"
                     value={p.selection.reasoningEffort}
                     items={efforts.map((e) => ({ id: e, name: e }))}
@@ -1006,7 +1011,7 @@ export function RunControls(p: RunControlsProps) {
                 <div className="run-settings-row">
                   <span>审批权限</span>
                   <Picker
-                    id="approval-mode"
+                    id={(p.idPrefix ?? '') + 'approval-mode'}
                     label="审批"
                     value={p.selection.modeId}
                     items={modes.map((m) => ({ id: m.id, name: labels[m.id] || m.name }))}
@@ -1021,7 +1026,7 @@ export function RunControls(p: RunControlsProps) {
                 )}
                 <button
                   type="button"
-                  id="refresh-run-options"
+                  id={(p.idPrefix ?? '') + 'refresh-run-options'}
                   className="refresh-run-options"
                   disabled={!p.canRefresh || p.disabled}
                   onClick={p.onRefresh}

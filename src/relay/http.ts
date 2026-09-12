@@ -30,6 +30,14 @@ import {
 } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
 import {
+  SESSION_TASKS_FEATURE,
+  TASK_LIMITS,
+  taskReadSchema,
+  taskActionSchema,
+  validateTaskReadResult,
+  validateTaskActionResult,
+} from '../task-protocol';
+import {
   SESSION_CONTROL_FEATURE,
   SESSION_CONTROL_LIMITS,
   sessionControlActionSchema,
@@ -327,6 +335,8 @@ export function createApp(
           'cancel',
           'session-control',
           'session-operations',
+          'tasks-read',
+          'tasks-action',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -341,6 +351,7 @@ export function createApp(
     workspaceId: string,
     params: unknown,
     localProjectId?: string,
+    authorityOwner?: string,
   ): Promise<unknown> {
     assert(online(device), 409, '执行电脑不可达，指令未送达');
     assert(commands.size < 64, 429, '请求过多，请稍后再试');
@@ -359,6 +370,7 @@ export function createApp(
         workspaceId,
         params,
         localProjectId,
+        ...(authorityOwner ? { authorityOwner } : {}),
       });
     });
   }
@@ -667,6 +679,7 @@ export function createApp(
             boundary.runtime.id,
             input,
             localProjectId,
+            owner!,
           );
         } catch (error) {
           failed = { error };
@@ -1858,6 +1871,68 @@ export function createApp(
               throw new AppError(502, '会话操作响应与原请求不匹配');
             }
             return json(res, 200, result);
+          }
+          if (
+            ['tasks-read', 'tasks-action'].includes(parts[5] ?? '') &&
+            parts.length === 6 &&
+            req.method === 'POST'
+          ) {
+            const action = parts[5] === 'tasks-action';
+            if (action) scopedRecoveryRequest = true;
+            const boundary = sessionBoundary(host.device_id, runtime!, replica.local_id, () => {
+              assert(
+                isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
+                409,
+                '协作请求的项目副本已变化',
+              );
+            });
+            const value = await body(req, TASK_LIMITS.requestBytes);
+            const input = action ? taskActionSchema.parse(value) : taskReadSchema.parse(value);
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '协作请求与执行范围不匹配',
+            );
+            boundary.current(SESSION_TASKS_FEATURE);
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                parts[5]!,
+                host.runtime_id,
+                input,
+                replica.local_id,
+                owner!,
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            boundary.current(SESSION_TASKS_FEATURE);
+            if (failed)
+              throw new AppError(
+                failed.error instanceof AppError &&
+                  [400, 401, 403, 404, 409, 413, 429, 504].includes(failed.error.status)
+                  ? failed.error.status
+                  : 502,
+                '协作操作未能确认，请手动核查原操作',
+                false,
+              );
+            assert(
+              Buffer.byteLength(JSON.stringify(raw) ?? '') <= TASK_LIMITS.responseBytes,
+              502,
+              '协作响应超过限制',
+            );
+            try {
+              return json(
+                res,
+                200,
+                action
+                  ? validateTaskActionResult(raw, taskActionSchema.parse(input))
+                  : validateTaskReadResult(raw, taskReadSchema.parse(input)),
+              );
+            } catch {
+              throw new AppError(502, '协作响应与原请求不匹配', false);
+            }
           }
           const sessionRoute = ['sessions', 'mutations', 'session-actions', 'cancel'].includes(
             parts[5] ?? '',
