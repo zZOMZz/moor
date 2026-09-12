@@ -20,6 +20,29 @@ import {
   attachmentReceiptSchema,
   attachmentContentSchema,
 } from '../attachment-protocol';
+import {
+  PROJECT_TREE_FEATURE,
+  PROJECT_DIFF_FEATURE,
+  projectTreeReadSchema,
+  projectTreeResultSchema,
+  projectTurnDiffReadSchema,
+  projectTurnDiffResultSchema,
+  projectDiffFileReadSchema,
+  projectDiffFileResultSchema,
+} from '../project-content-protocol';
+import {
+  QUESTIONS_FEATURE,
+  STEER_FEATURE,
+  questionAnswerSchema,
+  questionReceiptSchema,
+  steerRequestSchema,
+  steerReceiptSchema,
+} from '../interaction-protocol';
+import {
+  SESSION_SEARCH_FEATURE,
+  sessionSearchRequestSchema,
+  sessionSearchResultSchema,
+} from '../search-protocol';
 export function createApp(
   store: Store,
   options: { origin: string; setupToken: string; publicDir?: string; localOnly?: boolean },
@@ -72,7 +95,14 @@ export function createApp(
     for (const [id, pending] of commands)
       if (
         pending.device === device &&
-        ['file-content', 'read-attachment'].includes(pending.method) &&
+        [
+          'file-content',
+          'read-attachment',
+          'read-project-tree',
+          'read-turn-diff',
+          'read-diff-file',
+          'search-sessions',
+        ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
         clearTimeout(pending.timer);
@@ -514,6 +544,235 @@ export function createApp(
                 result.attachment?.attachmentId === input.attachmentId,
                 502,
                 '附件响应与请求不匹配',
+              );
+            return json(res, 200, result);
+          }
+          if (
+            req.method === 'POST' &&
+            parts.length === 6 &&
+            ['project-tree', 'turn-diff', 'diff-file'].includes(parts[5]!)
+          ) {
+            const route = parts[5]!;
+            const feature = route === 'project-tree' ? PROJECT_TREE_FEATURE : PROJECT_DIFF_FEATURE;
+            const payload = await body(req, 16 * 1024);
+            const input =
+              route === 'project-tree'
+                ? projectTreeReadSchema.parse(payload)
+                : route === 'turn-diff'
+                  ? projectTurnDiffReadSchema.parse(payload)
+                  : projectDiffFileReadSchema.parse(payload);
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '文件请求与项目副本不匹配',
+            );
+            assert(runtime?.features?.includes(feature), 409, '请先升级执行电脑上的 Moor');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const method =
+              route === 'project-tree'
+                ? 'read-project-tree'
+                : route === 'turn-diff'
+                  ? 'read-turn-diff'
+                  : 'read-diff-file';
+            const raw = await request(
+              host.device_id,
+              method,
+              host.runtime_id,
+              input,
+              replica.local_id,
+            );
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            const current = store.catalog.replica(owner!, workspaceId, replica.id);
+            assert(
+              current.host.device_id === host.device_id &&
+                current.host.runtime_id === input.workspaceId &&
+                current.local_id === input.localProjectId,
+              409,
+              '文件请求的执行目标已变更',
+            );
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.features?.includes(feature) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              '执行主机已不可达，请重新读取文件',
+            );
+            const parsed =
+              route === 'project-tree'
+                ? projectTreeResultSchema.safeParse(raw)
+                : route === 'turn-diff'
+                  ? projectTurnDiffResultSchema.safeParse(raw)
+                  : projectDiffFileResultSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行主机返回的文件内容格式无效');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId,
+              502,
+              '文件响应与请求范围不匹配',
+            );
+            if ('turnId' in input) {
+              assert(
+                'turnId' in result && result.turnId === input.turnId,
+                502,
+                '变更响应不属于请求的回合',
+              );
+              if (result.reference)
+                assert(result.reference.turnId === input.turnId, 502, '变更引用不属于请求的回合');
+              if ('path' in input) {
+                const fileInput = projectDiffFileReadSchema.parse(input);
+                assert(
+                  'path' in result && result.path === input.path,
+                  502,
+                  '变更响应不属于请求的文件',
+                );
+                assert(
+                  !fileInput.knownVersion || result.reference.version === fileInput.knownVersion,
+                  502,
+                  '变更响应不属于请求的历史版本',
+                );
+              }
+            } else {
+              assert(
+                'entries' in result &&
+                  result.offset === (input.offset ?? 0) &&
+                  result.entries.length <= (input.limit ?? 200),
+                502,
+                '文件树分页与请求不匹配',
+              );
+              assert(
+                !input.knownVersion || result.version === input.knownVersion,
+                502,
+                '文件树版本与请求不匹配',
+              );
+            }
+            return json(res, 200, result);
+          }
+          if (
+            req.method === 'POST' &&
+            parts.length === 6 &&
+            ['question-answers', 'steer'].includes(parts[5]!)
+          ) {
+            const question = parts[5] === 'question-answers';
+            const feature = question ? QUESTIONS_FEATURE : STEER_FEATURE;
+            const input = question
+              ? questionAnswerSchema.parse(await body(req, 2 * 1024 * 1024))
+              : steerRequestSchema.parse(await body(req, 128 * 1024));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '交互请求与项目副本不匹配',
+            );
+            assert(
+              runtime?.features?.includes(feature),
+              409,
+              '执行电脑尚未支持此交互，请更新 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const raw = await request(
+              host.device_id,
+              question ? 'answer-question' : 'steer',
+              host.runtime_id,
+              input,
+              replica.local_id,
+            );
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            const current = store.catalog.replica(owner!, workspaceId, replica.id);
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              current.host.device_id === host.device_id &&
+                current.host.runtime_id === input.workspaceId &&
+                current.local_id === input.localProjectId &&
+                online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.features?.includes(feature) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              '交互执行目标已变化，结果待主机确认',
+            );
+            const parsed = question
+              ? questionReceiptSchema.safeParse(raw)
+              : steerReceiptSchema.safeParse(raw);
+            assert(parsed.success, 502, '主机尚未返回有效的交互确认');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId &&
+                result.expectedTurnId === input.expectedTurnId &&
+                result.operationId === input.operationId,
+              502,
+              '交互确认与原请求不匹配',
+            );
+            if ('requestId' in input)
+              assert(
+                'requestId' in result && result.requestId === input.requestId,
+                502,
+                '问答确认不属于原请求',
+              );
+            return json(res, 200, result);
+          }
+          if (req.method === 'POST' && parts.length === 6 && parts[5] === 'session-search') {
+            const input = sessionSearchRequestSchema.parse(await body(req, 8 * 1024));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '搜索请求与项目副本不匹配',
+            );
+            assert(
+              runtime?.features?.includes(SESSION_SEARCH_FEATURE),
+              409,
+              '执行电脑尚未支持正文搜索，请更新 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const raw = await request(
+              host.device_id,
+              'search-sessions',
+              host.runtime_id,
+              input,
+              replica.local_id,
+            );
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            const current = store.catalog.replica(owner!, workspaceId, replica.id);
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              current.host.device_id === host.device_id &&
+                current.host.runtime_id === input.workspaceId &&
+                current.local_id === input.localProjectId &&
+                online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.features?.includes(SESSION_SEARCH_FEATURE) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              '搜索执行目标已变化，请重新搜索',
+            );
+            const parsed = sessionSearchResultSchema.safeParse(raw);
+            assert(parsed.success, 502, '主机返回的搜索结果格式无效');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId &&
+                result.scope === input.scope &&
+                result.query === input.query &&
+                result.hits.length <= input.limit,
+              502,
+              '搜索响应与请求不匹配',
+            );
+            if (input.scope === 'session')
+              assert(
+                result.hits.every((hit) => hit.sessionId === input.sessionId),
+                502,
+                '搜索结果超出当前会话',
               );
             return json(res, 200, result);
           }

@@ -13,6 +13,13 @@ import { createApp } from '../relay/http';
 import { AppError, assert, mutationSchema, sessionActionSchema, PROTOCOL } from '../protocol';
 import { projectFileReadSchema } from '../content-protocol';
 import { attachmentActionSchema, attachmentReadSchema } from '../attachment-protocol';
+import {
+  projectTreeReadSchema,
+  projectTurnDiffReadSchema,
+  projectDiffFileReadSchema,
+} from '../project-content-protocol';
+import { questionAnswerSchema, steerRequestSchema } from '../interaction-protocol';
+import { sessionSearchRequestSchema } from '../search-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -223,6 +230,30 @@ function connect(target: Target) {
             const body = attachmentReadSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.readAttachment(body, m.localProjectId);
+          } else if (m.method === 'read-project-tree') {
+            const body = projectTreeReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readProjectTree(body, m.localProjectId);
+          } else if (m.method === 'read-turn-diff') {
+            const body = projectTurnDiffReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readTurnDiff(body, m.localProjectId);
+          } else if (m.method === 'read-diff-file') {
+            const body = projectDiffFileReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readDiffFile(body, m.localProjectId);
+          } else if (m.method === 'answer-question') {
+            const body = questionAnswerSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.answerQuestion(body, m.localProjectId);
+          } else if (m.method === 'steer') {
+            const body = steerRequestSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.steer(body, m.localProjectId);
+          } else if (m.method === 'search-sessions') {
+            const body = sessionSearchRequestSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.searchSessions(body, m.localProjectId);
           } else if (m.method === 'cancel')
             result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');

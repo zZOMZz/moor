@@ -459,8 +459,9 @@ test('stopped-host copy preserves attachments, references, receipt tombstones an
     },
   });
   const beforeCopy = mirror(original.store.doc(sent.sessionId), sent.sessionId);
-  const generated = (beforeCopy.getState().history[1].items![0] as any)
-    .attachment as AttachmentReference;
+  const generated = (
+    beforeCopy.getState().history[1].items!.find((item: any) => item.type === 'attachment') as any
+  ).attachment as AttachmentReference;
   beforeCopy.dispose();
   await original.finish();
   original.close();
@@ -526,8 +527,10 @@ test('ACP embedded output and tool artifacts become scoped durable references wi
   });
   const view = mirror(f.store.doc('session-a'), 'session-a');
   const items: any[] = view.getState().history[1].items!;
-  const imageRef = items[0].attachment as AttachmentReference;
-  const toolRefs = items[1].content.map(
+  const imageRef = items.find((item) => item.type === 'attachment')
+    .attachment as AttachmentReference;
+  const tool = items.find((item) => item.type === 'tool_call');
+  const toolRefs = tool.content.map(
     (item: any) => item.content.attachment,
   ) as AttachmentReference[];
   const serialized = JSON.stringify(view.getState());
@@ -535,7 +538,7 @@ test('ACP embedded output and tool artifacts become scoped durable references wi
   strict.equal(serialized.includes(image.data), false);
   strict.equal(serialized.includes('synthetic generated output'), false);
   strict.equal(serialized.includes('ordinary tool metadata'), true);
-  strict.equal(items[1].rawOutput.image.data, '[embedded data omitted]');
+  strict.equal(tool.rawOutput.image.data, '[embedded data omitted]');
   strict.equal(
     (
       await f.host.readAttachment({
@@ -617,7 +620,9 @@ test('unsupported or invalid Agent artifacts are explicit notices and never fetc
   ])
     f.update({ sessionUpdate: 'agent_message_chunk', content });
   const view = mirror(f.store.doc('session-a'), 'session-a');
-  const items: any[] = view.getState().history[1].items!;
+  const items: any[] = view
+    .getState()
+    .history[1].items!.filter((item: any) => item.type !== 'agent_features');
   strict.equal(items.length, 5);
   strict.ok(items.every((item) => item.type === 'text' && item.text.includes('Agent')));
   const serialized = JSON.stringify(view.getState());
@@ -643,7 +648,10 @@ test('generated blobs and transcript persist together, and quota exhaustion leav
     content: { type: 'image', mimeType: 'image/png', data: 'YQ==' },
   });
   const view = mirror(f.store.doc('session-a'), 'session-a');
-  strict.match((view.getState().history[1].items![0] as any).text, /会话容量/);
+  strict.match(
+    (view.getState().history[1].items!.find((item: any) => item.type === 'text') as any).text,
+    /会话容量/,
+  );
   view.dispose();
   strict.equal(f.store.journal.db.prepare('SELECT count(*) AS n FROM attachment').get()!.n, 1);
   await f.host.attachmentAction(remove(full));
@@ -683,7 +691,11 @@ test('live Agent capability downgrade never dispatches the already confirmed att
   strict.equal(f.prompts.length, 0);
   const view = mirror(f.store.doc(action.sessionId), action.sessionId);
   strict.equal(view.getState().history[1].status, 'failed');
-  strict.match((view.getState().history[1].items![0] as any).message, /不支持该附件类型/);
+  strict.match(
+    (view.getState().history[1].items!.find((item: any) => item.type === 'system_notice') as any)
+      .message,
+    /不支持该附件类型/,
+  );
   view.dispose();
   strict.deepEqual(await f.host.mutate(mutation), receipt);
   strict.equal(f.opens(), 1);

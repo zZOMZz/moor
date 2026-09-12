@@ -34,6 +34,7 @@ function fixture(file = ':memory:') {
   const dispatched: any[] = [];
   let callbacks: Parameters<AgentDriver['open']>[3];
   let complete!: () => void;
+  let finishRequested = false;
   let prompted!: () => void;
   const started = new Promise<void>((r) => (prompted = r));
   const driver: AgentDriver = {
@@ -46,7 +47,10 @@ function fixture(file = ':memory:') {
           dispatches++;
           dispatched.push(input);
           prompted();
-          await new Promise<void>((r) => (complete = r));
+          await new Promise<void>((r) => {
+            complete = r;
+            if (finishRequested) complete();
+          });
         },
         async cancel() {
           complete?.();
@@ -85,8 +89,10 @@ function fixture(file = ':memory:') {
       }),
     finish: async () => {
       const done = [...host.active.values()].map((r) => r.done);
+      finishRequested = true;
       complete?.();
       await Promise.all(done);
+      finishRequested = false;
     },
     close: () => {
       host.close();

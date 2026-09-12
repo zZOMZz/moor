@@ -4,7 +4,13 @@ import { Flock, LoroDoc, delta, metas, mirror, putMeta } from '../model';
 import { assert, sessionActionSchema, type Mutation, type SessionAction } from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { RuntimeStore, type AttachmentScope } from '../runtime/store';
-import type { AgentConfig, AgentDriver, AgentSession, PermissionOutcome } from '../runtime/agent';
+import type {
+  AgentConfig,
+  AgentDriver,
+  AgentSession,
+  AgentRunBinding,
+  PermissionOutcome,
+} from '../runtime/agent';
 import { runCapabilitiesSchema } from '../run-config';
 import {
   CONTENT_VERSION,
@@ -34,6 +40,53 @@ import {
   type PromptInputCapabilities,
 } from '../attachment-protocol';
 
+import {
+  PROJECT_TREE_FEATURE,
+  PROJECT_DIFF_FEATURE,
+  projectTreeReadSchema,
+  projectTurnDiffReadSchema,
+  projectDiffFileReadSchema,
+  projectTreeResultSchema,
+  projectTurnDiffResultSchema,
+  projectDiffFileResultSchema,
+  projectDiffReferenceSchema,
+  type ProjectTreeRead,
+  type ProjectTreeResult,
+  type ProjectTurnDiffRead,
+  type ProjectTurnDiffResult,
+  type ProjectDiffFileRead,
+  type ProjectDiffFileResult,
+  type ProjectDiffReference,
+  type ProjectContentIssue,
+} from '../project-content-protocol';
+import {
+  captureProjectSnapshot,
+  enumerateProjectFiles,
+  type ProjectSnapshot,
+} from '../runtime/project-snapshot';
+import type { ProjectHistoryScope } from '../runtime/project-history';
+import { searchHostSessions } from './host-search';
+import { SESSION_SEARCH_FEATURE, type SessionSearchRequest } from '../search-protocol';
+import {
+  QUESTIONS_FEATURE,
+  STEER_FEATURE,
+  questionRequestSchema,
+  type QuestionAnswer,
+  type SteerRequest,
+} from '../interaction-protocol';
+import {
+  SessionInteractions,
+  cancelledQuestionAnswer,
+  expireSessionInteractions,
+  type InteractionTurn,
+} from './session-interactions';
+import {
+  runtimeFeatureReportSchema,
+  sessionEventSchema,
+  sessionEventStateSchema,
+  type SessionEvent,
+} from '../runtime/session-events';
+
 type Active = {
   turnId: string;
   userTurnId: string;
@@ -41,6 +94,12 @@ type Active = {
   session?: AgentSession;
   stopped: boolean;
   done?: Promise<void>;
+  projectScope: ProjectHistoryScope;
+  rootPath: string;
+  before?: ProjectSnapshot;
+  snapshotIssues: ProjectContentIssue[];
+  terminal?: { status: string; message?: string };
+  finalizing?: Promise<void>;
   permissions: Map<
     string,
     { options: any[]; resolve: (value: { outcome: PermissionOutcome }) => void }
@@ -50,6 +109,8 @@ export class HostWorkspace {
   closed = false;
   locks = new Map<string, Promise<unknown>>();
   active = new Map<string, Active>();
+  settlementFailures = new Map<string, LoroDoc>();
+  interactions: SessionInteractions<Active>;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -66,7 +127,19 @@ export class HostWorkspace {
     private catalogue: () => void,
     private changed: (sessionId?: string) => void,
     private fileReader = readProjectFileBytes,
+    private projectContent = { capture: captureProjectSnapshot, tree: enumerateProjectFiles },
   ) {
+    this.interactions = new SessionInteractions<Active>({
+      journal: store.journal,
+      getRun: (sessionId) => this.active.get(sessionId),
+      serial: (sessionId, work) => this.serial(sessionId, work),
+      scopeCheck: (scope, localProjectId) => {
+        const lease = this.projectLease(scope, localProjectId);
+        return { userId: lease.userId, machineId: lease.machineId, rootPath: lease.rootPath };
+      },
+      persist: (sessionId, run, edit, write) =>
+        this.persistInteraction(sessionId, run, edit, write),
+    });
     this.updateCatalogue();
   }
   ensureConnected() {
@@ -76,7 +149,16 @@ export class HostWorkspace {
     this.ensureConnected();
   }
   updateCatalogue() {
-    this.workspace.features = ['session-actions', FILE_CONTENT_FEATURE, ATTACHMENTS_FEATURE];
+    this.workspace.features = [
+      'session-actions',
+      FILE_CONTENT_FEATURE,
+      ATTACHMENTS_FEATURE,
+      PROJECT_TREE_FEATURE,
+      PROJECT_DIFF_FEATURE,
+      SESSION_SEARCH_FEATURE,
+      QUESTIONS_FEATURE,
+      STEER_FEATURE,
+    ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
       .map((r) => r.value as any);
@@ -160,8 +242,17 @@ export class HostWorkspace {
     return {
       meta: metas(this.meta)['session-' + sessionId],
       metaBundle: this.meta.exportJson(),
-      update: delta(this.active.get(sessionId)?.doc ?? this.store.doc(sessionId), version),
+      update: delta(
+        this.active.get(sessionId)?.doc ??
+          this.settlementFailures.get(sessionId) ??
+          this.store.doc(sessionId),
+        version,
+      ),
       synced: true,
+      persisted: !this.settlementFailures.has(sessionId),
+      ...(this.settlementFailures.has(sessionId)
+        ? { persistenceError: 'Agent 回合已停止，但结果尚未保存；请重启执行服务后再发送新的指令。' }
+        : {}),
       online: true,
     };
   }
@@ -282,6 +373,245 @@ export class HostWorkspace {
     return request.knownVersion === content.version
       ? { ...base, status: 'not-modified' }
       : { ...base, status: 'content', encoding: 'base64', data: bytes.toString('base64') };
+  }
+  projectLease(input: ContentScope, localProjectId?: string) {
+    const scope = this.attachmentScope(input, localProjectId);
+    this.checkProject(input.sessionId, input.localProjectId);
+    const rootPath = this.workspace.projects.find(
+      (project) => project.id === input.localProjectId,
+    )!.rootPath;
+    return { ...scope, rootPath };
+  }
+  checkProjectLease(lease: ProjectHistoryScope & { rootPath: string }) {
+    const current = this.projectLease(lease);
+    assert(isDeepStrictEqual(current, lease), 409, '项目执行范围已变化');
+  }
+  searchSessions(input: SessionSearchRequest, localProjectId?: string) {
+    return searchHostSessions(this, input, localProjectId);
+  }
+  answerQuestion(input: QuestionAnswer, localProjectId?: string) {
+    return this.interactions.answerQuestion(input, localProjectId);
+  }
+  steer(input: SteerRequest, localProjectId?: string) {
+    return this.interactions.steer(input, localProjectId);
+  }
+  persistInteraction(
+    id: string,
+    run: Active | undefined,
+    edit: ((turn: InteractionTurn) => void) | undefined,
+    write?: () => void,
+  ) {
+    this.ensureConnected();
+    assert(!run || this.active.get(id) === run, 409, '原交互回合已变化');
+    const doc = run && edit ? new LoroDoc() : undefined;
+    if (doc) doc.import(run!.doc.export({ mode: 'snapshot' }));
+    const view = doc ? mirror(doc, id) : undefined;
+    try {
+      this.store.transaction(() => {
+        if (view && doc) {
+          view.setState((state) => {
+            const turn = state.history.find((turn) => turn.id === run!.turnId);
+            assert(turn, 409, '原交互回合已变化');
+            edit!(turn);
+          });
+          this.store.persist(id, doc);
+        }
+        write?.();
+      });
+      if (doc) run!.doc = doc;
+    } finally {
+      view?.dispose();
+    }
+    if (doc) this.changed(id);
+  }
+  runBinding(id: string, run: Active): AgentRunBinding {
+    return {
+      workspaceId: run.projectScope.workspaceId,
+      localProjectId: run.projectScope.localProjectId,
+      sessionId: id,
+      expectedTurnId: run.turnId,
+    };
+  }
+  boundRun(id: string, run: Active, binding: AgentRunBinding) {
+    if (
+      this.closed ||
+      run.stopped ||
+      this.active.get(id) !== run ||
+      !isDeepStrictEqual(binding, this.runBinding(id, run))
+    )
+      return false;
+    try {
+      this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  sessionEvent(id: string, run: Active, input: SessionEvent, binding: AgentRunBinding) {
+    if (!this.boundRun(id, run, binding)) return;
+    const parsed = sessionEventSchema.safeParse(input);
+    if (!parsed.success) return;
+    this.edit(id, run, (turn) => this.applyTurnEvent(turn, parsed.data));
+  }
+  applyTurnEvent(turn: InteractionTurn, event: SessionEvent) {
+    const items = (turn.items ??= []);
+    // Each turn freezes its latest bounded observations. Replacing an existing
+    // observation keeps ordinary message/tool navigation indexes stable.
+    const key = (value: SessionEvent) =>
+      value.kind === 'plan' || value.kind === 'plan-removed'
+        ? ['plan', value.planId ?? null]
+        : [value.kind];
+    const existing = items.findIndex(
+      (item) => item?.type === 'session_event' && isDeepStrictEqual(key(item.event), key(event)),
+    );
+    const item = { type: 'session_event', event };
+    if (existing >= 0) items[existing] = item;
+    else if (items.filter((item) => item?.type === 'session_event').length < 104) items.push(item);
+    else if (!items.some((item) => item?.type === 'system_notice' && item.name === 'event_limit'))
+      items.push({
+        type: 'system_notice',
+        name: 'event_limit',
+        message: '运行事件数量达到历史保存上限；部分计划快照未保存。',
+      });
+  }
+  saveAgentFeatures(id: string, run: Active, session: AgentSession) {
+    const runtime = runtimeFeatureReportSchema.safeParse(session.runtimeFeatures);
+    const current = sessionEventStateSchema.safeParse(session.currentEvents);
+    const capabilities = session.interactionCapabilities;
+    this.edit(id, run, (turn) => {
+      (turn.items ??= []).push({
+        type: 'agent_features',
+        ...(runtime.success ? { runtimeFeatures: runtime.data } : {}),
+        interactionCapabilities: {
+          questions: capabilities?.questions === true,
+          steer: capabilities?.steer === true && typeof session.steer === 'function',
+          ...(typeof capabilities?.steerUnavailableReason === 'string'
+            ? { steerUnavailableReason: capabilities.steerUnavailableReason.slice(0, 1000) }
+            : {}),
+        },
+      });
+      if (current.success) {
+        const state = current.data;
+        if (state.commands)
+          this.applyTurnEvent(turn, {
+            version: 1,
+            source: 'acp',
+            kind: 'commands',
+            commands: state.commands,
+          });
+        for (const plan of state.plans)
+          this.applyTurnEvent(turn, { version: 1, source: 'acp', kind: 'plan', ...plan });
+        if (state.contextUsage) this.applyTurnEvent(turn, state.contextUsage);
+        if (state.tokenUsage) this.applyTurnEvent(turn, state.tokenUsage);
+      }
+    });
+  }
+  projectTurn(input: ContentScope & { turnId: string }, localProjectId?: string) {
+    const lease = this.projectLease(input, localProjectId);
+    const view = mirror(
+      this.active.get(input.sessionId)?.doc ??
+        this.settlementFailures.get(input.sessionId) ??
+        this.store.doc(input.sessionId),
+      input.sessionId,
+    );
+    const turn = view
+      .getState()
+      .history.find((turn) => turn.id === input.turnId && turn.role === 'assistant');
+    const reference = projectDiffReferenceSchema.safeParse(turn?.fileDiff);
+    view.dispose();
+    assert(turn, 404, '回合不属于当前会话');
+    return { lease, reference: reference.success ? reference.data : undefined };
+  }
+  async readProjectTree(
+    input: ProjectTreeRead,
+    localProjectId?: string,
+  ): Promise<ProjectTreeResult> {
+    const request = projectTreeReadSchema.parse(input),
+      lease = this.projectLease(request, localProjectId);
+    const tree = await this.projectContent.tree(lease.rootPath);
+    this.checkProjectLease(lease);
+    const version = 'sha256:' + createHash('sha256').update(JSON.stringify(tree)).digest('hex');
+    assert(
+      !request.knownVersion || request.knownVersion === version,
+      409,
+      '项目文件树已变化，请从第一页刷新',
+    );
+    const offset = request.offset ?? 0,
+      limit = request.limit ?? 200;
+    assert(offset <= tree.entries.length, 409, '文件树分页已失效，请刷新');
+    const entries = tree.entries.slice(offset, offset + limit),
+      nextOffset = offset + entries.length;
+    return projectTreeResultSchema.parse({
+      contentVersion: 1,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      confirmed: true,
+      version,
+      source: tree.source,
+      entries,
+      offset,
+      total: tree.entries.length,
+      ...(nextOffset < tree.entries.length ? { nextOffset } : {}),
+      partial: tree.partial,
+      enumerationComplete: tree.enumerationComplete,
+      issues: tree.issues,
+    });
+  }
+  async readTurnDiff(
+    input: ProjectTurnDiffRead,
+    localProjectId?: string,
+  ): Promise<ProjectTurnDiffResult> {
+    const request = projectTurnDiffReadSchema.parse(input),
+      { lease, reference } = this.projectTurn(request, localProjectId);
+    const saved = this.store.projectHistory.read(lease, request.turnId);
+    const failedPersistence =
+      !!reference &&
+      (!saved || (reference.state === 'unavailable' && saved.reference.state === 'pending'));
+    return projectTurnDiffResultSchema.parse({
+      contentVersion: 1,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      confirmed: true,
+      turnId: request.turnId,
+      state: failedPersistence ? 'unavailable' : (saved?.reference.state ?? 'not-recorded'),
+      ...(failedPersistence
+        ? { reference: { ...reference!, state: 'unavailable', changeCount: 0 } }
+        : saved
+          ? { reference: saved.reference }
+          : {}),
+      changes: failedPersistence ? [] : (saved?.changes ?? []),
+      partial: failedPersistence || saved?.partial !== false,
+      issues: failedPersistence
+        ? [{ reason: 'persistence-failed' }]
+        : (saved?.issues ?? [{ reason: 'not-recorded' }]),
+      attribution: 'shared-project',
+    });
+  }
+  async readDiffFile(
+    input: ProjectDiffFileRead,
+    localProjectId?: string,
+  ): Promise<ProjectDiffFileResult> {
+    const request = projectDiffFileReadSchema.parse(input),
+      { lease } = this.projectTurn(request, localProjectId);
+    const content = this.store.projectHistory.readFile(
+      lease,
+      request.turnId,
+      request.path,
+      request.knownVersion,
+    );
+    return projectDiffFileResultSchema.parse({
+      contentVersion: 1,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      confirmed: true,
+      turnId: request.turnId,
+      path: request.path,
+      ...content,
+      attribution: 'shared-project',
+    });
   }
   attachmentScope(input: ContentScope, localProjectId?: string): AttachmentScope {
     this.ensureConnected();
@@ -431,6 +761,11 @@ export class HostWorkspace {
       if (metas(this.meta)['session-' + m.sessionId] || record)
         this.checkProject(m.sessionId, localProjectId);
       if (record?.phase === 'accepted') return JSON.parse(record.result);
+      assert(
+        !this.settlementFailures.has(m.sessionId),
+        409,
+        '上次回合结果尚未保存，请重启执行服务后再发送新的指令',
+      );
       const active = this.active.get(m.sessionId);
       const original = active?.doc ?? this.store.doc(m.sessionId);
       const validated = validateMutation(original, this.meta, this.workspace, m);
@@ -524,6 +859,14 @@ export class HostWorkspace {
           for (const attachment of attachments)
             this.store.referenceAttachment(attachmentScope, attachment.attachmentId);
           this.store.meta = validated.flock;
+          if (m.kind === 'turn') {
+            const reference = this.store.projectHistory.begin(attachmentScope, assistantId);
+            const view = mirror(validated.doc, m.sessionId);
+            view.setState((state) => {
+              state.history.find((turn) => turn.id === assistantId)!.fileDiff = reference;
+            });
+            view.dispose();
+          }
           this.store.persist(m.sessionId, validated.doc);
           return journal.accept(m);
         });
@@ -541,6 +884,11 @@ export class HostWorkspace {
           userTurnId: turnId,
           doc: validated.doc,
           stopped: false,
+          projectScope: attachmentScope,
+          rootPath: this.workspace.projects.find(
+            (project) => project.id === attachmentScope.localProjectId,
+          )!.rootPath,
+          snapshotIssues: [],
           permissions: new Map(),
         };
         this.active.set(m.sessionId, run);
@@ -550,8 +898,8 @@ export class HostWorkspace {
       return result;
     });
   }
-  edit(id: string, run: Active, edit: (turn: any) => void) {
-    if (run.stopped || this.closed) return;
+  edit(id: string, run: Active, edit: (turn: any) => void, terminal = false) {
+    if ((run.stopped && !terminal) || this.closed) return;
     const view = mirror(run.doc, id);
     try {
       this.store.transaction(() => {
@@ -617,40 +965,58 @@ export class HostWorkspace {
   }
   async execute(id: string, run: Active) {
     try {
+      try {
+        const before = await this.projectContent.capture(run.rootPath);
+        if (this.closed) return;
+        this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+        run.before = before;
+        this.store.transaction(() =>
+          this.store.projectHistory.saveBefore(run.projectScope, run.turnId, before),
+        );
+      } catch {
+        if (!this.closed) run.snapshotIssues.push({ reason: 'capture-failed' });
+      }
+      if (run.stopped || this.closed) return;
+      this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
       const meta = metas(this.meta)['session-' + id];
       const agent = this.machine.get(['agentConfig', String(meta.agentConfigId)]) as AgentConfig;
       const project = this.workspace.projects.find(
         (p) => p.id === (meta.project as any).localProjectId,
       )!;
-      const session = await this.driver.open(
-        agent,
-        project.rootPath,
-        this.store.nativeSession(id),
-        {
-          update: (value) => this.update(id, run, value),
-          permission: (value) => {
-            if (run.stopped || this.closed)
-              return Promise.resolve({ outcome: { outcome: 'cancelled' } });
-            const requestId = randomUUID();
-            return new Promise((resolve) => {
-              run.permissions.set(requestId, { options: value.options, resolve });
-              this.edit(id, run, (turn) => {
-                let item = turn.items.find(
-                  (i: any) => i.type === 'tool_call' && i.toolCallId === value.toolCall.toolCallId,
-                );
-                if (!item) turn.items.push((item = { ...value.toolCall, type: 'tool_call' }));
-                item.permissionRequest = { requestId, options: value.options };
-              });
-            });
-          },
+      const session = await this.driver.open(agent, run.rootPath, this.store.nativeSession(id), {
+        update: (value) => this.update(id, run, value),
+        event: (event, binding) => this.sessionEvent(id, run, event, binding),
+        question: (input) => {
+          const request = questionRequestSchema.parse(input);
+          const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
+          return this.boundRun(id, run, { workspaceId, localProjectId, sessionId, expectedTurnId })
+            ? this.interactions.receiveQuestion(request)
+            : Promise.resolve(cancelledQuestionAnswer(request));
         },
-      );
+        permission: (value) => {
+          if (run.stopped || this.closed)
+            return Promise.resolve({ outcome: { outcome: 'cancelled' } });
+          const requestId = randomUUID();
+          return new Promise((resolve) => {
+            run.permissions.set(requestId, { options: value.options, resolve });
+            this.edit(id, run, (turn) => {
+              let item = turn.items.find(
+                (i: any) => i.type === 'tool_call' && i.toolCallId === value.toolCall.toolCallId,
+              );
+              if (!item) turn.items.push((item = { ...value.toolCall, type: 'tool_call' }));
+              item.permissionRequest = { requestId, options: value.options };
+            });
+          });
+        },
+      });
       run.session = session;
       if (run.stopped || this.closed) {
         await session.close();
         return;
       }
+      this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
       this.store.setNativeSession(id, session.id);
+      this.saveAgentFeatures(id, run, session);
       const view = mirror(run.doc, id),
         input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig as Record<
           string,
@@ -664,25 +1030,109 @@ export class HostWorkspace {
       });
       const attachmentData = this.attachmentData(attachmentScope, input.attachments ?? []);
       this.assertAttachmentCapabilities(input.attachments ?? [], session.inputCapabilities);
-      await session.prompt(attachmentData.length ? { ...input, attachmentData } : input);
-      this.finish(id, run, 'handled');
+      await session.prompt(
+        attachmentData.length ? { ...input, attachmentData } : input,
+        this.runBinding(id, run),
+      );
+      run.terminal ??= { status: 'handled' };
     } catch (error) {
-      this.finish(id, run, 'failed', error instanceof Error ? error.message : 'Agent 执行失败');
+      run.terminal ??= {
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Agent 执行失败',
+      };
     } finally {
       for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
       run.permissions.clear();
-      await run.session?.close();
-      if (this.active.get(id) === run) this.active.delete(id);
+      run.stopped = true;
+      this.interactions.cancelPending(id, run);
+      await Promise.resolve(run.session?.close()).catch(() => {});
+      if (!this.closed) {
+        try {
+          await this.finalizeProjectTurn(id, run);
+        } catch {
+          const view = mirror(run.doc, id);
+          view.setState((state) => {
+            const turn = state.history.find((turn) => turn.id === run.turnId)!;
+            turn.finished = true;
+            turn.status = 'failed';
+            expireSessionInteractions(turn, 'stopped');
+            const reference = projectDiffReferenceSchema.safeParse(turn.fileDiff);
+            if (reference.success)
+              turn.fileDiff = { ...reference.data, state: 'unavailable', changeCount: 0 };
+            (turn.items ??= []).push({
+              type: 'system_notice',
+              name: 'chat_failed',
+              message: 'Agent 回合已停止，但结果未能保存；请重启执行服务后再发送新的指令。',
+            });
+          });
+          view.dispose();
+          putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+          this.settlementFailures.set(id, run.doc);
+          this.changed(id);
+        } finally {
+          if (this.active.get(id) === run) this.active.delete(id);
+        }
+      }
     }
   }
-  finish(id: string, run: Active, status: string, message?: string) {
-    if (run.stopped || this.closed) return;
+  async finalizeProjectTurn(id: string, run: Active) {
+    return (run.finalizing ??= (async () => {
+      let after: ProjectSnapshot | undefined;
+      try {
+        this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+        const capturedAfter = await this.projectContent.capture(run.rootPath);
+        if (this.closed) return;
+        this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+        after = capturedAfter;
+      } catch {
+        run.snapshotIssues.push({ reason: 'capture-failed' });
+      }
+      if (this.closed) return;
+      const terminal = run.terminal ?? { status: 'canceled' };
+      try {
+        this.finish(id, run, terminal.status, terminal.message, () =>
+          this.store.projectHistory.finish(
+            run.projectScope,
+            run.turnId,
+            run.before,
+            after,
+            run.snapshotIssues,
+          ),
+        );
+      } catch {
+        const saved = this.store.projectHistory.read(run.projectScope, run.turnId);
+        this.finish(
+          id,
+          run,
+          terminal.status,
+          terminal.message,
+          saved ? { ...saved.reference, state: 'unavailable', changeCount: 0 } : undefined,
+        );
+      }
+    })());
+  }
+  finish(
+    id: string,
+    run: Active,
+    status: string,
+    message?: string,
+    reference?: ProjectDiffReference | (() => ProjectDiffReference | undefined),
+  ) {
+    if (this.closed) return;
+    this.interactions.cancelPending(id, run);
     putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-    this.edit(id, run, (turn) => {
-      turn.finished = true;
-      turn.status = status;
-      if (message) turn.items.push({ type: 'system_notice', name: 'chat_failed', message });
-    });
+    this.edit(
+      id,
+      run,
+      (turn) => {
+        turn.finished = true;
+        turn.status = status;
+        expireSessionInteractions(turn, 'stopped');
+        if (reference) turn.fileDiff = typeof reference === 'function' ? reference() : reference;
+        if (message) turn.items.push({ type: 'system_notice', name: 'chat_failed', message });
+      },
+      true,
+    );
     run.stopped = true;
   }
   async cancel(sessionId: string, turnId: string, localProjectId?: string) {
@@ -691,11 +1141,13 @@ export class HostWorkspace {
       this.checkProject(sessionId, localProjectId);
       const run = this.active.get(sessionId);
       assert(run && !run.stopped && run.turnId === turnId, 409, '该回合已经结束');
-      this.finish(sessionId, run, 'canceled');
+      run.terminal = { status: 'canceled' };
+      run.stopped = true;
+      this.interactions.cancelPending(sessionId, run);
       for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
       await run.session?.cancel().catch(() => {});
       await run.session?.close();
-      this.active.delete(sessionId);
+      await run.done;
       return { success: true };
     });
   }
@@ -712,7 +1164,13 @@ export class HostWorkspace {
   close() {
     if (this.closed) return;
     for (const [id, run] of this.active) {
-      this.finish(id, run, 'failed', '执行主机已停止；请手动发送新的指令。');
+      const terminal = run.terminal ?? {
+        status: 'failed',
+        message: '执行主机已停止；请手动发送新的指令。',
+      };
+      this.finish(id, run, terminal.status, terminal.message, () =>
+        this.store.projectHistory.interrupt(run.projectScope, run.turnId),
+      );
       for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
       run.session?.close();
     }

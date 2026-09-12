@@ -1,4 +1,28 @@
+import { QUESTIONS_FEATURE, STEER_FEATURE, type QuestionAnswer } from '../interaction-protocol';
+import {
+  InteractionController,
+  interactionKey,
+  questionDraftKey,
+  questionItemSchema,
+  steerItemSchema,
+  interactionCapabilitiesSchema,
+  sessionInformation,
+  renderInteractionItem,
+  type InteractionTarget,
+  type QuestionItem,
+  type SteerItem,
+} from './interactions';
+import {
+  showInteractionControls,
+  showQuestionPanel,
+  showInformationPanel,
+  showSteerPanel,
+  closeInteractionPanel,
+} from './interaction-ui';
 import { api as request, ApiError, type Identity } from './api';
+import { SESSION_SEARCH_FEATURE, type SearchHit } from '../search-protocol';
+import { searchSessionContent, type SearchSession, type SessionSearchView } from './session-search';
+import { showSessionSearchControl, showSessionSearchPanel } from './session-search-ui';
 import { firstStartupSource } from './bootstrap';
 import {
   showShell,
@@ -15,6 +39,27 @@ import {
 } from './ui';
 import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
 import { attachmentReferenceSchema, type AttachmentReference } from '../content-protocol';
+import { CONTENT_LIMITS } from '../content-protocol';
+import {
+  PROJECT_TREE_FEATURE,
+  PROJECT_DIFF_FEATURE,
+  projectDiffReferenceSchema,
+  type ProjectDiffChange,
+} from '../project-content-protocol';
+import {
+  projectContentKey,
+  readProjectTree,
+  readCurrentProjectFile,
+  readProjectTurnDiff,
+  readProjectDiffFile,
+  type ProjectContentTarget,
+} from './project-content';
+import {
+  showProjectContentControls,
+  showProjectContentPanel,
+  type ProjectContentPanelProps,
+  type ProjectTurnChoice,
+} from './project-content-ui';
 import {
   AttachmentDraftController,
   attachmentDraftKey,
@@ -77,11 +122,381 @@ let archived = false,
   actionSending = false,
   actionError = '';
 let pendingAction: PendingSessionAction | undefined;
+let sessionPersistenceError = '';
+let volatileSessionDoc: LoroDoc | undefined;
 let attachments: AttachmentDraftController | undefined,
   attachmentGeneration = 0,
   attachmentLoading = false,
   attachmentWorking = false,
   attachmentLoadError = '';
+type ProjectPanelState = Pick<
+  ProjectContentPanelProps,
+  | 'title'
+  | 'mode'
+  | 'busy'
+  | 'error'
+  | 'tree'
+  | 'currentFile'
+  | 'currentUnavailable'
+  | 'turns'
+  | 'turnId'
+  | 'diff'
+  | 'diffFile'
+> & { target: ProjectContentTarget; generation: number };
+let projectPanel: ProjectPanelState | undefined,
+  projectPanelGeneration = 0,
+  projectReadGeneration = 0;
+let interactions: InteractionController | undefined;
+let interactionLoading = false,
+  interactionLoadError = '',
+  interactionGeneration = 0;
+let interactionPanel:
+  | { mode: 'question'; key: string }
+  | { mode: 'information' }
+  | { mode: 'steer'; expectedTurnId: string }
+  | undefined;
+function resetInteractions() {
+  interactionGeneration++;
+  interactions = undefined;
+  interactionLoading = false;
+  interactionLoadError = '';
+  interactionPanel = undefined;
+  closeInteractionPanel();
+  showInteractionControls(undefined);
+}
+function interactionTarget(): InteractionTarget | undefined {
+  if (!owner || !selected || !workspace || !replica || !activeWorkspace || !sessionId) return;
+  return {
+    owner,
+    deviceId: selected.id,
+    workspaceId: workspace.id,
+    localProjectId: replica.localProjectId,
+    sessionId,
+    catalogWorkspaceId: activeWorkspace.id,
+    replicaId: replica.id,
+  };
+}
+function currentInteractions() {
+  const target = interactionTarget();
+  return target && interactions && interactionKey(target) === interactionKey(interactions.scope)
+    ? interactions
+    : undefined;
+}
+async function loadInteractionDraft() {
+  const token = ++interactionGeneration,
+    target = interactionTarget(),
+    generation = sessionGeneration;
+  interactions = undefined;
+  interactionLoading = true;
+  interactionLoadError = '';
+  updateComposer();
+  try {
+    if (!target) return;
+    const controller = new InteractionController(target, {
+      read: cache.read,
+      write: cache.write,
+      request: api,
+      onChange: () => {
+        if (interactions === controller) updateComposer();
+      },
+    });
+    await controller.load();
+    if (token !== interactionGeneration || generation !== sessionGeneration) return;
+    interactions = controller;
+  } catch (e) {
+    if (token === interactionGeneration)
+      interactionLoadError = '交互草稿无法恢复，请重新打开会话后重试。';
+    throw e;
+  } finally {
+    if (token === interactionGeneration) {
+      interactionLoading = false;
+      updateComposer();
+    }
+  }
+}
+function interactionSnapshot() {
+  const view = mirror(volatileSessionDoc ?? doc, sessionId),
+    history = view.getState().history;
+  const active = history.findLast((turn) => turn.role === 'assistant' && !turn.finished),
+    latest = history.findLast((turn) => turn.role === 'assistant');
+  const questions: QuestionItem[] = [],
+    steers: SteerItem[] = [];
+  for (const turn of history)
+    for (const item of turn.items ?? []) {
+      const question = questionItemSchema.safeParse(item);
+      if (
+        question.success &&
+        question.data.request.workspaceId === workspace?.id &&
+        question.data.request.localProjectId === replica?.localProjectId &&
+        question.data.request.sessionId === sessionId &&
+        question.data.request.expectedTurnId === turn.id
+      )
+        questions.push(question.data);
+      const steer = steerItemSchema.safeParse(item);
+      if (steer.success && steer.data.expectedTurnId === turn.id) steers.push(steer.data);
+    }
+  let capabilities: ReturnType<typeof interactionCapabilitiesSchema.parse> | undefined;
+  for (const item of active?.items ?? []) {
+    const value = item as any;
+    if (value.type === 'agent_features') {
+      const parsed = interactionCapabilitiesSchema.safeParse(value.interactionCapabilities);
+      if (parsed.success) capabilities = parsed.data;
+    }
+  }
+  const information = sessionInformation(latest?.items ?? []);
+  const finishedTurns = history
+    .filter((turn) => turn.role === 'assistant' && turn.finished)
+    .map((turn) => turn.id);
+  view.dispose();
+  return { activeId: active?.id, questions, steers, capabilities, information, finishedTurns };
+}
+function interactionOnlineReason() {
+  if (interactionLoadError) return interactionLoadError;
+  if (interactionLoading || !currentInteractions()) return '正在恢复本地交互草稿…';
+  if (!authenticated || !connected || !selected?.online || !replica?.available)
+    return '执行电脑离线 · 草稿已保留；连接后需要手动提交。';
+  return '';
+}
+function interactionNewReason(feature: string) {
+  return (
+    interactionOnlineReason() ||
+    sessionPersistenceError ||
+    (meta?.isArchived ? '请先恢复会话。' : '') ||
+    (!workspace?.features?.includes(feature) ? '请更新执行电脑上的 Moor，以使用此交互。' : '') ||
+    (sending || pending || actionSending || pendingAction ? '请先确认当前会话操作。' : '')
+  );
+}
+function closeCurrentInteractionPanel() {
+  interactionPanel = undefined;
+  closeInteractionPanel();
+}
+function openQuestion(item: QuestionItem) {
+  interactionPanel = { mode: 'question', key: questionDraftKey(item.request) };
+  renderInteractions();
+}
+function assertInteractionController(controller: InteractionController) {
+  const target = interactionTarget();
+  if (controller !== currentInteractions() || !target)
+    throw new Error('会话目标已改变，请重新打开原交互。');
+  return target;
+}
+async function answerActiveQuestion(requestId: string, answer: QuestionAnswer['answer']) {
+  const controller = currentInteractions(),
+    snapshot = interactionSnapshot(),
+    item = snapshot.questions.find((q) => questionDraftKey(q.request) === requestId);
+  const reason = interactionNewReason(QUESTIONS_FEATURE);
+  if (reason) throw new Error(reason);
+  if (
+    !controller ||
+    !item ||
+    item.status !== 'pending' ||
+    item.request.expectedTurnId !== snapshot.activeId ||
+    snapshot.capabilities?.questions !== true
+  )
+    throw new Error('问题已结束或不再属于当前活动回合。');
+  const generation = sessionGeneration;
+  await controller.answer(item.request, answer, assertInteractionController(controller));
+  if (generation !== sessionGeneration) return;
+  closeCurrentInteractionPanel();
+  await loadSession();
+}
+async function submitSteer(prompt: string, expectedTurnId: string) {
+  const controller = currentInteractions(),
+    snapshot = interactionSnapshot(),
+    reason = interactionNewReason(STEER_FEATURE);
+  if (reason) throw new Error(reason);
+  if (!controller || snapshot.activeId !== expectedTurnId || !expectedTurnId)
+    throw new Error('原回合已经结束；追加草稿仍保留，不会转为新指令。');
+  if (snapshot.capabilities?.steer !== true)
+    throw new Error(
+      snapshot.capabilities?.steerUnavailableReason || '当前运行时不支持回合内追加。',
+    );
+  const generation = sessionGeneration;
+  await controller.steer(expectedTurnId, prompt, assertInteractionController(controller));
+  if (generation !== sessionGeneration) return;
+  closeCurrentInteractionPanel();
+  await loadSession();
+}
+async function retryInteraction() {
+  const controller = currentInteractions(),
+    reason = interactionOnlineReason();
+  if (reason) throw new Error(reason);
+  if (!controller?.pending) throw new Error('没有待确认交互。');
+  const generation = sessionGeneration;
+  await controller.retry(assertInteractionController(controller));
+  if (generation === sessionGeneration) await loadSession();
+}
+function interactionDismissal() {
+  const operation = currentInteractions()?.pending,
+    snapshot = interactionSnapshot();
+  if (!operation) return;
+  const record =
+    operation.kind === 'steer'
+      ? snapshot.steers.find(
+          (item) =>
+            item.operationId === operation.request.operationId &&
+            item.expectedTurnId === operation.request.expectedTurnId,
+        )
+      : undefined;
+  if (record?.status === 'not-injected')
+    return {
+      outcome: 'not-injected' as const,
+      message: '主机记录确认原追加未进入活动回合。关闭记录不会自动发送新指令。',
+    };
+  if (snapshot.finishedTurns.includes(operation.request.expectedTurnId))
+    return {
+      outcome: 'unknown' as const,
+      message:
+        '原回合已结束，原交互送达结果仍未获得有效确认。关闭只解除本地待确认状态，不代表成功，也不会重发。',
+    };
+}
+async function dismissInteraction() {
+  const controller = currentInteractions(),
+    outcome = interactionDismissal();
+  if (!controller || !outcome) throw new Error('原回合仍在运行；请先确认交互结果或停止任务。');
+  await controller.dismiss(outcome.outcome, outcome.message);
+}
+async function fillAgentCommand(command: string) {
+  const snapshot = interactionSnapshot();
+  if (
+    !snapshot.information.commands?.some((item) => item.name === command) ||
+    sending ||
+    pending ||
+    attachmentWorking ||
+    sessionPersistenceError
+  )
+    throw new Error('当前无法填入该命令。');
+  const field = $<HTMLTextAreaElement>('#prompt'),
+    generation = sessionGeneration,
+    draftKey = key('draft');
+  const text = '/' + command.replace(/^\/+/, '') + (field.value ? ' ' + field.value : ' ');
+  await cache.write(draftKey, text);
+  if (generation !== sessionGeneration) return;
+  field.value = text;
+  resizeComposer();
+  closeCurrentInteractionPanel();
+  field.focus();
+}
+function renderInteractions() {
+  if (!interactionTarget()) {
+    showInteractionControls(undefined);
+    return;
+  }
+  const controller = currentInteractions(),
+    snapshot = interactionSnapshot(),
+    reason = interactionOnlineReason();
+  const operation = controller?.pending,
+    record =
+      operation?.kind === 'steer'
+        ? snapshot.steers.find(
+            (item) =>
+              item.operationId === operation.request.operationId &&
+              item.expectedTurnId === operation.request.expectedTurnId,
+          )
+        : undefined;
+  const pendingMessage =
+    record?.status === 'not-injected'
+      ? '主机记录：原追加未进入活动回合。可手动关闭记录，再决定下一步。'
+      : record?.status === 'unknown'
+        ? '主机无法确认追加是否进入回合。手动重试只查询原记录，不会再次调用 Agent。'
+        : undefined;
+  showInteractionControls({
+    questions: snapshot.questions.filter(
+      (q) => q.status === 'pending' && q.request.expectedTurnId === snapshot.activeId,
+    ),
+    pending: operation,
+    busy: controller?.busy ?? false,
+    reason,
+    pendingMessage,
+    canDismiss: !!interactionDismissal(),
+    closedCount: controller?.closed.length ?? 0,
+    onQuestion: openQuestion,
+    onInformation: () => {
+      interactionPanel = { mode: 'information' };
+      renderInteractions();
+    },
+    onSteer: () => {
+      interactionPanel = { mode: 'steer', expectedTurnId: snapshot.activeId ?? '' };
+      renderInteractions();
+    },
+    onRetry: () => run(retryInteraction),
+    onDismiss: () => run(dismissInteraction),
+  });
+  if (!interactionPanel) return;
+  if (interactionPanel.mode === 'information') {
+    const generation = sessionGeneration;
+    showInformationPanel({
+      state: snapshot.information,
+      canFill: !sending && !pending && !attachmentWorking && !sessionPersistenceError,
+      onFill: (command) => {
+        if (generation !== sessionGeneration) throw new Error('命令所属会话已改变。');
+        return fillAgentCommand(command);
+      },
+      onClose: closeCurrentInteractionPanel,
+    });
+    return;
+  }
+  if (!controller) return;
+  if (interactionPanel.mode === 'question') {
+    const panel = interactionPanel,
+      item = snapshot.questions.find((q) => questionDraftKey(q.request) === panel.key);
+    if (!item) {
+      closeCurrentInteractionPanel();
+      return;
+    }
+    const active = item.status === 'pending' && item.request.expectedTurnId === snapshot.activeId;
+    showQuestionPanel({
+      item,
+      values: controller.questionDraft(item.request),
+      active,
+      busy: controller.busy,
+      pending: !!operation,
+      reason:
+        interactionNewReason(QUESTIONS_FEATURE) ||
+        (snapshot.capabilities?.questions !== true && active ? '当前运行时尚未确认问答能力。' : ''),
+      onClose: closeCurrentInteractionPanel,
+      onDraft: (values) => {
+        assertInteractionController(controller);
+        return controller.saveQuestionDraft(item.request, values);
+      },
+      onAnswer: (answer) => {
+        assertInteractionController(controller);
+        return answerActiveQuestion(panel.key, answer);
+      },
+    });
+    return;
+  }
+  const panel = interactionPanel;
+  const steerReason =
+    interactionNewReason(STEER_FEATURE) ||
+    (!snapshot.activeId
+      ? '当前没有活动回合。'
+      : snapshot.activeId !== panel.expectedTurnId
+        ? '原回合已经结束；此草稿不会转为新指令。'
+        : snapshot.capabilities?.steer !== true
+          ? snapshot.capabilities?.steerUnavailableReason ||
+            (currentAgent()?.agentType === 'codex'
+              ? '当前 Codex 适配器不支持回合内追加。'
+              : '当前运行时不支持回合内追加。')
+          : '');
+  showSteerPanel({
+    draft: controller.steerDraft,
+    reason: steerReason,
+    busy: controller.busy,
+    pending: operation,
+    closed: controller.closed,
+    onClose: closeCurrentInteractionPanel,
+    onDraft: (value) => {
+      assertInteractionController(controller);
+      return controller.saveSteerDraft(value);
+    },
+    onSubmit: (prompt) => {
+      assertInteractionController(controller);
+      return submitSteer(prompt, panel.expectedTurnId);
+    },
+  });
+}
+
 let newProjectId = '',
   newAgentId = '',
   newSessionControlsReady = false;
@@ -282,6 +697,10 @@ function renderAttachmentControls() {
         : attachmentInputReason(reference, currentAgent()?.inputCapabilities),
     disabled:
       !controller ||
+      !!interactionLoadError ||
+      interactionLoading ||
+      !!currentInteractions()?.busy ||
+      !!currentInteractions()?.pending ||
       !!attachmentLoadError ||
       attachmentLoading ||
       attachmentWorking ||
@@ -321,6 +740,435 @@ function renderAttachmentControls() {
     onPreview: (item) => previewAttachment(item.reference, item.data, 'draft'),
   });
 }
+function projectTarget(): ProjectContentTarget {
+  if (
+    !owner ||
+    !selected ||
+    !workspace ||
+    !replica ||
+    !activeWorkspace ||
+    !sessionId ||
+    meta?.id !== sessionId
+  )
+    throw new Error('请先打开一个已有会话，确认项目和执行电脑。');
+  return {
+    owner,
+    deviceId: selected.id,
+    workspaceId: workspace.id,
+    localProjectId: replica.localProjectId,
+    sessionId,
+    catalogWorkspaceId: activeWorkspace.id,
+    replicaId: replica.id,
+  };
+}
+function projectOnline() {
+  return authenticated && connected && selected?.online === true && replica?.available === true;
+}
+function projectTurns(): ProjectTurnChoice[] {
+  const view = mirror(volatileSessionDoc ?? doc, sessionId);
+  const turns = view
+    .getState()
+    .history.filter((turn) => turn.role === 'assistant')
+    .map((turn, index) => {
+      const reference = projectDiffReferenceSchema.safeParse(turn.fileDiff);
+      return {
+        id: turn.id,
+        label: `第 ${index + 1} 回合 · ${new Date(turn.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+        ...(reference.success ? { reference: reference.data } : {}),
+      };
+    });
+  view.dispose();
+  return turns.reverse();
+}
+type SearchPanelState = {
+  target: ProjectContentTarget;
+  generation: number;
+  title: string;
+  sessions: SearchSession[];
+  busy?: boolean;
+  error?: string;
+  result?: SessionSearchView;
+};
+let searchPanel: SearchPanelState | undefined;
+let searchPanelGeneration = 0,
+  searchReadGeneration = 0;
+function closeSessionSearch() {
+  searchPanelGeneration++;
+  searchReadGeneration++;
+  searchPanel = undefined;
+  showSessionSearchPanel();
+}
+function searchPanelCurrent(panel: SearchPanelState) {
+  if (!searchPanel || panel.generation !== searchPanelGeneration) return false;
+  try {
+    return projectContentKey(panel.target) === projectContentKey(projectTarget());
+  } catch {
+    return false;
+  }
+}
+function renderSessionSearch() {
+  const panel = searchPanel;
+  if (!panel || !searchPanelCurrent(panel)) {
+    closeSessionSearch();
+    return;
+  }
+  showSessionSearchPanel({
+    ...panel,
+    online: projectOnline(),
+    onClose: closeSessionSearch,
+    onSearch: (query, scope) => run(() => runSessionSearch(panel, query, scope)),
+    onOpen: (hit) => run(() => openSearchHit(panel, hit)),
+  });
+}
+function openSessionSearch() {
+  const target = projectTarget();
+  if (projectOnline() && !workspace?.features?.includes(SESSION_SEARCH_FEATURE))
+    throw new Error('执行电脑需要更新 Moor 才能搜索正文。');
+  closeProjectContent();
+  closeCurrentInteractionPanel();
+  closeNavigation();
+  const sessions = sessionList
+    .filter((row) => row.replicaId === target.replicaId)
+    .map((row) => ({ id: row.id, title: row.title || '会话' }));
+  if (!sessions.some((row) => row.id === target.sessionId))
+    sessions.unshift({ id: target.sessionId, title: meta?.title || '会话' });
+  searchPanel = {
+    target,
+    generation: ++searchPanelGeneration,
+    title: `${meta?.title ?? '会话'} · ${selected?.name ?? ''}`,
+    sessions,
+  };
+  renderSessionSearch();
+}
+async function runSessionSearch(
+  panel: SearchPanelState,
+  query: string,
+  scope: 'session' | 'project',
+) {
+  if (!searchPanelCurrent(panel)) return;
+  const generation = ++searchReadGeneration;
+  const current = () => searchPanelCurrent(panel) && generation === searchReadGeneration;
+  const runtime = workspace!;
+  const online = projectOnline();
+  let cacheBytes = 0;
+  searchPanel = { ...panel, busy: true, error: '', result: undefined };
+  renderSessionSearch();
+  try {
+    const result = await searchSessionContent(
+      panel.target,
+      { query, scope },
+      online,
+      panel.sessions,
+      {
+        read: cache.read,
+        write: cache.write,
+        request: api,
+        readHistory: async (target) => {
+          const saved = await cache.read<any>(
+            [target.owner, target.deviceId, target.workspaceId, target.sessionId, 'session'].join(
+              '/',
+            ),
+          );
+          if (
+            !saved ||
+            saved.meta?.id !== target.sessionId ||
+            saved.meta?.userId !== runtime.userId ||
+            saved.meta?.machineId !== runtime.machineId ||
+            saved.meta?.project?.kind !== 'local' ||
+            saved.meta?.project?.localProjectId !== target.localProjectId ||
+            typeof saved.snapshot !== 'string'
+          )
+            return undefined;
+          // Bound decoding too: cached CRDT snapshots may be much larger than the
+          // visible text projection. Cache corruption never falls back to a live doc.
+          cacheBytes += saved.snapshot.length;
+          if (saved.snapshot.length > 24 * 1024 * 1024 || cacheBytes > 64 * 1024 * 1024)
+            return undefined;
+          const cachedDoc = new LoroDoc();
+          cachedDoc.import(decode(saved.snapshot));
+          const view = mirror(cachedDoc, target.sessionId);
+          try {
+            return structuredClone(view.getState().history);
+          } finally {
+            view.dispose();
+            cachedDoc.free();
+          }
+        },
+      },
+    );
+    if (current()) searchPanel = { ...searchPanel!, result };
+  } catch (cause) {
+    if (current())
+      searchPanel = {
+        ...searchPanel!,
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+  } finally {
+    if (current()) {
+      searchPanel = { ...searchPanel!, busy: false };
+      renderSessionSearch();
+    }
+  }
+}
+async function openSearchHit(panel: SearchPanelState, hit: SearchHit) {
+  if (
+    !searchPanelCurrent(panel) ||
+    !panel.result?.hits.some((value) => JSON.stringify(value) === JSON.stringify(hit))
+  )
+    return;
+  const target = panel.target;
+  if (!sessionList.some((row) => row.id === hit.sessionId && row.replicaId === target.replicaId)) {
+    if (projectOnline()) await loadSessions();
+    if (!searchPanelCurrent(panel)) return;
+    if (
+      !sessionList.some((row) => row.id === hit.sessionId && row.replicaId === target.replicaId) &&
+      hit.sessionId !== sessionId
+    )
+      throw new Error('搜索结果对应的会话不在当前可访问列表中，请刷新后重新搜索。');
+  }
+  closeSessionSearch();
+  if (hit.sessionId !== sessionId) await openSession(hit.sessionId, target.replicaId);
+  if (
+    projectContentKey({ ...target, sessionId: hit.sessionId }) !==
+    projectContentKey(projectTarget())
+  )
+    return;
+  const article = [...document.querySelectorAll<HTMLElement>('#history [data-search-turn]')].find(
+    (element) => element.dataset.searchTurn === hit.turnId,
+  );
+  if (!article) throw new Error('当前历史中没有这条结果，内容可能已更新或尚未缓存。');
+  const item =
+    [...article.querySelectorAll<HTMLElement>('[data-search-item]')].find(
+      (element) => element.dataset.searchItem === String(hit.itemIndex),
+    ) ?? article;
+  item.querySelectorAll('details').forEach((details) => {
+    details.open = true;
+  });
+  document
+    .querySelectorAll('.search-located')
+    .forEach((element) => element.classList.remove('search-located'));
+  item.classList.add('search-located');
+  item.tabIndex = -1;
+  item.focus({ preventScroll: true });
+  item.scrollIntoView({ block: 'center' });
+  // Saved baseline hits use the same turn anchor as messages. Open a frozen
+  // file only when that exact path exists in this turn's confirmed summary.
+  if (hit.kind === 'diff' && hit.path && workspace?.features?.includes(PROJECT_DIFF_FEATURE)) {
+    const view = mirror(volatileSessionDoc ?? doc, sessionId);
+    const turn = view.getState().history.find((turn) => turn.id === hit.turnId);
+    const ref = projectDiffReferenceSchema.safeParse(turn?.fileDiff);
+    view.dispose();
+    if (ref.success && ref.data.version) {
+      await openProjectContent('changes', hit.turnId);
+      const change = projectPanel?.diff?.result.changes.find((change) => change.path === hit.path);
+      if (change) await openProjectDiffFile(change);
+    }
+  }
+}
+function closeProjectContent() {
+  closeSessionSearch();
+  projectPanelGeneration++;
+  projectReadGeneration++;
+  projectPanel = undefined;
+  showProjectContentPanel();
+}
+function renderProjectControls() {
+  showSessionSearchControl(
+    sessionId && meta?.id === sessionId && replica
+      ? {
+          enabled:
+            !projectOnline() || workspace?.features?.includes(SESSION_SEARCH_FEATURE) === true,
+          onOpen: () => run(async () => openSessionSearch()),
+        }
+      : undefined,
+  );
+  if (searchPanel) renderSessionSearch();
+  showProjectContentControls(
+    sessionId && meta?.id === sessionId && replica
+      ? {
+          tree: workspace?.features?.includes(PROJECT_TREE_FEATURE) === true,
+          changes: workspace?.features?.includes(PROJECT_DIFF_FEATURE) === true,
+          onTree: () => run(() => openProjectContent('tree')),
+          onChanges: () => run(() => openProjectContent('changes')),
+        }
+      : undefined,
+  );
+}
+function renderProjectPanel() {
+  if (!projectPanel) return;
+  showProjectContentPanel({
+    ...projectPanel,
+    onClose: closeProjectContent,
+    onMode: (mode) => run(() => openProjectContent(mode)),
+    onTreeMore: () => run(() => loadProjectTree(true)),
+    onFile: (path, size) => run(() => openCurrentProjectFile(path, size)),
+    onTurn: (id) => run(() => loadProjectTurn(id)),
+    onDiffFile: (change) => run(() => openProjectDiffFile(change)),
+    onRefresh: () =>
+      run(() =>
+        projectPanel?.mode === 'tree'
+          ? loadProjectTree(false)
+          : loadProjectTurn(projectPanel?.turnId),
+      ),
+  });
+}
+async function projectRead(
+  work: (panel: ProjectPanelState, online: boolean) => Promise<Partial<ProjectPanelState>>,
+) {
+  if (!projectPanel) return;
+  const panel = projectPanel,
+    requestGeneration = ++projectReadGeneration;
+  const current = () => {
+    if (
+      !projectPanel ||
+      panel.generation !== projectPanelGeneration ||
+      panel.generation !== projectPanel.generation ||
+      requestGeneration !== projectReadGeneration
+    )
+      return false;
+    try {
+      return projectContentKey(panel.target) === projectContentKey(projectTarget());
+    } catch {
+      return false;
+    }
+  };
+  projectPanel = { ...panel, busy: true, error: '' };
+  renderProjectPanel();
+  try {
+    const patch = await work(panel, projectOnline());
+    if (current()) projectPanel = { ...projectPanel!, ...patch };
+  } catch (cause) {
+    if (current())
+      projectPanel = {
+        ...projectPanel!,
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+  } finally {
+    if (current()) {
+      projectPanel = { ...projectPanel!, busy: false };
+      renderProjectPanel();
+    }
+  }
+}
+async function openProjectContent(mode: 'tree' | 'changes', turnId?: string) {
+  const feature = mode === 'tree' ? PROJECT_TREE_FEATURE : PROJECT_DIFF_FEATURE;
+  if (!workspace?.features?.includes(feature))
+    throw new Error('执行电脑需要更新 Moor 才能读取这类内容。');
+  const target = projectTarget();
+  closeNavigation();
+  projectPanel = {
+    target,
+    generation: ++projectPanelGeneration,
+    title: `${meta?.title ?? '会话'} · ${selected?.name ?? ''}`,
+    mode,
+    turns: projectTurns(),
+    turnId,
+  };
+  renderProjectPanel();
+  if (mode === 'tree') await loadProjectTree(false);
+  else await loadProjectTurn(turnId ?? projectPanel.turns[0]?.id);
+}
+async function loadProjectTree(more: boolean) {
+  if (!projectPanel) return;
+  if (more && projectPanel.tree?.result.nextOffset === undefined) return;
+  if (!more)
+    projectPanel = {
+      ...projectPanel,
+      tree: undefined,
+      currentFile: undefined,
+      currentUnavailable: undefined,
+    };
+  await projectRead(async (panel, online) => {
+    const old = more ? panel.tree : undefined;
+    const tree = await readProjectTree(
+      panel.target,
+      old ? { offset: old.result.nextOffset, knownVersion: old.result.version } : {},
+      online,
+      { read: cache.read, write: cache.write, request: api },
+    );
+    if (old) {
+      if (
+        old.result.version !== tree.result.version ||
+        old.result.total !== tree.result.total ||
+        old.result.entries.some((item) =>
+          tree.result.entries.some((entry) => entry.path === item.path),
+        )
+      )
+        throw new Error('目录读取期间发生变化，请重新读取文件树。');
+      return {
+        tree: {
+          ...tree,
+          cacheSaved: old.cacheSaved && tree.cacheSaved,
+          result: {
+            ...tree.result,
+            offset: 0,
+            entries: [...old.result.entries, ...tree.result.entries],
+          },
+        },
+      };
+    }
+    return { tree };
+  });
+}
+async function openCurrentProjectFile(path: string, size: number) {
+  if (!projectPanel) return;
+  projectPanel = { ...projectPanel, currentFile: undefined, currentUnavailable: undefined };
+  if (size > CONTENT_LIMITS.fileBytes) {
+    projectReadGeneration++;
+    projectPanel = {
+      ...projectPanel,
+      busy: false,
+      error: '',
+      currentUnavailable: { path, message: '文件超过 1 MiB，只显示目录信息，不提供文本预览。' },
+    };
+    renderProjectPanel();
+    return;
+  }
+  await projectRead(async (panel, online) => ({
+    currentFile: await readCurrentProjectFile(panel.target, path, online, {
+      read: cache.read,
+      write: cache.write,
+      request: api,
+    }),
+  }));
+}
+async function loadProjectTurn(turnId?: string) {
+  if (!projectPanel) return;
+  projectPanel = {
+    ...projectPanel,
+    turns: projectTurns(),
+    turnId,
+    diff: undefined,
+    diffFile: undefined,
+  };
+  if (!turnId) {
+    projectReadGeneration++;
+    projectPanel = { ...projectPanel, busy: false, error: '' };
+    renderProjectPanel();
+    return;
+  }
+  await projectRead(async (panel, online) => ({
+    diff: await readProjectTurnDiff(
+      panel.target,
+      turnId,
+      online,
+      { read: cache.read, write: cache.write, request: api },
+      panel.turns.find((turn) => turn.id === turnId)?.reference,
+    ),
+  }));
+}
+async function openProjectDiffFile(change: ProjectDiffChange) {
+  if (!projectPanel?.diff?.result.reference) return;
+  const reference = projectPanel.diff.result.reference;
+  projectPanel = { ...projectPanel, diffFile: undefined };
+  await projectRead(async (panel, online) => ({
+    diffFile: await readProjectDiffFile(panel.target, reference, change, online, {
+      read: cache.read,
+      write: cache.write,
+      request: api,
+    }),
+  }));
+}
 function run(fn: () => Promise<unknown>) {
   void fn().catch(error);
 }
@@ -332,6 +1180,10 @@ async function api(path: string, body?: unknown) {
   return request(path, body);
 }
 function resetWorkspace() {
+  closeProjectContent();
+  resetInteractions();
+  sessionPersistenceError = '';
+  volatileSessionDoc = undefined;
   events?.close();
   events = null;
   connected = false;
@@ -700,6 +1552,7 @@ function renderNewSessionControls() {
   });
 }
 function renderTarget() {
+  renderProjectControls();
   const project = activeWorkspace?.projects.find((p) => p.id === replica?.projectId);
   const row = sessionList.find((s) => s.id === sessionId && s.replicaId === replica?.id);
   showTarget({
@@ -878,6 +1731,10 @@ async function restoreSelection() {
   else restoredSelection = false;
 }
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
+  closeProjectContent();
+  resetInteractions();
+  sessionPersistenceError = '';
+  volatileSessionDoc = undefined;
   restoredSelection = true;
   const generation = ++sessionGeneration;
   attachmentGeneration++;
@@ -1209,6 +2066,10 @@ function renderSessions() {
 }
 
 async function openSession(id: string, replicaId?: string, keepNavigation = false) {
+  closeProjectContent();
+  resetInteractions();
+  sessionPersistenceError = '';
+  volatileSessionDoc = undefined;
   const row = sessionList.find(
     (s) =>
       s.id === id &&
@@ -1334,38 +2195,66 @@ async function openSession(id: string, replicaId?: string, keepNavigation = fals
   await restoreRunOptions();
   if (generation !== sessionGeneration) return;
   await loadAttachmentDraft();
+  if (generation !== sessionGeneration) return;
+  await loadInteractionDraft();
   updateComposer();
 }
 async function loadSession() {
   const generation = sessionGeneration,
     id = sessionId,
-    readGeneration = ++sessionReadGeneration;
+    readGeneration = ++sessionReadGeneration,
+    fullRead = volatileSessionDoc !== undefined;
   if (!id || !authenticated || !selected?.online) return;
   const data = await api(
-    prefix() + '/sessions/' + id + query() + '&version=' + encodeURIComponent(vv(doc)),
+    prefix() +
+      '/sessions/' +
+      id +
+      query() +
+      (fullRead ? '' : '&version=' + encodeURIComponent(vv(doc))),
   );
   if (
     generation !== sessionGeneration ||
     readGeneration !== sessionReadGeneration ||
-    (data.meta?.metadataRevision ?? 0) < (meta?.metadataRevision ?? 0)
+    (!fullRead && (data.meta?.metadataRevision ?? 0) < (meta?.metadataRevision ?? 0))
   )
     return;
-  if (data.update) doc.import(decode(data.update));
-  flock.importJson(data.metaBundle);
+  const persisted = data.persisted !== false && !data.persistenceError;
+  if (persisted) {
+    // Following a volatile read, the host may have restarted at its last durable
+    // state. CRDT merge cannot remove abandoned operations: replace both stores
+    // from the explicitly requested full response instead.
+    if (fullRead) {
+      doc = new LoroDoc();
+      flock = new Flock();
+    }
+    if (data.update) doc.import(decode(data.update));
+    flock.importJson(data.metaBundle);
+    volatileSessionDoc = undefined;
+  } else {
+    const display = new LoroDoc();
+    if (!fullRead) display.import(doc.export({ mode: 'snapshot' }));
+    if (data.update) display.import(decode(data.update));
+    volatileSessionDoc = display;
+  }
   meta = data.meta;
   renderTarget();
-  await cache.write(key('session'), {
-    snapshot: encode(doc.export({ mode: 'snapshot' })),
-    metaBundle: flock.exportJson(),
-    meta,
-  });
+  sessionPersistenceError = persisted
+    ? ''
+    : '执行电脑尚未保存本次输出。当前内容只在主机内存中，请保留执行组件并检查磁盘或数据库状态；暂不能发送新指令。';
+  if (persisted)
+    await cache.write(key('session'), {
+      snapshot: encode(doc.export({ mode: 'snapshot' })),
+      metaBundle: flock.exportJson(),
+      meta,
+    });
   if (generation !== sessionGeneration) return;
-  if (!data.synced) $('#history').textContent = '执行电脑不可达；本机尚未缓存这段历史。';
+  if (!data.synced && persisted)
+    $('#history').textContent = '执行电脑不可达；本机尚未缓存这段历史。';
   else renderHistory();
   updateComposer();
 }
 function renderHistory() {
-  const view = mirror(doc, sessionId),
+  const view = mirror(volatileSessionDoc ?? doc, sessionId),
     state = view.getState();
   const container = $('#history'),
     atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
@@ -1373,15 +2262,16 @@ function renderHistory() {
     state.history
       .map(
         (turn) =>
-          `<article class="turn ${turn.role}"><div class="turn-label">${turn.role === 'user' ? '你' : esc(meta?.agentType ?? 'Agent')} <time>${new Date(turn.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>${(
+          `<article class="turn ${turn.role}" data-search-turn="${esc(turn.id)}"><div class="turn-label">${turn.role === 'user' ? '你' : esc(meta?.agentType ?? 'Agent')} <time>${new Date(turn.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>${(
             turn.items ?? []
           )
-            .map((item: any, index: number) =>
-              renderItem(item, !!turn.finished, `${turn.id}/${index}`),
+            .map(
+              (item: any, index: number) =>
+                `<div data-search-item="${index}">${renderInteractionItem(item, `${turn.id}/${index}`) ?? renderItem(item, !!turn.finished, `${turn.id}/${index}`)}</div>`,
             )
             .join(
               '',
-            )}${renderFileChanges(turn.fileDiff, turn.id + '/files')}${turn.role === 'assistant' && !turn.finished ? '<span class="working">Agent 正在处理</span>' : ''}</article>`,
+            )}${renderFileChanges(turn.fileDiff, turn.id + '/files')}${turn.role === 'assistant' && workspace?.features?.includes(PROJECT_DIFF_FEATURE) ? `<button type="button" class="project-turn-open" data-project-turn="${esc(turn.id)}">查看回合文件变更</button>` : ''}${turn.role === 'assistant' && !turn.finished ? '<span class="working">Agent 正在处理</span>' : ''}</article>`,
       )
       .join('') || '<p class="empty">会话已建立，等待第一条消息。</p>';
   const expanded = new Map(
@@ -1401,6 +2291,18 @@ function renderHistory() {
         await navigator.clipboard.writeText(text);
         button.textContent = '已复制';
       });
+  });
+  container.querySelectorAll<HTMLButtonElement>('[data-project-turn]').forEach((button) => {
+    button.onclick = () => run(() => openProjectContent('changes', button.dataset.projectTurn));
+  });
+  container.querySelectorAll<HTMLButtonElement>('[data-open-question]').forEach((button) => {
+    const item = interactionSnapshot().questions.find(
+      (item) => questionDraftKey(item.request) === button.dataset.openQuestion,
+    );
+    button.disabled = !item;
+    button.onclick = () => {
+      if (item) openQuestion(item);
+    };
   });
   const references: AttachmentReference[] = [];
   for (const turn of state.history)
@@ -1555,7 +2457,13 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  const persistenceState = document.querySelector('#session-persistence-state');
+  if (persistenceState) {
+    persistenceState.textContent = sessionPersistenceError;
+    persistenceState.toggleAttribute('hidden', !sessionPersistenceError);
+  }
   renderAttachmentControls();
+  renderInteractions();
   renderSessionActionState();
   const invalidRunOptions = renderRunOptions();
   renderNewSessionControls();
@@ -1568,6 +2476,11 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    (!!sessionPersistenceError && !pending) ||
+    !!interactionLoadError ||
+    interactionLoading ||
+    !!currentInteractions()?.busy ||
+    !!currentInteractions()?.pending ||
     !!attachmentLoadError ||
     attachmentLoading ||
     attachmentWorking ||
@@ -1602,7 +2515,7 @@ function updateComposer() {
   if (state) state.toggleAttribute('hidden', !state.textContent);
   let active = false;
   if (sessionId) {
-    const v = mirror(doc, sessionId);
+    const v = mirror(volatileSessionDoc ?? doc, sessionId);
     active = v.getState().history.some((t) => t.role === 'assistant' && !t.finished);
     v.dispose();
   }
@@ -1674,6 +2587,10 @@ async function sendTurn() {
     await submit(pending);
     return;
   }
+  if (sessionPersistenceError) throw new Error(sessionPersistenceError);
+  if (interactionLoadError) throw new Error(interactionLoadError);
+  if (interactionLoading || currentInteractions()?.busy || currentInteractions()?.pending)
+    throw new Error('请先确认或关闭原交互记录。');
   if (meta?.isArchived) throw new Error('请先恢复会话，再发送新的指令。');
   if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
   const prompt = $<HTMLTextAreaElement>('#prompt').value.trim();

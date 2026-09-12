@@ -5,6 +5,10 @@ import { Flock, LoroDoc, mirror, putMeta } from '../model';
 import { Journal } from '../bridge/journal';
 import { assert, type RuntimeWorkspace } from '../protocol';
 import type { AttachmentReference, ContentScope } from '../content-protocol';
+import { ProjectHistoryStore } from './project-history';
+import { projectDiffReferenceSchema } from '../project-content-protocol';
+import { SessionSearchIndex, type SearchScope } from './session-search';
+import { expireSessionInteractions } from '../bridge/session-interactions';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -23,12 +27,15 @@ const attachmentScopeValues = (scope: AttachmentScope) => [
 // One host-owned database commits documents, metadata and delivery receipts together.
 export class RuntimeStore {
   journal: Journal;
+  projectHistory: ProjectHistoryStore;
+  sessionSearch: SessionSearchIndex;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
   constructor(file: string) {
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.journal = new Journal(file);
+    this.projectHistory = new ProjectHistoryStore(this.journal.db);
     if (file !== ':memory:') chmodSync(file, 0o600);
     this.journal.db.exec(`
       CREATE TABLE IF NOT EXISTS runtime_state(key TEXT PRIMARY KEY, value BLOB NOT NULL);
@@ -44,8 +51,22 @@ export class RuntimeStore {
         reference TEXT NOT NULL, bytes BLOB, referenced INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(workspace_id,user_id,machine_id,project_id,session_id,id)
       );
+      CREATE TABLE IF NOT EXISTS search_source(session_id TEXT PRIMARY KEY,revision INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS search_index_version(
+        workspace_id TEXT NOT NULL,user_id TEXT NOT NULL,machine_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,session_id TEXT NOT NULL,revision INTEGER NOT NULL,projection_version INTEGER NOT NULL,
+        PRIMARY KEY(workspace_id,user_id,machine_id,project_id,session_id)
+      );
+      INSERT OR IGNORE INTO search_source SELECT id,1 FROM session;
+      CREATE TRIGGER IF NOT EXISTS search_source_insert AFTER INSERT ON session BEGIN
+        INSERT INTO search_source VALUES(NEW.id,1) ON CONFLICT(session_id) DO UPDATE SET revision=revision+1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_source_update AFTER UPDATE OF snapshot ON session BEGIN
+        INSERT INTO search_source VALUES(NEW.id,1) ON CONFLICT(session_id) DO UPDATE SET revision=revision+1;
+      END;
       PRAGMA user_version=1;
     `);
+    this.sessionSearch = new SessionSearchIndex(this.journal.db);
     const identity = this.load('identity');
     this.workspace = identity
       ? JSON.parse(Buffer.from(identity).toString())
@@ -65,12 +86,29 @@ export class RuntimeStore {
       const id = String(row.id),
         doc = this.doc(id),
         view = mirror(doc, id);
-      let interrupted = false;
+      let interrupted = false,
+        interactionsChanged = false;
+      const meta = this.meta.get(['m', 'session-' + id, 'project']) as
+        | { localProjectId?: string }
+        | undefined;
+      const scope = {
+        workspaceId: this.workspace.id,
+        userId: this.workspace.userId,
+        machineId: this.workspace.machineId,
+        localProjectId: meta?.localProjectId ?? '',
+        sessionId: id,
+      };
       view.setState((state) => {
-        for (const turn of state.history)
+        for (const turn of state.history) {
+          if (turn.role === 'assistant')
+            interactionsChanged = expireSessionInteractions(turn) || interactionsChanged;
           if (turn.role === 'assistant' && !turn.finished) {
             turn.finished = true;
             turn.status = 'failed';
+            if (projectDiffReferenceSchema.safeParse(turn.fileDiff).success) {
+              const reference = this.projectHistory.interrupt(scope, turn.id);
+              if (reference) turn.fileDiff = reference;
+            }
             (turn.items ??= []).push({
               type: 'system_notice',
               name: 'chat_failed',
@@ -78,12 +116,11 @@ export class RuntimeStore {
             });
             interrupted = true;
           }
+        }
       });
       view.dispose();
-      if (interrupted) {
-        putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-        this.persist(id, doc);
-      }
+      if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+      if (interrupted || interactionsChanged) this.persist(id, doc);
     }
   }
   load(key: string) {
@@ -120,6 +157,30 @@ export class RuntimeStore {
       .prepare('INSERT OR REPLACE INTO session VALUES(?,?)')
       .run(id, doc.export({ mode: 'snapshot' }));
     this.save('meta', this.meta.exportFile());
+  }
+  searchSource(id: string) {
+    const row = this.journal.db
+      .prepare(
+        'SELECT s.revision,length(d.snapshot) AS bytes FROM search_source s JOIN session d ON d.id=s.session_id WHERE s.session_id=?',
+      )
+      .get(id);
+    return row ? { revision: Number(row.revision), bytes: Number(row.bytes) } : undefined;
+  }
+  searchIndexVersion(scope: SearchScope) {
+    const row = this.journal.db
+      .prepare(
+        'SELECT v.revision,v.projection_version FROM search_index_version v JOIN search_document d USING(workspace_id,user_id,machine_id,project_id,session_id) WHERE v.workspace_id=? AND v.user_id=? AND v.machine_id=? AND v.project_id=? AND v.session_id=?',
+      )
+      .get(...attachmentScopeValues(scope));
+    return row
+      ? { revision: Number(row.revision), projectionVersion: Number(row.projection_version) }
+      : undefined;
+  }
+  markSearchIndexed(scope: SearchScope, revision: number, projectionVersion: number) {
+    assert(this.searchSource(scope.sessionId)?.revision === revision, 409, '会话在索引期间已更新');
+    this.journal.db
+      .prepare('INSERT OR REPLACE INTO search_index_version VALUES(?,?,?,?,?,?,?)')
+      .run(...attachmentScopeValues(scope), revision, projectionVersion);
   }
   registerProject(path: string) {
     const rootPath = realpathSync(path);

@@ -97,6 +97,8 @@ export async function syntheticRelay(port = 0) {
       headers: { Authorization: 'Bearer ' + device.token },
     });
     const messages: any[] = [];
+    // Individual read-only protocol tests can supply synthetic host responses.
+    const responses = new Map<string, (request: any) => unknown | Promise<unknown>>();
     const ready = new Promise<void>((resolve) =>
       socket.on('message', async (raw) => {
         const m = JSON.parse(raw.toString());
@@ -105,7 +107,8 @@ export async function syntheticRelay(port = 0) {
         if (m.type !== 'request') return;
         let result: unknown, error: unknown;
         const current = metas(meta)['session-' + m.params.sessionId];
-        if (m.method === 'sessions')
+        if (responses.has(m.method)) result = await responses.get(m.method)!(m);
+        else if (m.method === 'sessions')
           result = Object.values(metas(meta)).filter(
             (s) => !m.localProjectId || (s.project as any).localProjectId === m.localProjectId,
           );
@@ -239,6 +242,7 @@ export async function syntheticRelay(port = 0) {
       sessionActions,
       fileContents,
       fileResponse,
+      responses,
     });
   }
   const api = async (path: string, body?: unknown) =>

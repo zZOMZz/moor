@@ -1,5 +1,7 @@
 import type { RunCapabilities } from '../run-config';
 import type { PromptInputCapabilities } from '../attachment-protocol';
+import type { QuestionAnswer, QuestionRequest } from '../interaction-protocol';
+import type { RuntimeFeatureReport, SessionEvent, SessionEventState } from './session-events';
 export type AgentConfig = {
   id: string;
   name: string;
@@ -13,11 +15,34 @@ export type AgentConfig = {
 export type PermissionOutcome =
   | { outcome: 'cancelled' }
   | { outcome: 'selected'; optionId: string };
+export type AgentRunBinding = Pick<
+  QuestionRequest,
+  'workspaceId' | 'localProjectId' | 'sessionId' | 'expectedTurnId'
+>;
+export type AgentCallbacks = {
+  update(value: any): void;
+  permission(value: any): Promise<{ outcome: PermissionOutcome }>;
+  event?(event: SessionEvent, binding: AgentRunBinding): void;
+  question?(request: QuestionRequest): Promise<QuestionAnswer>;
+};
+export type AgentInteractionCapabilities = {
+  questions: boolean;
+  steer: boolean;
+  steerUnavailableReason?: string;
+};
+export type AgentSteerResult =
+  | { outcome: 'injected' }
+  | { outcome: 'promptRequired'; reason: 'noRunningTurn' };
 export type AgentSession = {
   id: string;
   capabilities: RunCapabilities;
   inputCapabilities?: PromptInputCapabilities;
-  prompt(input: any): Promise<void>;
+  // Protocol observations are distinct from implemented, safe driver actions.
+  runtimeFeatures?: RuntimeFeatureReport;
+  interactionCapabilities?: AgentInteractionCapabilities;
+  currentEvents?: SessionEventState;
+  prompt(input: any, binding?: AgentRunBinding): Promise<void>;
+  steer?(input: { expectedTurnId: string; prompt: string }): Promise<AgentSteerResult>;
   cancel(): Promise<void>;
   close(): void | Promise<void>;
 };
@@ -26,9 +51,6 @@ export type AgentDriver = {
     config: AgentConfig,
     cwd: string,
     nativeId: string | undefined,
-    callbacks: {
-      update(value: any): void;
-      permission(value: any): Promise<{ outcome: PermissionOutcome }>;
-    },
+    callbacks: AgentCallbacks,
   ): Promise<AgentSession>;
 };
