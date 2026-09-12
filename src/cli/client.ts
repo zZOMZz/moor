@@ -37,6 +37,7 @@ import { CliError, type CliArgs } from './args';
 import { CliHttp, CliHttpError, connectionSchema, serverOrigin } from './http';
 import { cliInput } from './input';
 import { CliGoogleAuth } from './google-auth';
+import { EncryptedCliClient } from './encrypted-client';
 import { PrivateEndpointFile } from '../security/private-endpoint-file';
 import { trustConnectionSchema } from '../security/trust-client';
 import { CliState, type CliOperation, type CliTarget } from './state';
@@ -431,6 +432,7 @@ export class CliClient {
     }
   }
   async run(args: CliArgs): Promise<unknown> {
+    if (args.group === 'secure') return new EncryptedCliClient(this.deps).run(args);
     const authRevision = args.group === 'auth' ? this.state.settingsRevision() : undefined;
     const authCurrent = () => {
       if (this.deps.signal?.aborted || this.state.settingsRevision() !== authRevision)

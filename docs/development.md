@@ -18,6 +18,8 @@ corepack pnpm format:check
 
 构建同时生成 `dist/cli.mjs` 会话命令入口，并随 macOS 包提供。CLI 的真实子进程往返测试见 `tests/cli-host.test.ts`；它启动独立本机主机与合成 ACP，使用真实 HTTP 和私有客户端数据库验证创建、发送、等待、停止、整理、重启与原结果查询。CLI 状态不读取主机数据库，测试准备仅在主机启动前登记虚构项目和 Agent。构建后可用 `MOOR_TEST_CLI_BUNDLES=1 pnpm exec tsx --test tests/cli-host.test.ts` 对最终 `bridge.mjs`/`cli.mjs` 再跑同一流程。使用说明见[会话 CLI](cli.md)。
 
+显式加密入口的实际子进程专项为 `tests/encrypted-cli-host.test.ts`：Host 和 CLI 连接生产 `createApp` 中转应用，使用合成 Google-only 账号、真实设备配对和合成 stdio ACP，核对密文往返、原操作恢复、冷重启不重复执行，以及中转帧/SQLite 不含项目和会话正文。中转应用在测试进程内运行，Host/CLI 为真实子进程。构建后执行 `MOOR_TEST_CLI_BUNDLES=1 pnpm exec tsx --test tests/encrypted-cli-host.test.ts`；新安装包可用 `MOOR_TEST_PACKAGED_APP` 指定包内入口与 Electron。没有真实 Google 或 Agent 账号，也不依赖另一个应用的数据。
+
 最终 macOS 包可用同一 CLI 往返用例验收：
 
 ```sh

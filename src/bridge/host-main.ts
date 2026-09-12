@@ -14,6 +14,7 @@ import { Store, token } from '../relay/accounts';
 import { createApp } from '../relay/http';
 import { AppError, assert, PROTOCOL } from '../protocol';
 import { HostCommandDispatcher } from './host-command';
+import { EncryptedHostTransport, openSecureHostEndpoint } from './encrypted-host';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
 import { GitHubConfig } from '../runtime/github-config';
 import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
@@ -45,6 +46,8 @@ const { values } = parseArgs({
     'skills-config-stdin': { type: 'boolean' },
     'agent-config-stdin': { type: 'boolean' },
     'mcp-config-stdin': { type: 'boolean' },
+    'secure-endpoint': { type: 'string' },
+    'secure-connection': { type: 'string' },
   },
 });
 const configurationOnly =
@@ -53,6 +56,36 @@ const configurationOnly =
   values['skills-config-stdin'] ||
   values['agent-config-stdin'] ||
   values['mcp-config-stdin'];
+const secureMode =
+  values['secure-endpoint'] !== undefined || values['secure-connection'] !== undefined;
+let secureProjectRoots = (): string[] => (values.project ?? []).map((path) => resolve(path));
+if (
+  secureMode &&
+  (!values['secure-endpoint'] ||
+    !values['secure-connection'] ||
+    values.desktop ||
+    values.local ||
+    values.pair ||
+    configurationOnly)
+) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({
+      error: '加密主机需要同时指定私有设备和连接文件，不能混用本机、桌面、旧配对或配置命令',
+    }) + '\n',
+  );
+  process.exit(1);
+}
+const secureEndpoint = secureMode
+  ? await openSecureHostEndpoint({
+      endpointFile: values['secure-endpoint']!,
+      connectionFile: values['secure-connection']!,
+      server: values.server,
+      projectRoots: () => secureProjectRoots(),
+    })
+  : undefined;
+process.once('exit', () => secureEndpoint?.close());
+let secureTransport: EncryptedHostTransport | undefined;
 if (
   values.local &&
   (values.desktop || values.pair || values.server !== undefined || configurationOnly)
@@ -148,7 +181,7 @@ if (values.pair) {
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   writeFileSync(configPath, JSON.stringify(config) + '\n', { mode: 0o600 });
   console.log('设备已配对');
-} else {
+} else if (!secureMode) {
   try {
     config = JSON.parse(readFileSync(configPath, 'utf8'));
   } catch (e) {
@@ -170,6 +203,25 @@ try {
 }
 process.once('exit', releaseRuntime);
 const runtime = new RuntimeStore(runtimeFile);
+secureProjectRoots = () => [
+  ...(values.project ?? []).map((path) => resolve(path)),
+  ...runtime.machine
+    .scan({ prefix: ['localProject'] })
+    .map((row) => (row.value as { rootPath: string }).rootPath),
+  // Reserve the entire managed tree before a future session creates its cwd.
+  join(dirname(runtimeFile), 'worktrees'),
+  // Persisted execution roots can survive a runtime-directory move. Exclude
+  // both planned roots and current cwd, including operations awaiting recovery.
+  ...runtime.journal.db
+    .prepare(
+      "SELECT json_extract(record,'$.plan.targetPath') AS root,json_extract(record,'$.managed.cwd') AS cwd FROM session_execution",
+    )
+    .all()
+    .flatMap((row) =>
+      [row.root, row.cwd].filter((path): path is string => typeof path === 'string'),
+    ),
+];
+secureEndpoint?.current();
 const agentSettings = new AgentSettings(runtime, acpDriver, () => {
   if (!configurationOnly) {
     for (const host of workspaces.values()) host.updateCatalogue();
@@ -202,6 +254,7 @@ const githubConfig = new GitHubConfig(
 );
 const previewBlockedOrigins = new Set<string>();
 if (config) previewBlockedOrigins.add(config.server);
+if (secureEndpoint) previewBlockedOrigins.add(secureEndpoint.connection.origin);
 const previewConfig = new PreviewConfig(join(dirname(runtimeFile), 'preview-v1.json'), {
   identity: () => ({
     workspaceId: runtime.workspace.id,
@@ -293,6 +346,9 @@ const skillsConfig = new SkillsConfig(join(dirname(runtimeFile), 'skills-v1.json
     dirname(runtimeFile),
     dirname(configPath),
     resolve(values['github-config-dir'] ?? dirname(runtimeFile)),
+    ...(secureMode
+      ? [dirname(values['secure-endpoint']!), dirname(values['secure-connection']!)]
+      : []),
   ],
   changed: () => {
     if (!configurationOnly)
@@ -368,13 +424,17 @@ function reportHealth() {
   process.send({
     type: 'health',
     local: ready && workspaces.size > 0 ? 'ready' : 'unavailable',
-    relay: !remote
-      ? 'unpaired'
-      : remote.revoked
-        ? 'revoked'
-        : remote.socket?.readyState === WebSocket.OPEN
-          ? 'connected'
-          : 'reconnecting',
+    relay: secureEndpoint
+      ? secureTransport?.ready
+        ? 'connected'
+        : 'unavailable'
+      : !remote
+        ? 'unpaired'
+        : remote.revoked
+          ? 'revoked'
+          : remote.socket?.readyState === WebSocket.OPEN
+            ? 'connected'
+            : 'reconnecting',
     workspaces: [...workspaces.values()].filter((w) => !w.closed).length,
   });
 }
@@ -382,6 +442,14 @@ function broadcast(v: unknown) {
   for (const t of targets) send(t.socket, v);
 }
 function hello() {
+  if (secureEndpoint) {
+    try {
+      secureEndpoint.current();
+    } catch {
+      void stop();
+      return;
+    }
+  }
   if (ready)
     broadcast({
       type: 'hello',
@@ -398,6 +466,7 @@ async function refresh() {
   if (stopped || refreshing) return;
   refreshing = true;
   try {
+    secureEndpoint?.current();
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
       host = new HostWorkspace(
@@ -440,6 +509,7 @@ async function refresh() {
       runtime.saveMachine();
       projectsRegistered = true;
     }
+    secureEndpoint?.current();
     host.updateCatalogue();
     ready = true;
     hello();
@@ -447,6 +517,13 @@ async function refresh() {
   } catch {
     ready = false;
     broadcast({ type: 'unavailable' });
+    if (secureEndpoint) {
+      try {
+        secureEndpoint.current();
+      } catch {
+        void stop();
+      }
+    }
   } finally {
     refreshing = false;
     reportHealth();
@@ -901,6 +978,7 @@ if (values.desktop) {
 }
 if (
   config &&
+  !secureMode &&
   !values.local &&
   (values.server === undefined ||
     (values.server && config.server === new URL(values.server).origin))
@@ -910,6 +988,37 @@ reportHealth();
 const refreshTimer = setInterval(() => void refresh(), 10000);
 const notificationTimer = setInterval(() => notifications.drain(), 2000);
 for (const target of targets) connect(target);
+if (secureEndpoint) {
+  await refresh();
+  if (ready)
+    secureTransport = new EncryptedHostTransport({
+      endpoint: secureEndpoint,
+      dispatcher: commands,
+      catalog: () => {
+        assert(ready && !stopped, 503, '加密主机暂不可用');
+        return {
+          catalogVersion: 1,
+          machineId,
+          workspaces: [...workspaces.values()]
+            .filter((host) => !host.closed)
+            .map((host) => host.workspace),
+        };
+      },
+      closed: () => {
+        for (const host of workspaces.values()) {
+          host.previewManager.invalidate();
+          host.taskManager.invalidateUnavailable();
+          host.invalidateMcp();
+        }
+        try {
+          secureEndpoint.current();
+        } catch {
+          void stop();
+        }
+        reportHealth();
+      },
+    });
+}
 async function stop() {
   if (stopped) return;
   stopped = true;
@@ -918,6 +1027,8 @@ async function stop() {
   clearInterval(refreshTimer);
   clearInterval(notificationTimer);
   notifications.close();
+  secureTransport?.close();
+  secureEndpoint?.close();
   for (const target of targets) {
     clearTimeout(target.retry);
     target.socket?.terminate();

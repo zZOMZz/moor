@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { id } from '../protocol';
 import { CliError } from './args';
+import { secureOperationSchema, type SecureCliOperation } from './secure-operation';
 export const cliTargetSchema = z
   .object({
     serverKey: z.string().min(1).max(2048),
@@ -174,6 +175,7 @@ export class CliState {
     this.db = new DatabaseSync(file);
     this.db.exec(
       'PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS setting(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,value TEXT NOT NULL);' +
+        'CREATE TABLE IF NOT EXISTS secure_outbox(id TEXT PRIMARY KEY,value TEXT NOT NULL);' +
         'CREATE TABLE IF NOT EXISTS setting_revision(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL CHECK(revision>=0)); INSERT OR IGNORE INTO setting_revision VALUES(1,0);' +
         'CREATE INDEX IF NOT EXISTS pending_identity ON outbox (' +
         identityColumns.join(',') +
@@ -239,6 +241,109 @@ export class CliState {
   target() {
     const value = this.get('target');
     return value === undefined ? undefined : cliTargetSchema.parse(value);
+  }
+  /** Encrypted operations have a separate table so legacy CLI recovery can never send them in plaintext. */
+  secureOperation(operationId: string) {
+    this.assertCurrent();
+    const row = this.db
+      .prepare('SELECT value FROM secure_outbox WHERE id=?')
+      .get(id.parse(operationId));
+    if (!row) return;
+    const value = secureOperationSchema.parse(JSON.parse(String(row.value)));
+    if (value.operationId !== operationId || value.requestVersion !== requestVersion(value.body))
+      throw new CliError('corrupt-outbox', '加密原操作记录不可验证；未发送。', 1);
+    return value;
+  }
+  secureOperationSummaries() {
+    this.assertCurrent();
+    const rows = this.db
+      .prepare(
+        "SELECT json_remove(value,'$.body','$.receipt') AS value FROM secure_outbox ORDER BY rowid DESC LIMIT 101",
+      )
+      .all();
+    const shape = secureOperationSchema.innerType().omit({ body: true, receipt: true });
+    return {
+      operations: rows.slice(0, 100).map((row) => shape.parse(JSON.parse(String(row.value)))),
+      limit: 100,
+      truncated: rows.length > 100,
+    };
+  }
+  secureStage(
+    input: Omit<SecureCliOperation, 'state' | 'createdAt' | 'requestVersion'>,
+    now = new Date().toISOString(),
+  ) {
+    const value = secureOperationSchema.parse({
+      ...input,
+      state: 'pending',
+      createdAt: now,
+      requestVersion: requestVersion(input.body),
+    });
+    this.assertCurrent();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const prior = this.secureOperation(value.operationId);
+      if (prior) {
+        if (
+          prior.body !== value.body ||
+          prior.kind !== value.kind ||
+          JSON.stringify(prior.target) !== JSON.stringify(value.target)
+        )
+          throw new CliError('operation-conflict', '原操作编号已用于另一加密请求。', 5);
+        this.db.exec('COMMIT');
+        return prior;
+      }
+      if (value.kind !== 'stop') {
+        const rows = this.db
+          .prepare(
+            "SELECT id FROM secure_outbox WHERE json_extract(value,'$.state') IN ('pending','ending') AND json_extract(value,'$.target')=? LIMIT 1",
+          )
+          .get(JSON.stringify(value.target));
+        if (rows)
+          throw new CliError(
+            'pending',
+            '请先核查此会话的加密原操作；精确停止仍可单独执行。',
+            6,
+            String(rows.id),
+          );
+      }
+      this.db
+        .prepare('INSERT INTO secure_outbox VALUES(?,?)')
+        .run(value.operationId, JSON.stringify(value));
+      this.assertCurrent();
+      this.db.exec('COMMIT');
+      return value;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  secureTransition(
+    operationId: string,
+    from: SecureCliOperation['state'][],
+    state: SecureCliOperation['state'],
+    receipt?: unknown,
+  ) {
+    this.assertCurrent();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const prior = this.secureOperation(operationId);
+      if (!prior || !from.includes(prior.state))
+        throw new CliError('operation-conflict', '加密原操作状态已改变，请重新读取。', 5);
+      const next = secureOperationSchema.parse({
+        ...prior,
+        state,
+        ...(receipt === undefined ? {} : { receipt }),
+      });
+      this.db
+        .prepare('UPDATE secure_outbox SET value=? WHERE id=?')
+        .run(JSON.stringify(next), operationId);
+      this.assertCurrent();
+      this.db.exec('COMMIT');
+      return next;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   setTarget(value: CliTarget) {
     this.set('target', cliTargetSchema.parse(value));
