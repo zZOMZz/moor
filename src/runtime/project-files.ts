@@ -4,6 +4,7 @@ import { lstat, open } from 'node:fs/promises';
 import { isAbsolute, join, parse, resolve } from 'node:path';
 import { CONTENT_LIMITS, projectFilePathSchema } from '../content-protocol';
 import { AppError, assert } from '../protocol';
+import { isPrivateEndpointEnvelope } from '../security/private-content';
 
 type Checkpoint = 'directories-checked' | 'opened' | 'before-read' | 'after-read';
 export type ProjectFileReadOptions = {
@@ -17,6 +18,7 @@ type Directory = { path: string; identity: BigIntStats };
 export function isHostPrivateProjectPath(path: string) {
   return path.split('/').some((part) => {
     const name = part.toLowerCase();
+    if (name === '.moor-security') return true;
     if (
       /\.cli\.json(?:\.tmp-.*)?$/.test(name) ||
       /^moor-cli-v1\.sqlite(?:-(?:wal|shm|journal))?$/.test(name)
@@ -61,7 +63,11 @@ export async function readProjectFileBytes(
   options: ProjectFileReadOptions = {},
 ) {
   projectFilePathSchema.parse(relativePath);
-  assert(!isHostPrivateProjectPath(relativePath), 403, '项目文件属于 Moor 主机私有配置，不可读取');
+  assert(
+    !isHostPrivateProjectPath(rootPath) && !isHostPrivateProjectPath(relativePath),
+    403,
+    '项目文件属于 Moor 主机私有配置，不可读取',
+  );
   assert(isAbsolute(rootPath) && resolve(rootPath) === rootPath, 403, '项目目录不可用');
   try {
     const fullPath = join(rootPath, relativePath),
@@ -119,6 +125,7 @@ export async function readProjectFileBytes(
         '项目文件已变化，请重新读取',
       );
       const bytes = buffer.subarray(0, length);
+      assert(!isPrivateEndpointEnvelope(bytes), 403, '项目文件属于 Moor 主机私有配置，不可读取');
       let mediaType: 'text/plain' | 'application/octet-stream' = 'application/octet-stream';
       if (!bytes.includes(0)) {
         try {

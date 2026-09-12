@@ -30,6 +30,7 @@ import {
   type AttachmentReference,
 } from '../content-protocol';
 import { readProjectFileBytes } from '../runtime/project-files';
+import { isPrivateEndpointEnvelope } from '../security/private-content';
 import { SKILLS_FEATURE, type SkillsRead } from '../skills-protocol';
 import { SessionSkillsManager, type SessionSkillsOptions } from '../runtime/session-skills';
 import { ROLE_FEATURE, type RolesRead, type RolesActionRequest } from '../role-protocol';
@@ -54,6 +55,7 @@ import {
   type TaskAuthorityLease,
 } from '../task-protocol';
 import {
+  normalizeAgentText,
   normalizeAgentContent,
   normalizeAgentToolContent,
   safeAgentMetadata,
@@ -1115,6 +1117,7 @@ export class HostWorkspace {
         );
         assert(!stored, 409, '附件编号已使用，请重新添加附件');
         bytes = Buffer.from(action.data, 'base64');
+        assert(!isPrivateEndpointEnvelope(bytes), 403, '附件属于 Moor 主机私有配置，不可共享');
         assert(
           bytes.length === action.attachment.content.byteLength &&
             'sha256:' + createHash('sha256').update(bytes).digest('hex') ===
@@ -1157,6 +1160,7 @@ export class HostWorkspace {
       const scope = this.attachmentScope(request, localProjectId);
       const stored = this.store.attachment(scope, request.attachmentId);
       assert(stored?.bytes, 404, '附件不存在或已删除');
+      assert(!isPrivateEndpointEnvelope(stored.bytes), 403, '附件属于 Moor 主机私有配置，不可读取');
       return {
         contentVersion: CONTENT_VERSION,
         workspaceId: request.workspaceId,
@@ -1176,6 +1180,7 @@ export class HostWorkspace {
         400,
         '附件尚未送达、已删除或不属于当前会话',
       );
+      assert(!isPrivateEndpointEnvelope(stored.bytes), 403, '附件属于 Moor 主机私有配置，不可共享');
       return { reference, data: stored.bytes.toString('base64') };
     });
   }
@@ -1516,9 +1521,10 @@ export class HostWorkspace {
         update.content?.type === 'text'
       ) {
         const type = update.sessionUpdate === 'agent_message_chunk' ? 'text' : 'thought';
+        const content = normalizeAgentText(update.content.text);
         const last = items.at(-1);
-        if (last?.type === type) last.text += update.content.text;
-        else items.push({ type, text: update.content.text });
+        if (last?.type === type) last.text += content.text;
+        else items.push({ type, text: content.text });
       } else if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate)) {
         items.push(normalizeAgentContent(update.content, save));
       } else if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {

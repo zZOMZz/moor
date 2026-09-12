@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  isPrivateEndpointEnvelope,
+  isPrivateEndpointEnvelopeValue,
+} from '../security/private-content';
+import {
   CONTENT_LIMITS,
   attachmentReferenceSchema,
   isCanonicalBase64,
@@ -10,6 +14,11 @@ type AttachedContent = { type: 'attachment'; attachment: AttachmentReference };
 type TextContent = { type: 'text'; text: string };
 type SaveAttachment = (reference: AttachmentReference, bytes: Buffer) => AttachmentReference;
 const omitted = (reason: string): TextContent => ({ type: 'text', text: `[${reason}]` });
+const privateText = (value: string) => isPrivateEndpointEnvelope(Buffer.from(value, 'utf8'));
+export const normalizeAgentText = (text: string): TextContent =>
+  privateText(text)
+    ? omitted('Agent 返回的内容属于 Moor 主机私有配置，未保存')
+    : { type: 'text', text };
 const filename = (resource: any, mediaType: string) => {
   let candidate: string | undefined;
   if (typeof resource?.uri === 'string') {
@@ -31,7 +40,7 @@ export function normalizeAgentContent(
   save: SaveAttachment,
 ): AttachedContent | TextContent {
   if (value?.type === 'text' && typeof value.text === 'string')
-    return { type: 'text', text: value.text };
+    return normalizeAgentText(value.text);
   if (value?.type === 'resource_link') return omitted('Agent 返回的资源链接暂不可读取');
   if (!['image', 'audio', 'resource'].includes(value?.type))
     return omitted('Agent 返回了暂不支持的内容');
@@ -57,6 +66,8 @@ export function normalizeAgentContent(
         return omitted('Agent 返回的附件格式无效或超过 8 MiB，未保存');
       bytes = Buffer.from(encoded, 'base64');
     }
+    if (isPrivateEndpointEnvelope(bytes))
+      return omitted('Agent 返回的附件属于 Moor 主机私有配置，未保存');
     const reference = attachmentReferenceSchema.parse({
       contentVersion: 1,
       attachmentId: 'attachment_' + randomUUID(),
@@ -93,8 +104,17 @@ export function normalizeAgentToolContent(value: any, save: SaveAttachment): any
       typeof item.path === 'string' &&
       (typeof item.oldText === 'string' || item.oldText === null) &&
       typeof item.newText === 'string'
-    )
+    ) {
+      if (
+        (typeof item.oldText === 'string' && privateText(item.oldText)) ||
+        privateText(item.newText)
+      )
+        return {
+          type: 'content',
+          content: omitted('Agent 返回的差异属于 Moor 主机私有配置，未保存'),
+        };
       return { type: 'diff', path: item.path, oldText: item.oldText, newText: item.newText };
+    }
     if (item?.type === 'terminal' && typeof item.terminalId === 'string')
       return { type: 'terminal', terminalId: item.terminalId };
     return { type: 'content', content: omitted('Agent 返回了暂不支持的工具内容') };
@@ -105,6 +125,8 @@ export function normalizeAgentToolContent(value: any, save: SaveAttachment): any
 // of embedded binary data. The normalized content above owns those references.
 export function safeAgentMetadata(value: unknown, depth = 0): unknown {
   if (depth > 20) return '[metadata omitted]';
+  if (isPrivateEndpointEnvelopeValue(value) || (typeof value === 'string' && privateText(value)))
+    return '[Moor 主机私有配置已省略]';
   if (typeof value === 'string' && value.length > 120000 && isCanonicalBase64(value))
     return '[large embedded data omitted]';
   if (Array.isArray(value)) return value.map((item) => safeAgentMetadata(item, depth + 1));

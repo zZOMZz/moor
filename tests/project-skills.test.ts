@@ -1,13 +1,23 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { AppError } from '../src/protocol';
 import { SKILLS_LIMITS, skillSummarySchema, type SkillSource } from '../src/skills-protocol';
 import { discoverSkills, type SkillDiscoveryOptions } from '../src/runtime/project-skills';
+import { runDeviceSecurityCommand } from '../src/security/commands';
 
 const version = 'sha256:' + '1'.repeat(64);
 const source = (id = 'project_agents'): SkillSource => ({
@@ -30,6 +40,64 @@ async function put(root: string, path: string, body: string | Buffer = skillBody
   await writeFile(join(root, path), body);
 }
 const changed = (error: unknown) => error instanceof AppError && error.status === 409;
+
+test('private vault, recovery code and capsule copies named SKILL.md never become readable Skills', async (t) => {
+  const root = await fixture(t),
+    dataFile = join(root, 'custom-vault.json'),
+    recoveryCodeFile = join(root, 'custom-code.json'),
+    outputFile = join(root, 'custom-backup.json'),
+    skillsRoot = join(root, 'skills');
+  await runDeviceSecurityCommand(
+    {
+      action: 'initialize',
+      identity: {
+        accountId: 'synthetic-owner',
+        serverOrigin: 'https://relay.example.test',
+        deviceId: 'synthetic-mbp',
+        roles: ['host'],
+      },
+      recoveryCodeFile,
+    },
+    { dataFile },
+  );
+  await runDeviceSecurityCommand(
+    { action: 'export-recovery', recoveryCodeFile, outputFile },
+    { dataFile },
+  );
+  for (const [index, path] of [dataFile, recoveryCodeFile, outputFile].entries())
+    await put(skillsRoot, `private-${index}/SKILL.md`, await readFile(path));
+  await put(skillsRoot, 'safe/SKILL.md', 'Ordinary documentation of moor-private-endpoint-v1.');
+  const result = await discoverSkills([{ source: source(), rootPath: skillsRoot }]);
+  assert.deepEqual(
+    result.skills.map((item) => item.path),
+    ['safe/SKILL.md'],
+  );
+  assert.equal(result.documents.size, 1);
+  assert.deepEqual(
+    result.issues
+      .filter((item) => item.reason === 'unreadable')
+      .map((item) => item.path)
+      .sort(),
+    [0, 1, 2].map((index) => `private-${index}/SKILL.md`),
+  );
+});
+
+test('Skills skip reserved security directories even when a source starts inside one', async (t) => {
+  const root = await fixture(t);
+  for (const name of ['.moor-security', '.MOOR-SECURITY'])
+    await put(root, `${name}/nested/private/SKILL.md`, 'synthetic-private-body');
+  const fromParent = await discoverSkills([{ source: source(), rootPath: root }]);
+  assert.equal(fromParent.skills.length, 0);
+  const inputs = ['.moor-security', '.MOOR-SECURITY'].flatMap((name, index) => [
+    { source: source(`private-${index}`), rootPath: join(root, name) },
+    { source: source(`nested-${index}`), rootPath: join(root, name, 'nested') },
+  ]);
+  const result = await discoverSkills(inputs);
+  assert.equal(result.documents.size, 0);
+  assert.ok(result.sources.every((item) => item.status === 'unavailable'));
+  assert.ok(result.issues.every((item) => item.reason === 'unreadable'));
+  assert.ok(!JSON.stringify(result).includes('synthetic-private-body'));
+});
 
 test('Skills preserve independent source identities, Unicode, and exact original bodies', async (t) => {
   const root = await fixture(t),

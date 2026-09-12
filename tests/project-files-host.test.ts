@@ -3,6 +3,8 @@ import strict from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -25,6 +27,8 @@ import {
 import { putMeta } from '../src/model';
 import { readProjectFileBytes, type ProjectFileReadOptions } from '../src/runtime/project-files';
 import { RuntimeStore } from '../src/runtime/store';
+import { runDeviceSecurityCommand } from '../src/security/commands';
+import { PrivateEndpointFile } from '../src/security/private-endpoint-file';
 
 function directory(t: { after(fn: () => void): void }) {
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'moor-project-files-')));
@@ -83,6 +87,90 @@ function fixture(
   return { ...paths, store, host, request, dispatches: () => dispatches };
 }
 const status = (expected: number) => (error: any) => error.status === expected;
+
+test('actual device vault, recovery code, capsule and arbitrary copies never enter project responses', async (t) => {
+  const f = fixture(t);
+  const privateDirectory = join(f.root, 'private');
+  mkdirSync(privateDirectory, { mode: 0o700 });
+  const dataFile = join(privateDirectory, 'custom-vault.json');
+  const recoveryCodeFile = join(privateDirectory, 'custom-code.json');
+  const outputFile = join(privateDirectory, 'custom-backup.json');
+  await runDeviceSecurityCommand(
+    {
+      action: 'initialize',
+      identity: {
+        accountId: 'synthetic-owner',
+        serverOrigin: 'https://relay.example.test',
+        deviceId: 'synthetic-mbp',
+        roles: ['host'],
+      },
+      recoveryCodeFile,
+    },
+    { dataFile },
+  );
+  await runDeviceSecurityCommand(
+    { action: 'export-recovery', recoveryCodeFile, outputFile },
+    { dataFile },
+  );
+  const before = f.store.meta.exportJson();
+  for (const [index, file] of [dataFile, recoveryCodeFile, outputFile].entries()) {
+    const copied = `arbitrary-${index}.txt`;
+    copyFileSync(file, join(f.root, copied));
+    for (const path of [`private/${file.split('/').at(-1)!}`, copied]) {
+      await strict.rejects(f.host.readProjectFile({ ...f.request, path }), status(403));
+    }
+    await strict.rejects(
+      readProjectFileBytes(privateDirectory, file.split('/').at(-1)!),
+      status(403),
+    );
+  }
+  strict.deepEqual(f.store.meta.exportJson(), before);
+  strict.equal(f.dispatches(), 0);
+});
+
+test('reserved security directories stay unreadable when the project root is the directory or one of its descendants', async (t) => {
+  const f = directory(t);
+  for (const name of ['.moor-security', '.MOOR-SECURITY']) {
+    const privateDirectory = join(f.root, name),
+      nested = join(privateDirectory, 'nested');
+    mkdirSync(nested, { recursive: true, mode: 0o700 });
+    writeFileSync(join(nested, 'plain.txt'), 'synthetic-secret');
+    await strict.rejects(readProjectFileBytes(f.root, `${name}/nested/plain.txt`), status(403));
+    await strict.rejects(readProjectFileBytes(privateDirectory, 'nested/plain.txt'), status(403));
+    await strict.rejects(readProjectFileBytes(nested, 'plain.txt'), status(403));
+  }
+});
+
+test('structured private markers are rejected while ordinary source and unrelated JSON remain readable', async (t) => {
+  const f = directory(t);
+  chmodSync(f.root, 0o700);
+  const privateFile = join(f.root, 'arbitrary.data');
+  const store = PrivateEndpointFile.open(privateFile);
+  store.save(null, { kind: 'synthetic-private-value', secret: 'synthetic-secret' });
+  store.close();
+  await strict.rejects(readProjectFileBytes(f.root, 'arbitrary.data'), status(403));
+  for (const [path, text] of [
+    ['source.ts', 'export const FORMAT = "moor-private-endpoint-v1";'],
+    [
+      'example.json',
+      JSON.stringify({ format: 'another-format', revision: 1, value: 'ordinary content' }),
+    ],
+    ['documentation.txt', 'Private files use {"format":"moor-private-endpoint-v1"}.'],
+  ]) {
+    writeFileSync(join(f.root, path), text);
+    strict.equal((await readProjectFileBytes(f.root, path)).bytes.toString('utf8'), text);
+  }
+  writeFileSync(
+    privateFile,
+    '\uFEFF' +
+      JSON.stringify(
+        { format: 'moor-private-endpoint-v1', revision: 1, value: { secret: 'synthetic-secret' } },
+        null,
+        2,
+      ),
+  );
+  await strict.rejects(readProjectFileBytes(f.root, 'arbitrary.data'), status(403));
+});
 
 test('Moor GitHub credential and temporary files are reserved even when their parent is a registered project', async (t) => {
   const f = fixture(t);

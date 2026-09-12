@@ -81,7 +81,13 @@ async function copyDependencyTree(name, dest, from = process.cwd(), ancestors = 
 }
 async function copyRuntime(dest) {
   await mkdir(dest, { recursive: true });
-  for (const file of ['bridge.mjs', 'cli.mjs', 'server.mjs', 'preview-renderer.cjs'])
+  for (const file of [
+    'bridge.mjs',
+    'cli.mjs',
+    'security.mjs',
+    'server.mjs',
+    'preview-renderer.cjs',
+  ])
     await cp('dist/' + file, join(dest, file));
   await cp('dist/public', join(dest, 'public'), { recursive: true });
   for (const pkg of ['ws', 'loro-crdt']) await copyPackage(pkg, dest);

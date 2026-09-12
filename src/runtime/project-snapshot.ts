@@ -192,6 +192,7 @@ function excluded(path: string) {
 }
 async function checkedRoot(rootPath: string) {
   assert(isAbsolute(rootPath) && resolve(rootPath) === rootPath, 403, '项目目录不可用');
+  assert(!isHostPrivateProjectPath(rootPath), 403, '项目目录属于 Moor 主机私有配置，不可读取');
   const anchor = parse(rootPath).root,
     directories: DirectoryIdentity[] = [];
   let path = anchor;

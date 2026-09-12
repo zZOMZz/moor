@@ -36,12 +36,22 @@ const cliBuild = await build({
   entryPoints: ['src/cli/main.ts'],
   outfile: 'dist/cli.mjs',
 });
+const securityBuild = await build({
+  ...nodeOptions,
+  entryPoints: ['src/security/main.ts'],
+  outfile: 'dist/security.mjs',
+});
 await cp('src/desktop/preview-renderer.cjs', 'dist/preview-renderer.cjs');
 await writeFile(
   'dist/THIRD_PARTY_NOTICES.txt',
   await browserNotices(
-    { ...relayBuild.metafile.inputs, ...hostBuild.metafile.inputs, ...cliBuild.metafile.inputs },
-    'host, relay and CLI',
+    {
+      ...relayBuild.metafile.inputs,
+      ...hostBuild.metafile.inputs,
+      ...cliBuild.metafile.inputs,
+      ...securityBuild.metafile.inputs,
+    },
+    'host, relay and local CLIs',
   ),
 );
 const browserBuild = await build({

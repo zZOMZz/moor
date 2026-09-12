@@ -46,13 +46,20 @@ const desktopFiles = new Set([
   'moor-logo.png',
   'THIRD-PARTY.txt',
 ]);
-const runtimeFiles = new Set(['bridge.mjs', 'cli.mjs', 'server.mjs', 'preview-renderer.cjs']);
+const runtimeFiles = new Set([
+  'bridge.mjs',
+  'cli.mjs',
+  'security.mjs',
+  'server.mjs',
+  'preview-renderer.cjs',
+]);
 const required = [
   'Contents/Info.plist',
   `${programRoot}/package.json`,
   `${programRoot}/entry.cjs`,
   `${programRoot}/runtime/bridge.mjs`,
   `${programRoot}/runtime/cli.mjs`,
+  `${programRoot}/runtime/security.mjs`,
   `${programRoot}/licenses/Moor-LICENSE`,
   `${programRoot}/licenses/Moor-NOTICE`,
   `${programRoot}/licenses/BUNDLED-NOTICES.txt`,
