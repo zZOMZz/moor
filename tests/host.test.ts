@@ -182,6 +182,7 @@ test('relay database contains only identity and organization records, never sess
     [
       'account',
       'device',
+      'external_identity',
       'host_binding',
       'login',
       'pair',

@@ -2,6 +2,7 @@ export interface Identity {
   owner: string | null;
   needsSetup: boolean;
   localOnly?: boolean;
+  google?: { enabled: boolean; linked?: { email: string } | null; hasPassword?: boolean };
 }
 
 export class ApiError extends Error {

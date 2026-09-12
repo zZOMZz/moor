@@ -144,6 +144,8 @@ import {
   validateRolesInspect,
 } from '../role-protocol';
 import { MCP_FEATURE, MCP_LIMITS, mcpReadSchema, validateMcpRead } from '../mcp-protocol';
+import { GoogleAuth } from './google-auth';
+import type { GoogleOidcProvider } from './google-oidc';
 export function createApp(
   store: Store,
   options: {
@@ -154,9 +156,15 @@ export function createApp(
     localInstanceId?: string;
     localInstanceProof?: (challenge: string) => string;
     pushTransport?: WebPushTransport;
+    googleProvider?: GoogleOidcProvider;
   },
 ) {
   let origin = new URL(options.origin).origin;
+  const googleAuth = new GoogleAuth(store, {
+    origin,
+    setupToken: options.setupToken,
+    provider: options.localOnly ? undefined : options.googleProvider,
+  });
   const localInstanceId = options.localInstanceId;
   const bridges = new Map<
     string,
@@ -483,6 +491,7 @@ export function createApp(
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
+      if (await googleAuth.handle(req, res, url)) return;
       if (path === '/api/me' && req.method === 'GET') {
         let owner: string | null = null;
         try {
@@ -492,6 +501,12 @@ export function createApp(
           owner,
           needsSetup: !store.hasAccount(),
           localOnly: options.localOnly === true,
+          google: {
+            enabled: googleAuth.enabled,
+            ...(owner
+              ? { linked: store.googleIdentity(owner), hasPassword: store.hasPassword(owner) }
+              : {}),
+          },
         });
       }
       if ((path === '/api/login' || path === '/api/setup') && req.method === 'POST') {
@@ -2482,7 +2497,10 @@ export function createApp(
       }
       assert(req.method === 'GET' && !path.startsWith('/api/'), 404, '未找到');
       const publicDir = resolve(options.publicDir ?? 'dist/public'),
-        filename = resolve(publicDir, path === '/' ? 'index.html' : '.' + path);
+        filename = resolve(
+          publicDir,
+          path === '/' || path === '/auth/google/complete' ? 'index.html' : '.' + path,
+        );
       assert(filename.startsWith(publicDir + '/'), 404, '未找到');
       await serveStatic(req, res, filename);
     } catch (e) {
@@ -2718,9 +2736,11 @@ export function createApp(
     online,
     setOrigin: (value: string) => {
       origin = new URL(value).origin;
+      googleAuth.setOrigin(origin);
     },
     close: async () => {
       closing = true;
+      googleAuth.close();
       notifications.close();
       clearInterval(heartbeat);
       for (const c of commands.values()) {

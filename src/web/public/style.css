@@ -3432,3 +3432,60 @@ dialog pre {
     grid-template-columns: 1fr;
   }
 }
+
+.google-login {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.google-login form,
+.google-account form {
+  display: grid;
+  gap: 12px;
+}
+.google-login label,
+.google-account label {
+  display: grid;
+  gap: 8px;
+}
+.google-complete {
+  --login-card: var(--surface-raised);
+  --login-edge: var(--border);
+  --login-shadow: var(--shadow);
+  --login-field: var(--surface);
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 24px 16px;
+}
+.google-complete .auth {
+  position: static;
+  width: min(100%, 460px);
+  margin: 0;
+  transform: none;
+  overflow-wrap: anywhere;
+}
+.google-complete p {
+  margin-block: 16px;
+}
+.google-confirm-code {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  letter-spacing: 2px;
+}
+.google-code-check {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.google-code-check input[type='checkbox'] {
+  width: 16px;
+  min-height: 0;
+  margin: 0;
+  flex: 0 0 auto;
+}
+.google-account {
+  width: min(520px, calc(100vw - 32px));
+  overflow-wrap: anywhere;
+}

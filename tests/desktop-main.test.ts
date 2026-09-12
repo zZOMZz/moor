@@ -525,10 +525,29 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   });
   assert.deepEqual(Object.keys(webBridge.get('moorDesktop')).sort(), [
     'cancelAttachmentSave',
+    'googleAuth',
     'saveAttachment',
     'version',
   ]);
   assert.equal(webBridge.has('personal'), false);
+  await t.test(
+    'Google handoff IPC rejects local content and unregistered sender frames',
+    async () => {
+      await assert.rejects(
+        webBridge.get('moorDesktop').googleAuth.begin({ mode: 'login' }),
+        /Google/,
+      );
+      for (const action of ['begin', 'complete', 'cancel']) {
+        await assert.rejects(
+          invoke('moor:google-auth-' + action, action === 'begin' ? { mode: 'login' } : undefined, {
+            sender: reopened.webContents,
+            senderFrame: { ...reopened.webContents.mainFrame },
+          }),
+          /Google/,
+        );
+      }
+    },
+  );
   const bytes = Buffer.from('Synthetic native save');
   const value = {
     scope: {

@@ -37,6 +37,7 @@ const desktopFiles = new Set([
   'recovery.cjs',
   'agent-settings.cjs',
   'mcp-settings.cjs',
+  'google-auth.cjs',
   'page-loader.cjs',
   'settings.css',
   'settings.html',
