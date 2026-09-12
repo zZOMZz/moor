@@ -10,7 +10,7 @@ import { acpDriver } from '../runtime/acp';
 import { localCodexPath, withLocalCodex } from './local-codex';
 import { Store, token } from '../relay/accounts';
 import { createApp } from '../relay/http';
-import { AppError, assert, mutationSchema, PROTOCOL } from '../protocol';
+import { AppError, assert, mutationSchema, sessionActionSchema, PROTOCOL } from '../protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -205,6 +205,10 @@ function connect(target: Target) {
             const body = mutationSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.mutate(body, m.localProjectId);
+          } else if (m.method === 'session-action') {
+            const body = sessionActionSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.sessionAction(body, m.localProjectId);
           } else if (m.method === 'cancel')
             result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');
@@ -218,7 +222,7 @@ function connect(target: Target) {
               message: e instanceof AppError ? e.message : '本地主机处理失败',
               rejected:
                 (e instanceof AppError && e.rejected) ||
-                (m.method === 'mutate' &&
+                (['mutate', 'session-action'].includes(m.method) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
             },

@@ -4,7 +4,7 @@ import { serveStatic } from './static';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { Store, type Device } from './accounts';
-import { AppError, assert, helloSchema, mutationSchema } from '../protocol';
+import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
 import { workspaceInputSchema, projectInputSchema, replicaAssignmentSchema } from '../catalog';
 export function createApp(
@@ -328,6 +328,30 @@ export function createApp(
               await request(host.device_id, 'mutate', host.runtime_id, mutation, replica.local_id),
             );
           }
+          if (parts[5] === 'session-actions' && parts.length === 6 && req.method === 'POST') {
+            const action = sessionActionSchema.parse(await body(req));
+            assert(
+              action.workspaceId === host.runtime_id && action.localProjectId === replica.local_id,
+              400,
+              '会话操作与项目副本不匹配',
+            );
+            assert(
+              runtime?.features?.includes('session-actions'),
+              409,
+              '请先升级执行电脑上的 Moor',
+            );
+            return json(
+              res,
+              200,
+              await request(
+                host.device_id,
+                'session-action',
+                host.runtime_id,
+                action,
+                replica.local_id,
+              ),
+            );
+          }
           if (parts[5] === 'cancel' && req.method === 'POST') {
             const input = z
               .object({ sessionId: z.string(), turnId: z.string() })
@@ -369,6 +393,21 @@ export function createApp(
           const b = mutationSchema.parse(await body(req));
           assert(ws.id === b.workspaceId, 400, '工作区不匹配');
           return json(res, 200, await request(d.id, 'mutate', ws.id, b));
+        }
+        if (parts[3] === 'session-actions' && parts.length === 4 && req.method === 'POST') {
+          const action = sessionActionSchema.parse(await body(req));
+          assert(ws.id === action.workspaceId, 400, '工作区不匹配');
+          assert(
+            ws.projects.some((project) => project.id === action.localProjectId),
+            404,
+            '项目副本不可用',
+          );
+          assert(ws.features?.includes('session-actions'), 409, '请先升级执行电脑上的 Moor');
+          return json(
+            res,
+            200,
+            await request(d.id, 'session-action', ws.id, action, action.localProjectId),
+          );
         }
         if (parts[3] === 'cancel' && req.method === 'POST') {
           const b = z.object({ sessionId: z.string(), turnId: z.string() }).parse(await body(req));

@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { Store } from '../../src/relay/accounts';
 import { createApp } from '../../src/relay/http';
-import { PROTOCOL, type RuntimeWorkspace } from '../../src/protocol';
+import { PROTOCOL, sessionActionSchema, type RuntimeWorkspace } from '../../src/protocol';
 import { Flock, LoroDoc, decode, delta, metas, mirror, putMeta } from '../../src/model';
 
 // In-memory integration fixture: never starts a runtime, reads a project, or contacts a model.
@@ -44,10 +44,12 @@ export async function syntheticRelay(port = 0) {
           runConfig: syntheticCapabilities,
         },
       ],
+      features: ['session-actions'],
     };
     const meta = new Flock(),
       docs = new Map<string, LoroDoc>(),
-      operations = new Set<string>();
+      operations = new Set<string>(),
+      sessionActions = new Map<string, { input: string; result: unknown }>();
     const sessionId = 'same-session-id';
     const doc = new LoroDoc(),
       view = mirror(doc, sessionId);
@@ -119,9 +121,50 @@ export async function syntheticRelay(port = 0) {
             operations.add(m.params.operationId);
           }
           result = { accepted: true, delivered: true, operationId: m.params.operationId };
+        } else if (m.method === 'session-action') {
+          const parsed = sessionActionSchema.safeParse(m.params);
+          if (!parsed.success) error = { status: 400, message: '请求格式无效', rejected: true };
+          else {
+            const action = parsed.data,
+              receipt = sessionActions.get(action.operationId);
+            if (
+              action.workspaceId !== runtime.id ||
+              !current ||
+              (current.project as any).localProjectId !== action.localProjectId ||
+              m.localProjectId !== action.localProjectId
+            )
+              error = { status: 404, message: '会话不属于该项目副本', rejected: true };
+            else if (receipt) {
+              if (receipt.input !== JSON.stringify(action))
+                error = { status: 409, message: '重复编号对应不同请求', rejected: true };
+              else result = receipt.result;
+            } else if ((current.metadataRevision ?? 0) !== action.expectedRevision)
+              error = { status: 409, message: '会话信息已更新，请刷新后重试', rejected: true };
+            else {
+              putMeta(meta, 'session-' + action.sessionId, {
+                metadataRevision: action.expectedRevision + 1,
+                isArchived: current.isArchived === true,
+                isPinned: current.isPinned === true,
+                ...(action.action === 'rename' ? { title: action.title, titleSource: 'user' } : {}),
+                ...(['archive', 'restore'].includes(action.action)
+                  ? { isArchived: action.action === 'archive' }
+                  : {}),
+                ...(['pin', 'unpin'].includes(action.action)
+                  ? { isPinned: action.action === 'pin' }
+                  : {}),
+              });
+              result = {
+                accepted: true,
+                delivered: true,
+                operationId: action.operationId,
+                meta: metas(meta)['session-' + action.sessionId],
+              };
+              sessionActions.set(action.operationId, { input: JSON.stringify(action), result });
+            }
+          }
         } else if (m.method === 'cancel') result = { success: true };
         socket.send(JSON.stringify({ type: 'response', requestId: m.requestId, result, error }));
-        if (m.method === 'mutate')
+        if (m.method === 'mutate' || (m.method === 'session-action' && !error))
           socket.send(
             JSON.stringify({
               type: 'changed',
@@ -141,7 +184,7 @@ export async function syntheticRelay(port = 0) {
       }),
     );
     await ready;
-    hosts.push({ device, runtime, socket, messages, operations });
+    hosts.push({ device, runtime, socket, messages, operations, sessionActions });
   }
   const api = async (path: string, body?: unknown) =>
     fetch(origin + path, {

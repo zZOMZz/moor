@@ -12,7 +12,15 @@ import {
   sendIcon,
 } from './ui';
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
-import { agentSchema, type Mutation, type RuntimeWorkspace } from '../protocol';
+import { agentSchema, type Mutation, type RuntimeWorkspace, type SessionAction } from '../protocol';
+import {
+  actionScope,
+  deliverSessionAction,
+  pendingSessionActionSchema,
+  routeSessionAction,
+  sessionActionKey,
+  type PendingSessionAction,
+} from './session-actions';
 import { resolveRunSelection, selectionFromInput, type RunSelection } from '../run-config';
 import type { Workspace, ProjectReplica } from '../catalog';
 import * as cache from './cache';
@@ -44,10 +52,18 @@ let owner = '',
 let events: WebSocket | null = null,
   connected = false,
   sessionGeneration = 0,
+  sessionReadGeneration = 0,
   refreshTimer: ReturnType<typeof setTimeout> | undefined,
   pending: Mutation | undefined,
   sending = false;
 let sessionList: SessionSummary[] = [];
+let archived = false,
+  listLoading = false,
+  listError = '',
+  listGeneration = 0,
+  actionSending = false,
+  actionError = '';
+let pendingAction: PendingSessionAction | undefined;
 let newProjectId = '',
   newAgentId = '',
   newSessionControlsReady = false;
@@ -117,6 +133,11 @@ function resetWorkspace() {
   newProjectId = newAgentId = '';
   newSessionControlsReady = false;
   pending = undefined;
+  pendingAction = undefined;
+  actionError = '';
+  archived = listLoading = false;
+  listError = '';
+  listGeneration++;
   meta = null;
   restoredSelection = false;
   selectionLoading = 0;
@@ -233,6 +254,7 @@ function logout() {
 }
 function newSession() {
   return run(async () => {
+    archived = false;
     const copies = activeWorkspace?.replicas.filter((r) => r.projectId === projectFilter) ?? [];
     const currentHost = activeWorkspace?.hosts.find(
       (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
@@ -562,6 +584,9 @@ async function selectWorkspace(id: string, saved?: Partial<Selection>) {
   newProjectId = newAgentId = '';
   newSessionControlsReady = false;
   pending = undefined;
+  pendingAction = undefined;
+  actionError = '';
+  archived = false;
   sessionGeneration++;
   renderNewSessionControls();
   renderDevices();
@@ -677,6 +702,167 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
     if (selectionLoading === generation) selectionLoading = 0;
   }
 }
+function currentActionScope() {
+  if (!owner || !selected || !workspace || !replica || !sessionId) return undefined;
+  return {
+    owner,
+    deviceId: selected.id,
+    workspaceId: workspace.id,
+    localProjectId: replica.localProjectId,
+    sessionId,
+  };
+}
+function canManageSession(row: SessionSummary) {
+  const copy = activeWorkspace?.replicas.find((r) => r.id === row.replicaId);
+  const host = activeWorkspace?.hosts.find((h) => h.id === copy?.hostId);
+  const runtime = devices
+    .find((d) => d.id === host?.deviceId)
+    ?.workspaces.find((w) => w.id === host?.runtimeWorkspaceId);
+  return !!(
+    authenticated &&
+    connected &&
+    copy?.available &&
+    host?.online &&
+    runtime?.features?.includes('session-actions') &&
+    !actionSending &&
+    !pendingAction &&
+    !sending &&
+    !pending
+  );
+}
+async function manageSession(row: SessionSummary, action: SessionAction['action'], title?: string) {
+  actionError = '';
+  try {
+    if (!canManageSession(row)) throw new Error('请先连接支持会话管理的主机，并确认上一次操作。');
+    if (sessionId !== row.id || replica?.id !== row.replicaId)
+      await openSession(row.id, row.replicaId, action === 'rename');
+    if (sessionId !== row.id || replica?.id !== row.replicaId) return;
+    if (!canManageSession(row)) throw new Error('请先确认这段会话的上一次操作。');
+    const scope = currentActionScope();
+    if (!scope || !activeWorkspace || !replica) return;
+    const base = {
+      operationId: crypto.randomUUID(),
+      workspaceId: scope.workspaceId,
+      localProjectId: scope.localProjectId,
+      sessionId: row.id,
+      expectedRevision: row.metadataRevision ?? 0,
+    };
+    await submitSessionAction({
+      owner,
+      deviceId: scope.deviceId,
+      catalogWorkspaceId: activeWorkspace.id,
+      replicaId: replica.id,
+      request: action === 'rename' ? { ...base, action, title: title ?? '' } : { ...base, action },
+    });
+  } catch (e) {
+    actionError = e instanceof Error ? e.message : String(e);
+    renderNavigation();
+    throw e;
+  }
+}
+async function submitSessionAction(operation: PendingSessionAction) {
+  if (actionSending) return;
+  if (!connected || !authenticated || !selected?.online)
+    throw new Error('执行电脑离线，会话操作仍待手动确认。');
+  const scope = currentActionScope();
+  const operationKey = sessionActionKey(actionScope(operation));
+  if (!scope || sessionActionKey(scope) !== operationKey)
+    throw new Error('请打开原会话，再重试确认这次操作。');
+  if (!activeWorkspace || !replica || !replica.available)
+    throw new Error('原会话的项目副本不可达，请恢复连接后手动重试。');
+  const routed = routeSessionAction(operation, {
+    ...scope,
+    catalogWorkspaceId: activeWorkspace.id,
+    replicaId: replica.id,
+  });
+  const isCurrent = () => {
+    const current = currentActionScope();
+    return current && sessionActionKey(current) === operationKey;
+  };
+  const requestedOwner = owner;
+  actionSending = true;
+  actionError = '';
+  renderNavigation();
+  updateComposer();
+  try {
+    const confirmed = await deliverSessionAction(routed, {
+      write: cache.write,
+      request: api,
+      onPending: (value) => {
+        if (isCurrent()) pendingAction = value;
+      },
+    });
+    if (owner !== requestedOwner) return;
+    listGeneration++;
+    const summary = confirmed as SessionSummary;
+    sessionList = sessionList.map((row) =>
+      row.id === summary.id &&
+      row.replicaId === routed.replicaId &&
+      (row.metadataRevision ?? 0) <= summary.metadataRevision!
+        ? { ...row, ...summary }
+        : row,
+    );
+    if (isCurrent()) {
+      if ((meta?.metadataRevision ?? 0) <= summary.metadataRevision!)
+        meta = { ...meta, ...confirmed };
+      await loadSession().catch(error);
+      if (isCurrent() && ['archive', 'restore'].includes(operation.request.action))
+        archived = meta?.isArchived === true;
+    }
+    await loadSessions();
+  } catch (e) {
+    if (isCurrent()) {
+      actionError = e instanceof Error ? e.message : String(e);
+      // A rejected revision must be refreshed before a new manual decision.
+      if (e instanceof ApiError && e.rejected) {
+        await loadSession().catch(error);
+        await loadSessions();
+      }
+    }
+    throw e;
+  } finally {
+    actionSending = false;
+    renderSessions();
+    updateComposer();
+  }
+}
+function renderSessionActionState() {
+  const container = document.querySelector<HTMLElement>('#session-action-state');
+  if (!container) return;
+  const names = {
+    rename: '重命名',
+    archive: '归档',
+    restore: '恢复',
+    pin: '置顶',
+    unpin: '取消置顶',
+  };
+  const message = actionSending
+    ? '正在等待主机确认会话操作…'
+    : pendingAction
+      ? `${names[pendingAction.request.action]}结果待确认，请手动重试。`
+      : meta?.isArchived
+        ? '会话已归档。恢复后可继续，原草稿保留。'
+        : '';
+  container.hidden = !message;
+  const actionButton =
+    !actionSending && pendingAction
+      ? '<button type="button" data-retry-session-action>重试确认</button>'
+      : !actionSending && meta?.isArchived
+        ? '<button type="button" data-restore-session>恢复会话</button>'
+        : '';
+  renderInto('#session-action-state', `<span>${esc(message)}</span>${actionButton}`);
+  const retry = container.querySelector<HTMLButtonElement>('[data-retry-session-action]');
+  if (retry) {
+    retry.disabled = !authenticated || !connected || !selected?.online;
+    retry.onclick = () => run(() => submitSessionAction(pendingAction!));
+  }
+  const restore = container.querySelector<HTMLButtonElement>('[data-restore-session]');
+  if (restore) {
+    const row = sessionList.find((r) => r.id === sessionId && r.replicaId === replica?.id);
+    restore.disabled = !row || !canManageSession(row);
+    restore.onclick = () => row && run(() => manageSession(row, 'restore'));
+  }
+}
 function renderNavigation() {
   showNavigation({
     catalog,
@@ -684,7 +870,19 @@ function renderNavigation() {
     projectLabels: Object.fromEntries(
       activeWorkspace?.projects.map((p) => [p.id, projectLabel(activeWorkspace!, p.id)]) ?? [],
     ),
-    list: filterCatalogSessions(sessionList, activeWorkspace, search, projectFilter),
+    list: filterCatalogSessions(sessionList, activeWorkspace, search, projectFilter, archived),
+    archived,
+    onArchived: (value) => {
+      archived = value;
+      renderNavigation();
+    },
+    listLoading,
+    listError,
+    actionPending: actionSending,
+    actionError,
+    actionSession: sessionList.find((row) => row.id === sessionId && row.replicaId === replica?.id),
+    canManage: canManageSession,
+    onAction: (row, action, title) => run(() => manageSession(row, action, title)),
     projectFilter,
     search,
     selectedSession: sessionId,
@@ -728,7 +926,12 @@ async function loadSessions(refresh = true) {
   if (!activeWorkspace) return;
   const space = activeWorkspace,
     generation = sessionGeneration,
-    requestedOwner = owner;
+    requestedOwner = owner,
+    requestGeneration = ++listGeneration;
+  listLoading = true;
+  listError = '';
+  renderNavigation();
+  let unavailable = 0;
   // Bound concurrency; every host returns its own index, which stays in browser cache.
   const rows: SessionSummary[][] = [];
   for (let i = 0; i < space.hosts.length; i += 4) {
@@ -744,15 +947,23 @@ async function loadSessions(refresh = true) {
             list = await api(`/api/workspaces/${space.id}/hosts/${host.id}/sessions`);
             await cache.write(listKey, list);
           } catch {
-            list = (await cache.read<SessionSummary[]>(listKey)) ?? [];
+            unavailable++;
+            list = (await cache.read<SessionSummary[]>(listKey).catch(() => undefined)) ?? [];
           }
           return catalogSessionList(list, space, host.id);
         }),
       )),
     );
   }
-  if (activeWorkspace !== space || generation !== sessionGeneration || owner !== requestedOwner)
+  if (
+    activeWorkspace !== space ||
+    generation !== sessionGeneration ||
+    owner !== requestedOwner ||
+    requestGeneration !== listGeneration
+  )
     return;
+  listLoading = false;
+  listError = unavailable ? '部分电脑不可达，显示本机已缓存的会话。' : '';
   sessionList = rows.flat();
   renderSessions();
 }
@@ -761,7 +972,7 @@ function renderSessions() {
   renderTarget();
 }
 
-async function openSession(id: string, replicaId?: string) {
+async function openSession(id: string, replicaId?: string, keepNavigation = false) {
   const row = sessionList.find(
     (s) =>
       s.id === id &&
@@ -793,14 +1004,27 @@ async function openSession(id: string, replicaId?: string) {
   newProjectId = newAgentId = '';
   newSessionControlsReady = false;
   renderNewSessionControls();
-  closeNavigation();
+  if (!keepNavigation) closeNavigation();
   void persistSelection().catch(error);
   doc = new LoroDoc();
   flock = new Flock();
   meta = null;
+  pendingAction = undefined;
+  actionError = '';
   const restored = await cache.read<Mutation>(key('pending'));
   if (generation !== sessionGeneration) return;
   pending = restored;
+  const scope = currentActionScope();
+  if (scope) {
+    const saved = await cache.read<PendingSessionAction>(sessionActionKey(scope));
+    if (generation !== sessionGeneration) return;
+    if (saved) {
+      const parsed = pendingSessionActionSchema.parse(saved);
+      if (sessionActionKey(actionScope(parsed)) !== sessionActionKey(scope))
+        throw new Error('待确认操作的会话范围不匹配，请重新打开原会话。');
+      pendingAction = parsed;
+    }
+  }
   renderSessions();
   renderTarget();
   $<HTMLFormElement>('#composer').hidden = false;
@@ -849,6 +1073,7 @@ async function openSession(id: string, replicaId?: string) {
       doc.import(decode(saved.snapshot));
       flock.importJson(saved.metaBundle);
       meta = saved.meta;
+      if (meta?.isArchived && !keepNavigation) archived = true;
       renderHistory();
     } else
       $('#history').textContent =
@@ -866,17 +1091,27 @@ async function openSession(id: string, replicaId?: string) {
     $('#history').innerHTML =
       '<div class="welcome compact"><h1>今天，我们从哪里开始？</h1><p>选择项目和 Agent，让想法继续向前。</p></div>';
   if (generation !== sessionGeneration) return;
+  if (id && meta?.isArchived) {
+    archived = true;
+    renderNavigation();
+  }
   await restoreRunOptions();
   updateComposer();
 }
 async function loadSession() {
   const generation = sessionGeneration,
-    id = sessionId;
+    id = sessionId,
+    readGeneration = ++sessionReadGeneration;
   if (!id || !authenticated || !selected?.online) return;
   const data = await api(
     prefix() + '/sessions/' + id + query() + '&version=' + encodeURIComponent(vv(doc)),
   );
-  if (generation !== sessionGeneration) return;
+  if (
+    generation !== sessionGeneration ||
+    readGeneration !== sessionReadGeneration ||
+    (data.meta?.metadataRevision ?? 0) < (meta?.metadataRevision ?? 0)
+  )
+    return;
   if (data.update) doc.import(decode(data.update));
   flock.importJson(data.metaBundle);
   meta = data.meta;
@@ -1061,6 +1296,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderSessionActionState();
   const invalidRunOptions = renderRunOptions();
   renderNewSessionControls();
   document
@@ -1072,6 +1308,9 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    actionSending ||
+    !!pendingAction ||
+    (!!meta?.isArchived && !pending) ||
     !connected ||
     !selected?.online ||
     !replica?.available ||
@@ -1142,10 +1381,12 @@ async function submit(m: Mutation) {
   }
 }
 async function sendTurn() {
+  if (actionSending || pendingAction) throw new Error('请先确认会话管理操作。');
   if (pending) {
     await submit(pending);
     return;
   }
+  if (meta?.isArchived) throw new Error('请先恢复会话，再发送新的指令。');
   if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
   const prompt = $<HTMLTextAreaElement>('#prompt').value.trim();
   if (!prompt) return;

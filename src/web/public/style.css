@@ -354,6 +354,27 @@ textarea::placeholder {
   width: 12px;
   height: 12px;
 }
+.session-filters {
+  display: flex;
+  gap: 4px;
+  margin: 12px 4px 0;
+}
+.session-filters button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 7px 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-filters button[aria-pressed='true'] {
+  background: var(--selected);
+  color: var(--ink);
+}
+.session-filters svg {
+  width: 13px;
+  height: 13px;
+}
 #sessions {
   min-height: 0;
   flex: 1;
@@ -361,6 +382,115 @@ textarea::placeholder {
   margin-top: 12px;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+.session-row .session {
+  min-width: 0;
+  padding-right: 38px;
+}
+.session-actions {
+  position: absolute;
+  right: 4px;
+  width: 30px;
+  height: 30px;
+  color: var(--muted);
+}
+.session-title-line {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+}
+.session-title-line > svg {
+  width: 11px;
+  height: 11px;
+  color: var(--muted);
+}
+.load-more {
+  width: calc(100% - 12px);
+  margin: 12px 6px;
+  background: transparent;
+  padding: 9px;
+  font-size: 12px;
+}
+.load-more span {
+  margin-left: auto;
+  color: var(--muted);
+}
+.list-error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.session-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: #0006;
+}
+.session-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 91;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-raised);
+  box-shadow: 0 12px 40px var(--shadow);
+}
+.session-dialog h2 {
+  font-size: 18px;
+  margin: 0;
+}
+.session-dialog p {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 10px 0 18px;
+}
+.session-dialog .list-error {
+  color: var(--danger);
+}
+.session-dialog label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.session-dialog input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.session-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+}
+#session-action-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: min(100% - 40px, var(--reading-width));
+  margin: 0 auto 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+#session-action-state button {
+  font-size: 12px;
 }
 .section-label {
   display: flex;
@@ -1780,11 +1910,15 @@ dialog pre {
   .icon-button {
     width: 44px;
   }
+  .session-row .session {
+    padding-right: 52px;
+  }
   .send-button {
     width: 40px;
     height: 40px;
   }
-  .navigation-search input {
+  .navigation-search input,
+  .session-dialog input {
     font-size: 16px;
   }
   select {

@@ -27,6 +27,7 @@ export const runtimeWorkspaceSchema = z.object({
   machineId: id,
   projects: z.array(localProjectSchema).max(500),
   agents: z.array(agentSchema).max(100),
+  features: z.array(id).max(20).optional(),
 });
 export type RuntimeWorkspace = z.infer<typeof runtimeWorkspaceSchema>;
 export const helloSchema = z.object({
@@ -46,6 +47,27 @@ export const mutationSchema = z.object({
   metaBundle: z.unknown().optional(),
 });
 export type Mutation = z.infer<typeof mutationSchema>;
+const sessionActionBase = z.object({
+  operationId: id,
+  workspaceId: id,
+  sessionId: id,
+  localProjectId: id,
+  expectedRevision: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER - 1),
+});
+export const sessionActionSchema = z.discriminatedUnion('action', [
+  sessionActionBase
+    .extend({ action: z.literal('rename'), title: z.string().trim().min(1).max(200) })
+    .strict(),
+  sessionActionBase.extend({ action: z.literal('archive') }).strict(),
+  sessionActionBase.extend({ action: z.literal('restore') }).strict(),
+  sessionActionBase.extend({ action: z.literal('pin') }).strict(),
+  sessionActionBase.extend({ action: z.literal('unpin') }).strict(),
+]);
+export type SessionAction = z.infer<typeof sessionActionSchema>;
 export class AppError extends Error {
   constructor(
     public status: number,

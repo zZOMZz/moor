@@ -1,7 +1,7 @@
 import { syntheticCapabilities } from './support/agent-capabilities';
 import test from 'node:test';
 import strict from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HostWorkspace } from '../src/bridge/host-workspace';
@@ -9,7 +9,12 @@ import { RuntimeStore } from '../src/runtime/store';
 import type { AgentDriver } from '../src/runtime/agent';
 import { Store } from '../src/relay/accounts';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../src/model';
-import type { Mutation, RuntimeWorkspace } from '../src/protocol';
+import {
+  sessionActionSchema,
+  type Mutation,
+  type RuntimeWorkspace,
+  type SessionAction,
+} from '../src/protocol';
 const ws: RuntimeWorkspace = {
   id: 'lw_synthetic',
   name: '验证工作区',
@@ -374,4 +379,267 @@ test('unsupported models, efforts, permission modes and launch settings fail bef
     strict.equal(f.journal.has(m.operationId), false);
   }
   strict.equal(f.dispatches(), 0);
+});
+
+function sessionAction(
+  f: ReturnType<typeof fixture>,
+  action: SessionAction['action'],
+  title = '新的合成标题',
+): SessionAction {
+  return sessionActionSchema.parse({
+    operationId: crypto.randomUUID(),
+    workspaceId: ws.id,
+    sessionId: 'session-a',
+    localProjectId: 'project-a',
+    expectedRevision: metas(f.meta)['session-session-a']?.metadataRevision ?? 0,
+    action,
+    ...(action === 'rename' ? { title } : {}),
+  });
+}
+
+test('session action schema permits only explicit scoped metadata operations', () => {
+  const valid = {
+    operationId: 'action',
+    workspaceId: ws.id,
+    sessionId: 'session-a',
+    localProjectId: 'project-a',
+    expectedRevision: 0,
+    action: 'rename',
+    title: '  标题  ',
+  };
+  strict.equal(sessionActionSchema.parse(valid).action, 'rename');
+  strict.equal((sessionActionSchema.parse(valid) as { title: string }).title, '标题');
+  for (const changes of [
+    { title: '   ' },
+    { title: 'x'.repeat(201) },
+    { title: undefined },
+    { localProjectId: undefined },
+    { expectedRevision: -1 },
+    { expectedRevision: 0.5 },
+    { expectedRevision: Number.MAX_SAFE_INTEGER },
+    { action: 'delete' },
+    { action: 'archive', title: 'not allowed' },
+    { command: 'injected' },
+    { update: 'injected' },
+  ])
+    strict.equal(sessionActionSchema.safeParse({ ...valid, ...changes }).success, false);
+});
+
+test('session actions preserve transcript, files, native context and lifecycle without an Agent prompt', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  strict.deepEqual(f.host.workspace.features, ['session-actions']);
+  await f.host.mutate(request(f));
+  await f.started;
+  const before = metas(f.meta)['session-session-a'];
+  const active = f.host.active.get('session-a');
+  await f.host.sessionAction(sessionAction(f, 'rename', '  用户命名  '), 'project-a');
+  await f.host.sessionAction(sessionAction(f, 'pin'), 'project-a');
+  strict.equal(f.host.active.get('session-a'), active);
+  strict.equal(metas(f.meta)['session-session-a'].title, '用户命名');
+  strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 2);
+  strict.deepEqual(metas(f.meta)['session-session-a'].status, before.status);
+  strict.equal(metas(f.meta)['session-session-a'].lastMessageAt, before.lastMessageAt);
+  strict.equal(metas(f.meta)['session-session-a'].latestUserMsgId, before.latestUserMsgId);
+  await f.finish();
+  const withFiles = f.store.doc('session-a'),
+    files = mirror(withFiles, 'session-a');
+  files.setState((state) => {
+    state.history.at(-1)!.fileDiff = {
+      files: [{ path: 'synthetic.txt', additions: 1, deletions: 0 }],
+    };
+    state.history.at(-1)!.items!.push({
+      type: 'tool_call',
+      toolCallId: 'synthetic-file',
+      kind: 'edit',
+      content: [{ type: 'diff', path: 'synthetic.txt', oldText: '', newText: 'synthetic' }],
+    });
+  });
+  files.dispose();
+  f.store.transaction(() => f.store.persist('session-a', withFiles));
+  const snapshot = f.store.journal.db
+    .prepare('SELECT snapshot FROM session WHERE id=?')
+    .get('session-a')!.snapshot;
+  for (const action of ['archive', 'unpin', 'restore'] as const) {
+    const result = await f.host.sessionAction(sessionAction(f, action), 'project-a');
+    strict.equal(result.accepted, true);
+    strict.equal(result.delivered, true);
+  }
+  strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 5);
+  strict.equal(metas(f.meta)['session-session-a'].isArchived, false);
+  strict.equal(metas(f.meta)['session-session-a'].isPinned, false);
+  strict.deepEqual(
+    f.store.journal.db.prepare('SELECT snapshot FROM session WHERE id=?').get('session-a')!
+      .snapshot,
+    snapshot,
+  );
+  strict.equal(f.store.nativeSession('session-a'), 'synthetic-native');
+  strict.equal(f.dispatches(), 1);
+  await f.host.mutate(request(f));
+  strict.equal(metas(f.meta)['session-session-a'].title, '用户命名');
+  strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 5);
+  await f.finish();
+});
+
+test('session action receipts survive restart and reject reused operation IDs with a different payload', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'moor-session-actions-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'host.sqlite'),
+    f = fixture(file);
+  await f.host.mutate(request(f));
+  await f.finish();
+  const rename = sessionAction(f, 'rename');
+  const first = await f.host.sessionAction(rename, 'project-a');
+  await f.host.sessionAction(sessionAction(f, 'pin'), 'project-a');
+  strict.deepEqual(await f.host.sessionAction(rename), first, 'retry returns the original receipt');
+  await strict.rejects(
+    f.host.sessionAction({ ...rename, title: '不同内容' } as SessionAction),
+    /重复编号/,
+  );
+  f.close();
+  const restoredDir = join(dir, 'restored');
+  mkdirSync(restoredDir);
+  const restoredFile = join(restoredDir, 'host.sqlite');
+  copyFileSync(file, restoredFile);
+  const restored = new RuntimeStore(restoredFile);
+  strict.equal(restored.workspace.id, ws.id);
+  strict.equal(restored.workspace.machineId, ws.machineId);
+  strict.equal(restored.workspace.userId, ws.userId);
+  restored.close();
+  const next = fixture(restoredFile);
+  t.after(next.close);
+  strict.deepEqual(await next.host.sessionAction(rename), first);
+  strict.equal(metas(next.meta)['session-session-a'].metadataRevision, 2);
+  strict.equal(metas(next.meta)['session-session-a'].isPinned, true);
+  strict.equal(next.dispatches(), 0);
+  strict.equal(next.store.nativeSession('session-a'), 'synthetic-native');
+});
+
+test('session metadata and receipt roll back together when receipt storage fails', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.finish();
+  const action = sessionAction(f, 'rename'),
+    before = metas(f.meta),
+    persisted = f.store.load('meta');
+  f.journal.db.exec(
+    "CREATE TRIGGER fail_action BEFORE INSERT ON operation BEGIN SELECT RAISE(ABORT, 'synthetic receipt failure'); END",
+  );
+  await strict.rejects(f.host.sessionAction(action));
+  strict.equal(f.journal.has(action.operationId), false);
+  strict.deepEqual(metas(f.meta), before);
+  strict.deepEqual(f.store.load('meta'), persisted);
+  f.journal.db.exec('DROP TRIGGER fail_action');
+  strict.equal((await f.host.sessionAction(action)).meta.metadataRevision, 1);
+  strict.equal(f.dispatches(), 1);
+});
+
+test('session action scope is validated before receipt lookup and metadata writes', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.finish();
+  const action = sessionAction(f, 'rename');
+  for (const changes of [
+    { workspaceId: 'wrong-workspace' },
+    { localProjectId: 'unknown-project' },
+    { sessionId: 'unknown-session' },
+  ])
+    await strict.rejects(f.host.sessionAction({ ...action, ...changes }));
+  await strict.rejects(f.host.sessionAction(action, 'other-project'));
+  strict.equal(f.journal.has(action.operationId), false);
+  await f.host.sessionAction(action);
+  await strict.rejects(f.host.sessionAction(action, 'other-project'));
+  for (const field of ['machineId', 'userId']) {
+    const original = metas(f.meta)['session-session-a'][field];
+    putMeta(f.meta, 'session-session-a', { [field]: 'other-owner' });
+    await strict.rejects(f.host.sessionAction(action), /不属于这台电脑/);
+    putMeta(f.meta, 'session-session-a', { [field]: original });
+  }
+  f.host.workspace.projects = [];
+  await strict.rejects(f.host.sessionAction(action), /项目副本/);
+});
+
+test('concurrent metadata actions serialize, stale revisions conflict and duplicate delivery applies once', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.finish();
+  const rename = sessionAction(f, 'rename'),
+    pin = sessionAction(f, 'pin');
+  const results = await Promise.allSettled([
+    f.host.sessionAction(rename),
+    f.host.sessionAction(pin),
+  ]);
+  strict.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 1);
+  strict.equal(f.journal.has(pin.operationId), false);
+  const retry = sessionAction(f, 'pin');
+  const copies = await Promise.all([f.host.sessionAction(retry), f.host.sessionAction(retry)]);
+  strict.deepEqual(copies[0], copies[1]);
+  strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 2);
+  strict.equal(f.dispatches(), 1);
+});
+
+test('archive rejects active or pending turns and archived sessions cannot execute before restore', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  const archive = sessionAction(f, 'archive');
+  await strict.rejects(f.host.sessionAction(archive), /当前指令/);
+  strict.equal(f.journal.has(archive.operationId), false);
+  await f.finish();
+  const handled = metas(f.meta)['session-session-a'].lastHandledUserMsgId;
+  putMeta(f.meta, 'session-session-a', { latestUserMsgId: 'waiting' });
+  await strict.rejects(f.host.sessionAction(archive), /当前指令/);
+  putMeta(f.meta, 'session-session-a', { latestUserMsgId: handled });
+  const turn = request(f);
+  const results = await Promise.allSettled([f.host.sessionAction(archive), f.host.mutate(turn)]);
+  strict.equal(results[0].status, 'fulfilled');
+  strict.equal(results[1].status, 'rejected');
+  strict.equal(f.journal.has(turn.operationId), false);
+  strict.equal(f.dispatches(), 1);
+  await f.host.sessionAction(sessionAction(f, 'restore'));
+  await f.host.mutate(turn);
+  await f.finish();
+  strict.equal(f.dispatches(), 2);
+});
+
+test('legacy sessions receive metadata defaults on first action and browser CRDT edits cannot manage metadata', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.finish();
+  const {
+    metadataRevision: _revision,
+    isPinned: _pinned,
+    isArchived: _archived,
+    ...legacy
+  } = metas(f.meta)['session-session-a'];
+  f.store.meta = new Flock();
+  putMeta(f.meta, 'session-session-a', legacy);
+  f.store.save('meta', f.meta.exportFile());
+  const accepted = await f.host.sessionAction(sessionAction(f, 'rename'));
+  strict.equal(accepted.meta.metadataRevision, 1);
+  strict.equal(accepted.meta.isArchived, false);
+  strict.equal(accepted.meta.isPinned, false);
+  for (const fields of [
+    { title: 'CRDT injected' },
+    { isArchived: true },
+    { isPinned: true },
+    { metadataRevision: 9 },
+  ]) {
+    const mutation = request(f),
+      candidate = Flock.fromFile(f.meta.exportFile()),
+      version = candidate.version();
+    candidate.importJson(mutation.metaBundle as never);
+    putMeta(candidate, 'session-session-a', fields);
+    mutation.metaBundle = candidate.exportJson(version);
+    await strict.rejects(f.host.mutate(mutation));
+    strict.equal(f.journal.has(mutation.operationId), false);
+  }
+  strict.equal(metas(f.meta)['session-session-a'].metadataRevision, 1);
+  strict.equal(f.dispatches(), 1);
 });

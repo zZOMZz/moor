@@ -1,5 +1,5 @@
 import { Login, type LoginProps } from './login';
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { Dialog } from '@base-ui/react/dialog';
@@ -8,6 +8,8 @@ import { Select } from '@base-ui/react/select';
 import { Popover } from '@base-ui/react/popover';
 import {
   ArrowUp,
+  Archive,
+  ArchiveRestore,
   Bot,
   ChevronDown,
   Check,
@@ -17,6 +19,8 @@ import {
   Monitor,
   MoreHorizontal,
   PanelLeft,
+  Pin,
+  PinOff,
   Plus,
   Search,
   Settings2,
@@ -146,6 +150,7 @@ export function Shell({
               <p>选择一个项目，继续你的工作。</p>
             </div>
           </div>
+          <div id="session-action-state" role="status" hidden />
           <form
             id="composer"
             hidden
@@ -366,6 +371,7 @@ export function NewSessionControls(p: NewSessionControlsProps) {
   );
 }
 
+export type SessionActionKind = 'rename' | 'archive' | 'restore' | 'pin' | 'unpin';
 type NavigationProps = {
   catalog: Workspace[];
   space?: Workspace;
@@ -380,6 +386,15 @@ type NavigationProps = {
   connected: boolean;
   localOnly: boolean;
   canCreate: boolean;
+  archived?: boolean;
+  onArchived?: (value: boolean) => void;
+  onAction?: (session: SessionSummary, action: SessionActionKind, title?: string) => void;
+  canManage?: (session: SessionSummary) => boolean;
+  actionPending?: boolean;
+  actionError?: string;
+  actionSession?: SessionSummary;
+  listLoading?: boolean;
+  listError?: string;
   onWorkspace: (id: string) => void;
   onHost: (id: string) => void;
   onSearch: (value: string) => void;
@@ -390,7 +405,34 @@ type NavigationProps = {
   onPair: () => void;
   onLogout: () => void;
 };
+const sessionKey = (session: SessionSummary) =>
+  JSON.stringify([session.replicaId ?? '', session.id]);
+const actionTriggerId = (session: SessionSummary) =>
+  `session-actions-${encodeURIComponent(sessionKey(session))}`;
 export function Navigation(p: NavigationProps) {
+  const [visibleCount, setVisibleCount] = useState(100);
+  const [rename, setRename] = useState<{
+    session: SessionSummary;
+    draft: string;
+    attempted?: boolean;
+    submitted?: string;
+  }>();
+  const renameTrigger = useRef('');
+  const renameSession =
+    rename &&
+    ((p.actionSession && sessionKey(p.actionSession) === sessionKey(rename.session)
+      ? p.actionSession
+      : undefined) ??
+      p.list.find((s) => sessionKey(s) === sessionKey(rename.session)) ??
+      rename.session);
+  useEffect(() => {
+    setVisibleCount(100);
+  }, [p.space?.id, p.search, p.projectFilter, p.archived]);
+  useEffect(() => {
+    if (rename?.submitted && renameSession?.title === rename.submitted) {
+      setRename(undefined);
+    }
+  }, [renameSession, rename]);
   const [appearance, setAppearance] = useState(() => {
     try {
       return localStorage.getItem('moor-appearance') || 'system';
@@ -406,11 +448,22 @@ export function Navigation(p: NavigationProps) {
       /* Appearance is optional in restricted storage. */
     }
   }, [appearance]);
-  const groups = new Map<string, SessionSummary[]>();
+  const groups = new Map<string, { sessions: SessionSummary[]; total: number }>();
+  const displayed = p.list.slice(0, visibleCount);
+  const selected = p.list.find(
+    (s) => s.id === p.selectedSession && s.replicaId === p.selectedReplica,
+  );
+  if (selected && !displayed.includes(selected)) displayed.push(selected);
+  const visible = new Set(displayed);
   for (const s of p.list) {
     const id = s.projectId ?? '';
-    groups.set(id, [...(groups.get(id) ?? []), s]);
+    let group = groups.get(id);
+    if (!group) groups.set(id, (group = { sessions: [], total: 0 }));
+    group.total++;
+    if (visible.has(s)) group.sessions.push(s);
   }
+  const canManage = (session: SessionSummary) =>
+    Boolean(p.onAction) && !p.actionPending && (p.canManage?.(session) ?? true);
   return (
     <>
       <div className="workspace-picker">
@@ -475,47 +528,216 @@ export function Navigation(p: NavigationProps) {
           <X />
         </button>
       )}
-      <nav id="sessions" aria-label="会话列表">
-        {[...groups].map(([id, sessions]) => (
-          <section className="session-group" key={id}>
-            <div className="section-label">
-              <Folder />
-              {p.projectLabels[id] || '项目'}
-              <span>{sessions.length}</span>
-            </div>
-            {sessions.map((s) => (
-              <button
-                key={`${s.replicaId}/${s.id}`}
-                className={`session ${s.id === p.selectedSession && s.replicaId === p.selectedReplica ? 'selected' : ''}`}
-                aria-current={
-                  s.id === p.selectedSession && s.replicaId === p.selectedReplica
-                    ? 'page'
-                    : undefined
-                }
-                onClick={() => p.onSession(s.id, s.replicaId)}
-              >
-                <span className="session-title truncate">{s.title || '新会话'}</span>
-                <small>
-                  {s.deviceName || '执行电脑'}
-                  <span>
-                    {s.lastMessageAt && s.lastMessageAt > 86400000
-                      ? new Date(s.lastMessageAt).toLocaleDateString([], {
-                          month: 'numeric',
-                          day: 'numeric',
-                        })
-                      : ''}
-                  </span>
-                </small>
-              </button>
-            ))}
-          </section>
-        ))}
-        {!p.list.length && (
-          <p className="empty">
-            {p.search || p.projectFilter ? '没有匹配的会话' : '从一段新会话开始。'}
+      <div className="session-filters" role="group" aria-label="会话状态">
+        <button aria-pressed={!p.archived} onClick={() => p.onArchived?.(false)}>
+          活跃会话
+        </button>
+        <button aria-pressed={Boolean(p.archived)} onClick={() => p.onArchived?.(true)}>
+          <Archive />
+          已归档
+        </button>
+      </div>
+      <nav
+        id="sessions"
+        aria-label={p.archived ? '已归档会话列表' : '活跃会话列表'}
+        aria-busy={Boolean(p.listLoading)}
+      >
+        {p.listLoading && (
+          <p className="empty" role="status">
+            正在刷新会话…
           </p>
         )}
+        {p.listError && (
+          <p className="empty list-error" role="alert">
+            {p.listError}
+          </p>
+        )}
+        {[...groups]
+          .filter(([, group]) => group.sessions.length)
+          .map(([id, group]) => (
+            <section className="session-group" key={id}>
+              <div className="section-label">
+                <Folder />
+                {p.projectLabels[id] || '项目'}
+                <span>{group.total}</span>
+              </div>
+              {group.sessions.map((s) => (
+                <div className="session-row" key={sessionKey(s)}>
+                  <button
+                    className={`session ${s.id === p.selectedSession && s.replicaId === p.selectedReplica ? 'selected' : ''}`}
+                    aria-current={
+                      s.id === p.selectedSession && s.replicaId === p.selectedReplica
+                        ? 'page'
+                        : undefined
+                    }
+                    onClick={() => p.onSession(s.id, s.replicaId)}
+                  >
+                    <span className="session-title-line">
+                      {s.isPinned && <Pin aria-label="已置顶" />}
+                      <span className="session-title truncate">{s.title || '新会话'}</span>
+                    </span>
+                    <small>
+                      {s.deviceName || '执行电脑'}
+                      <span>
+                        {s.lastMessageAt && s.lastMessageAt > 86400000
+                          ? new Date(s.lastMessageAt).toLocaleDateString([], {
+                              month: 'numeric',
+                              day: 'numeric',
+                            })
+                          : ''}
+                      </span>
+                    </small>
+                  </button>
+                  <Menu.Root>
+                    <Menu.Trigger
+                      id={actionTriggerId(s)}
+                      className="icon-button session-actions"
+                      aria-label={`管理会话：${s.title || '新会话'}`}
+                      disabled={!canManage(s)}
+                    >
+                      <MoreHorizontal />
+                    </Menu.Trigger>
+                    <Menu.Portal>
+                      <Menu.Positioner className="popup-positioner" sideOffset={4} align="end">
+                        <Menu.Popup className="menu-popup">
+                          <Menu.Item
+                            className="menu-item"
+                            disabled={!canManage(s)}
+                            onClick={() => {
+                              renameTrigger.current = actionTriggerId(s);
+                              setRename({ session: { ...s }, draft: s.title || '' });
+                            }}
+                          >
+                            <SquarePen />
+                            重命名
+                          </Menu.Item>
+                          <Menu.Item
+                            className="menu-item"
+                            disabled={!canManage(s)}
+                            onClick={() => p.onAction?.(s, s.isPinned ? 'unpin' : 'pin')}
+                          >
+                            {s.isPinned ? <PinOff /> : <Pin />}
+                            {s.isPinned ? '取消置顶' : '置顶'}
+                          </Menu.Item>
+                          <Menu.Separator className="menu-separator" />
+                          <Menu.Item
+                            className="menu-item"
+                            disabled={
+                              !canManage(s) || (!s.isArchived && s.status?.type === 'working')
+                            }
+                            onClick={() => p.onAction?.(s, s.isArchived ? 'restore' : 'archive')}
+                          >
+                            {s.isArchived ? <ArchiveRestore /> : <Archive />}
+                            {s.isArchived
+                              ? '恢复会话'
+                              : s.status?.type === 'working'
+                                ? '运行中，暂不可归档'
+                                : '归档'}
+                          </Menu.Item>
+                        </Menu.Popup>
+                      </Menu.Positioner>
+                    </Menu.Portal>
+                  </Menu.Root>
+                </div>
+              ))}
+            </section>
+          ))}
+        {!p.list.length && !p.listLoading && !p.listError && (
+          <p className="empty">
+            {p.search || p.projectFilter
+              ? '没有匹配的会话'
+              : p.archived
+                ? '还没有归档的会话。'
+                : '从一段新会话开始。'}
+          </p>
+        )}
+        {displayed.length < p.list.length && (
+          <button className="load-more" onClick={() => setVisibleCount((count) => count + 100)}>
+            加载更多
+            <span>
+              {displayed.length} / {p.list.length}
+            </span>
+          </button>
+        )}
       </nav>
+      <Dialog.Root
+        open={Boolean(rename)}
+        onOpenChange={(open) => {
+          if (!open) setRename(undefined);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Backdrop className="session-dialog-backdrop" />
+          <Dialog.Popup
+            className="session-dialog"
+            finalFocus={() =>
+              document.getElementById('navigation')?.hasAttribute('data-open')
+                ? (document.getElementById(renameTrigger.current) ??
+                  document.getElementById('session-search'))
+                : document.getElementById('nav-toggle')
+            }
+          >
+            <Dialog.Title>重命名会话</Dialog.Title>
+            <Dialog.Description>为这段会话设置一个容易找到的标题。</Dialog.Description>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!rename || !renameSession || !canManage(renameSession) || !rename.draft.trim())
+                  return;
+                const title = rename.draft.trim();
+                if (title === renameSession.title) {
+                  setRename(undefined);
+                  return;
+                }
+                // Editing starts from the version the user opened. Only a known
+                // rejection followed by a manual save may use a newer revision.
+                const requestSession =
+                  rename.attempted && p.actionError && !p.actionPending
+                    ? renameSession
+                    : rename.session;
+                setRename({
+                  ...rename,
+                  session: requestSession,
+                  attempted: true,
+                  submitted: title,
+                });
+                p.onAction?.(requestSession, 'rename', title);
+              }}
+            >
+              <label htmlFor="session-title-draft">会话标题</label>
+              <input
+                id="session-title-draft"
+                value={rename?.draft ?? ''}
+                maxLength={200}
+                autoComplete="off"
+                disabled={p.actionPending}
+                onChange={(event) =>
+                  setRename(
+                    (current) =>
+                      current && { ...current, draft: event.target.value, submitted: undefined },
+                  )
+                }
+              />
+              {rename?.attempted && p.actionError && (
+                <p className="list-error" role="alert">
+                  {p.actionError}
+                </p>
+              )}
+              {p.actionPending && <p role="status">等待电脑确认…</p>}
+              <div className="session-dialog-actions">
+                <Dialog.Close type="button">取消</Dialog.Close>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={!rename?.draft.trim() || !renameSession || !canManage(renameSession)}
+                >
+                  保存标题
+                </button>
+              </div>
+            </form>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
       <div className="sidebar-bottom">
         <PopupMenu
           label="我的电脑"

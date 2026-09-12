@@ -18,6 +18,8 @@ export type SessionSummary = {
   project?: { kind?: string; localProjectId?: string };
   status?: { type?: string };
   isArchived?: boolean;
+  isPinned?: boolean;
+  metadataRevision?: number;
   replicaId?: string;
   projectId?: string;
   deviceName?: string;
@@ -52,20 +54,24 @@ export function filterCatalogSessions(
   workspace: Workspace | undefined,
   search: string,
   projectId: string,
+  archived = false,
 ) {
   const words = search.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const projectNames = new Map(workspace?.projects.map((project) => [project.id, project.name]));
   const time = (s: SessionSummary) => s.lastMessageAt ?? (Date.parse(s.createdAt ?? '') || 0);
   return list
     .filter((s) => {
-      if (s.isArchived || (projectId && s.projectId !== projectId)) return false;
-      const project = workspace?.projects.find((p) => p.id === s.projectId);
+      if (Boolean(s.isArchived) !== archived || (projectId && s.projectId !== projectId))
+        return false;
       const haystack =
-        `${s.title ?? ''} ${project?.name ?? ''} ${s.deviceName ?? ''}`.toLocaleLowerCase();
+        `${s.title ?? ''} ${projectNames.get(s.projectId ?? '') ?? ''} ${s.deviceName ?? ''}`.toLocaleLowerCase();
       return words.every((w) => haystack.includes(w));
     })
     .sort(
       (a, b) =>
-        time(b) - time(a) || `${a.replicaId}/${a.id}`.localeCompare(`${b.replicaId}/${b.id}`),
+        Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned)) ||
+        time(b) - time(a) ||
+        `${a.replicaId}/${a.id}`.localeCompare(`${b.replicaId}/${b.id}`),
     );
 }
 export function filterSessions(

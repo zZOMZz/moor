@@ -12,7 +12,9 @@ for (const file of tests)
     platform: 'node',
     format: 'esm',
     target: 'node24',
-    external: ['loro-crdt', 'ws', 'jsdom', 'react', 'react-dom', 'react-dom/client'],
+    // Keep React shared with act(), but initialize bundled React DOM only when
+    // each UI test imports its components after installing the synthetic DOM.
+    external: ['loro-crdt', 'ws', 'jsdom', 'react'],
     banner: {
       js: "import { createRequire } from 'node:module'; const require=createRequire(import.meta.url);",
     },

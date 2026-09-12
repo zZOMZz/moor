@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { WebSocket } from 'ws';
 import { syntheticRelay } from './support/synthetic-relay';
 import type { Workspace } from '../src/catalog';
+import { PROTOCOL } from '../src/protocol';
 
 test('workspace HTTP routes bind a same-id session to the chosen replica and reject stale ownership', async (t) => {
   const f = await syntheticRelay();
@@ -143,6 +144,126 @@ test('agent options are scoped to the selected workspace, host and project repli
         agentId: 'agent',
       })
     ).status,
+    404,
+  );
+});
+
+test('session actions bind account, runtime, replica and session and never reach another same-id session', async (t) => {
+  const f = await syntheticRelay();
+  t.after(f.close);
+  const [space]: Workspace[] = await (await f.api('/api/workspaces')).json();
+  const host = space.hosts[1],
+    replica = space.replicas.find(
+      (item) => item.hostId === host.id && item.localProjectId === 'local-moor',
+    )!;
+  const path = `/api/workspaces/${space.id}/replicas/${replica.id}/session-actions`;
+  const action = {
+    operationId: 'rename-one',
+    workspaceId: host.runtimeWorkspaceId,
+    sessionId: 'same-session-id',
+    localProjectId: replica.localProjectId,
+    expectedRevision: 0,
+    action: 'rename',
+    title: '  主机 B 的新标题  ',
+  };
+  const before = f.hosts.map((item) => item.messages.length);
+  for (const changes of [
+    { workspaceId: 'other-runtime' },
+    { localProjectId: 'local-other' },
+    { command: 'injected' },
+    { title: ' ' },
+    { expectedRevision: -1 },
+  ])
+    assert.equal((await f.api(path, { ...action, ...changes })).status, 400);
+  assert.deepEqual(
+    f.hosts.map((item) => item.messages.length),
+    before,
+  );
+  assert.equal(
+    (await fetch(f.origin + path, { method: 'POST', headers: { Origin: f.origin } })).status,
+    401,
+  );
+  const response = await f.api(path, action),
+    accepted = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(accepted.delivered, true);
+  assert.equal(accepted.meta.title, '主机 B 的新标题');
+  assert.equal(accepted.meta.metadataRevision, 1);
+  assert.equal(f.hosts[0].messages.length, before[0]);
+  const forwarded = f.hosts[1].messages.at(-1);
+  assert.equal(forwarded.method, 'session-action');
+  assert.equal(forwarded.localProjectId, 'local-moor');
+  assert.equal(forwarded.workspaceId, host.runtimeWorkspaceId);
+  assert.equal(f.hosts[1].operations.size, 0);
+  assert.deepEqual(await (await f.api(path, action)).json(), accepted);
+  assert.equal((await f.api(path, { ...action, title: 'changed payload' })).status, 409);
+  assert.equal((await f.api(path, { ...action, operationId: 'stale' })).status, 409);
+  const other = space.replicas.find(
+    (item) => item.hostId === host.id && item.localProjectId === 'local-other',
+  )!;
+  assert.equal(
+    (
+      await f.api(`/api/workspaces/${space.id}/replicas/${other.id}/session-actions`, {
+        ...action,
+        operationId: 'wrong-session',
+        localProjectId: 'local-other',
+      })
+    ).status,
+    404,
+  );
+  const devicePath = `/api/devices/${host.deviceId}/session-actions?workspace=${host.runtimeWorkspaceId}`;
+  assert.deepEqual(await (await f.api(devicePath, action)).json(), accepted);
+  assert.equal(
+    (await f.api(devicePath, { ...action, localProjectId: 'unregistered' })).status,
+    404,
+  );
+});
+
+test('session actions require advertised host support and an online, current workspace binding', async (t) => {
+  const f = await syntheticRelay();
+  t.after(f.close);
+  const [space]: Workspace[] = await (await f.api('/api/workspaces')).json();
+  const host = space.hosts[0],
+    fixture = f.hosts.find((item) => item.device.id === host.deviceId)!;
+  const replica = space.replicas.find(
+    (item) => item.hostId === host.id && item.localProjectId === 'local-moor',
+  )!;
+  const path = `/api/workspaces/${space.id}/replicas/${replica.id}/session-actions`;
+  const action = {
+    operationId: 'archive-one',
+    workspaceId: host.runtimeWorkspaceId,
+    sessionId: 'same-session-id',
+    localProjectId: replica.localProjectId,
+    expectedRevision: 0,
+    action: 'archive',
+  };
+  const { features: _features, ...legacy } = fixture.runtime;
+  let pong = once(fixture.socket, 'pong');
+  fixture.socket.send(
+    JSON.stringify({
+      type: 'hello',
+      protocol: PROTOCOL,
+      machineId: legacy.machineId,
+      workspaces: [legacy],
+    }),
+  );
+  fixture.socket.ping();
+  await pong;
+  const before = fixture.messages.filter((item) => item.method === 'session-action').length;
+  assert.equal((await f.api(path, action)).status, 409);
+  assert.equal(fixture.messages.filter((item) => item.method === 'session-action').length, before);
+  pong = once(fixture.socket, 'pong');
+  fixture.socket.send(JSON.stringify({ type: 'unavailable' }));
+  fixture.socket.ping();
+  await pong;
+  assert.equal((await f.api(path, action)).status, 409);
+  const target = await (await f.api('/api/workspaces', { name: 'Moved' })).json();
+  await f.api(`/api/workspaces/${space.id}/hosts/${host.id}/move`, { workspaceId: target.id });
+  assert.equal((await f.api(path, action)).status, 404);
+  await f.api(`/api/devices/${host.deviceId}/revoke`, {});
+  assert.equal(
+    (await f.api(`/api/workspaces/${target.id}/replicas/${replica.id}/session-actions`, action))
+      .status,
     404,
   );
 });

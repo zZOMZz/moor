@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filterSessions, resolveSelection, type Device } from '../src/web/navigation';
+import {
+  filterSessions,
+  filterCatalogSessions,
+  resolveSelection,
+  type Device,
+  type SessionSummary,
+} from '../src/web/navigation';
+import type { Workspace } from '../src/catalog';
 import { markdown, renderItem, renderFileChanges } from '../src/web/content';
 const workspace = {
   id: 'work-b',
@@ -72,6 +79,61 @@ test('search combines words and project names, filters by project and sorts by r
     ['old', 'recent', 'ui', 'archived'],
     'sorting must not mutate the shared cached catalogue',
   );
+});
+test('catalog filtering separates archives and orders pins with deterministic replica ties', () => {
+  const catalog = {
+    projects: [
+      { id: 'p1', name: 'Web API' },
+      { id: 'p2', name: 'Mobile' },
+    ],
+  } as Workspace;
+  const list: SessionSummary[] = [
+    { id: 'recent', title: 'Fix auth', projectId: 'p1', lastMessageAt: 50, deviceName: 'Mac' },
+    {
+      id: 'pinned-old',
+      title: 'Fix timeout',
+      projectId: 'p1',
+      lastMessageAt: 1,
+      isPinned: true,
+      deviceName: 'Mac',
+    },
+    {
+      id: 'pinned-new',
+      title: 'Fix auth',
+      projectId: 'p1',
+      lastMessageAt: 10,
+      isPinned: true,
+      deviceName: 'Mac',
+    },
+    {
+      id: 'archive',
+      title: 'Fix docs',
+      projectId: 'p1',
+      lastMessageAt: 100,
+      isArchived: true,
+      deviceName: 'Mac',
+    },
+    { id: 'other', title: 'Fix auth', projectId: 'p2', lastMessageAt: 200, isPinned: true },
+    { id: 'tie', replicaId: 'b', projectId: 'p1', lastMessageAt: 2 },
+    { id: 'tie', replicaId: 'a', projectId: 'p1', lastMessageAt: 2 },
+  ];
+  const before = structuredClone(list);
+  assert.deepEqual(
+    filterCatalogSessions(list, catalog, 'API fix mac', 'p1').map((s) => s.id),
+    ['pinned-new', 'pinned-old', 'recent'],
+  );
+  assert.deepEqual(
+    filterCatalogSessions(list, catalog, 'API fix', 'p1', true).map((s) => s.id),
+    ['archive'],
+  );
+  assert.deepEqual(
+    filterCatalogSessions(list, catalog, '', 'p1')
+      .filter((s) => s.id === 'tie')
+      .map((s) => s.replicaId),
+    ['a', 'b'],
+  );
+  assert.deepEqual(filterCatalogSessions(list, catalog, 'Mobile', '', true), []);
+  assert.deepEqual(list, before, 'filters and pinned sorting preserve the shared host cache');
 });
 test('Markdown makes code readable while HTML, scripts and unsafe links stay inert', () => {
   const html = markdown(

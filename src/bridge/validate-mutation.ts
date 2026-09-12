@@ -85,6 +85,7 @@ export function validateMutation(
         assert(isDeepStrictEqual(old[key], meta[key]), 400, '已有会话的执行目标不可改变');
   }
   if (m.kind === 'turn') {
+    assert(meta.isArchived !== true, 409, '请先恢复已归档会话，再发送指令');
     assert(
       !oldState.history.some((t) => t.role === 'assistant' && !t.finished),
       409,

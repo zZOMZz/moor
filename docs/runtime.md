@@ -61,8 +61,72 @@ flowchart TD
 
 Moor 桥接协议当前为 v3，会话格式为 v1；ACP 使用锁定 SDK 的协议版本，两者独立。升级中转和客户端时需保持桥接协议一致，旧协议连接会被拒绝。
 
+会话整理在主机报告对应能力后才开放。新主机为旧会话补用未置顶、元数据版本为零的默认值，不需要导入或重建历史；客户端提交时带预期元数据版本，主机在同一事务中保存新状态和操作凭据。重命名、置顶、归档与恢复的凭据也属于主机备份范围。新界面连接未报告能力的旧主机时不能使用这些整理操作。
+
 从旧 Lody 运行时升级时，需要重新配对电脑、登记项目。旧数据库、配对文件和浏览器数据保留原样，不自动导入历史或执行旧草稿。新版本不使用遗留的 `.runtime/` 源码检出；历史来源与版权署名保留在 [NOTICE](../NOTICE)。
 
 中转迁移只搬迁账号、设备和组织元数据。域名改变后，浏览器的 origin 也改变，旧草稿与缓存不会自动出现；操作步骤见[部署与迁移](../deploy/README.md)。
+
+## 主机停机备份与恢复
+
+主机的 `runtime-v1.sqlite` 同时保存主机身份、项目和 Agent 配置、会话正文与元数据、operation 去重记录，以及 Moor 会话到 Agent 原生会话 ID 的映射。完整复制数据库及仍存在的 WAL/SHM 文件，才能保留同一次备份中的这些关系。不要只导出会话正文，也不要在主机运行时分别复制几个表。
+
+备份前明确退出 Moor，或停止命令行启动的桥接进程，并确认该数据目录已没有写入者；关闭窗口不等于退出。不要为备份删除所有权锁，也不要终止无关进程。下列路径均为占位符，必须改为操作者已确认的 Moor 数据路径；命令只复制明确列出的 Moor 文件，不扫描 Agent 或其他应用的数据目录。
+
+### 备份
+
+桌面数据位置可能沿用旧版 Moor 的目录，不能仅根据应用名猜测。默认主机数据库与 `bridge-v3.json` 同目录；命令行使用了 `--runtime-data`、`MOOR_RUNTIME_DATA` 或 `--config` 时，应分别填写实际路径。备份目标必须是源码与发布目录之外的新目录。
+
+```sh
+umask 077
+moor_host_db='/absolute/path/to/moor-host-data/runtime-v1.sqlite'
+moor_bridge_config='/absolute/path/to/moor-host-data/bridge-v3.json'
+moor_settings_file='/absolute/path/to/moor-host-data/settings.json'
+moor_backup_dir='/absolute/path/to/private-backups/moor-host-backup-unique'
+test -f "$moor_host_db" || exit 1
+mkdir "$moor_backup_dir" || exit 1
+cp "$moor_host_db" "$moor_backup_dir/runtime-v1.sqlite" || exit 1
+for moor_suffix in -wal -shm; do
+  if test -f "$moor_host_db$moor_suffix"; then
+    cp "$moor_host_db$moor_suffix" "$moor_backup_dir/runtime-v1.sqlite$moor_suffix" || exit 1
+  fi
+done
+for moor_suffix in '' .catalog.sqlite .catalog.sqlite-wal .catalog.sqlite-shm .local-port; do
+  if test -f "$moor_bridge_config$moor_suffix"; then
+    cp "$moor_bridge_config$moor_suffix" "$moor_backup_dir/bridge-v3.json$moor_suffix" || exit 1
+  fi
+done
+if test -f "$moor_settings_file"; then
+  cp "$moor_settings_file" "$moor_backup_dir/settings.json" || exit 1
+fi
+```
+
+本机未配对或纯 CLI 使用时，部分配置文件可能不存在。保留配对配置、组织目录、桌面设置和本机端口记录，可保留原服务关系、项目设置及本机页面 origin；这些文件可能含设备凭据，只保存在私有备份中。主机所有权锁是运行时互斥设施，无需备份或复制到目标目录。
+
+项目文件与 Agent 自己持有的上下文/登录状态不在这份数据库备份中。项目文件应由操作者另行备份；Git 历史不包含未提交修改。Moor 保存原生会话 ID，并不保存 Agent 的原生会话内容。恢复到另一台机器时，仅凭 Moor 数据库不能保证原生上下文可继续，需由操作者通过 Agent 自己支持的方式处理其状态和登录；Moor 不读取其他应用数据库。
+
+### 恢复
+
+先停原主机，保留当前数据和所用程序版本，再恢复到一个尚不存在的新目录。以下示例接续上述备份变量，不覆盖现有数据，也不自动启动主机：
+
+```sh
+moor_restore_dir='/absolute/path/to/moor-restored-host-unique'
+test -f "$moor_backup_dir/runtime-v1.sqlite" || exit 1
+mkdir "$moor_restore_dir" || exit 1
+cp "$moor_backup_dir/runtime-v1.sqlite" "$moor_restore_dir/runtime-v1.sqlite" || exit 1
+for moor_name in runtime-v1.sqlite-wal runtime-v1.sqlite-shm bridge-v3.json bridge-v3.json.catalog.sqlite bridge-v3.json.catalog.sqlite-wal bridge-v3.json.catalog.sqlite-shm bridge-v3.json.local-port settings.json; do
+  if test -f "$moor_backup_dir/$moor_name"; then
+    cp "$moor_backup_dir/$moor_name" "$moor_restore_dir/$moor_name" || exit 1
+  fi
+done
+```
+
+先使用与备份兼容的 Moor 版本启动；当前数据格式是 v1。桌面通过 `MOOR_DESKTOP_DATA_DIR` 指定恢复目录，CLI 分别通过 `--runtime-data` 和 `--config` 指定恢复后的文件。恢复后的数据库保留原主机身份；源目录与恢复目录不能同时启动为两个相同身份的主机，目录锁只保护各自的数据库路径，无法阻止这种身份复制。
+
+恢复后先核对原主机/项目身份、标题、置顶与归档状态及历史可读性。首次加载会收束备份内未完成的回合，不自动执行。使用合成项目和合成 Agent 验证原 operationId 重试返回原凭据、不增加回合；只有明确手动发送新指令才尝试继续 Agent 原生会话。实际项目路径、Agent 可执行文件与原生上下文也必须仍可用；恢复失败时保留恢复目录排查，不用旧备份直接覆盖新产生的数据。
+
+手机和浏览器的草稿、待确认请求仍属于相应访问端，主机备份不会把它们迁到另一浏览器。浏览器缓存可能不完整或被清理，不能用作历史备份。升级时保留现有 IndexedDB，发送结果不明时先在原访问端核对并手动重试同一个请求。中转账号、设备撤销和组织映射另按[中转停机备份](../deploy/README.md#停机备份)保存。
+
+上述是操作者的恢复步骤，不表示已经完成真实数据恢复验收。合成恢复与真机验收分别按[设备验收](validation.md)记录结果。
 
 继续阅读：[开发与验证](development.md) · [文档目录](README.md)

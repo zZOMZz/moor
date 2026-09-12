@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { LoroDoc, delta, metas, mirror, putMeta } from '../model';
-import { assert, AppError, type Mutation } from '../protocol';
+import { Flock, LoroDoc, delta, metas, mirror, putMeta } from '../model';
+import { assert, sessionActionSchema, type Mutation, type SessionAction } from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { RuntimeStore } from '../runtime/store';
 import type { AgentConfig, AgentDriver, AgentSession, PermissionOutcome } from '../runtime/agent';
@@ -47,6 +47,7 @@ export class HostWorkspace {
     this.ensureConnected();
   }
   updateCatalogue() {
+    this.workspace.features = ['session-actions'];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
       .map((r) => r.value as any);
@@ -130,6 +131,70 @@ export class HostWorkspace {
       online: true,
     };
   }
+  async sessionAction(input: SessionAction, localProjectId?: string) {
+    const action = sessionActionSchema.parse(input);
+    return this.serial(action.sessionId, async () => {
+      this.ensureConnected();
+      assert(action.workspaceId === this.workspace.id, 400, '会话执行目标不匹配');
+      assert(
+        this.workspace.projects.some((project) => project.id === action.localProjectId),
+        404,
+        '项目副本已从主机移除',
+      );
+      assert(
+        !localProjectId || action.localProjectId === localProjectId,
+        400,
+        '执行项目与副本不匹配',
+      );
+      // Scope is checked before looking up a receipt, including an accepted retry.
+      this.checkProject(action.sessionId, action.localProjectId);
+      const journal = this.store.journal;
+      const receipt = journal.lookup(this.workspace.id, action);
+      if (receipt?.phase === 'accepted') return JSON.parse(receipt.result);
+      const name = 'session-' + action.sessionId,
+        current = metas(this.meta)[name],
+        revision = current.metadataRevision ?? 0;
+      assert(revision === action.expectedRevision, 409, '会话信息已更新，请刷新后重试');
+      if (action.action === 'archive') {
+        const view = mirror(this.store.doc(action.sessionId), action.sessionId);
+        const pending = view
+          .getState()
+          .history.some(
+            (turn) =>
+              (turn.role === 'assistant' && !turn.finished) ||
+              (turn.role === 'user' && !turn.read && turn.status === 'pending'),
+          );
+        view.dispose();
+        assert(
+          !this.active.has(action.sessionId) &&
+            (current.status as any)?.type !== 'working' &&
+            (!current.latestUserMsgId ||
+              current.latestUserMsgId === current.lastHandledUserMsgId) &&
+            !pending,
+          409,
+          '请等待当前指令完成或停止后再归档',
+        );
+      }
+      const next = Flock.fromFile(this.meta.exportFile());
+      putMeta(next, name, {
+        isArchived: current.isArchived === true,
+        isPinned: current.isPinned === true,
+        metadataRevision: action.expectedRevision + 1,
+        ...(action.action === 'rename' ? { title: action.title, titleSource: 'user' } : {}),
+        ...(['archive', 'restore'].includes(action.action)
+          ? { isArchived: action.action === 'archive' }
+          : {}),
+        ...(['pin', 'unpin'].includes(action.action) ? { isPinned: action.action === 'pin' } : {}),
+      });
+      const result = this.store.transaction(() => {
+        this.store.save('meta', next.exportFile());
+        return journal.acceptSessionAction(this.workspace.id, action, metas(next)[name]);
+      });
+      this.store.meta = next;
+      this.changed(action.sessionId);
+      return result;
+    });
+  }
   async mutate(m: Mutation, localProjectId?: string) {
     return this.serial(m.sessionId, async () => {
       this.ensureConnected();
@@ -147,6 +212,12 @@ export class HostWorkspace {
       const original = active?.doc ?? this.store.doc(m.sessionId);
       const validated = validateMutation(original, this.meta, this.workspace, m);
       const meta = metas(validated.flock)['session-' + m.sessionId];
+      if (!metas(this.meta)['session-' + m.sessionId])
+        putMeta(validated.flock, 'session-' + m.sessionId, {
+          metadataRevision: 0,
+          isPinned: false,
+          isArchived: false,
+        });
       if (localProjectId)
         assert(
           (meta.project as any)?.localProjectId === localProjectId,
