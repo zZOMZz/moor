@@ -3311,6 +3311,58 @@ dialog pre {
   }
 }
 
+.mcp-panel {
+  width: min(620px, calc(100vw - 32px));
+  overflow-wrap: anywhere;
+}
+.mcp-panel ul {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+}
+.mcp-panel li {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.mcp-panel li label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 550;
+}
+.mcp-panel input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 16px;
+  min-height: 0;
+  margin: 0;
+}
+.mcp-panel li p {
+  margin: 10px 0 0;
+}
+.mcp-panel code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.mcp-panel .session-dialog-actions {
+  flex-wrap: wrap;
+}
+.mcp-panel .session-dialog-actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .mcp-panel .session-dialog-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mcp-panel .session-dialog-actions button {
+    width: 100%;
+  }
+}
 .tasks-panel {
   width: min(900px, calc(100vw - 24px));
   max-height: calc(100dvh - 24px);
