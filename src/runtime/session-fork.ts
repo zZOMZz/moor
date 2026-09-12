@@ -245,9 +245,17 @@ export class SessionForkManager {
       view = mirror(doc, scope.sessionId);
     const history = structuredClone(view.getState().history);
     view.dispose();
-    const nativeId = store.nativeSession(scope.sessionId, execution),
-      agent = store.machine.get(['agentConfig', String(meta.agentConfigId)]) as AgentConfig;
-    assert(agent && agent.id === meta.agentConfigId, 409, '来源 Agent 配置不可用');
+    const agent = store.agents.binding(scope);
+    assert(
+      agent &&
+        agent.id === meta.agentConfigId &&
+        agent.machineId === scope.machineId &&
+        agent.cliType === meta.cliType &&
+        agent.agentType === meta.agentType,
+      409,
+      '来源会话没有可验证的固定 Agent 配置',
+    );
+    const nativeId = store.nativeSession(scope.sessionId, execution);
     const sourceVersion = hash(
       JSON.stringify([
         scopeKey(scope),
@@ -444,6 +452,7 @@ export class SessionForkManager {
   }
   private current(record: ForkRecord) {
     this.host.ensureConnected();
+    this.assertAgentBinding(record);
     const source = this.source(record.scope);
     assert(
       this.idle(record.scope.sessionId) &&
@@ -484,15 +493,14 @@ export class SessionForkManager {
       409,
       'Fork 子会话工作目录已变化',
     );
-    assert(
-      isDeepStrictEqual(
-        this.host.store.machine.get(['agentConfig', record.agent.id]),
-        record.agent,
-      ),
-      409,
-      'Fork Agent 配置已变化',
-    );
+    this.assertAgentBinding(record);
     return current;
+  }
+  private assertAgentBinding(record: ForkRecord) {
+    const agents = this.host.store.agents;
+    agents.assertCurrent(record.scope, record.agent);
+    const child = agents.binding(this.childScope(record));
+    assert(!child || isDeepStrictEqual(child, record.agent), 409, 'Fork 子会话的 Agent 配置不匹配');
   }
   private nativeResult(record: ForkRecord, nativeId: string) {
     assert(
@@ -634,6 +642,7 @@ export class SessionForkManager {
         }
         this.host.executionManager.busy.add(request.sessionId);
         try {
+          this.assertAgentBinding(record!);
           if (record!.phase === 'accepted' || record!.phase === 'rejected')
             throw new AppError(409, 'Fork 回执状态不一致');
           if (record!.phase === 'dispatched')
@@ -781,6 +790,7 @@ export class SessionForkManager {
     const previous = store.meta;
     try {
       return store.transaction(() => {
+        store.agents.bind(scope, record.agent);
         store.meta = next;
         store.setNativeSession(scope.sessionId, record.nativeId!, current);
         store.forks.saveCapabilities(

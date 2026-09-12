@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { runCapabilitiesSchema } from './run-config';
 
 export const PROTOCOL = 3;
+export const AGENT_VERSIONS_FEATURE = 'agent-versions-v1';
 export const id = z
   .string()
   .min(1)

@@ -351,6 +351,10 @@ test('project and workspace scope are validated before receipt creation or retry
 test('host obtains ACP capabilities and preserves selected input across retry', async (t) => {
   const f = fixture();
   t.after(f.close);
+  const rootPath = mkdtempSync(join(tmpdir(), 'moor-agent-options-'));
+  t.after(() => rmSync(rootPath, { recursive: true, force: true }));
+  f.store.machine.set(['localProject', 'project-a'], { ...ws.projects[0], rootPath });
+  f.host.updateCatalogue();
   await strict.rejects(f.host.refreshAgentOptions('unknown', 'project-a'));
   await strict.rejects(f.host.refreshAgentOptions('agent-a', 'unknown'));
   const agent = await f.host.refreshAgentOptions('agent-a', 'project-a');
@@ -371,6 +375,10 @@ test('host obtains ACP capabilities and preserves selected input across retry', 
 test('unsupported models, efforts, permission modes and launch settings fail before staging', async (t) => {
   const f = fixture();
   t.after(f.close);
+  const rootPath = mkdtempSync(join(tmpdir(), 'moor-agent-options-'));
+  t.after(() => rmSync(rootPath, { recursive: true, force: true }));
+  f.store.machine.set(['localProject', 'project-a'], { ...ws.projects[0], rootPath });
+  f.host.updateCatalogue();
   await f.host.refreshAgentOptions('agent-a', 'project-a');
   for (const config of [
     { modelId: 'unknown' },

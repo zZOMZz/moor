@@ -1,8 +1,10 @@
 import { randomUUID, createHash } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta } from '../model';
 import {
   AppError,
+  AGENT_VERSIONS_FEATURE,
   assert,
   sessionActionSchema,
   type Mutation,
@@ -133,6 +135,7 @@ type Active = {
   projectScope: ProjectHistoryScope;
   rootPath: string;
   execution: ExecutionLease;
+  agent: AgentConfig;
   before?: ProjectSnapshot;
   snapshotIssues: ProjectContentIssue[];
   terminal?: { status: string; message?: string };
@@ -222,6 +225,7 @@ export class HostWorkspace {
       GITHUB_WRITE_FEATURE,
       PREVIEW_FEATURE,
       SKILLS_FEATURE,
+      AGENT_VERSIONS_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -229,46 +233,129 @@ export class HostWorkspace {
     this.workspace.agents = this.machine
       .scan({ prefix: ['agentConfig'] })
       .map((r) => r.value as AgentConfig)
-      .filter((a) => a.machineId === this.workspace.machineId)
-      .map((a) => {
-        const options = runCapabilitiesSchema.safeParse(this.machine.get(['capabilities', a.id]));
-        const input = promptInputCapabilitiesSchema.safeParse(
-          this.machine.get(['inputCapabilities', a.id]),
-        );
-        return {
-          id: a.id,
-          name: a.name,
-          cliType: a.cliType,
-          agentType: a.agentType,
-          runConfig: options.success ? options.data : undefined,
-          inputCapabilities: input.success ? input.data : undefined,
-        };
-      });
+      .filter(
+        (a) =>
+          a.machineId === this.workspace.machineId &&
+          this.machine.get(['retiredAgent', a.id]) !== true,
+      )
+      .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
     this.catalogue();
   }
-  async refreshAgentOptions(agentId: string, localProjectId?: string) {
+  agentDescriptor(a: AgentConfig) {
+    const options = runCapabilitiesSchema.safeParse(this.machine.get(['capabilities', a.id]));
+    const input = promptInputCapabilitiesSchema.safeParse(
+      this.machine.get(['inputCapabilities', a.id]),
+    );
+    return {
+      id: a.id,
+      name: a.name,
+      cliType: a.cliType,
+      agentType: a.agentType,
+      runConfig: options.success ? options.data : undefined,
+      inputCapabilities: input.success ? input.data : undefined,
+    };
+  }
+  sessionAgent(scope: AttachmentScope) {
+    const agent = this.store.agents.binding(scope);
+    const meta = metas(this.meta)['session-' + scope.sessionId];
+    assert(
+      agent &&
+        agent.id === meta?.agentConfigId &&
+        agent.machineId === scope.machineId &&
+        agent.cliType === meta?.cliType &&
+        agent.agentType === meta?.agentType,
+      409,
+      '会话的 Agent 配置版本不可用',
+    );
+    return agent;
+  }
+  async refreshAgentOptions(agentId: string, localProjectId?: string, sessionId?: string) {
     return this.serial('capabilities/' + agentId, async () => {
       this.ensureConnected();
-      const agent = this.machine.get(['agentConfig', agentId]) as AgentConfig | undefined;
-      const project =
+      const selectedProject =
         this.workspace.projects.find((p) => p.id === localProjectId) ??
         (!localProjectId ? this.workspace.projects[0] : undefined);
-      assert(agent?.machineId === this.workspace.machineId, 404, 'Agent 配置不可用');
-      assert(project, 404, '请先登记项目');
-      const session = await this.driver.open(agent, project.rootPath, undefined, {
-        update: () => {},
-        permission: async () => ({ outcome: { outcome: 'cancelled' } }),
-      });
-      try {
+      assert(selectedProject, 404, '请先登记项目');
+      const project = structuredClone(selectedProject);
+      const identity = [this.workspace.id, this.workspace.userId, this.workspace.machineId];
+      const scope = {
+        workspaceId: this.workspace.id,
+        userId: this.workspace.userId,
+        machineId: this.workspace.machineId,
+        localProjectId: project.id,
+        sessionId: sessionId ?? '',
+      };
+      const execution = sessionId ? this.executionLease(scope, project.id) : undefined;
+      const agent = sessionId ? this.sessionAgent(scope) : this.store.agents.get(agentId);
+      assert(
+        agent?.id === agentId &&
+          agent.machineId === this.workspace.machineId &&
+          (sessionId || this.workspace.agents.some((a) => a.id === agentId)),
+        404,
+        'Agent 配置不可用',
+      );
+      const cwd = execution?.rootPath ?? project.rootPath;
+      const directoryIdentity = () => {
+        try {
+          const path = realpathSync(cwd),
+            stat = lstatSync(path, { bigint: true });
+          assert(stat.isDirectory(), 409, '能力检查的执行目录不可用');
+          return { path, dev: stat.dev, ino: stat.ino };
+        } catch {
+          throw new AppError(409, '能力检查的执行目录已变化或不可用');
+        }
+      };
+      const directory = directoryIdentity();
+      const current = () => {
         this.ensureConnected();
-        this.machine.set(['capabilities', agentId], session.capabilities as never);
-        this.machine.set(['inputCapabilities', agentId], session.inputCapabilities as never);
-        this.store.saveMachine();
-        this.updateCatalogue();
-        return this.workspace.agents.find((a) => a.id === agentId)!;
-      } finally {
-        session.close();
+        assert(
+          isDeepStrictEqual(identity, [
+            this.workspace.id,
+            this.workspace.userId,
+            this.workspace.machineId,
+          ]) &&
+            isDeepStrictEqual(
+              project,
+              this.workspace.projects.find((p) => p.id === project.id),
+            ),
+          409,
+          '能力检查的执行范围已变化',
+        );
+        assert(isDeepStrictEqual(directory, directoryIdentity()), 409, '能力检查的执行目录已变化');
+        if (execution) {
+          this.checkExecutionLease(execution);
+          this.store.agents.assertCurrent(scope, agent);
+        } else
+          assert(
+            this.workspace.agents.some((a) => a.id === agentId),
+            409,
+            'Agent 配置版本已退出新会话列表',
+          );
+      };
+      current();
+      let session: AgentSession;
+      try {
+        session = await this.driver.open(agent, cwd, undefined, {
+          update: () => {},
+          permission: async () => ({ outcome: { outcome: 'cancelled' } }),
+        });
+      } catch {
+        current();
+        throw new AppError(502, 'Agent 能力检查失败，请在执行电脑检查本机配置');
       }
+      try {
+        current();
+      } finally {
+        try {
+          await session.close();
+        } catch {}
+        current();
+      }
+      this.machine.set(['capabilities', agentId], session.capabilities as never);
+      this.machine.set(['inputCapabilities', agentId], session.inputCapabilities as never);
+      this.store.saveMachine();
+      this.updateCatalogue();
+      return this.agentDescriptor(agent);
     });
   }
   async watch(sessionId: string, on: boolean) {
@@ -303,7 +390,23 @@ export class HostWorkspace {
   async read(sessionId: string, version?: string, localProjectId?: string) {
     this.ensureConnected();
     this.checkProject(sessionId, localProjectId);
+    const metadata = metas(this.meta)['session-' + sessionId];
+    const scope = this.attachmentScope(
+      {
+        workspaceId: this.workspace.id,
+        sessionId,
+        localProjectId: (metadata.project as any).localProjectId,
+      },
+      localProjectId,
+    );
+    const agent = this.store.agents.binding(scope);
     return {
+      ...(agent &&
+      agent.id === metadata.agentConfigId &&
+      agent.cliType === metadata.cliType &&
+      agent.agentType === metadata.agentType
+        ? { agent: this.agentDescriptor(agent) }
+        : {}),
       meta: metas(this.meta)['session-' + sessionId],
       metaBundle: this.meta.exportJson(),
       update: delta(
@@ -988,7 +1091,22 @@ export class HostWorkspace {
       );
       const active = this.active.get(m.sessionId);
       const original = active?.doc ?? this.store.doc(m.sessionId);
-      const validated = validateMutation(original, this.meta, this.workspace, m);
+      const boundAgent = currentMeta
+        ? this.sessionAgent(
+            this.attachmentScope(
+              {
+                workspaceId: m.workspaceId,
+                sessionId: m.sessionId,
+                localProjectId: (currentMeta.project as any)?.localProjectId,
+              },
+              localProjectId,
+            ),
+          )
+        : undefined;
+      const validationWorkspace = boundAgent
+        ? { ...this.workspace, agents: [this.agentDescriptor(boundAgent)] }
+        : this.workspace;
+      const validated = validateMutation(original, this.meta, validationWorkspace, m);
       const meta = metas(validated.flock)['session-' + m.sessionId];
       if (!metas(this.meta)['session-' + m.sessionId])
         putMeta(validated.flock, 'session-' + m.sessionId, {
@@ -1011,9 +1129,15 @@ export class HostWorkspace {
         localProjectId,
       );
       const execution = this.executionLease(attachmentScope, localProjectId, true);
+      const agent = boundAgent ?? this.store.agents.get(String(meta.agentConfigId));
+      assert(
+        agent && agent.id === meta.agentConfigId && agent.machineId === attachmentScope.machineId,
+        409,
+        'Agent 配置版本不可用',
+      );
       if (m.kind === 'turn') this.githubWriteManager.assertExecutionAvailable(execution);
       // Reject a mismatched restored context before confirming a new turn.
-      this.store.nativeSession(m.sessionId, execution);
+      this.store.nativeSession(m.sessionId, execution, agent.id);
       const inputView = mirror(validated.doc, m.sessionId);
       const attachments: AttachmentReference[] =
         m.kind === 'turn'
@@ -1026,7 +1150,7 @@ export class HostWorkspace {
       inputView.dispose();
       if (attachments.length) {
         this.attachmentData(attachmentScope, attachments);
-        const capabilities = this.workspace.agents.find(
+        const capabilities = validationWorkspace.agents.find(
           (agent) => agent.id === meta.agentConfigId,
         )?.inputCapabilities;
         this.assertAttachmentCapabilities(attachments, capabilities);
@@ -1079,6 +1203,7 @@ export class HostWorkspace {
       try {
         result = this.store.transaction(() => {
           journal.stage(this.workspace.id, m, turnId);
+          this.store.agents.bind(attachmentScope, agent);
           this.store.reserveAttachmentScope(attachmentScope);
           for (const attachment of attachments)
             this.store.referenceAttachment(attachmentScope, attachment.attachmentId);
@@ -1116,6 +1241,7 @@ export class HostWorkspace {
           projectScope: attachmentScope,
           rootPath: execution.rootPath,
           execution,
+          agent,
           snapshotIssues: [],
           permissions: new Map(),
         };
@@ -1207,15 +1333,14 @@ export class HostWorkspace {
       if (run.stopped || this.closed) return;
       this.checkExecutionLease(run.execution);
       const meta = metas(this.meta)['session-' + id];
-      const agent = this.machine.get(['agentConfig', String(meta.agentConfigId)]) as AgentConfig;
+      const agent = run.agent;
+      this.store.agents.assertCurrent(run.projectScope, agent);
+      assert(meta.agentConfigId === agent.id, 409, '会话的 Agent 配置版本已变化');
       const project = this.workspace.projects.find(
         (p) => p.id === (meta.project as any).localProjectId,
       )!;
-      const session = await this.driver.open(
-        agent,
-        run.rootPath,
-        this.store.nativeSession(id, run.execution),
-        {
+      const session = await this.driver
+        .open(agent, run.rootPath, this.store.nativeSession(id, run.execution, agent.id), {
           update: (value) => this.update(id, run, value),
           event: (event, binding) => this.sessionEvent(id, run, event, binding),
           forkAnchor: (anchor, binding) => {
@@ -1273,15 +1398,18 @@ export class HostWorkspace {
               }
             });
           },
-        },
-      );
+        })
+        .catch(() => {
+          throw new AppError(502, 'Agent 启动或恢复失败，请在执行电脑检查本机配置');
+        });
       run.session = session;
       if (run.stopped || this.closed) {
         await session.close();
         return;
       }
       this.checkExecutionLease(run.execution);
-      this.store.setNativeSession(id, session.id, run.execution);
+      this.store.agents.assertCurrent(run.projectScope, agent);
+      this.store.setNativeSession(id, session.id, run.execution, agent.id);
       this.saveAgentFeatures(id, run, session, agent);
       const view = mirror(run.doc, id),
         input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig as Record<

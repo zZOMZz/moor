@@ -1,7 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, chmodSync, statSync, realpathSync } from 'node:fs';
 import { dirname, basename, join, resolve } from 'node:path';
-import { Flock, LoroDoc, mirror, putMeta } from '../model';
+import { isDeepStrictEqual } from 'node:util';
+import { Flock, LoroDoc, metas, mirror, putMeta } from '../model';
 import { Journal } from '../bridge/journal';
 import { assert, type RuntimeWorkspace } from '../protocol';
 import type { AttachmentReference, ContentScope } from '../content-protocol';
@@ -14,6 +15,8 @@ import { notificationScopeSchema } from '../notification-protocol';
 import { SessionExecutionStore } from './session-execution';
 import { SessionForkStore } from './session-fork';
 import { SessionGithubStore } from './session-github';
+import { SessionAgentStore, agentConfigSnapshot } from './session-agent';
+import type { AgentConfig } from './agent';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -38,6 +41,7 @@ export class RuntimeStore {
   executions: SessionExecutionStore;
   forks: SessionForkStore;
   github: SessionGithubStore;
+  agents: SessionAgentStore;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
@@ -79,6 +83,7 @@ export class RuntimeStore {
     this.notifications = new HostNotifications(this.journal.db, options);
     this.forks = new SessionForkStore(this.journal.db);
     this.github = new SessionGithubStore(this.journal.db);
+    this.agents = new SessionAgentStore(this.journal.db);
     this.executions = new SessionExecutionStore(
       this.journal.db,
       options.worktreeRoot ??
@@ -93,6 +98,9 @@ export class RuntimeStore {
       this.journal.db.exec(
         'ALTER TABLE agent_session ADD COLUMN execution_revision INTEGER NOT NULL DEFAULT 0',
       );
+    const migrateNativeAgent = !nativeColumns.some((column) => column.name === 'agent_version_id');
+    if (migrateNativeAgent)
+      this.journal.db.exec('ALTER TABLE agent_session ADD COLUMN agent_version_id TEXT');
     const identity = this.load('identity');
     this.workspace = identity
       ? JSON.parse(Buffer.from(identity).toString())
@@ -106,6 +114,52 @@ export class RuntimeStore {
         };
     this.meta = this.loadFlock('meta');
     this.machine = this.loadFlock('machine');
+    const migrateAgentBindings = !this.load('agent-bindings-v1');
+    // Freeze the configuration actually present before startup registration can
+    // select a newer version. This cannot reconstruct pre-upgrade launch history.
+    this.transaction(() => {
+      this.rememberAgents();
+      for (const [name, meta] of Object.entries(metas(this.meta))) {
+        const project = meta.project as { kind?: string; localProjectId?: string } | undefined;
+        if (
+          !name.startsWith('session-') ||
+          meta.id !== name.slice(8) ||
+          meta.userId !== this.workspace.userId ||
+          meta.machineId !== this.workspace.machineId ||
+          project?.kind !== 'local' ||
+          !project.localProjectId ||
+          typeof meta.agentConfigId !== 'string'
+        )
+          continue;
+        const scope = {
+          workspaceId: this.workspace.id,
+          userId: this.workspace.userId,
+          machineId: this.workspace.machineId,
+          localProjectId: project.localProjectId,
+          sessionId: String(meta.id),
+        };
+        if (!this.attachmentScopeMatches(scope)) continue;
+        const stored = this.agents.binding(scope);
+        if (!stored && !migrateAgentBindings) continue;
+        const agent = stored ?? this.agents.get(meta.agentConfigId);
+        if (
+          !agent ||
+          agent.id !== meta.agentConfigId ||
+          agent.machineId !== scope.machineId ||
+          agent.cliType !== meta.cliType ||
+          agent.agentType !== meta.agentType
+        )
+          continue;
+        this.agents.bind(scope, agent);
+        if (migrateAgentBindings)
+          this.journal.db
+            .prepare(
+              'UPDATE agent_session SET agent_version_id=? WHERE id=? AND agent_version_id IS NULL',
+            )
+            .run(agent.id, scope.sessionId);
+      }
+      this.save('agent-bindings-v1', Buffer.from('1'));
+    });
     this.save('identity', Buffer.from(JSON.stringify(this.workspace)));
     this.notifications.resolveAllApprovals();
     // A restart settles interrupted turns, but never starts a queued prompt.
@@ -238,13 +292,57 @@ export class RuntimeStore {
     return id;
   }
   saveMachine() {
+    this.rememberAgents();
     this.machine.commit();
     this.save('machine', this.machine.exportFile());
+  }
+  private rememberAgents() {
+    for (const row of this.machine.scan({ prefix: ['agentConfig'] })) {
+      const config = row.value as AgentConfig;
+      assert(row.key[1] === config.id, 409, 'Agent 配置版本编号不匹配');
+      this.agents.remember(config);
+    }
+  }
+  // Local registration advances a private preset pointer; sessions keep version IDs.
+  registerAgent(presetId: string, config: AgentConfig) {
+    const previous = this.machine;
+    this.machine = Flock.fromFile(previous.exportFile());
+    try {
+      return this.transaction(() => {
+        const currentId = this.machine.get(['agentPreset', presetId]);
+        const current = this.agents.get(typeof currentId === 'string' ? currentId : config.id);
+        const candidate = agentConfigSnapshot({ ...config, id: current?.id ?? config.id });
+        assert(candidate.machineId === this.workspace.machineId, 409, 'Agent 配置不属于本机');
+        const next =
+          current && !isDeepStrictEqual(current, candidate)
+            ? { ...candidate, id: 'agent_' + randomUUID() }
+            : candidate;
+        this.agents.remember(next);
+        this.machine.set(['agentConfig', next.id], next as never);
+        this.machine.set(['agentPreset', presetId], next.id);
+        this.machine.set(['retiredAgent', next.id], false);
+        if (
+          current &&
+          current.id !== next.id &&
+          !this.machine.scan({ prefix: ['agentPreset'] }).some((row) => row.value === current.id)
+        )
+          this.machine.set(['retiredAgent', current.id], true);
+        this.saveMachine();
+        return next;
+      });
+    } catch (error) {
+      this.machine = previous;
+      throw error;
+    }
   }
   hasNativeSession(id: string) {
     return !!this.journal.db.prepare('SELECT 1 FROM agent_session WHERE id=?').get(id);
   }
-  nativeSession(id: string, execution = { executionId: 'shared', executionRevision: 0 }) {
+  nativeSession(
+    id: string,
+    execution = { executionId: 'shared', executionRevision: 0 },
+    agentId?: string,
+  ) {
     const row = this.journal.db.prepare('SELECT * FROM agent_session WHERE id=?').get(id);
     if (!row) return;
     assert(
@@ -253,19 +351,31 @@ export class RuntimeStore {
       409,
       '原生 Agent 上下文属于其他执行目录，不能恢复',
     );
+    const binding = this.agents.bySession(id);
+    const expectedAgent = agentId ?? binding?.config.id;
+    if (expectedAgent)
+      assert(
+        row.agent_version_id === expectedAgent && (!binding || binding.config.id === expectedAgent),
+        409,
+        '原生 Agent 上下文属于其他配置版本，不能恢复',
+      );
     return row.native_id as string;
   }
   setNativeSession(
     id: string,
     nativeId: string,
     execution = { executionId: 'shared', executionRevision: 0 },
+    agentId?: string,
   ) {
-    this.nativeSession(id, execution);
+    const binding = this.agents.bySession(id);
+    const expectedAgent = agentId ?? binding?.config.id;
+    assert(!agentId || binding?.config.id === agentId, 409, 'Agent 会话配置版本尚未固定');
+    this.nativeSession(id, execution, expectedAgent);
     this.journal.db
       .prepare(
-        'INSERT OR REPLACE INTO agent_session(id,native_id,execution_id,execution_revision) VALUES(?,?,?,?)',
+        'INSERT OR REPLACE INTO agent_session(id,native_id,execution_id,execution_revision,agent_version_id) VALUES(?,?,?,?,?)',
       )
-      .run(id, nativeId, execution.executionId, execution.executionRevision);
+      .run(id, nativeId, execution.executionId, execution.executionRevision, expectedAgent ?? null);
   }
   attachmentScopeMatches(scope: AttachmentScope) {
     const row = this.journal.db

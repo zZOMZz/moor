@@ -19,7 +19,15 @@ import {
   type HostNotificationEvent,
   type NotificationEnvelope,
 } from '../notification-protocol';
-import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
+import {
+  AppError,
+  assert,
+  agentSchema,
+  helloSchema,
+  id,
+  mutationSchema,
+  sessionActionSchema,
+} from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
 import { workspaceInputSchema, projectInputSchema, replicaAssignmentSchema } from '../catalog';
 import {
@@ -277,6 +285,7 @@ export function createApp(
           'github-write-read',
           'preview-read',
           'skills-read',
+          'agent-options',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -1369,27 +1378,84 @@ export function createApp(
               throw error;
             }
           }
-          if (parts[5] === 'agent-options' && req.method === 'POST') {
+          if (parts[5] === 'agent-options' && parts.length === 6 && req.method === 'POST') {
             const input = z
-              .object({ agentId: z.string().min(1).max(160) })
+              .object({ agentId: id, sessionId: id.optional() })
               .strict()
-              .parse(await body(req));
-            assert(
-              runtime?.agents.some((a) => a.id === input.agentId),
-              404,
-              'Agent 配置不可用',
-            );
-            return json(
-              res,
-              200,
-              await request(
+              .parse(await body(req, 4096));
+            assert(runtime, 409, '执行电脑暂时不可用');
+            const selectedAgent = runtime.agents.find((agent) => agent.id === input.agentId);
+            if (!input.sessionId) assert(selectedAgent, 404, 'Agent 配置不可用');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const currentReplica = store.catalog.replica(owner!, workspaceId, replica.id);
+              const currentRuntime = bridges
+                .get(host.device_id)
+                ?.workspaces.find((workspace) => workspace.id === host.runtime_id);
+              assert(
+                currentReplica.host.device_id === host.device_id &&
+                  currentReplica.host.runtime_id === host.runtime_id &&
+                  currentReplica.local_id === replica.local_id &&
+                  currentReplica.project_id === replica.project_id &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  currentRuntime?.userId === runtime.userId &&
+                  currentRuntime?.machineId === runtime.machineId &&
+                  currentRuntime.projects.some((project) => project.id === replica.local_id),
+                409,
+                'Agent 能力请求的执行范围已变化，请重新读取',
+              );
+              const currentAgent = currentRuntime.agents.find(
+                (agent) => agent.id === input.agentId,
+              );
+              if (!input.sessionId) assert(currentAgent, 409, 'Agent 配置已变化，请重新读取');
+              return currentAgent;
+            };
+            current();
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
                 host.device_id,
                 'agent-options',
                 host.runtime_id,
                 input,
                 replica.local_id,
-              ),
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            const currentAgent = current();
+            if (failed) {
+              const status =
+                failed.error instanceof AppError &&
+                [400, 403, 404, 409, 413, 429, 504].includes(failed.error.status)
+                  ? failed.error.status
+                  : 502;
+              throw new AppError(status, 'Agent 能力暂时不可读取，请重新读取会话或检查执行电脑');
+            }
+            assert(
+              Buffer.byteLength(JSON.stringify(raw) ?? '') <= 16 * 1024 * 1024,
+              502,
+              '执行电脑返回的 Agent 能力超过限制',
             );
+            // The public schema strips host-only launch options, including nested
+            // unknown capability fields. Errors never forward raw ACP diagnostics.
+            const parsed = agentSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行电脑返回的 Agent 能力不可验证');
+            const result = parsed.data;
+            assert(
+              result.id === input.agentId &&
+                [selectedAgent, currentAgent].every(
+                  (agent) =>
+                    !agent ||
+                    (agent.cliType === result.cliType && agent.agentType === result.agentType),
+                ),
+              502,
+              'Agent 能力响应与请求版本不匹配',
+            );
+            return json(res, 200, result);
           }
           if (parts[5] === 'sessions' && req.method === 'GET')
             return json(

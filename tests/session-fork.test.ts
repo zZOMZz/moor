@@ -17,7 +17,7 @@ import { HostWorkspace } from '../src/bridge/host-workspace';
 import { RuntimeStore } from '../src/runtime/store';
 import { Flock, metas, mirror, putMeta, vv, delta } from '../src/model';
 import { AppError, type Mutation } from '../src/protocol';
-import type { AgentDriver } from '../src/runtime/agent';
+import type { AgentConfig, AgentDriver } from '../src/runtime/agent';
 import type { AgentForkInput, AgentForkCapabilities } from '../src/runtime/agent-fork';
 import {
   forkReceiptSchema,
@@ -107,11 +107,14 @@ function fixture(t: { after(fn: () => unknown): void }) {
       adapterVersion: '1.11.0',
     };
   const opens: { cwd: string; native?: string }[] = [],
+    openConfigs: AgentConfig[] = [],
+    forkConfigs: AgentConfig[] = [],
     closes: string[] = [],
     prompts: string[] = [],
     forks: AgentForkInput[] = [];
   const driver: AgentDriver = {
     async open(_config, cwd, native, callbacks) {
+      openConfigs.push(structuredClone(_config));
       opens.push({ cwd, native });
       await beforeOpen?.(native);
       const id = native ?? 'native-' + ++count;
@@ -150,6 +153,7 @@ function fixture(t: { after(fn: () => unknown): void }) {
       };
     },
     async fork(_config, input) {
+      forkConfigs.push(structuredClone(_config));
       forks.push(input);
       assert.ok(
         store.journal.db
@@ -189,6 +193,8 @@ function fixture(t: { after(fn: () => unknown): void }) {
     root,
     git,
     opens,
+    openConfigs,
+    forkConfigs,
     closes,
     prompts,
     forks,
@@ -577,7 +583,7 @@ test('fork staging rollback, busy source, changed source version, duplicate chil
   assert.equal(f.forks.length, 1);
 });
 
-test('older sessions negotiate missing Fork capabilities without another prompt, and configuration changes invalidate the cache and anchors', async (t) => {
+test('older sessions negotiate missing Fork capabilities without another prompt and keep their bound Agent version when machine configuration changes', async (t) => {
   const f = fixture(t);
   await f.prompt();
   const original = vv(f.store.doc('source')),
@@ -596,17 +602,17 @@ test('older sessions negotiate missing Fork capabilities without another prompt,
   assert.equal(f.opens.length, calls + 1);
   const agent = f.store.machine.get(['agentConfig', 'agent']) as any;
   f.store.machine.set(['agentConfig', 'agent'], { ...agent, name: 'Changed configuration' });
-  f.store.saveMachine();
   f.forkCapabilities = { sameDirectory: false, worktree: false, turnCutoff: false };
   const changed = await f.host.readForkOptions({
     forkVersion: 1,
     ...f.scope(),
     turnId: assistant.id,
   });
-  assert.equal(f.opens.length, calls + 2);
-  assert.equal(changed.currentAvailable, false);
-  assert.equal(changed.turns[0]!.available, false);
-  assert.notEqual(changed.sourceVersion, options.sourceVersion);
+  assert.equal(f.opens.length, calls + 1);
+  assert.equal(changed.currentAvailable, true);
+  assert.equal(changed.turns[0]!.available, true);
+  assert.equal(changed.sourceVersion, options.sourceVersion);
+  assert.equal(changed.agent.name, 'Synthetic');
   assert.equal(f.prompts.length, 1);
 });
 
@@ -737,7 +743,7 @@ test('shared-directory identity replacement invalidates a stale Fork source befo
   assert.equal(f.forks.length, 0);
 });
 
-test('an already-created child waits for its original directory identity and Agent configuration before confirmation', async (t) => {
+test('an already-created child waits for its original directory identity and retains its pinned Agent when the machine configuration changes', async (t) => {
   const f = fixture(t);
   await f.prompt();
   const request = await f.request();
@@ -756,8 +762,80 @@ test('an already-created child waits for its original directory identity and Age
     ...agent,
     name: 'Changed while Fork was pending',
   });
-  assert.equal((await f.host.forkSession(request)).phase, 'unknown');
-  f.store.machine.set(['agentConfig', 'agent'], agent);
   assert.equal((await f.host.forkSession(request)).phase, 'accepted');
   assert.equal(f.forks.length, 1);
+  assert.equal(f.forkConfigs[0].name, 'Synthetic');
+  assert.deepEqual(
+    f.store.agents.binding({
+      ...f.scope('child'),
+      userId: 'local:synthetic',
+      machineId: 'machine',
+    }),
+    f.forkConfigs[0],
+  );
+});
+
+test('Fork binds the child to the source version in the acceptance transaction and keeps that version after restart', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  const scope = { ...f.scope(), userId: 'local:synthetic', machineId: 'machine' },
+    original = f.store.agents.binding(scope)!;
+  const request = await f.request();
+  f.store.machine.set(['agentConfig', 'agent'], {
+    ...original,
+    name: 'Mutable replacement',
+    customAcp: { command: '/synthetic/other-agent', args: [] },
+  });
+  const accepted = await f.host.forkSession(request);
+  assert.equal(accepted.phase, 'accepted');
+  assert.deepEqual(f.forkConfigs[0], original);
+  assert.deepEqual(
+    f.store.agents.binding({ ...scope, sessionId: request.childSessionId }),
+    original,
+  );
+  // Persist only the valid original local config; the test replacement above
+  // models a stale mutable entry, not authorization to register another version.
+  f.store.machine.set(['agentConfig', 'agent'], original as never);
+  f.store.saveMachine();
+  f.restart();
+  assert.deepEqual(
+    f.store.agents.binding({ ...scope, sessionId: request.childSessionId }),
+    original,
+  );
+  assert.deepEqual(await f.host.forkSession(request), accepted);
+  assert.equal(f.forks.length, 1);
+  await f.prompt(request.childSessionId, 'Continue child');
+  assert.deepEqual(f.openConfigs.at(-1), original);
+});
+
+test('an unknown Fork with a changed recorded Agent snapshot cannot open or fork under that replacement', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  const request = await f.request();
+  f.afterNative = () => {
+    throw new Error('Synthetic response lost after native creation');
+  };
+  assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+  const original = f.store.forks.record(request.operationId)!;
+  const opens = f.opens.length;
+  f.store.forks.save({
+    ...original,
+    agent: { ...original.agent, customAcp: { command: '/synthetic/wrong-version', args: [] } },
+  });
+  assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+  assert.equal(f.opens.length, opens);
+  assert.equal(f.forks.length, 1);
+  assert.equal(
+    f.store.agents.binding({
+      ...f.scope('child'),
+      userId: 'local:synthetic',
+      machineId: 'machine',
+    }),
+    undefined,
+  );
+  f.store.forks.save(original);
+  f.afterNative = undefined;
+  assert.equal((await f.host.forkSession(request)).phase, 'accepted');
+  assert.equal(f.forks.length, 1);
+  assert.deepEqual(f.openConfigs.at(-1), original.agent);
 });

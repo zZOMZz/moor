@@ -366,16 +366,15 @@ async function refresh() {
       for (const agentType of values['builtin-agent'] ?? []) {
         assert(['codex', 'claude'].includes(agentType), 400, '仅支持 Codex 或 Claude');
         const id = 'personal-' + agentType;
-        const existing = runtime.machine.get(['agentConfig', id]);
-        const base = existing ?? {
+        const base = {
           id,
           name: agentType === 'codex' ? 'Codex' : 'Claude',
           machineId,
           cliType: 'builtin',
           agentType,
         };
-        runtime.machine.set(
-          ['agentConfig', id],
+        runtime.registerAgent(
+          id,
           withLocalCodex(base, agentType === 'codex' ? localCodexPath() : undefined),
         );
       }
@@ -461,7 +460,11 @@ function connect(target: Target) {
           let result: unknown;
           if (m.method === 'sessions') result = workspace.list(m.localProjectId);
           else if (m.method === 'agent-options')
-            result = await workspace.refreshAgentOptions(m.params.agentId, m.localProjectId);
+            result = await workspace.refreshAgentOptions(
+              m.params.agentId,
+              m.localProjectId,
+              m.params.sessionId,
+            );
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
           else if (m.method === 'skills-read') {
