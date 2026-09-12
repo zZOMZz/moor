@@ -781,6 +781,13 @@ test('attention continuation commits the new turn and original disposition atomi
     strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
     busy.delete(item.sessionId);
   }
+  const busyRoots = (f.host.githubWriteManager as unknown as { busyRoots: Set<string> }).busyRoots;
+  busyRoots.add(ws.projects[0].rootPath);
+  await strict.rejects(f.host.attentionContinue(context, item.itemId, continuation), /准备提交/);
+  strict.equal(f.journal.has(continuation.mutation.operationId), false);
+  strict.equal(f.dispatches(), 1);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
+  busyRoots.clear();
   f.journal.db.exec(
     "CREATE TRIGGER fail_attention_receipt BEFORE INSERT ON attention_receipt BEGIN SELECT RAISE(ABORT, 'synthetic receipt failure'); END",
   );

@@ -122,6 +122,16 @@ import { GIT_WORKTREE_FEATURE, type GitAction, type GitStateRead } from '../git-
 import { SessionExecutionManager, type ExecutionLease } from '../runtime/session-execution';
 import { SessionForkManager } from '../runtime/session-fork';
 import { SessionGithubManager, type SessionGithubOptions } from '../runtime/session-github';
+import {
+  SessionGithubWriteManager,
+  type SessionGithubWriteOptions,
+} from '../runtime/session-github-write';
+import {
+  GITHUB_WRITE_FEATURE,
+  type GithubWriteRead,
+  type GithubWriteAction,
+  type GithubWriteInspect,
+} from '../github-write-protocol';
 import { GITHUB_FEATURE, type GithubRead, type GithubAction } from '../github-protocol';
 import { SESSION_FORK_FEATURE, type ForkOptionsRead, type SessionFork } from '../fork-protocol';
 
@@ -158,6 +168,7 @@ export class HostWorkspace {
   executionManager: SessionExecutionManager;
   forkManager: SessionForkManager;
   githubManager: SessionGithubManager;
+  githubWriteManager: SessionGithubWriteManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -177,10 +188,15 @@ export class HostWorkspace {
     private projectContent = { capture: captureProjectSnapshot, tree: enumerateProjectFiles },
     git?: ConstructorParameters<typeof SessionExecutionManager>[1],
     github?: SessionGithubOptions,
+    githubWrite?: SessionGithubWriteOptions,
   ) {
     this.executionManager = new SessionExecutionManager(this, git);
     this.forkManager = new SessionForkManager(this, driver);
     this.githubManager = new SessionGithubManager(this, github);
+    this.githubWriteManager = new SessionGithubWriteManager(this, {
+      config: github?.config,
+      ...githubWrite,
+    });
     this.interactions = new SessionInteractions<Active>({
       journal: store.journal,
       getRun: (sessionId) => this.active.get(sessionId),
@@ -217,6 +233,7 @@ export class HostWorkspace {
       GIT_WORKTREE_FEATURE,
       SESSION_FORK_FEATURE,
       GITHUB_FEATURE,
+      GITHUB_WRITE_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -448,6 +465,29 @@ export class HostWorkspace {
     this.changed(input.sessionId);
     return result;
   }
+  async readGithubWrite(input: GithubWriteRead, localProjectId?: string) {
+    try {
+      return await this.githubWriteManager.read(input, localProjectId);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(502, '写操作上下文暂时不可读取，请检查执行电脑');
+    }
+  }
+  async githubWriteAction(input: GithubWriteAction, localProjectId?: string) {
+    const result = await this.githubWriteManager.action(input, localProjectId);
+    this.changed(input.sessionId);
+    return result;
+  }
+  async inspectGithubWrite(input: GithubWriteInspect, localProjectId?: string) {
+    const result = await this.githubWriteManager.inspect(input, localProjectId);
+    this.changed(input.request.sessionId);
+    return result;
+  }
+  async abandonGithubWrite(input: { request: GithubWriteAction }, localProjectId?: string) {
+    const result = await this.githubWriteManager.abandon(input, localProjectId);
+    this.changed(input.request.sessionId);
+    return result;
+  }
   async readForkOptions(input: ForkOptionsRead, localProjectId?: string) {
     try {
       return await this.forkManager.options(input, localProjectId);
@@ -458,7 +498,9 @@ export class HostWorkspace {
   }
   async forkSession(input: SessionFork, localProjectId?: string) {
     try {
-      const result = await this.forkManager.action(input, localProjectId);
+      const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
+        this.forkManager.action(input, localProjectId),
+      );
       this.changed(input.childSessionId);
       return result;
     } catch (error) {
@@ -468,7 +510,9 @@ export class HostWorkspace {
   }
   async gitAction(input: GitAction, localProjectId?: string) {
     assert(!this.forkManager.busy.has(input.sessionId), 409, '此会话正在处理 Fork，请等待原操作');
-    const result = await this.executionManager.action(input, localProjectId);
+    const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
+      this.executionManager.action(input, localProjectId),
+    );
     this.changed(input.sessionId);
     return result;
   }
@@ -1183,6 +1227,7 @@ export class HostWorkspace {
       localProjectId,
     );
     const execution = this.executionLease(attachmentScope, localProjectId, true);
+    if (m.kind === 'turn') this.githubWriteManager.assertExecutionAvailable(execution);
     // Reject a mismatched restored context before confirming a new turn.
     this.store.nativeSession(m.sessionId, execution);
     const inputView = mirror(validated.doc, m.sessionId);

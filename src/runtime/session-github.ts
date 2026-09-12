@@ -218,7 +218,12 @@ export class SessionGithubManager {
       case 'overview': {
         let localBranch: string | undefined, localHeadSha: string | undefined;
         try {
-          const git = await this.host.executionManager.read({ gitVersion: 1, ...scope });
+          const git = await this.host.executionManager.read({
+            gitVersion: 1,
+            workspaceId: scope.workspaceId,
+            localProjectId: scope.localProjectId,
+            sessionId: scope.sessionId,
+          });
           localBranch = git.repository.branch;
           localHeadSha = git.repository.headOid;
         } catch {

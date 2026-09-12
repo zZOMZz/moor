@@ -19,6 +19,7 @@ function validateAction(value) {
     'project-bind': ['localProjectId', 'credentialId', 'owner', 'repo'],
     'project-unbind': ['localProjectId'],
     'project-check': ['localProjectId'],
+    'project-writes': ['localProjectId', 'enabled'],
   };
   if (!object(value) || !Object.hasOwn(fields, value.action))
     throw new Error('GitHub 本机设置请求无效');
@@ -35,6 +36,10 @@ function validateAction(value) {
   )
     throw new Error('请先刷新 GitHub 本机设置');
   for (const field of fields[value.action]) {
+    if (field === 'enabled') {
+      if (typeof value.enabled !== 'boolean') throw new Error('GitHub 本机设置字段无效');
+      continue;
+    }
     if (
       field === 'credentialId' &&
       value.action === 'credential-save' &&
@@ -82,6 +87,8 @@ const safeHostErrors = new Set([
   '项目 GitHub 登记已变化，请重新登记',
   '项目目录不可用，请重新登记项目',
   '项目目录已变化，请重新登记',
+  '项目 GitHub 登记不存在',
+  '启用外部写入前请先验证项目仓库',
 ]);
 // Whitelist every renderer field: a malformed child response can never return a
 // saved token, private file record, or an arbitrary extra credential property.
@@ -128,6 +135,7 @@ function publicState(value) {
         repo: b.repo,
         current: b.current,
         status: status(b.status),
+        ...(typeof b.writesEnabled === 'boolean' ? { writesEnabled: b.writesEnabled } : {}),
         ...(b.repositoryId === undefined ? {} : { repositoryId: b.repositoryId }),
       };
     }

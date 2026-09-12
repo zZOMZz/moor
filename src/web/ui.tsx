@@ -270,6 +270,7 @@ export function Shell({
       <Content name="#git-workspace-view" />
       <Content name="#session-fork-view" />
       <Content name="#github-view" />
+      <Content name="#github-write-view" />
     </div>
   );
 }

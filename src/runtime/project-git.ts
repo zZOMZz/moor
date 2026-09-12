@@ -309,6 +309,10 @@ function checkRepository(repository: GitRepository) {
     'Git 项目归属已变化',
   );
 }
+// Other typed host Git operations reuse the same immutable directory/config lease.
+export function validateProjectGitRepository(repository: GitRepository) {
+  checkRepository(repository);
+}
 async function pointer(path: string): Promise<GitPointerIdentity> {
   const item = await identity(path, true);
   assert((await lstat(path)).size <= 4096, 409, 'Git 指针超出检查限制');

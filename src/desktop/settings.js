@@ -237,6 +237,12 @@ function renderGitHubProject() {
   $('github-project-bind').disabled = !project || !githubState.credentials.length;
   $('github-project-check').disabled = !binding || !binding.current;
   $('github-project-unbind').disabled = !binding;
+  $('github-project-writes').disabled =
+    !binding ||
+    (!binding.writesEnabled && (!binding.current || binding.status.state !== 'connected'));
+  $('github-project-writes').textContent = binding?.writesEnabled
+    ? '停用评论、推送与 PR 写入'
+    : '启用评论、推送与 PR 写入';
 }
 function renderGitHub(value, action) {
   githubState = value;
@@ -328,6 +334,15 @@ $('github-project-bind').onclick = () =>
 for (const action of ['project-check', 'project-unbind'])
   $('github-' + action).onclick = () =>
     githubEdit({ action, localProjectId: $('github-project').value });
+$('github-project-writes').onclick = () => {
+  const project = githubState?.projects.find((p) => p.id === $('github-project').value);
+  if (!project?.binding) return;
+  return githubEdit({
+    action: 'project-writes',
+    localProjectId: project.id,
+    enabled: !project.binding.writesEnabled,
+  });
+};
 window.addEventListener('beforeunload', () => {
   githubClosed = true;
   githubRevision++;

@@ -171,7 +171,10 @@ function array(value: unknown): unknown[] {
   return value;
 }
 function body(value: unknown): { body: string; bodyTruncated: boolean } {
-  const raw = value === null ? '' : text(value, GITHUB_CLIENT_LIMITS.responseBytes);
+  const full = value === null ? '' : text(value, GITHUB_CLIENT_LIMITS.responseBytes);
+  // This exact trailing marker is host recovery metadata. Detail versions still hash
+  // the unmodified upstream body; it never appears in the public display projection.
+  const raw = full.replace(/\n\n<!-- moor-operation:sha256:[a-f0-9]{64} -->$/, '');
   let end = Math.min(raw.length, GITHUB_CLIENT_LIMITS.bodyCharacters);
   if (end < raw.length && /[\ud800-\udbff]/.test(raw[end - 1]) && /[\udc00-\udfff]/.test(raw[end]))
     end--;
