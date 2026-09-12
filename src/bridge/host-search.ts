@@ -48,6 +48,7 @@ function authorizedSessions(host: HostSearchContext, lease: Lease, range: 'sessi
         (meta.project as { localProjectId?: string } | undefined)?.localProjectId ===
           lease.localProjectId &&
         host.store.attachmentScopeMatches({ ...lease, sessionId: String(meta.id) }) &&
+        host.store.executions.scopeMatches({ ...lease, sessionId: String(meta.id) }) &&
         (range === 'project' || meta.id === lease.sessionId),
     )
     .map(([, meta]) => ({

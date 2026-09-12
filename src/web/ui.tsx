@@ -160,6 +160,7 @@ export function Shell({
             </div>
             <div id="project-content-controls">
               <Content name="#project-content-controls" />
+              <Content name="#git-workspace-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -263,6 +264,7 @@ export function Shell({
       <Content name="#session-search-view" />
       <Content name="#interaction-view" />
       <Content name="#notification-view" />
+      <Content name="#git-workspace-view" />
     </div>
   );
 }

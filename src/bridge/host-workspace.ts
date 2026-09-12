@@ -112,6 +112,8 @@ import {
   NOTIFICATION_LIMITS,
   type HostNotificationEvent,
 } from '../notification-protocol';
+import { GIT_WORKTREE_FEATURE, type GitAction, type GitStateRead } from '../git-protocol';
+import { SessionExecutionManager, type ExecutionLease } from '../runtime/session-execution';
 
 type Active = {
   turnId: string;
@@ -122,6 +124,7 @@ type Active = {
   done?: Promise<void>;
   projectScope: ProjectHistoryScope;
   rootPath: string;
+  execution: ExecutionLease;
   before?: ProjectSnapshot;
   snapshotIssues: ProjectContentIssue[];
   terminal?: { status: string; message?: string };
@@ -142,6 +145,7 @@ export class HostWorkspace {
   active = new Map<string, Active>();
   settlementFailures = new Map<string, LoroDoc>();
   interactions: SessionInteractions<Active>;
+  executionManager: SessionExecutionManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -159,13 +163,15 @@ export class HostWorkspace {
     private changed: (sessionId?: string) => void,
     private fileReader = readProjectFileBytes,
     private projectContent = { capture: captureProjectSnapshot, tree: enumerateProjectFiles },
+    git?: ConstructorParameters<typeof SessionExecutionManager>[1],
   ) {
+    this.executionManager = new SessionExecutionManager(this, git);
     this.interactions = new SessionInteractions<Active>({
       journal: store.journal,
       getRun: (sessionId) => this.active.get(sessionId),
       serial: (sessionId, work) => this.serial(sessionId, work),
       scopeCheck: (scope, localProjectId) => {
-        const lease = this.projectLease(scope, localProjectId);
+        const lease = this.executionLease(scope, localProjectId);
         return { userId: lease.userId, machineId: lease.machineId, rootPath: lease.rootPath };
       },
       persist: (sessionId, run, edit, write) =>
@@ -193,6 +199,7 @@ export class HostWorkspace {
       QUESTIONS_FEATURE,
       STEER_FEATURE,
       NOTIFICATIONS_FEATURE,
+      GIT_WORKTREE_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -360,42 +367,9 @@ export class HostWorkspace {
     localProjectId?: string,
   ): Promise<ProjectFileResult> {
     const request = projectFileReadSchema.parse(input);
-    const scope = () => {
-      this.ensureConnected();
-      assert(request.workspaceId === this.workspace.id, 400, '文件读取目标不匹配');
-      assert(
-        !localProjectId || request.localProjectId === localProjectId,
-        400,
-        '读取项目与副本不匹配',
-      );
-      this.checkProject(request.sessionId, request.localProjectId);
-      const project = this.machine.get(['localProject', request.localProjectId]) as
-        | { id: string; rootPath: string }
-        | undefined;
-      assert(
-        project?.id === request.localProjectId &&
-          this.workspace.projects.some(
-            (item) => item.id === project.id && item.rootPath === project.rootPath,
-          ),
-        404,
-        '项目副本已从主机移除',
-      );
-      return {
-        rootPath: project.rootPath,
-        userId: this.workspace.userId,
-        machineId: this.workspace.machineId,
-      };
-    };
-    const before = scope();
+    const before = this.executionLease(request, localProjectId);
     const { bytes, content } = await this.fileReader(before.rootPath, request.path);
-    const after = scope();
-    assert(
-      before.rootPath === after.rootPath &&
-        before.userId === after.userId &&
-        before.machineId === after.machineId,
-      409,
-      '文件读取范围已变化，请重试',
-    );
+    this.checkExecutionLease(before);
     const base: Omit<ProjectFileResult, 'status'> = {
       contentVersion: CONTENT_VERSION,
       workspaceId: request.workspaceId,
@@ -409,17 +383,40 @@ export class HostWorkspace {
       ? { ...base, status: 'not-modified' }
       : { ...base, status: 'content', encoding: 'base64', data: bytes.toString('base64') };
   }
-  projectLease(input: ContentScope, localProjectId?: string) {
+  projectRootLease(input: ContentScope, localProjectId?: string) {
     const scope = this.attachmentScope(input, localProjectId);
-    this.checkProject(input.sessionId, input.localProjectId);
     const rootPath = this.workspace.projects.find(
       (project) => project.id === input.localProjectId,
     )!.rootPath;
     return { ...scope, rootPath };
   }
+  // Historical authorization stays tied to the registered project even after a
+  // session worktree has been removed. Only live content uses executionLease.
+  projectLease(input: ContentScope, localProjectId?: string) {
+    const lease = this.projectRootLease(input, localProjectId);
+    this.checkProject(input.sessionId, input.localProjectId);
+    return lease;
+  }
   checkProjectLease(lease: ProjectHistoryScope & { rootPath: string }) {
     const current = this.projectLease(lease);
     assert(isDeepStrictEqual(current, lease), 409, '项目执行范围已变化');
+  }
+  executionLease(input: ContentScope, localProjectId?: string, allowNew = false) {
+    const lease = allowNew
+      ? this.projectRootLease(input, localProjectId)
+      : this.projectLease(input, localProjectId);
+    return this.store.executions.lease(lease);
+  }
+  checkExecutionLease(lease: ExecutionLease) {
+    assert(isDeepStrictEqual(this.executionLease(lease), lease), 409, '会话执行目录已变化');
+  }
+  readGitState(input: GitStateRead, localProjectId?: string) {
+    return this.executionManager.read(input, localProjectId);
+  }
+  async gitAction(input: GitAction, localProjectId?: string) {
+    const result = await this.executionManager.action(input, localProjectId);
+    this.changed(input.sessionId);
+    return result;
   }
   searchSessions(input: SessionSearchRequest, localProjectId?: string) {
     return searchHostSessions(this, input, localProjectId);
@@ -534,7 +531,7 @@ export class HostWorkspace {
     )
       return false;
     try {
-      this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+      this.checkExecutionLease(run.execution);
       return true;
     } catch {
       return false;
@@ -620,9 +617,9 @@ export class HostWorkspace {
     localProjectId?: string,
   ): Promise<ProjectTreeResult> {
     const request = projectTreeReadSchema.parse(input),
-      lease = this.projectLease(request, localProjectId);
+      lease = this.executionLease(request, localProjectId);
     const tree = await this.projectContent.tree(lease.rootPath);
-    this.checkProjectLease(lease);
+    this.checkExecutionLease(lease);
     const version = 'sha256:' + createHash('sha256').update(JSON.stringify(tree)).digest('hex');
     assert(
       !request.knownVersion || request.knownVersion === version,
@@ -729,6 +726,7 @@ export class HostWorkspace {
       machineId: this.workspace.machineId,
     };
     assert(this.store.attachmentScopeMatches(scope), 404, '附件会话不属于该项目副本');
+    assert(this.store.executions.scopeMatches(scope), 404, '会话执行目录不属于该项目副本');
     return scope;
   }
   async attachmentAction(
@@ -959,6 +957,7 @@ export class HostWorkspace {
   ) {
     const request = attentionContinueSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
+    this.checkGitIdle(context.sessionId!);
     assert(
       request.mutation.sessionId === context.sessionId &&
         request.mutation.workspaceId === context.runtimeWorkspaceId,
@@ -991,6 +990,7 @@ export class HostWorkspace {
   ) {
     const request = attentionPermissionSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
+    this.checkGitIdle(context.sessionId!);
     return this.serial(context.sessionId!, async () => {
       this.attentionTarget(context, true);
       const previous = this.store.attention.lookupReceipt(
@@ -1053,7 +1053,11 @@ export class HostWorkspace {
       });
     });
   }
+  private checkGitIdle(sessionId: string) {
+    assert(!this.executionManager.busy.has(sessionId), 409, '此会话正在处理 Git 操作，指令未送达');
+  }
   async mutate(m: Mutation, localProjectId?: string) {
+    this.checkGitIdle(m.sessionId);
     return this.serial(m.sessionId, () => this.mutateAccepted(m, localProjectId));
   }
   private async mutateAccepted(
@@ -1065,6 +1069,7 @@ export class HostWorkspace {
     },
   ) {
     this.ensureConnected();
+    this.checkGitIdle(m.sessionId);
     assert(
       m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
       400,
@@ -1110,6 +1115,9 @@ export class HostWorkspace {
       },
       localProjectId,
     );
+    const execution = this.executionLease(attachmentScope, localProjectId, true);
+    // Reject a mismatched restored context before confirming a new turn.
+    this.store.nativeSession(m.sessionId, execution);
     const inputView = mirror(validated.doc, m.sessionId);
     const attachments: AttachmentReference[] =
       m.kind === 'turn'
@@ -1218,9 +1226,8 @@ export class HostWorkspace {
         doc: validated.doc,
         stopped: false,
         projectScope: attachmentScope,
-        rootPath: this.workspace.projects.find(
-          (project) => project.id === attachmentScope.localProjectId,
-        )!.rootPath,
+        rootPath: execution.rootPath,
+        execution,
         snapshotIssues: [],
         permissions: new Map(),
       };
@@ -1321,7 +1328,7 @@ export class HostWorkspace {
       try {
         const before = await this.projectContent.capture(run.rootPath);
         if (this.closed) return;
-        this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+        this.checkExecutionLease(run.execution);
         run.before = before;
         this.store.transaction(() =>
           this.store.projectHistory.saveBefore(run.projectScope, run.turnId, before),
@@ -1330,82 +1337,92 @@ export class HostWorkspace {
         if (!this.closed) run.snapshotIssues.push({ reason: 'capture-failed' });
       }
       if (run.stopped || this.closed) return;
-      this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+      this.checkExecutionLease(run.execution);
       const meta = metas(this.meta)['session-' + id];
       const agent = this.machine.get(['agentConfig', String(meta.agentConfigId)]) as AgentConfig;
       const project = this.workspace.projects.find(
         (p) => p.id === (meta.project as any).localProjectId,
       )!;
-      const session = await this.driver.open(agent, run.rootPath, this.store.nativeSession(id), {
-        update: (value) => this.update(id, run, value),
-        event: (event, binding) => this.sessionEvent(id, run, event, binding),
-        question: (input) => {
-          const request = questionRequestSchema.parse(input);
-          const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
-          return this.boundRun(id, run, { workspaceId, localProjectId, sessionId, expectedTurnId })
-            ? this.interactions.receiveQuestion(request)
-            : Promise.resolve(cancelledQuestionAnswer(request));
-        },
-        permission: (value) => {
-          if (!this.boundRun(id, run, this.runBinding(id, run)))
-            return Promise.resolve({ outcome: { outcome: 'cancelled' } });
-          const requestId = randomUUID();
-          return new Promise((resolve) => {
-            const request = structuredClone(value);
-            run.permissions.set(requestId, {
-              options: request.options,
-              toolCall: request.toolCall,
-              resolve,
+      const session = await this.driver.open(
+        agent,
+        run.rootPath,
+        this.store.nativeSession(id, run.execution),
+        {
+          update: (value) => this.update(id, run, value),
+          event: (event, binding) => this.sessionEvent(id, run, event, binding),
+          question: (input) => {
+            const request = questionRequestSchema.parse(input);
+            const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
+            return this.boundRun(id, run, {
+              workspaceId,
+              localProjectId,
+              sessionId,
+              expectedTurnId,
+            })
+              ? this.interactions.receiveQuestion(request)
+              : Promise.resolve(cancelledQuestionAnswer(request));
+          },
+          permission: (value) => {
+            if (!this.boundRun(id, run, this.runBinding(id, run)))
+              return Promise.resolve({ outcome: { outcome: 'cancelled' } });
+            const requestId = randomUUID();
+            return new Promise((resolve) => {
+              const request = structuredClone(value);
+              run.permissions.set(requestId, {
+                options: request.options,
+                toolCall: request.toolCall,
+                resolve,
+              });
+              try {
+                this.edit(
+                  id,
+                  run,
+                  (turn) => {
+                    let item = turn.items.findLast(
+                      (i: any) =>
+                        i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
+                    );
+                    // A tool may ask again or have concurrent permission requests.
+                    // Keep every request addressable by its own immutable id.
+                    if (!item || item.permissionRequest) turn.items.push((item = {}));
+                    Object.assign(item, request.toolCall, {
+                      type: 'tool_call',
+                      permissionRequest: { requestId, options: request.options },
+                    });
+                  },
+                  false,
+                  () => {
+                    this.store.notifications.record(
+                      { ...run.projectScope, turnId: run.turnId },
+                      'approval-required',
+                      requestId,
+                    );
+                    this.store.attention.recordPermission({
+                      sessionId: id,
+                      assistantTurnId: run.turnId,
+                      userTurnId: run.userTurnId,
+                      localProjectId: project.id,
+                      requestId,
+                      summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
+                    });
+                  },
+                );
+              } catch (error) {
+                run.permissions.delete(requestId);
+                resolve({ outcome: { outcome: 'cancelled' } });
+                throw error;
+              }
             });
-            try {
-              this.edit(
-                id,
-                run,
-                (turn) => {
-                  let item = turn.items.findLast(
-                    (i: any) =>
-                      i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
-                  );
-                  // A tool may ask again or have concurrent permission requests.
-                  // Keep every request addressable by its own immutable id.
-                  if (!item || item.permissionRequest) turn.items.push((item = {}));
-                  Object.assign(item, request.toolCall, {
-                    type: 'tool_call',
-                    permissionRequest: { requestId, options: request.options },
-                  });
-                },
-                false,
-                () => {
-                  this.store.notifications.record(
-                    { ...run.projectScope, turnId: run.turnId },
-                    'approval-required',
-                    requestId,
-                  );
-                  this.store.attention.recordPermission({
-                    sessionId: id,
-                    assistantTurnId: run.turnId,
-                    userTurnId: run.userTurnId,
-                    localProjectId: project.id,
-                    requestId,
-                    summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
-                  });
-                },
-              );
-            } catch (error) {
-              run.permissions.delete(requestId);
-              resolve({ outcome: { outcome: 'cancelled' } });
-              throw error;
-            }
-          });
+          },
         },
-      });
+      );
       run.session = session;
       if (run.stopped || this.closed) {
         await session.close();
         return;
       }
-      this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
-      this.store.setNativeSession(id, session.id);
+      this.checkExecutionLease(run.execution);
+      this.store.setNativeSession(id, session.id, run.execution);
       this.saveAgentFeatures(id, run, session);
       const view = mirror(run.doc, id),
         input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig as Record<
@@ -1470,10 +1487,10 @@ export class HostWorkspace {
     return (run.finalizing ??= (async () => {
       let after: ProjectSnapshot | undefined;
       try {
-        this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+        this.checkExecutionLease(run.execution);
         const capturedAfter = await this.projectContent.capture(run.rootPath);
         if (this.closed) return;
-        this.checkProjectLease({ ...run.projectScope, rootPath: run.rootPath });
+        this.checkExecutionLease(run.execution);
         after = capturedAfter;
       } catch {
         run.snapshotIssues.push({ reason: 'capture-failed' });

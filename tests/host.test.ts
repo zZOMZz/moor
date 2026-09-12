@@ -699,6 +699,12 @@ test('attention approval reads never approve; exact scoped retry responds only o
     expectedTurnId: item.userTurnId,
     optionId: 'allow',
   };
+  f.host.executionManager.busy.add(item.sessionId);
+  await strict.rejects(f.host.attentionPermission(context, item.itemId, choice), /Git/);
+  strict.equal(f.journal.has(choice.operationId), false);
+  strict.equal(f.host.active.get(item.sessionId)!.permissions.size, 1);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'pending');
+  f.host.executionManager.busy.delete(item.sessionId);
   const receipt = await f.host.attentionPermission(context, item.itemId, choice);
   strict.deepEqual(await waiting, { outcome: { outcome: 'selected', optionId: 'allow' } });
   strict.deepEqual(await f.host.attentionPermission(context, item.itemId, choice), receipt);
@@ -765,6 +771,12 @@ test('attention continuation commits the new turn and original disposition atomi
     eventRevision: item.eventRevision,
     observationRevision: 1,
   };
+  f.host.executionManager.busy.add(item.sessionId);
+  await strict.rejects(f.host.attentionContinue(context, item.itemId, continuation), /Git/);
+  strict.equal(f.journal.has(continuation.mutation.operationId), false);
+  strict.equal(f.dispatches(), 1);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
+  f.host.executionManager.busy.delete(item.sessionId);
   f.journal.db.exec(
     "CREATE TRIGGER fail_attention_receipt BEFORE INSERT ON attention_receipt BEGIN SELECT RAISE(ABORT, 'synthetic receipt failure'); END",
   );

@@ -1,3 +1,6 @@
+import { GIT_WORKTREE_FEATURE } from '../git-protocol';
+import { GitWorkspaceController, gitWorkspaceKey, type GitTarget } from './git-workspace';
+import { showGitWorkspaceControl, showGitWorkspacePanel } from './git-workspace-ui';
 import { NotificationController } from './notifications';
 import {
   notificationBrowser,
@@ -655,6 +658,168 @@ function renderInteractions() {
   });
 }
 
+let gitWorkspace: GitWorkspaceController | undefined;
+let gitLoading = false,
+  gitLoadError = '',
+  gitGeneration = 0,
+  gitPanelOpen = false;
+function resetGitWorkspace() {
+  gitGeneration++;
+  gitWorkspace = undefined;
+  gitLoading = false;
+  gitLoadError = '';
+  gitPanelOpen = false;
+  showGitWorkspacePanel();
+  showGitWorkspaceControl();
+}
+function gitTarget(): GitTarget | undefined {
+  const controller = currentAttachments();
+  if (!controller || !workspace || !activeWorkspace || !replica) return;
+  return {
+    ...controller.scope,
+    userId: workspace.userId,
+    machineId: workspace.machineId,
+    catalogWorkspaceId: activeWorkspace.id,
+    replicaId: replica.id,
+  };
+}
+function currentGitWorkspace() {
+  const target = gitTarget();
+  return target && gitWorkspace && gitWorkspaceKey(target) === gitWorkspaceKey(gitWorkspace.target)
+    ? gitWorkspace
+    : undefined;
+}
+function gitBlocksComposer() {
+  return gitLoading || Boolean(gitLoadError || currentGitWorkspace()?.blocked);
+}
+async function loadGitWorkspace() {
+  const target = gitTarget(),
+    generation = ++gitGeneration;
+  gitWorkspace = undefined;
+  gitLoadError = '';
+  gitLoading = true;
+  updateComposer();
+  try {
+    if (!target) return;
+    const controller: GitWorkspaceController = new GitWorkspaceController(target, {
+      read: cache.read,
+      compareWrite: cache.compareWrite,
+      request: api,
+      current: () => generation === gitGeneration && currentGitWorkspace() === controller,
+      changed: () => {
+        if (generation === gitGeneration) updateComposer();
+      },
+    });
+    gitWorkspace = controller;
+    await controller.load();
+    if (generation !== gitGeneration) return;
+    if (
+      authenticated &&
+      selected?.online &&
+      replica?.available &&
+      workspace?.features?.includes(GIT_WORKTREE_FEATURE)
+    ) {
+      try {
+        await controller.refresh();
+      } catch (cause) {
+        if (generation === gitGeneration) error(cause);
+      }
+    }
+  } catch (cause) {
+    if (generation === gitGeneration)
+      gitLoadError = 'Git 操作记录无法恢复，请重新打开原会话后再发送。';
+    throw cause;
+  } finally {
+    if (generation === gitGeneration) {
+      gitLoading = false;
+      updateComposer();
+    }
+  }
+}
+function gitOnlineReason() {
+  if (!workspace?.features?.includes(GIT_WORKTREE_FEATURE))
+    return '执行电脑需要更新 Moor 才能使用 Git 与独立工作目录。';
+  if (!authenticated || !connected || !selected?.online || !replica?.available)
+    return '执行电脑离线，可查看上次缓存；连接后请手动操作。';
+  return '';
+}
+async function gitOperation(work: (controller: GitWorkspaceController) => Promise<void>) {
+  const controller = currentGitWorkspace(),
+    generation = gitGeneration;
+  if (!controller || gitLoading || gitLoadError)
+    throw new Error(gitLoadError || 'Git 操作记录尚未恢复。');
+  const reason = gitOnlineReason();
+  if (reason) throw new Error(reason);
+  if (
+    sending ||
+    pending ||
+    actionSending ||
+    pendingAction ||
+    attachmentWorking ||
+    currentAttachments()?.busyId ||
+    currentInteractions()?.busy ||
+    currentInteractions()?.pending
+  )
+    throw new Error('请先确认当前会话操作。');
+  try {
+    await work(controller);
+  } catch (cause) {
+    if (generation === gitGeneration) throw cause;
+  } finally {
+    if (generation === gitGeneration) updateComposer();
+  }
+}
+function openGitWorkspace() {
+  gitPanelOpen = true;
+  renderGitWorkspace();
+}
+function renderGitWorkspace() {
+  const controller = currentGitWorkspace();
+  showGitWorkspaceControl(
+    attentionVisible
+      ? undefined
+      : {
+          onOpen: openGitWorkspace,
+          disabled: !workspace || !replica,
+          label:
+            controller?.execution?.mode === 'worktree' ? 'Git · 独立工作目录' : 'Git 与工作目录',
+        },
+  );
+  if (!gitPanelOpen) return;
+  const generation = gitGeneration;
+  const act = (work: (value: GitWorkspaceController) => Promise<void>) =>
+    run(async () => {
+      if (generation !== gitGeneration || controller !== currentGitWorkspace()) return;
+      await gitOperation(work);
+    });
+  showGitWorkspacePanel({
+    controller,
+    newSession: !sessionId,
+    reason: gitLoadError || (gitLoading ? '正在恢复 Git 操作记录…' : gitOnlineReason()),
+    onClose: () => {
+      gitPanelOpen = false;
+      showGitWorkspacePanel();
+    },
+    onRefresh: () => act((value) => value.refresh()),
+    onPrepare: (branch, oid, name) =>
+      act(async (value) => {
+        if (sessionId) throw new Error('已有会话保留当前工作目录，请先创建新会话。');
+        await value.prepare(branch, oid, name);
+      }),
+    onRemove: () => act((value) => value.remove()),
+    onRetry: () => act((value) => value.retry()),
+    onNewDraft: () =>
+      act(async (value) => {
+        if (sessionId || value.pending || value.execution?.status !== 'removed') return;
+        const key = draftAttachmentSessionKey(value.target);
+        if ((await cache.read(key)) !== value.target.sessionId)
+          throw new Error('会话草稿已改变，请重新打开。');
+        await cache.write(key, crypto.randomUUID());
+        await loadAttachmentDraft();
+      }),
+  });
+}
+
 let newProjectId = '',
   newAgentId = '',
   newSessionControlsReady = false;
@@ -786,6 +951,8 @@ function setAttentionVisible(visible: boolean) {
   const persistenceState = document.querySelector<HTMLElement>('#session-persistence-state');
   if (persistenceState) persistenceState.hidden = visible || !sessionPersistenceError;
   if (visible) {
+    gitPanelOpen = false;
+    showGitWorkspacePanel();
     cancelAttachmentSave();
     showAttachmentPreview(undefined);
     closeNavigation();
@@ -895,6 +1062,7 @@ function attachmentTarget(controller: AttachmentDraftController): AttachmentTarg
   return { ...controller.scope, catalogWorkspaceId: activeWorkspace.id, replicaId: replica.id };
 }
 async function loadAttachmentDraft() {
+  resetGitWorkspace();
   const token = ++attachmentGeneration,
     base = currentAttachmentBase(),
     generation = sessionGeneration;
@@ -928,6 +1096,8 @@ async function loadAttachmentDraft() {
     );
     attachments = controller;
     await controller.load();
+    if (token === attachmentGeneration && generation === sessionGeneration)
+      await loadGitWorkspace();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -1535,6 +1705,7 @@ async function api(path: string, body?: unknown) {
   return request(path, body);
 }
 function resetWorkspace() {
+  resetGitWorkspace();
   cancelAttachmentSave();
   notificationController = undefined;
   notificationPanelOpen = false;
@@ -1835,6 +2006,7 @@ async function loadDevices() {
         (h) => h.deviceId === selected!.id && h.runtimeWorkspaceId === workspace?.id,
       )
     ) {
+      resetGitWorkspace();
       cancelAttachmentSave();
       showAttachmentPreview(undefined);
       selected = undefined;
@@ -1914,6 +2086,9 @@ function renderNewSessionControls() {
       sending ||
       pending ||
       attachmentWorking ||
+      gitLoading ||
+      currentGitWorkspace()?.busy ||
+      currentGitWorkspace()?.pending ||
       currentAttachments()?.busyId ||
       !workspace
     )
@@ -1941,13 +2116,21 @@ function renderNewSessionControls() {
     agents: workspace.agents.map(({ id, name }) => ({ id, name })),
     projectId: newProjectId,
     agentId: newAgentId,
-    disabled: sending || !!pending || attachmentWorking || !!currentAttachments()?.busyId,
+    disabled:
+      sending ||
+      !!pending ||
+      attachmentWorking ||
+      gitLoading ||
+      !!currentGitWorkspace()?.busy ||
+      !!currentGitWorkspace()?.pending ||
+      !!currentAttachments()?.busyId,
     onProject: (value) => change('project', value),
     onAgent: (value) => change('agent', value),
   });
 }
 function renderTarget() {
   renderProjectControls();
+  renderGitWorkspace();
   if (attentionVisible) {
     showTarget({ project: activeWorkspace?.name, title: '待我处理', connected, online: connected });
     return;
@@ -2057,6 +2240,7 @@ function showWorkspaceManager() {
 }
 async function selectWorkspace(id: string, saved?: Partial<Selection>) {
   const restoreAttention = attentionVisible;
+  resetGitWorkspace();
   cancelAttachmentSave();
   const target = catalog.find((w) => w.id === id);
   if (!target) return;
@@ -2134,6 +2318,7 @@ async function restoreSelection() {
   else restoredSelection = false;
 }
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
+  resetGitWorkspace();
   cancelAttachmentSave();
   closeProjectContent();
   resetInteractions();
@@ -2481,6 +2666,7 @@ async function openSession(
   keepAttention = false,
 ) {
   if (!keepAttention) setAttentionVisible(false);
+  resetGitWorkspace();
   cancelAttachmentSave();
   showAttachmentPreview(undefined);
   closeProjectContent();
@@ -2874,6 +3060,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderGitWorkspace();
   const persistenceState = document.querySelector('#session-persistence-state');
   if (persistenceState) {
     persistenceState.textContent = sessionPersistenceError;
@@ -2893,6 +3080,7 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    gitBlocksComposer() ||
     (!!sessionPersistenceError && !pending) ||
     !!interactionLoadError ||
     interactionLoading ||
@@ -2924,11 +3112,15 @@ function updateComposer() {
   $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending || attachmentWorking;
   const state = document.querySelector('#draft-state');
   if (state)
-    state.textContent = pending
-      ? '提交结果待确认，重试会使用同一编号'
-      : !connected || !selected?.online
-        ? '执行电脑离线 · 输入保留为草稿'
-        : '';
+    state.textContent = gitBlocksComposer()
+      ? currentGitWorkspace()?.execution?.status === 'removed'
+        ? '工作目录已清理，请创建另一份新会话'
+        : '请先在 Git 与工作目录中确认原操作'
+      : pending
+        ? '提交结果待确认，重试会使用同一编号'
+        : !connected || !selected?.online
+          ? '执行电脑离线 · 输入保留为草稿'
+          : '';
   if (state) state.toggleAttribute('hidden', !state.textContent);
   let active = false;
   if (sessionId) {
@@ -2996,6 +3188,8 @@ async function submit(m: Mutation) {
   }
 }
 async function sendTurn() {
+  if (gitBlocksComposer())
+    throw new Error(gitLoadError || '请先在 Git 与工作目录中确认当前目录状态。');
   if (attachmentLoadError) throw new Error(attachmentLoadError);
   if (attachmentLoading || attachmentWorking || currentAttachments()?.busyId)
     throw new Error('请等待附件操作完成。');
@@ -3031,6 +3225,8 @@ async function prepareTurnMutation(
   // Only the composer selects its attachment draft for this turn. Continuing an
   // attention item sends its reviewed text and preserves any separate composer attachments.
   const generation = sessionGeneration;
+  if (gitBlocksComposer())
+    throw new Error(gitLoadError || '请先在 Git 与工作目录中确认当前目录状态。');
   if (attachmentLoadError) throw new Error(attachmentLoadError);
   if (attachmentLoading || attachmentWorking || currentAttachments()?.busyId)
     throw new Error('请等待附件操作完成。');
