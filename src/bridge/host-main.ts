@@ -12,48 +12,21 @@ import { acpDriver } from '../runtime/acp';
 import { localCodexPath, withLocalCodex } from './local-codex';
 import { Store, token } from '../relay/accounts';
 import { createApp } from '../relay/http';
-import { AppError, assert, mutationSchema, sessionActionSchema, PROTOCOL } from '../protocol';
-import { projectFileReadSchema } from '../content-protocol';
-import { attachmentActionSchema, attachmentReadSchema } from '../attachment-protocol';
-import {
-  projectTreeReadSchema,
-  projectTurnDiffReadSchema,
-  projectDiffFileReadSchema,
-} from '../project-content-protocol';
-import { questionAnswerSchema, steerRequestSchema } from '../interaction-protocol';
-import { sessionSearchRequestSchema } from '../search-protocol';
+import { AppError, assert, PROTOCOL } from '../protocol';
+import { HostCommandDispatcher } from './host-command';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
-import { gitStateReadSchema, gitActionSchema } from '../git-protocol';
-import { forkOptionsReadSchema, sessionForkSchema } from '../fork-protocol';
-import { githubReadSchema, githubActionSchema } from '../github-protocol';
-import {
-  githubWriteReadSchema,
-  githubWriteActionSchema,
-  githubWriteInspectSchema,
-  githubWriteAbandonSchema,
-} from '../github-write-protocol';
 import { GitHubConfig } from '../runtime/github-config';
 import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
 import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
 import { McpSettings } from '../runtime/mcp-settings';
-import { mcpReadSchema } from '../mcp-protocol';
 import { AgentSettings } from '../runtime/agent-settings';
-import { sessionControlActionSchema, sessionOperationSchema } from '../session-control-protocol';
-import { taskAuthoritySchema, taskReadSchema, taskActionSchema } from '../task-protocol';
-import { skillsReadSchema } from '../skills-protocol';
-import { rolesReadSchema, rolesActionRequestSchema } from '../role-protocol';
+import { taskAuthoritySchema } from '../task-protocol';
 import {
   assertLocalCliConnectionPath,
   publishLocalCliConnection,
   localCliProof,
 } from './local-cli-connection';
-import {
-  previewReadSchema,
-  previewActionSchema,
-  previewInspectSchema,
-  previewCloseSchema,
-} from '../preview-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -479,6 +452,11 @@ async function refresh() {
     reportHealth();
   }
 }
+const commands = new HostCommandDispatcher({
+  ready: () => ready,
+  workspace: (id) => workspaces.get(id),
+  hasOperation: (operationId) => journal.has(operationId),
+});
 function connect(target: Target) {
   if (stopped || target.revoked) return;
   const url = new URL('/bridge', target.config.server);
@@ -540,212 +518,43 @@ function connect(target: Target) {
         await syncWatch(m.workspaceId, m.sessionId);
       }
       if (m.type === 'request') {
+        const command = {
+          method: m.method,
+          workspaceId: m.workspaceId,
+          localProjectId: m.localProjectId,
+          params: m.params,
+        };
         try {
-          const workspace = workspaces.get(m.workspaceId);
-          assert(ready && workspace && !workspace.closed, 409, '本机执行服务不可达');
-          let result: unknown;
-          if (m.method === 'sessions') result = workspace.list(m.localProjectId);
-          else if (m.method === 'agent-options')
-            result = await workspace.refreshAgentOptions(
-              m.params.agentId,
-              m.localProjectId,
-              m.params.sessionId,
-            );
-          else if (m.method === 'session')
-            result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
-          else if (m.method === 'roles-read')
-            result = await workspace.readRoles(rolesReadSchema.parse(m.params), m.localProjectId);
-          else if (m.method === 'mcp-read') {
-            const input = mcpReadSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = workspace.readMcp(input, m.localProjectId);
-          } else if (m.method === 'session-control')
-            result = await workspace.controlManager.control(
-              sessionControlActionSchema.parse(m.params),
-              m.localProjectId,
-            );
-          else if (m.method === 'session-operations')
-            result = await workspace.controlManager.recover(
-              sessionOperationSchema.parse(m.params),
-              m.localProjectId,
-            );
-          else if (m.method === 'tasks-read')
-            result = await workspace.taskManager.read(
-              taskReadSchema.parse(m.params),
-              m.localProjectId,
-            );
-          else if (m.method === 'tasks-action')
-            result = await workspace.taskManager.action(
-              taskActionSchema.parse(m.params),
-              m.localProjectId,
-            );
-          else if (m.method === 'roles-action')
-            result = await workspace.roleAction(
-              rolesActionRequestSchema.parse(m.params),
-              m.localProjectId,
-            );
-          else if (m.method === 'skills-read') {
-            const input = skillsReadSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readSkills(input, m.localProjectId);
-          } else if (m.method === 'preview-read') {
-            const input = previewReadSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readPreview(input, m.localProjectId);
-          } else if (m.method === 'preview-action') {
-            const input = previewActionSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.previewAction(input, m.localProjectId);
-          } else if (m.method === 'preview-inspect') {
-            const input = previewInspectSchema.parse(m.params);
-            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.inspectPreview(input, m.localProjectId);
-          } else if (m.method === 'preview-close') {
-            const input = previewCloseSchema.parse(m.params);
-            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.closePreview(input, m.localProjectId);
-          } else if (m.method === 'github-write-read') {
-            const input = githubWriteReadSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readGithubWrite(input, m.localProjectId);
-          } else if (m.method === 'github-write-action') {
-            const input = githubWriteActionSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.githubWriteAction(input, m.localProjectId);
-          } else if (m.method === 'github-write-inspect') {
-            const input = githubWriteInspectSchema.parse(m.params);
-            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.inspectGithubWrite(input, m.localProjectId);
-          } else if (m.method === 'github-write-abandon') {
-            const input = githubWriteAbandonSchema.parse(m.params);
-            assert(input.request.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.abandonGithubWrite(input, m.localProjectId);
-          } else if (m.method === 'github-read') {
-            const input = githubReadSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readGithub(input, m.localProjectId);
-          } else if (m.method === 'github-action' || m.method === 'github-abandon') {
-            const input = githubActionSchema.parse(m.params);
-            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await (m.method === 'github-abandon'
-              ? workspace.abandonGithub(input, m.localProjectId)
-              : workspace.githubAction(input, m.localProjectId));
-          } else if (m.method === 'mutate') {
-            const body = mutationSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            const authority =
-              m.authorityOwner === undefined
-                ? undefined
-                : taskAuthoritySchema.parse({
-                    serverOrigin: target.config.server,
-                    ownerId: m.authorityOwner,
-                    deviceId: target.config.id,
-                  });
-            result = await workspace.mutate(
-              body,
-              m.localProjectId,
-              authority
-                ? {
-                    ...authority,
-                    current: () => {
-                      assert(
-                        !stopped &&
-                          !target.revoked &&
-                          target.socket === ws &&
-                          ws.readyState === WebSocket.OPEN &&
-                          target.config.server === authority.serverOrigin &&
-                          target.config.id === authority.deviceId,
-                        409,
-                        '协作授权的原连接已失效',
-                      );
-                    },
-                  }
-                : undefined,
-            );
-          } else if (m.method === 'session-action') {
-            const body = sessionActionSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.sessionAction(body, m.localProjectId);
-          } else if (m.method === 'file-content') {
-            const body = projectFileReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readProjectFile(body, m.localProjectId);
-          } else if (m.method === 'attachment-action') {
-            const body = attachmentActionSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.attachmentAction(body, m.localProjectId);
-          } else if (m.method === 'read-attachment') {
-            const body = attachmentReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readAttachment(body, m.localProjectId);
-          } else if (m.method === 'read-project-tree') {
-            const body = projectTreeReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readProjectTree(body, m.localProjectId);
-          } else if (m.method === 'read-turn-diff') {
-            const body = projectTurnDiffReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readTurnDiff(body, m.localProjectId);
-          } else if (m.method === 'read-diff-file') {
-            const body = projectDiffFileReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readDiffFile(body, m.localProjectId);
-          } else if (m.method === 'answer-question') {
-            const body = questionAnswerSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.answerQuestion(body, m.localProjectId);
-          } else if (m.method === 'steer') {
-            const body = steerRequestSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.steer(body, m.localProjectId);
-          } else if (m.method === 'search-sessions') {
-            const body = sessionSearchRequestSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.searchSessions(body, m.localProjectId);
-          } else if (m.method === 'git-state') {
-            const body = gitStateReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readGitState(body, m.localProjectId);
-          } else if (m.method === 'git-action') {
-            const body = gitActionSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.gitAction(body, m.localProjectId);
-          } else if (m.method === 'fork-options') {
-            const body = forkOptionsReadSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.readForkOptions(body, m.localProjectId);
-          } else if (m.method === 'fork-action') {
-            const body = sessionForkSchema.parse(m.params);
-            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
-            result = await workspace.forkSession(body, m.localProjectId);
-          } else if (m.method === 'cancel')
-            result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
-          else throw new AppError(400, '不支持的操作');
+          const authority =
+            m.method !== 'mutate' || m.authorityOwner === undefined
+              ? undefined
+              : taskAuthoritySchema.parse({
+                  serverOrigin: target.config.server,
+                  ownerId: m.authorityOwner,
+                  deviceId: target.config.id,
+                });
+          const result = await commands.execute(command, {
+            authority: authority
+              ? {
+                  ...authority,
+                  current: () => {
+                    assert(
+                      !stopped &&
+                        !target.revoked &&
+                        target.socket === ws &&
+                        ws.readyState === WebSocket.OPEN &&
+                        target.config.server === authority.serverOrigin &&
+                        target.config.id === authority.deviceId,
+                      409,
+                      '协作授权的原连接已失效',
+                    );
+                  },
+                }
+              : undefined,
+          });
           send(ws, { type: 'response', requestId: m.requestId, result });
         } catch (e) {
-          send(ws, {
-            type: 'response',
-            requestId: m.requestId,
-            error: {
-              status: e instanceof AppError ? e.status : 502,
-              message: e instanceof AppError ? e.message : '本地主机处理失败',
-              rejected:
-                (e instanceof AppError && e.rejected) ||
-                ([
-                  'mutate',
-                  'session-action',
-                  'attachment-action',
-                  'git-action',
-                  'fork-action',
-                  'github-action',
-                  'github-abandon',
-                  'github-write-action',
-                  'preview-action',
-                ].includes(m.method) &&
-                  typeof m.params?.operationId === 'string' &&
-                  !journal.has(m.params.operationId)),
-            },
-          });
+          send(ws, { type: 'response', requestId: m.requestId, error: commands.error(command, e) });
         }
       }
     } catch (e) {
