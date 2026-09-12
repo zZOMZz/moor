@@ -146,6 +146,8 @@ import {
 import { MCP_FEATURE, MCP_LIMITS, mcpReadSchema, validateMcpRead } from '../mcp-protocol';
 import { GoogleAuth } from './google-auth';
 import type { GoogleOidcProvider } from './google-oidc';
+import { RelayTrustPublications, TRUST_PUBLICATION_FAILED } from './trust-publications';
+import { TRUST_PUBLICATION_LIMITS } from '../security/trust-publication';
 export function createApp(
   store: Store,
   options: {
@@ -160,6 +162,8 @@ export function createApp(
   },
 ) {
   let origin = new URL(options.origin).origin;
+  let trustOriginGeneration = 0;
+  const trustPublications = options.localOnly ? undefined : new RelayTrustPublications(store.db);
   const googleAuth = new GoogleAuth(store, {
     origin,
     setupToken: options.setupToken,
@@ -418,6 +422,40 @@ export function createApp(
       throw new AppError(400, 'JSON 无效');
     }
   }
+  async function trustBody(req: IncomingMessage, current: () => void): Promise<unknown> {
+    try {
+      current();
+      assert(
+        /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? ''),
+        415,
+        TRUST_PUBLICATION_FAILED,
+      );
+      const length = req.headers['content-length'];
+      if (length !== undefined)
+        assert(Number(length) <= TRUST_PUBLICATION_LIMITS.wireBytes, 413, TRUST_PUBLICATION_FAILED);
+      let size = 0;
+      const chunks: Buffer[] = [];
+      // Keep the response usable when rejecting a bounded body; discard unread bytes below.
+      for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+        current();
+        const bytes = Buffer.from(chunk);
+        size += bytes.byteLength;
+        assert(size <= TRUST_PUBLICATION_LIMITS.wireBytes, 413, TRUST_PUBLICATION_FAILED);
+        chunks.push(bytes);
+      }
+      current();
+      try {
+        const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+          Buffer.concat(chunks),
+        );
+        return JSON.parse(text);
+      } catch {
+        throw new AppError(400, TRUST_PUBLICATION_FAILED);
+      }
+    } finally {
+      if (!req.readableEnded && !req.destroyed) req.resume();
+    }
+  }
   const json = (res: ServerResponse, status: number, value: unknown) => {
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -453,6 +491,45 @@ export function createApp(
         /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:github-write\/(inspect|abandon)|preview\/(inspect|close))$/.test(
           path,
         );
+      if (path === '/api/security/trust/publish' || path === '/api/security/trust/read') {
+        try {
+          assert(!options.localOnly && trustPublications, 404, TRUST_PUBLICATION_FAILED);
+          assert(req.method === 'POST', 404, TRUST_PUBLICATION_FAILED);
+          assert(!url.search && !url.hash, 400, TRUST_PUBLICATION_FAILED);
+          assert(req.headers['x-moor-instance'] === undefined, 409, TRUST_PUBLICATION_FAILED);
+          const requestOrigin = origin,
+            generation = trustOriginGeneration,
+            secret = cookie(req);
+          assert(req.headers.origin === requestOrigin, 403, TRUST_PUBLICATION_FAILED);
+          assert(!closing, 503, TRUST_PUBLICATION_FAILED);
+          const owner = store.owner(secret);
+          const current = () => {
+            assert(!closing && !req.aborted && !res.destroyed, 503, TRUST_PUBLICATION_FAILED);
+            assert(
+              origin === requestOrigin && generation === trustOriginGeneration,
+              403,
+              TRUST_PUBLICATION_FAILED,
+            );
+            assert(store.owner(secret) === owner, 401, TRUST_PUBLICATION_FAILED);
+          };
+          const input = await trustBody(req, current);
+          current();
+          const boundary = { owner, origin: requestOrigin, current };
+          const result =
+            path === '/api/security/trust/publish'
+              ? await trustPublications.publish(input, boundary)
+              : await trustPublications.read(input, boundary);
+          current();
+          return json(res, 200, result);
+        } catch (error) {
+          if (!req.readableEnded && !req.destroyed) req.resume();
+          return json(
+            res,
+            error instanceof AppError ? error.status : error instanceof z.ZodError ? 400 : 500,
+            { error: TRUST_PUBLICATION_FAILED },
+          );
+        }
+      }
       const instanceHeader = req.headers['x-moor-instance'];
       if (instanceHeader !== undefined)
         assert(
@@ -2735,11 +2812,14 @@ export function createApp(
     server,
     online,
     setOrigin: (value: string) => {
-      origin = new URL(value).origin;
+      const next = new URL(value).origin;
+      if (next !== origin) trustOriginGeneration++;
+      origin = next;
       googleAuth.setOrigin(origin);
     },
     close: async () => {
       closing = true;
+      trustPublications?.close();
       googleAuth.close();
       notifications.close();
       clearInterval(heartbeat);

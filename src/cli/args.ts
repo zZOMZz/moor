@@ -9,7 +9,16 @@ export class CliError extends Error {
   }
 }
 const commands: Record<string, readonly string[]> = {
-  auth: ['login', 'status', 'logout'],
+  auth: [
+    'login',
+    'status',
+    'logout',
+    'export-trust',
+    'google-start',
+    'google-review',
+    'google-confirm',
+    'google-cancel',
+  ],
   targets: ['list', 'use'],
   session: [
     'create',
@@ -43,6 +52,7 @@ const values = new Set([
   'timeout',
   'turn',
   'mcp-server-ids',
+  'output',
 ]);
 export type CliArgs = {
   group: string;
@@ -93,9 +103,22 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   if ((flags.follow || flags.wait) && group !== 'session')
     throw new CliError('usage', '--follow/--wait 仅用于会话读取、发送或停止后的等待。');
   const allowed = new Set(['json', 'state-dir']);
-  if (group !== 'config' && !(group === 'operation' && command === 'list')) {
-    allowed.add('connection');
+  const google = group === 'auth' && command.startsWith('google-');
+  if (google) {
+    if (command === 'google-start') {
+      allowed.add('server');
+      if (!flags.server) throw new CliError('usage', 'Google 登录需要明确 --server。');
+    } else if (command === 'google-confirm') {
+      allowed.add('stdin');
+      if (!flags.stdin) throw new CliError('usage', 'Google 登录确认需要 --stdin 核对邮箱和代码。');
+    }
+  } else if (group !== 'config' && !(group === 'operation' && command === 'list')) {
+    if (!(group === 'auth' && command === 'export-trust')) allowed.add('connection');
     allowed.add('server');
+  }
+  if (group === 'auth' && command === 'export-trust') {
+    allowed.add('output');
+    if (!flags.output) throw new CliError('usage', '导出信任连接需要 --output 私有文件路径。');
   }
   if (group === 'auth' && command === 'login' && flags.connection && (flags.stdin || flags.file))
     throw new CliError('usage', '本机连接登录不接受远程登录资料。');
@@ -129,6 +152,11 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
 export const cliHelp = `Moor CLI (cliVersion 1)
   auth login --server https://relay.example --stdin   输入 {"email":"...","password":"..."}
   auth status | auth logout
+  auth google-start --server https://relay.example  输出系统浏览器登录地址和核对代码
+  auth google-review                             手动读取待确认邮箱、服务器和代码
+  auth google-confirm --stdin                     输入 {"expectedEmail":"...","expectedCode":"..."}
+  auth google-cancel                              取消当前 Google 登录流程
+  auth export-trust --output PATH               将当前远程登录导出为新的私有信任连接文件
   targets list | targets use --workspace ID --replica ID
   session create --agent ID [--stdin | --file PATH]  可选标题文本
   session list | session read [ID] [--follow | --wait] [--timeout MS]

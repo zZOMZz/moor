@@ -38,23 +38,18 @@ import {
   VerifiedTrust,
   type RootPublicJwk,
   type TrustedDevice,
+  type TrustCheckpoint,
   type TrustPin,
 } from './e2ee-trust';
 import { PrivateEndpointFile } from './private-endpoint-file';
+import {
+  publicTrustEntrySchema as publicTrustSchema,
+  verifyPublicTrustEntry,
+  TRUST_PUBLICATION_LIMITS,
+} from './trust-publication';
 
-export const DEVICE_MANAGER_LIMITS = Object.freeze({ approvals: 8 });
+export const DEVICE_MANAGER_LIMITS = Object.freeze({ approvals: 8, publications: 16 });
 const privateKeySchema = rootPublicJwkSchema.extend({ d: e2eeDigestSchema }).strict();
-const publicTrustSchema = z
-  .object({
-    pin: trustPinSchema,
-    rootPublicKey: rootPublicJwkSchema,
-    checkpoint: trustCheckpointSchema,
-    signedManifest: z
-      .string()
-      .min(1)
-      .max(64 * 1024),
-  })
-  .strict();
 export type DevicePublicTrust = z.infer<typeof publicTrustSchema>;
 const pendingSchema = z
   .object({ request: pairingRequestSchema, privateKey: privateKeySchema })
@@ -86,6 +81,9 @@ const stateSchema = z
       .max(128 * 1024)
       .nullable(),
     approvals: z.array(receiptSchema).max(DEVICE_MANAGER_LIMITS.approvals),
+    // Missing only in the previous preview format. Its current signed version
+    // remains pending until explicitly confirmed; unavailable history is never invented.
+    publications: z.array(publicTrustSchema).max(DEVICE_MANAGER_LIMITS.publications).optional(),
   })
   .strict()
   .refine(
@@ -149,14 +147,7 @@ function publicTrust(
   });
 }
 async function readTrust(value: DevicePublicTrust): Promise<VerifiedTrust> {
-  const trust = await VerifiedTrust.verify({
-    signed: value.signedManifest,
-    rootPublicKey: value.rootPublicKey,
-    pin: value.pin,
-    previous: value.checkpoint,
-  });
-  if (!same(trust.checkpoint, value.checkpoint)) fail();
-  return trust;
+  return verifyPublicTrustEntry(value);
 }
 async function newDevice(deviceId: string, roles: Roles) {
   const key = await generateDeviceEncryptionKey();
@@ -212,6 +203,24 @@ export class DeviceManager {
           assertPin(state.pin, state.trust.pin);
           manager.#trust = await readTrust(state.trust);
         }
+        let previousPublication: VerifiedTrust | undefined;
+        for (const entry of state.publications ?? []) {
+          if (!state.trust) fail();
+          assertPin(state.pin, entry.pin);
+          if (!same(entry.rootPublicKey, state.trust.rootPublicKey)) fail();
+          const verified = await readTrust(entry);
+          if (
+            verified.checkpoint.epoch > state.trust.checkpoint.epoch ||
+            (verified.checkpoint.epoch === state.trust.checkpoint.epoch &&
+              !same(verified.checkpoint, state.trust.checkpoint)) ||
+            (previousPublication &&
+              (verified.checkpoint.epoch <= previousPublication.checkpoint.epoch ||
+                (verified.checkpoint.epoch === previousPublication.checkpoint.epoch + 1 &&
+                  verified.manifest.previous !== previousPublication.checkpoint.digest)))
+          )
+            fail();
+          previousPublication = verified;
+        }
         for (const receipt of state.approvals) {
           assertPin(state.pin, receipt.request);
           if ((await fingerprintRequest(receipt.request)) !== receipt.fingerprint) fail();
@@ -261,6 +270,18 @@ export class DeviceManager {
   #receipts(state: State) {
     return state.approvals.filter((item) => item.request.expiresAt > this.#now());
   }
+  #publicationEntries(state: State): DevicePublicTrust[] {
+    return state.publications ?? (state.trust ? [state.trust] : []);
+  }
+  #appendPublication(state: State, entry: DevicePublicTrust) {
+    const before = this.#publicationEntries(state);
+    if (
+      before.length >= DEVICE_MANAGER_LIMITS.publications ||
+      (before.length && before.at(-1)!.checkpoint.epoch >= entry.checkpoint.epoch)
+    )
+      fail();
+    return [...before, entry];
+  }
   #isDeviceCurrent() {
     if (!this.#trust || !this.#state) return false;
     const device = this.#trust.manifest.devices.find(
@@ -283,6 +304,7 @@ export class DeviceManager {
           device: state.device,
           trust: state.trust,
           canUnlockRoot: !!state.recoveryCapsule,
+          pendingPublications: this.#publicationEntries(state).length,
           pending: state.pending
             ? {
                 request: state.pending.request,
@@ -305,6 +327,82 @@ export class DeviceManager {
     const key = await importDevicePrivateJwk(this.#state.privateKey);
     this.#assert(revision);
     return key;
+  }
+  /** Public metadata only. Reading never publishes, acknowledges or advances trust. */
+  publications() {
+    const { state, revision } = this.#active();
+    return structuredClone({
+      revision,
+      pin: state.pin,
+      rootPublicKey: state.trust!.rootPublicKey,
+      entries: this.#publicationEntries(state),
+    });
+  }
+  /** A matching relay storage receipt changes bookkeeping only, never cryptographic authority. */
+  ackPublications(input: { expectedRevision: number; checkpoints: TrustCheckpoint[] }) {
+    try {
+      const expected = z.number().int().positive().safe().parse(input.expectedRevision),
+        checkpoints = z
+          .array(trustCheckpointSchema)
+          .min(1)
+          .max(DEVICE_MANAGER_LIMITS.publications)
+          .parse(input.checkpoints);
+      const { state, trust } = this.#active();
+      this.#assert(expected);
+      const entries = this.#publicationEntries(state);
+      if (
+        checkpoints.length > entries.length ||
+        checkpoints.some((checkpoint, index) => !same(checkpoint, entries[index]!.checkpoint))
+      )
+        fail();
+      this.#write(expected, { ...state, publications: entries.slice(checkpoints.length) }, trust);
+      return this.status();
+    } catch {
+      return fail();
+    }
+  }
+  /** Verify a whole contiguous page before one durable update; failures cannot partially install it. */
+  async installTrustBatch(
+    input: { expectedRevision: number; entries: DevicePublicTrust[] },
+    options: { current?: () => void } = {},
+  ) {
+    try {
+      options.current?.();
+      const expected = z.number().int().positive().safe().parse(input.expectedRevision),
+        entries = z
+          .array(publicTrustSchema)
+          .max(TRUST_PUBLICATION_LIMITS.pageEntries)
+          .parse(input.entries);
+      const { state, trust } = this.#active();
+      this.#assert(expected);
+      let next = trust;
+      let latest = state.trust!;
+      for (const entry of entries) {
+        assertPin(entry.pin, state.pin);
+        if (!same(entry.rootPublicKey, state.trust!.rootPublicKey)) fail();
+        if (entry.checkpoint.epoch !== next.checkpoint.epoch + 1) fail();
+        next = await VerifiedTrust.verify({
+          signed: entry.signedManifest,
+          rootPublicKey: entry.rootPublicKey,
+          pin: state.pin,
+          previous: next.checkpoint,
+        });
+        options.current?.();
+        if (!same(next.checkpoint, entry.checkpoint)) fail();
+        latest = entry;
+      }
+      this.#assert(expected);
+      options.current?.();
+      if (!entries.length) return this.status();
+      this.#write(
+        expected,
+        { ...state, trust: latest, publications: this.#publicationEntries(state) },
+        next,
+      );
+      return this.status();
+    } catch {
+      return fail();
+    }
   }
   async initialize(identity: InitialIdentity, recoveryKey: string) {
     try {
@@ -347,6 +445,7 @@ export class DeviceManager {
           pending: null,
           recoveryCapsule,
           approvals: [],
+          publications: [publicTrust(trust, root.publicKey, signedManifest)],
         },
         trust,
       );
@@ -376,6 +475,7 @@ export class DeviceManager {
         pending: { request, privateKey: own.privateKey },
         recoveryCapsule: null,
         approvals: [],
+        publications: [],
       });
       return { ...this.status(), fingerprint };
     } catch {
@@ -475,6 +575,7 @@ export class DeviceManager {
           privateKey: pending.privateKey,
           pending: null,
           trust: publicTrust(trust, root, signed),
+          publications: this.#publicationEntries(state),
         },
         trust,
       );
@@ -590,6 +691,7 @@ export class DeviceManager {
           trust: next.public,
           recoveryCapsule: next.capsule,
           approvals: [...receipts, receipt],
+          publications: this.#appendPublication(state, next.public),
         },
         next.trust,
       );
@@ -627,6 +729,7 @@ export class DeviceManager {
           trust: next.public,
           recoveryCapsule: next.capsule,
           approvals: this.#receipts(state),
+          publications: this.#appendPublication(state, next.public),
         },
         next.trust,
       );
@@ -656,7 +759,11 @@ export class DeviceManager {
       }
       this.#write(
         expected,
-        { ...state, trust: publicTrust(next, state.trust!.rootPublicKey, signed) },
+        {
+          ...state,
+          trust: publicTrust(next, state.trust!.rootPublicKey, signed),
+          publications: this.#publicationEntries(state),
+        },
         next,
       );
       return this.status();
@@ -753,6 +860,7 @@ export class DeviceManager {
         pending: null,
         recoveryCapsule: capsule,
         approvals: [],
+        publications: [],
       };
       const next = await this.#nextTrust(
         temporary,
@@ -768,7 +876,12 @@ export class DeviceManager {
       );
       this.#write(
         null,
-        { ...temporary, trust: next.public, recoveryCapsule: next.capsule },
+        {
+          ...temporary,
+          trust: next.public,
+          recoveryCapsule: next.capsule,
+          publications: [next.public],
+        },
         next.trust,
       );
       return this.status();

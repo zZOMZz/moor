@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   agentSchema,
@@ -34,6 +36,9 @@ import { readLocalCliConnection } from '../bridge/local-cli-connection';
 import { CliError, type CliArgs } from './args';
 import { CliHttp, CliHttpError, connectionSchema, serverOrigin } from './http';
 import { cliInput } from './input';
+import { CliGoogleAuth } from './google-auth';
+import { PrivateEndpointFile } from '../security/private-endpoint-file';
+import { trustConnectionSchema } from '../security/trust-client';
 import { CliState, type CliOperation, type CliTarget } from './state';
 import {
   cliServerKey,
@@ -59,6 +64,12 @@ const authSchema = z.discriminatedUnion('kind', [
 ]);
 const loginSchema = z
   .object({ email: z.string().email().max(200), password: z.string().min(1).max(1024) })
+  .strict();
+const googleConfirmationSchema = z
+  .object({
+    expectedEmail: z.string().min(1).max(320),
+    expectedCode: z.string().regex(/^[A-F0-9]{4}-[A-F0-9]{4}$/),
+  })
   .strict();
 function scope(target: CliTarget): SessionControlScope {
   return {
@@ -420,11 +431,89 @@ export class CliClient {
     }
   }
   async run(args: CliArgs): Promise<unknown> {
+    const authRevision = args.group === 'auth' ? this.state.settingsRevision() : undefined;
+    const authCurrent = () => {
+      if (this.deps.signal?.aborted || this.state.settingsRevision() !== authRevision)
+        throw new CliError(
+          'authentication-conflict',
+          '登录状态已改变；请核对当前账号后手动继续。',
+          3,
+        );
+    };
+    if (args.group === 'auth' && args.command.startsWith('google-')) {
+      const google = new CliGoogleAuth(this.deps);
+      switch (args.command) {
+        case 'google-start':
+          return google.begin({ origin: String(args.flags.server) });
+        case 'google-review':
+          return google.review();
+        case 'google-cancel':
+          return google.cancel();
+        case 'google-confirm': {
+          let confirmation;
+          try {
+            if (!args.flags.stdin || args.flags.file) throw new Error();
+            confirmation = googleConfirmationSchema.parse(
+              JSON.parse((await cliInput(args, this.deps.stdin, 4096))!),
+            );
+          } catch {
+            throw new CliError('google-input', '确认输入必须是包含核对邮箱和代码的有效 JSON。');
+          }
+          authCurrent();
+          return google.finish(confirmation);
+        }
+      }
+    }
+    if (args.group === 'auth' && args.command === 'export-trust') {
+      let file: PrivateEndpointFile | undefined;
+      try {
+        const auth = authSchema.parse(this.state.get('auth'));
+        const revision = authRevision!;
+        const output = String(args.flags.output ?? '');
+        if (auth.kind !== 'remote' || args.flags.connection || !isAbsolute(output))
+          throw new Error();
+        const connection = trustConnectionSchema.parse({
+          kind: 'moor-trust-connection',
+          ...auth.connection,
+        });
+        if (args.flags.server && serverOrigin(String(args.flags.server)) !== connection.origin)
+          throw new Error();
+        const current = () => {
+          this.state.assertCurrent();
+          if (
+            this.deps.signal?.aborted ||
+            this.state.settingsRevision() !== revision ||
+            !isDeepStrictEqual(this.state.get('auth'), auth)
+          )
+            throw new Error();
+        };
+        current();
+        file = PrivateEndpointFile.open(output);
+        if (file.load()) throw new Error();
+        current();
+        file.save(null, connection);
+        current();
+        return { outputFile: resolve(output) };
+      } catch {
+        throw new CliError(
+          'export-trust',
+          '信任连接文件未能确认保存；请核对本机状态和目标文件，不会自动覆盖。',
+          1,
+        );
+      } finally {
+        file?.close();
+      }
+    }
     if (args.group === 'auth' && args.command === 'login') {
       if (args.flags.connection) {
-        const http = await this.http(args);
+        const initial = await this.http(args);
+        authCurrent();
+        const http = new CliHttp(initial.connection, { ...initial.options, current: authCurrent });
         await http.identity();
-        this.state.set('auth', { kind: 'local', file: String(args.flags.connection) });
+        authCurrent();
+        this.state.compareAndSetSettings(authRevision!, {
+          auth: { kind: 'local', file: String(args.flags.connection) },
+        });
         return { authenticated: true, kind: 'local', owner: http.owner, server: http.origin };
       }
       if (!args.flags.server) throw new CliError('usage', '远程登录需要明确 --server。');
@@ -435,13 +524,14 @@ export class CliClient {
       } catch {
         throw new CliError('login-input', '登录输入必须包含 email 和 password，且使用有效 JSON。');
       }
+      authCurrent();
       const initial = new CliHttp(
           { origin },
           {
             fetch: this.deps.fetch,
             signal: this.deps.signal,
             deadline: this.deps.deadline,
-            current: () => this.state.assertCurrent(),
+            current: authCurrent,
           },
         ),
         response = await initial.request('/api/login', JSON.stringify(credentials), 4096),
@@ -459,11 +549,12 @@ export class CliClient {
             fetch: this.deps.fetch,
             signal: this.deps.signal,
             deadline: this.deps.deadline,
-            current: () => this.state.assertCurrent(),
+            current: authCurrent,
           },
         ).identity(),
       });
-      this.state.set('auth', { kind: 'remote', connection });
+      authCurrent();
+      this.state.compareAndSetSettings(authRevision!, { auth: { kind: 'remote', connection } });
       return { authenticated: true, kind: 'remote', owner: connection.owner, server: origin };
     }
     if (args.group === 'config') {
@@ -487,12 +578,14 @@ export class CliClient {
       (args.flags.connection ||
         authSchema.optional().parse(this.state.get('auth'))?.kind === 'local')
     ) {
-      this.state.set('auth', undefined);
-      this.state.set('target', undefined);
+      authCurrent();
+      this.state.compareAndSetSettings(authRevision!, { auth: undefined, target: undefined });
       return { authenticated: false, kind: 'local', hostConnectionRetained: true };
     }
-    const http = await this.http(args);
+    let http = await this.http(args);
     if (args.group === 'auth') {
+      authCurrent();
+      http = new CliHttp(http.connection, { ...http.options, current: authCurrent });
       if (args.command === 'status')
         return {
           authenticated: true,
@@ -503,8 +596,8 @@ export class CliClient {
       try {
         await http.json('/api/logout', {});
       } finally {
-        this.state.set('auth', undefined);
-        this.state.set('target', undefined);
+        authCurrent();
+        this.state.compareAndSetSettings(authRevision!, { auth: undefined, target: undefined });
       }
       return { authenticated: false };
     }
