@@ -302,7 +302,13 @@ export class TasksController {
       this.enabled = undefined;
     });
   }
-  async stageSubmission(mutation: Mutation, pendingKey: string, pendingValue: unknown) {
+  async stageSubmission(
+    mutation: Mutation,
+    pendingKey: string,
+    pendingValue: unknown,
+    extra: readonly DraftBundleEntry[] = [],
+    extraCurrent: () => boolean = () => true,
+  ) {
     return this.exclusive(async (generation) => {
       await this.flush();
       this.access(generation);
@@ -337,8 +343,9 @@ export class TasksController {
           [
             { key: tasksKey(this.target), expected: this.saved, value },
             { key: pendingKey, expected: undefined, value: pendingValue },
+            ...extra,
           ],
-          () => this.deps.current() && generation === this.generation,
+          () => this.deps.current() && generation === this.generation && extraCurrent(),
         );
         this.current(generation);
         if (!written) throw new Error('任务提交草稿已在其他页面改变。');

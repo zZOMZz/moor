@@ -13,6 +13,7 @@ import { CliHttp } from '../src/cli/http';
 import { localCliProof, type LocalCliConnectionLease } from '../src/bridge/local-cli-connection';
 import { CliError, parseCliArgs } from '../src/cli/args';
 import { syntheticCapabilities } from './support/agent-capabilities';
+import type { AgentOpenOptions } from '../src/runtime/agent';
 const signal = () => {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => {
@@ -37,12 +38,14 @@ async function fixture(t: TestContext) {
   let opens = 0,
     prompts = 0,
     cancels = 0;
+  let agentOptions: AgentOpenOptions | undefined;
   let completion = signal(),
     started = signal();
   const host = new HostWorkspace(
     store,
     {
-      open: async () => {
+      open: async (_agent, _cwd, _nativeId, _callbacks, options) => {
+        agentOptions = options;
         opens++;
         return {
           id: 'native-' + opens,
@@ -147,7 +150,17 @@ async function fixture(t: TestContext) {
       if (suffix === 'session-control') result = await host.controlManager.control(data, projectId);
       else if (suffix === 'session-operations')
         result = await host.controlManager.recover(data, projectId);
-      else if (suffix === 'mutations') result = await host.mutate(data, projectId);
+      else if (suffix === 'mutations')
+        result = await host.mutate(data, projectId, {
+          serverOrigin: origin,
+          ownerId: 'owner',
+          deviceId: 'device',
+          current() {
+            assert.equal(fault.owner ?? 'owner', 'owner');
+            assert.equal(fault.device ?? 'device', 'device');
+          },
+        });
+      else if (suffix === 'mcp/read') result = host.readMcp(data, projectId);
       else if (suffix === 'session-actions') result = await host.sessionAction(data, projectId);
       else if (suffix === 'sessions')
         result = Object.values(metas(host.meta)).filter(
@@ -241,6 +254,9 @@ async function fixture(t: TestContext) {
     get client() {
       return client;
     },
+    get agentOptions() {
+      return agentOptions;
+    },
     get started() {
       return started;
     },
@@ -299,6 +315,67 @@ test('CLI creates without Agent, builds host-accepted turn, waits, stops exact a
   const config = await f.run(['config', 'show']);
   assert.ok(!JSON.stringify(config).includes('personal='));
   assert.ok(!JSON.stringify(config).includes('SYNTHETIC_PASSWORD'));
+});
+test('CLI reads MCP without execution, grants exact versions only on manual send and retries original authorization', async (t) => {
+  const f = await fixture(t);
+  await f.run(['session', 'create', '--agent', 'agent']);
+  const target = f.state.target()!;
+  const state = await f.host.mcpSettings.handle({
+    action: 'save',
+    expectedRevision: 0,
+    name: 'Synthetic MCP',
+    description: 'Review these tools',
+    projectIds: [target.localProjectId],
+    enabled: true,
+    connection: {
+      transport: 'http',
+      url: 'https://synthetic.invalid/mcp',
+      headers: { Authorization: 'Bearer SYNTHETIC_PRIVATE_MCP' },
+    },
+  });
+  const preset = state.presets[0]!;
+  const catalog = (await f.run(['session', 'mcp'])) as any;
+  assert.equal(catalog.servers[0].id, preset.versionId);
+  assert.doesNotMatch(JSON.stringify(catalog), /SYNTHETIC_PRIVATE_MCP|Authorization/);
+  assert.equal(f.counts().opens, 0);
+  const before = f.state.operations().length;
+  await assert.rejects(
+    f.run(['session', 'send', '--stdin', '--mcp-server-ids', 'unknown-version'], 'blocked'),
+    /未发送/,
+  );
+  assert.equal(f.state.operations().length, before);
+  f.fault.lost = 'after';
+  await assert.rejects(
+    f.run(
+      ['session', 'send', '--stdin', '--mcp-server-ids', preset.versionId],
+      'Authorize synthetic MCP',
+    ),
+    /原请求/,
+  );
+  await f.started.promise;
+  assert.equal(f.agentOptions?.mcp?.servers.length, 1);
+  const operation = f.state.operations().find((op) => op.kind === 'turn')!;
+  assert.doesNotMatch(operation.body, /SYNTHETIC_PRIVATE_MCP|Authorization/);
+  await f.finish();
+  await f.host.mcpSettings.handle({
+    action: 'enabled',
+    expectedRevision: 1,
+    id: preset.id,
+    enabled: false,
+  });
+  const reads = f.requests.filter((r) => r.path.endsWith('/mcp/read')).length;
+  f.restart();
+  await f.run(['operation', 'retry', operation.operationId]);
+  assert.equal(f.requests.filter((r) => r.path.endsWith('/mcp/read')).length, reads);
+  const writes = f.requests.filter((r) => r.path.endsWith('/mutations'));
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1]!.body, operation.body);
+  assert.equal(f.counts().prompts, 1);
+  f.next();
+  await f.run(['session', 'send', '--stdin'], 'Next turn has no extra MCP');
+  await f.started.promise;
+  assert.equal(f.agentOptions?.mcp, undefined);
+  assert.equal(f.counts().prompts, 2);
 });
 test('lost confirmation survives restart; inspect never dispatches, retry uses exact original bytes and original Agent', async (t) => {
   const f = await fixture(t);

@@ -121,6 +121,77 @@ async function fixture(
   return { session, child, messages, waitFor, control, start };
 }
 
+test(
+  'actual ACP limit updates use the initialized adapter identity and exact active session before entering shared reports',
+  { timeout: 15000 },
+  async (t) => {
+    for (const variant of [
+      {},
+      { custom: true },
+      { agentType: 'codex' },
+      { name: 'unverified-adapter' },
+      { version: '0.76.1' },
+      { nativeId: 'synthetic-resumed-native' },
+    ]) {
+      const events: { event: SessionEvent; binding: AgentRunBinding }[] = [];
+      const seen = signal<void>();
+      const f = await fixture(
+        t,
+        {
+          event(event, binding) {
+            events.push({ event, binding });
+            if (event.kind === 'context-usage') seen.resolve();
+          },
+        },
+        variant,
+      );
+      const active = f.start();
+      const prompt = await f.waitFor((message) => message.method === 'session/prompt');
+      const update = {
+        sessionUpdate: 'usage_update',
+        used: 12,
+        size: 100,
+        _meta: {
+          '_claude/rateLimit': {
+            status: 'allowed_warning',
+            rateLimitType: 'five_hour',
+            utilization: 0.9,
+            resetsAt: 1893456000,
+            credentials: 'synthetic-limit-secret',
+            hasChargeableSavedPaymentMethod: true,
+          },
+        },
+      };
+      f.control({ kind: 'emit', sessionId: 'wrong-native', update });
+      f.control({ kind: 'emit', sessionId: prompt.params.sessionId, update });
+      await seen.promise;
+      f.control({ kind: 'finish' });
+      await active;
+      assert.equal(events.length, 1);
+      assert.deepEqual(events[0]!.binding, binding);
+      const report = events[0]!.event;
+      assert.equal(report.kind, 'context-usage');
+      if (report.kind !== 'context-usage') throw new Error('Expected actual context report');
+      assert.equal(
+        !!report.rateLimit,
+        !(
+          'custom' in variant ||
+          'agentType' in variant ||
+          'name' in variant ||
+          'version' in variant
+        ),
+      );
+      if (report.rateLimit) {
+        assert.equal(report.rateLimit.utilization, 0.9);
+        assert.equal(report.rateLimit.resetsAt, 1893456000);
+        assert.deepEqual(f.session.currentEvents?.rateLimits, [report.rateLimit]);
+      }
+      assert.doesNotMatch(JSON.stringify(events), /synthetic-limit-secret|PaymentMethod/);
+      await f.session.close();
+    }
+  },
+);
+
 test('real ACP initializes capability discovery, preserves attachments and binds informational events and questions', async (t) => {
   const events: { event: SessionEvent; binding: AgentRunBinding }[] = [],
     updates: unknown[] = [];

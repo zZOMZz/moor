@@ -10,7 +10,7 @@ import { syntheticCapabilities } from './support/agent-capabilities';
 
 // Exercise the real controller and React UI. Only storage and transport are
 // synthetic; deferred responses reproduce ordering races without elapsed time.
-test('actual Tasks app reviews without execution, stages the parent plan atomically and retries only its original mutation', async () => {
+test('actual MCP app reads explicit metadata, binds the reviewed version to a turn and preserves later drafts on retry', async () => {
   const dom = new JSDOM('<!doctype html><div id="app"></div>', {
     url: 'https://synthetic.invalid',
   });
@@ -98,7 +98,7 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
     machineId: 'machine',
     projects: [{ id: 'project', name: 'Project', rootPath: '/synthetic' }],
     agents: [agent, other],
-    features: ['agent-versions-v1', 'session-tasks-v1', 'git-worktree-v1'],
+    features: ['agent-versions-v1', 'session-tasks-v1', 'git-worktree-v1', 'session-mcp-v1'],
   };
   const device = { id: 'device', name: 'Synthetic Mac', online: true, workspaces: [runtime] };
   const space = {
@@ -220,6 +220,16 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
     failCAS = false,
     rejectRetry = false;
   let waitMutation: undefined | (() => Promise<void>);
+  const server = {
+    id: 'mcp-version-a',
+    name: 'Synthetic <img src=x onerror=bad()>',
+    description: 'Reviewed metadata <script>bad()</script>',
+    transport: 'stdio' as const,
+  };
+  let catalog = [server];
+  let waitCatalog: undefined | (() => Promise<void>);
+  let invalidCatalog = false;
+  const bundles: string[][] = [];
   const oid = 'a'.repeat(40);
   Object.assign(globalThis, {
     __moorAppCache: storage,
@@ -234,7 +244,8 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
       entries: { key: string; expected: unknown; value: unknown }[],
       current: () => boolean,
     ) => {
-      assert.equal(entries.length, 2, 'task delivery and original mutation are one transaction');
+      assert.ok(entries.length === 2 || entries.length === 3);
+      bundles.push(entries.map((e) => e.key));
       if (failCAS) throw Error('synthetic storage failure');
       if (!current()) throw Error('scope changed');
       if (entries.some((e) => JSON.stringify(storage.get(e.key)) !== JSON.stringify(e.expected)))
@@ -283,7 +294,11 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
           canPrepare: true,
           canRemove: false,
         };
-      else if (url.pathname.endsWith('/tasks-read'))
+      else if (url.pathname.endsWith('/mcp/read')) {
+        await waitCatalog?.();
+        result = { ...body, confirmed: true, catalogRevision: 1, servers: catalog };
+        if (invalidCatalog) result = { ...result, sessionId: 'wrong-session' };
+      } else if (url.pathname.endsWith('/tasks-read'))
         result = { ...body, confirmed: true, grants, truncated: false };
       else if (url.pathname.endsWith('/tasks-action')) {
         const grant = structuredClone(grants[0]);
@@ -328,7 +343,7 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
         );
         assert.ok(
           [...storage.values()].some((v: any) => v?.delivery?.operationId === body.operationId),
-          'task authorization is durable before dispatch',
+          'MCP authorization is durable before dispatch',
         );
         await waitMutation?.();
         if (rejectRetry)
@@ -353,13 +368,13 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
         }
         if (lost) throw Error('synthetic lost parent receipt');
         result = receipts.get(body.operationId);
-      } else assert.fail('Unexpected Tasks app request ' + url.pathname);
+      } else assert.fail('Unexpected MCP app request ' + url.pathname);
       return { ok: true, status: 200, json: async () => structuredClone(result) };
     },
   });
   const loadPackage = createPackageRequire(join(process.cwd(), 'package.json'));
   const { build } = loadPackage('esbuild') as typeof import('esbuild');
-  const directory = await mkdtemp(join(process.cwd(), 'dist/tests/tasks-app-')),
+  const directory = await mkdtemp(join(process.cwd(), 'dist/tests/mcp-app-')),
     outfile = join(directory, 'app.mjs');
   await build({
     entryPoints: ['src/web/app.ts'],
@@ -374,7 +389,7 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
     },
     plugins: [
       {
-        name: 'synthetic-tasks-boundaries',
+        name: 'synthetic-mcp-boundaries',
         setup(builder) {
           builder.onResolve({ filter: /^\.\/cache$/ }, () => ({
             path: 'cache',
@@ -405,7 +420,7 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
                   'void loadAttachmentDraft().catch(error);',
                   'globalThis.__moorGitProjectChange = loadAttachmentDraft().catch(error);',
                 ) +
-              '\nexport {openSession,sendTurn,currentAgent,openTasks,currentTasks,reviewTasks,runSelection};export {disposeUI} from "./ui";',
+              '\nexport {openSession,sendTurn,currentAgent,openTasks,currentTasks,reviewTasks,runSelection,openMcp,currentMcp};export {disposeUI} from "./ui";',
           }));
         },
       },
@@ -467,6 +482,24 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
     assert.ok(app.currentTasks().enabled);
     await click('关闭协作任务');
   }
+  const reads = () => requests.filter((call) => call.path.endsWith('/mcp/read'));
+  const select = async (name: string) =>
+    act(() => {
+      const checkbox = [...document.querySelectorAll<HTMLInputElement>('.mcp-panel input')].find(
+        (item) => item.getAttribute('aria-label') === `选择 MCP：${name}`,
+      );
+      assert.ok(checkbox);
+      assert.equal(checkbox.disabled, false);
+      checkbox.click();
+    });
+  async function readAndSave() {
+    await click('额外 MCP');
+    await click('读取项目允许的 MCP');
+    await select(catalog[0]!.name);
+    await click('确认保存 MCP 选择到草稿');
+    assert.deepEqual(app.currentMcp().selected, catalog);
+    await click('关闭额外 MCP');
+  }
   try {
     await act(() =>
       app.boot(Promise.resolve({ owner, needsSetup: false }), Promise.resolve(owner)),
@@ -474,156 +507,248 @@ test('actual Tasks app reviews without execution, stages the parent plan atomica
     await act(() => SyntheticSocket.instances.at(-1)!.open());
     await act(async () => await (globalThis as any).__moorLastOperation);
     assert.equal(options().length, 0);
-    await enablePlan();
-    assert.equal(options().length, 0);
+    assert.equal(reads().length, 0);
+    await click('额外 MCP');
+    assert.equal(reads().length, 0, 'opening the panel never reads or connects');
+    assert.match(
+      document.querySelector('.mcp-panel')!.textContent!,
+      /Agent 自己的 MCP 设置不会因此关闭/,
+    );
+    await click('读取项目允许的 MCP');
+    assert.equal(reads().length, 1);
+    assert.equal(document.querySelector('.mcp-panel img,.mcp-panel script'), null);
+    assert.deepEqual(reads()[0]!.body, {
+      mcpVersion: 1,
+      workspaceId: 'runtime',
+      localProjectId: 'project',
+      sessionId: 'session',
+    });
+    await select(server.name);
+    await click('确认保存 MCP 选择到草稿');
+    assert.deepEqual(app.currentMcp().selected, [server]);
     assert.equal(mutations().length, 0);
-    await click('查看');
-    assert.equal(mutations().length, 0, 'composer card is not a form submit');
-    assert.equal(document.querySelector('.tasks-panel img,.tasks-panel script'), null);
-    await click('关闭协作任务');
-    assert.match(field().value, /Keep my original input/);
+    assert.equal(options().length, 0);
+    await click('关闭额外 MCP');
+    // A catalog revision retires the old immutable version, never upgrades it.
+    catalog = [{ ...server, id: 'mcp-version-b' }];
+    await act(() =>
+      SyntheticSocket.instances.at(-1)!.onmessage?.({
+        data: JSON.stringify({
+          type: 'changed',
+          room: { scope: 'mcp' },
+          deviceId: 'device',
+          workspaceId: 'runtime',
+        }),
+      }),
+    );
+    assert.equal(app.currentMcp().list, undefined);
+    assert.deepEqual(app.currentMcp().selected, [server]);
     await click('发送指令');
+    assert.equal(mutations().length, 0);
+    assert.deepEqual(app.currentMcp().selected, [server]);
+    assert.match(field().value, /Keep my original input/);
+    await click('额外 MCP');
+    await click('清空待保存选择');
+    await select(catalog[0]!.name);
+    await click('确认保存 MCP 选择到草稿');
+    await click('关闭额外 MCP');
+    await enablePlan();
+    // A user edit during the new metadata round-trip cancels that send and keeps the edit.
+    let preflightEntered!: () => void, preflightRelease!: () => void;
+    const preflightStarted = new Promise<void>((r) => (preflightEntered = r)),
+      preflightReleased = new Promise<void>((r) => (preflightRelease = r));
+    waitCatalog = async () => {
+      preflightEntered();
+      await preflightReleased;
+    };
+    let preflight!: Promise<void>;
+    await act(async () => {
+      button('发送指令').click();
+      preflight = (globalThis as any).__moorLastOperation;
+      await preflightStarted;
+    });
+    assert.equal(field().readOnly, false);
+    await type('Edited while checking MCP');
+    await act(async () => {
+      preflightRelease();
+      await preflight;
+    });
+    assert.equal(mutations().length, 0);
+    assert.equal(field().value, 'Edited while checking MCP');
+    assert.deepEqual(app.currentMcp().selected, catalog);
+    waitCatalog = undefined;
+    await type('Keep my original input');
+    const beforeSendReads = reads().length;
+    await click('发送指令');
+    assert.equal(
+      reads().length,
+      beforeSendReads + 1,
+      'fresh metadata is checked before the manual send',
+    );
     assert.equal(mutations().length, 1);
+    assert.ok(
+      bundles.some(
+        (keys) =>
+          keys.length === 3 &&
+          keys.some((key) => key.startsWith('mcp-draft-v1/')) &&
+          keys.some((key) => key.endsWith('/pending')),
+      ),
+      'MCP + task plan + pending share one transaction',
+    );
     const original = structuredClone(mutations()[0]!.body),
       sent = mirror(hostDoc, 'session'),
       input = sent.getState().history.at(-1)!.inputConfig as any;
     sent.dispose();
-    assert.equal(input.taskToolsEnabled, true);
+    assert.deepEqual(input.mcpServerIds, ['mcp-version-b']);
     assert.deepEqual(input.taskPlan, draft);
     assert.equal(input.prompt, 'Keep my original input');
     await act(() => app.openSession('session', 'replica'));
-    assert.equal(mutations().length, 1);
-    assert.equal(app.currentTasks().delivery.operationId, original.operationId);
+    assert.equal(app.currentMcp().delivery.operationId, original.operationId);
+    assert.equal(
+      app.currentMcp().list,
+      undefined,
+      'metadata is not restored as current availability',
+    );
+    await click('额外 MCP');
+    await click('清空待保存选择');
+    await click('确认保存 MCP 选择到草稿');
+    const laterReview = structuredClone(app.currentMcp().review);
+    assert.deepEqual(laterReview.servers, []);
+    await click('关闭额外 MCP');
+    const beforeRetryReads = reads().length;
     rejectRetry = true;
     await click('重试确认');
     assert.deepEqual(storage.get(cacheKey + '/pending'), original);
-    assert.equal(
-      app.currentTasks().delivery.operationId,
-      original.operationId,
-      'late predispatch rejection cannot erase original unknown',
-    );
+    assert.equal(app.currentMcp().delivery.operationId, original.operationId);
     rejectRetry = false;
     lost = false;
     await click('重试确认');
     assert.deepEqual(mutations().at(-1)!.body, original);
+    assert.equal(
+      reads().length,
+      beforeRetryReads,
+      'retry checks the original mutation, not a replacement catalog',
+    );
+    assert.equal(app.currentMcp().delivery, undefined);
+    assert.deepEqual(
+      app.currentMcp().review,
+      laterReview,
+      'confirmation never clears a later MCP edit',
+    );
     assert.equal(app.currentTasks().delivery, undefined);
-    assert.equal(app.currentTasks().enabled, undefined);
     assert.equal(field().value, '');
-    // A prepared worktree with no child history remains reviewable and manually cleanable.
-    grants = [
-      {
-        grantId: 'grant',
-        parentSessionId: 'session',
-        parentUserTurnId: 'parent-user',
-        parentAssistantTurnId: 'parent-assistant',
-        state: 'interrupted',
-        createdAt: '2026-01-01T00:00:00Z',
-        expiresAt: '2026-01-01T01:00:00Z',
-        plan: draft,
-        tasks: [
-          {
-            taskId: 'task',
-            childSessionId: 'uncreated-child',
-            sessionCreated: false,
-            title: draft.tasks[0]!.title,
-            agentId: 'agent',
-            completion: draft.tasks[0]!.completion,
-            status: 'unknown',
-            turnsUsed: 0,
-            execution: {
-              mode: 'worktree',
-              status: 'ready',
-              revision: 1,
-              executionId: 'task-execution',
-            },
-            goalVerified: false,
-          },
-        ],
-        operations: [
-          { operationId: 'create-op', taskId: 'task', kind: 'create', state: 'unknown' },
-        ],
-      },
-    ];
-    await click('协作任务');
-    await click('读取任务状态');
-    assert.equal(button('清理此任务工作目录').disabled, true);
-    assert.equal(
-      [...document.querySelectorAll('button')].some((b) => b.textContent === '打开子会话'),
-      false,
-    );
-    await click('核查原操作');
-    assert.equal(button('清理此任务工作目录').disabled, false);
-    await click('清理此任务工作目录');
-    assert.equal(
-      requests.filter((r) => r.path.endsWith('/tasks-action')).length,
-      1,
-      'cleanup requires final review',
-    );
-    await click('确认此操作');
-    const cleanup = requests.filter((r) => r.path.endsWith('/tasks-action')).at(-1)!.body;
-    assert.equal(cleanup.action, 'cleanup');
-    assert.equal(cleanup.taskId, 'task');
-    assert.equal(cleanup.expectedExecutionRevision, 1);
-    assert.match(document.querySelector('.tasks-panel')!.textContent!, /removed/);
-    await click('关闭协作任务');
-    // Child sessions may be read and navigated, but cannot authorize a second level.
+    // Child and new sessions start empty; an empty session keeps its stable draft ID.
     await act(() => app.openSession('task-child', 'replica'));
-    await click('协作任务');
-    assert.match(document.querySelector('.tasks-panel')!.textContent!, /子任务会话不能/);
-    assert.equal(button('添加子任务').disabled, true);
-    await click('关闭协作任务');
-    // Stable empty parent ID survives refresh and a failed transaction never sends.
+    assert.deepEqual(app.currentMcp().selected, []);
     await act(() => app.openSession('', 'replica'));
-    await enablePlan();
-    const newId = app.currentTasks().target.sessionId;
+    const newId = app.currentMcp().target.sessionId;
+    await readAndSave();
     await act(() => app.openSession('', 'replica'));
-    assert.equal(app.currentTasks().target.sessionId, newId);
-    assert.ok(app.currentTasks().enabled);
-    await type('New parent instruction');
+    assert.equal(app.currentMcp().target.sessionId, newId);
+    assert.deepEqual(app.currentMcp().selected, catalog);
+    await type('New synthetic instruction');
     const count = mutations().length;
     failCAS = true;
     await click('发送指令');
     assert.equal(mutations().length, count);
-    assert.match(field().value, /New parent instruction/);
     assert.equal(storage.get([owner, 'device', 'runtime', 'new', 'pending'].join('/')), undefined);
+    assert.match(field().value, /New synthetic instruction/);
     failCAS = false;
     await act(() => app.openSession('', 'replica'));
-    assert.ok(app.currentTasks().enabled);
     await click('发送指令');
-    assert.equal(mutations().length, count + 1);
     assert.equal(mutations().at(-1)!.body.sessionId, newId);
-    assert.equal(field().value, '');
-    // Late accepted response is retained in its original outbox when navigating away.
+    assert.equal(app.currentMcp().review, undefined);
+    // A late host confirmation leaves the original MCP outbox for its original page.
     await act(() => app.openSession('session', 'replica'));
-    await enablePlan();
-    await type('Late parent');
+    await readAndSave();
+    await type('Late synthetic confirmation');
+    let mutationEntered!: () => void, mutationRelease!: () => void;
+    const mutationStarted = new Promise<void>((r) => (mutationEntered = r)),
+      mutationReleased = new Promise<void>((r) => (mutationRelease = r));
+    waitMutation = async () => {
+      mutationEntered();
+      await mutationReleased;
+    };
+    let lateSending!: Promise<void>;
+    await act(async () => {
+      button('发送指令').click();
+      lateSending = (globalThis as any).__moorLastOperation;
+      await mutationStarted;
+    });
+    const lateOriginal = structuredClone(mutations().at(-1)!.body);
+    await act(() => app.openSession('task-child', 'replica'));
+    await type('Keep the child draft');
+    await act(async () => {
+      mutationRelease();
+      await lateSending;
+    });
+    assert.equal(field().value, 'Keep the child draft');
+    assert.deepEqual(storage.get(cacheKey + '/pending'), lateOriginal);
+    assert.ok(
+      [...storage.values()].some(
+        (v: any) =>
+          v?.target?.sessionId === 'session' &&
+          v?.delivery?.operationId === lateOriginal.operationId,
+      ),
+    );
+    assert.deepEqual(app.currentMcp().selected, []);
+    waitMutation = undefined;
+    await act(() => app.openSession('session', 'replica'));
+    await click('重试确认');
+    assert.deepEqual(mutations().at(-1)!.body, lateOriginal);
+    assert.equal(app.currentMcp().delivery, undefined);
+    // A late read from another target must not populate the current project/session.
+    await act(() => app.openSession('session', 'replica'));
     let entered!: () => void, release!: () => void;
     const started = new Promise<void>((r) => (entered = r)),
       released = new Promise<void>((r) => (release = r));
-    waitMutation = async () => {
+    waitCatalog = async () => {
       entered();
       await released;
     };
-    let sending!: Promise<void>;
+    await click('额外 MCP');
+    let reading!: Promise<void>;
     await act(async () => {
-      button('发送指令').click();
-      sending = (globalThis as any).__moorLastOperation;
+      button('读取项目允许的 MCP').click();
+      reading = (globalThis as any).__moorLastOperation;
       await started;
     });
     await act(() => app.openSession('task-child', 'replica'));
     await act(async () => {
       release();
-      await sending;
+      await reading;
     });
-    assert.equal(field().value, '');
-    assert.ok(storage.get(cacheKey + '/pending'));
-    assert.ok(
-      [...storage.values()].some((v: any) => v?.target?.sessionId === 'session' && v?.delivery),
-    );
-    waitMutation = undefined;
+    assert.equal(app.currentMcp().list, undefined);
+    assert.deepEqual(app.currentMcp().selected, []);
+    waitCatalog = undefined;
+    invalidCatalog = true;
+    await click('额外 MCP');
+    await click('读取项目允许的 MCP');
+    assert.equal(app.currentMcp().list, undefined);
+    await click('关闭额外 MCP');
+    invalidCatalog = false;
     await act(() => app.openSession('session', 'replica'));
-    await click('重试确认');
-    assert.equal(app.currentTasks().delivery, undefined);
+    await readAndSave();
+    const beforeOffline = requests.length,
+      sentCount = mutations().length;
+    await act(() => {
+      Object.defineProperty(win.navigator, 'onLine', { configurable: true, value: false });
+      win.dispatchEvent(new win.Event('offline'));
+    });
+    assert.equal(app.currentMcp().list, undefined);
+    assert.deepEqual(app.currentMcp().selected, catalog);
+    await click('额外 MCP');
+    assert.equal(button('读取项目允许的 MCP').disabled, true);
+    await click('清空待保存选择');
+    await click('确认保存 MCP 选择到草稿');
+    assert.deepEqual(app.currentMcp().selected, []);
+    await click('关闭额外 MCP');
+    assert.equal(requests.length, beforeOffline);
+    await act(() => {
+      Object.defineProperty(win.navigator, 'onLine', { configurable: true, value: true });
+      win.dispatchEvent(new win.Event('online'));
+    });
+    assert.equal(mutations().length, sentCount, 'reconnect never submits a local draft');
   } finally {
     await act(() => app.disposeUI());
     dom.window.close();

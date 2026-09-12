@@ -23,6 +23,13 @@ import {
   type SessionOriginalOperation,
 } from '../session-control-protocol';
 import { buildSessionTurn, readClientSession } from '../session-client';
+import {
+  MCP_FEATURE,
+  MCP_LIMITS,
+  mcpReadSchema,
+  mcpServerIdsSchema,
+  validateMcpRead,
+} from '../mcp-protocol';
 import { readLocalCliConnection } from '../bridge/local-cli-connection';
 import { CliError, type CliArgs } from './args';
 import { CliHttp, CliHttpError, connectionSchema, serverOrigin } from './http';
@@ -572,6 +579,20 @@ export class CliClient {
       return this.wait(http, target, args);
     const read = await this.read(http, target);
     if (args.command === 'read') return { target, ...read };
+    const readMcp = async () => {
+      requireFeature(resolved, MCP_FEATURE);
+      const request = mcpReadSchema.parse({
+        mcpVersion: 1,
+        workspaceId: target.workspaceId,
+        localProjectId: target.localProjectId,
+        sessionId: target.sessionId,
+      });
+      return validateMcpRead(
+        await http.json(replicaBase(target) + '/mcp/read', request, MCP_LIMITS.responseBytes),
+        request,
+      );
+    };
+    if (args.command === 'mcp') return { target, ...(await readMcp()) };
     if (args.command === 'send') {
       requireFeature(resolved, SESSION_CONTROL_FEATURE);
       if (args.flags.agent && args.flags.agent !== read.meta.agentConfigId)
@@ -582,12 +603,25 @@ export class CliClient {
           ? resolved.agents.find((a) => a.id === read.meta.agentConfigId)
           : undefined);
       if (!agent) throw new CliError('agent', '主机未提供此会话的固定 Agent 版本；未发送。', 5);
+      const mcpServerIds = mcpServerIdsSchema.parse(
+        args.flags['mcp-server-ids'] ? String(args.flags['mcp-server-ids']).split(',') : [],
+      );
+      if (mcpServerIds.length) {
+        const catalog = await readMcp();
+        if (mcpServerIds.some((id) => !catalog.servers.some((server) => server.id === id)))
+          throw new CliError(
+            'mcp',
+            '所选 MCP 版本已停用或不属于此项目，请重新读取并审查；未发送。',
+            5,
+          );
+      }
       const turnId = this.uuid(),
         request = buildSessionTurn({
           scope: scope(target),
           read,
           agent: agentSchema.parse(agent),
           prompt: (await cliInput(args, this.deps.stdin))!,
+          mcpServerIds,
           selection: {
             ...(args.flags.model ? { modelId: String(args.flags.model) } : {}),
             ...(args.flags.effort ? { reasoningEffort: String(args.flags.effort) } : {}),

@@ -74,6 +74,8 @@ node dist/cli.mjs session stop SESSION_ID --turn ASSISTANT_TURN_ID --wait
 
 CLI 可以查看审批和提问相关历史；当前会话 CLI 不提供审批答复、附件上传、角色应用、Skills 安装、Git 写操作或任意 shell 命令。已有审批、附件、角色和 Git 等能力仍使用各自入口，Skills 安装尚未实现，不因 CLI 登录扩大权限。
 
+`session mcp SESSION_ID --json` 只读取本机登记、已启用且允许当前项目使用的 MCP 版本。审查后可在 `session send` 中明确提供 `--mcp-server-ids ID,ID`，最多 8 项且每次发送前核对；省略时不添加 Moor MCP。配置、凭据和传输能力边界见[本机 MCP](mcp.md)。
+
 ## 整理与配置查看
 
 ```sh

@@ -36,6 +36,7 @@ const desktopFiles = new Set([
   'skills-settings.cjs',
   'recovery.cjs',
   'agent-settings.cjs',
+  'mcp-settings.cjs',
   'page-loader.cjs',
   'settings.css',
   'settings.html',

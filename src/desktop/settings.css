@@ -214,16 +214,20 @@ button:disabled {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-#agent-settings summary {
+#agent-settings summary,
+#mcp-settings summary {
   cursor: pointer;
   font-weight: 600;
 }
-#agent-settings label:not(.check) {
+#agent-settings label:not(.check),
+#mcp-settings label:not(.check) {
   display: block;
   margin: 12px 0;
 }
 #agent-settings select,
-#agent-settings textarea {
+#agent-settings textarea,
+#mcp-settings select,
+#mcp-settings textarea {
   display: block;
   width: 100%;
   margin-top: 5px;
@@ -234,18 +238,32 @@ button:disabled {
   color: var(--ink);
   font: inherit;
 }
-#agent-settings textarea {
+#agent-settings textarea,
+#mcp-settings textarea {
   resize: vertical;
 }
-#agent-settings small {
+#agent-settings small,
+#mcp-settings small {
   display: block;
   margin-bottom: 12px;
 }
-#agent-settings .actions {
+#agent-settings .actions,
+#mcp-settings .actions {
   flex-wrap: wrap;
 }
 #agent-version,
-#agent-check-status {
+#agent-check-status,
+#mcp-version,
+#mcp-private-names {
+  overflow-wrap: anywhere;
+}
+#mcp-projects {
+  display: grid;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+#mcp-projects .check {
   overflow-wrap: anywhere;
 }
 @media (max-width: 560px) {

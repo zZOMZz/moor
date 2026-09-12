@@ -68,6 +68,7 @@ async function fixture(t: TestContext) {
       '<plist><dict><key>CFBundleIdentifier</key><string>io.github.zzomzz.moor</string></dict></plist>',
     [`${appRoot}/package.json`]: '{"name":"moor","main":"entry.cjs"}',
     [`${appRoot}/entry.cjs`]: '// synthetic entry',
+    [`${appRoot}/mcp-settings.cjs`]: '// synthetic private MCP IPC controller',
     [`${appRoot}/runtime/bridge.mjs`]: '// synthetic host',
     [`${appRoot}/runtime/cli.mjs`]: '// synthetic cli',
     [`${appRoot}/runtime/public/index.html`]: '<title>Synthetic</title>',

@@ -16,6 +16,7 @@ const commands: Record<string, readonly string[]> = {
     'list',
     'read',
     'send',
+    'mcp',
     'stop',
     'archive',
     'restore',
@@ -41,6 +42,7 @@ const values = new Set([
   'mode',
   'timeout',
   'turn',
+  'mcp-server-ids',
 ]);
 export type CliArgs = {
   group: string;
@@ -106,7 +108,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     for (const name of ['stdin', 'file']) allowed.add(name);
   if (group === 'session' && ['create', 'send'].includes(command)) allowed.add('agent');
   if (group === 'session' && command === 'send')
-    for (const name of ['model', 'effort', 'mode']) allowed.add(name);
+    for (const name of ['model', 'effort', 'mode', 'mcp-server-ids']) allowed.add(name);
   if (group === 'session' && command === 'stop') allowed.add('turn');
   if (group === 'session' && ['read', 'send', 'stop'].includes(command))
     for (const name of ['wait', 'follow', 'timeout']) allowed.add(name);
@@ -131,6 +133,8 @@ export const cliHelp = `Moor CLI (cliVersion 1)
   session create --agent ID [--stdin | --file PATH]  可选标题文本
   session list | session read [ID] [--follow | --wait] [--timeout MS]
   session send [ID] --stdin | --file PATH [--model ID] [--effort ID] [--mode ID] [--wait]
+  session mcp [ID]                                读取本机授权的 MCP 配置版本
+  session send [ID] --stdin --mcp-server-ids ID,ID  明确授权该回合使用这些版本
   session stop [ID] [--turn ID] [--wait]
   session archive|restore|pin|unpin [ID]
   session rename [ID] --stdin | --file PATH
