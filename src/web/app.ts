@@ -116,7 +116,13 @@ import {
   type AttachmentTarget,
 } from './attachments';
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
-import { agentSchema, type Mutation, type RuntimeWorkspace, type SessionAction } from '../protocol';
+import {
+  AGENT_VERSIONS_FEATURE,
+  agentSchema,
+  type Mutation,
+  type RuntimeWorkspace,
+  type SessionAction,
+} from '../protocol';
 import {
   actionScope,
   deliverSessionAction,
@@ -313,6 +319,25 @@ let archived = false,
   actionError = '';
 let pendingAction: PendingSessionAction | undefined;
 let sessionPersistenceError = '';
+let sessionAgent: ReturnType<typeof agentSchema.parse> | undefined;
+let sessionAgentError = '';
+function sessionAgentProjection(value: unknown, sessionMeta: any) {
+  if (value === undefined) return;
+  const agent = agentSchema.parse(value);
+  if (
+    !sessionId ||
+    sessionMeta?.id !== sessionId ||
+    sessionMeta?.machineId !== workspace?.machineId ||
+    sessionMeta?.userId !== workspace?.userId ||
+    sessionMeta?.project?.kind !== 'local' ||
+    sessionMeta?.project?.localProjectId !== replica?.localProjectId ||
+    agent.id !== sessionMeta?.agentConfigId ||
+    agent.cliType !== sessionMeta?.cliType ||
+    agent.agentType !== sessionMeta?.agentType
+  )
+    throw new Error('会话 Agent 配置版本与执行范围不匹配，请重新读取。');
+  return agent;
+}
 let volatileSessionDoc: LoroDoc | undefined;
 let attachments: AttachmentDraftController | undefined,
   attachmentGeneration = 0,
@@ -2063,7 +2088,8 @@ function setAttentionVisible(visible: boolean) {
   const container = document.querySelector<HTMLElement>('#attention-view');
   if (container) container.hidden = !visible;
   const persistenceState = document.querySelector<HTMLElement>('#session-persistence-state');
-  if (persistenceState) persistenceState.hidden = visible || !sessionPersistenceError;
+  if (persistenceState)
+    persistenceState.hidden = visible || !(sessionPersistenceError || sessionAgentError);
   if (visible) {
     resetSkills();
     projectPreviewPanelOpen = false;
@@ -2838,6 +2864,8 @@ async function api(path: string, body?: unknown) {
   return request(path, body);
 }
 function resetWorkspace() {
+  sessionAgent = undefined;
+  sessionAgentError = '';
   resetGitWorkspace();
   cancelAttachmentSave();
   notificationController = undefined;
@@ -3001,6 +3029,8 @@ function pairComputer() {
   });
 }
 function logout() {
+  sessionAgent = undefined;
+  sessionAgentError = '';
   resetSkills();
   resetProjectPreview();
   resetGithub();
@@ -3187,6 +3217,8 @@ async function loadDevices() {
       sessionId = '';
       doc = new LoroDoc();
       meta = null;
+      sessionAgent = undefined;
+      sessionAgentError = '';
       pending = undefined;
       sessionList = [];
       $('#history').textContent = '执行目标已移出工作区或授权已撤销，请重新选择。';
@@ -3418,6 +3450,8 @@ function showWorkspaceManager() {
 }
 async function selectWorkspace(id: string, saved?: Partial<Selection>) {
   const restoreAttention = attentionVisible;
+  sessionAgent = undefined;
+  sessionAgentError = '';
   resetGitWorkspace();
   cancelAttachmentSave();
   const target = catalog.find((w) => w.id === id);
@@ -3496,6 +3530,8 @@ async function restoreSelection() {
   else restoredSelection = false;
 }
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
+  sessionAgent = undefined;
+  sessionAgentError = '';
   resetGitWorkspace();
   cancelAttachmentSave();
   closeProjectContent();
@@ -3844,6 +3880,8 @@ async function openSession(
   keepAttention = false,
 ) {
   if (!keepAttention) setAttentionVisible(false);
+  sessionAgent = undefined;
+  sessionAgentError = '';
   resetGitWorkspace();
   cancelAttachmentSave();
   showAttachmentPreview(undefined);
@@ -3942,9 +3980,12 @@ async function openSession(
       ? project!
       : (workspace.projects[0]?.id ?? '');
     const agentId = pendingAgent || options?.agent;
-    newAgentId = workspace.agents.some((a) => a.id === agentId)
-      ? String(agentId)
-      : (workspace.agents[0]?.id ?? '');
+    newAgentId =
+      typeof pendingAgent === 'string'
+        ? pendingAgent
+        : workspace.agents.some((a) => a.id === agentId)
+          ? String(agentId)
+          : (workspace.agents[0]?.id ?? '');
     newSessionControlsReady = true;
   }
   if (!id) selectReplica(pendingProject);
@@ -3956,6 +3997,13 @@ async function openSession(
       doc.import(decode(saved.snapshot));
       flock.importJson(saved.metaBundle);
       meta = saved.meta;
+      try {
+        sessionAgent = sessionAgentProjection(saved.agent, meta);
+        if (workspace?.features?.includes(AGENT_VERSIONS_FEATURE) && !sessionAgent)
+          sessionAgentError = '此会话的 Agent 配置版本尚未读取，请连接执行电脑后重新读取。';
+      } catch {
+        sessionAgentError = '缓存的会话 Agent 版本不可验证，请连接执行电脑后重新读取。';
+      }
       if (meta?.isArchived && !keepNavigation) archived = true;
       renderHistory();
     } else
@@ -4004,6 +4052,15 @@ async function loadSession() {
     (!fullRead && (data.meta?.metadataRevision ?? 0) < (meta?.metadataRevision ?? 0))
   )
     return;
+  let readAgent: ReturnType<typeof agentSchema.parse> | undefined;
+  try {
+    readAgent = sessionAgentProjection(data.agent, data.meta);
+  } catch (error) {
+    sessionAgent = undefined;
+    sessionAgentError = '执行电脑返回的会话 Agent 配置不匹配，请重新读取。';
+    updateComposer();
+    throw error;
+  }
   const persisted = data.persisted !== false && !data.persistenceError;
   if (persisted) {
     // Following a volatile read, the host may have restarted at its last durable
@@ -4023,6 +4080,11 @@ async function loadSession() {
     volatileSessionDoc = display;
   }
   meta = data.meta;
+  sessionAgent = readAgent;
+  sessionAgentError =
+    workspace?.features?.includes(AGENT_VERSIONS_FEATURE) && !readAgent
+      ? '此会话缺少固定的 Agent 配置，仍可查看历史，请创建新会话继续。'
+      : '';
   renderTarget();
   sessionPersistenceError = persisted
     ? ''
@@ -4032,6 +4094,7 @@ async function loadSession() {
       snapshot: encode(doc.export({ mode: 'snapshot' })),
       metaBundle: flock.exportJson(),
       meta,
+      ...(sessionAgent ? { agent: sessionAgent } : {}),
     });
   if (generation !== sessionGeneration) return;
   if (!data.synced && persisted)
@@ -4132,6 +4195,8 @@ let runOptionsGeneration = 0;
 let runSelectionTouched = false;
 const capabilityAttempts = new Set<string>();
 function currentAgent() {
+  if (sessionAgentError) return;
+  if (sessionId && sessionAgent?.id === meta?.agentConfigId) return sessionAgent;
   return workspace?.agents.find((a) => a.id === (meta?.agentConfigId ?? newAgentId));
 }
 function runOptionsKey() {
@@ -4190,7 +4255,12 @@ async function refreshRunOptions() {
   updateComposer();
   try {
     const updated = agentSchema.parse(
-      await api(prefix() + '/agent-options', { agentId: agent.id }),
+      await api(prefix() + '/agent-options', {
+        agentId: agent.id,
+        ...(sessionId && workspace?.features?.includes(AGENT_VERSIONS_FEATURE)
+          ? { sessionId }
+          : {}),
+      }),
     );
     if (
       generation !== runOptionsGeneration ||
@@ -4198,6 +4268,12 @@ async function refreshRunOptions() {
       currentAgent()?.id !== agent.id
     )
       return;
+    if (
+      updated.id !== agent.id ||
+      updated.cliType !== agent.cliType ||
+      updated.agentType !== agent.agentType
+    )
+      throw new Error('模型选项不属于当前会话的 Agent 版本。');
     Object.assign(currentAgent()!, updated);
     // Recover an effort field from the saved native turn when capabilities were initially unavailable.
     if (!runSelectionTouched && !pending && !runSelection.reasoningEffort) {
@@ -4258,8 +4334,11 @@ function updateComposer() {
   renderSessionFork();
   const persistenceState = document.querySelector('#session-persistence-state');
   if (persistenceState) {
-    persistenceState.textContent = sessionPersistenceError;
-    persistenceState.toggleAttribute('hidden', attentionVisible || !sessionPersistenceError);
+    persistenceState.textContent = sessionPersistenceError || sessionAgentError;
+    persistenceState.toggleAttribute(
+      'hidden',
+      attentionVisible || !(sessionPersistenceError || sessionAgentError),
+    );
   }
   renderAttachmentControls();
   renderInteractions();
@@ -4283,6 +4362,7 @@ function updateComposer() {
     gitBlocksComposer() ||
     forkBlocksComposer() ||
     (!!sessionPersistenceError && !pending) ||
+    (!!sessionAgentError && !pending) ||
     !!interactionLoadError ||
     interactionLoading ||
     !!currentInteractions()?.busy ||
@@ -4446,6 +4526,7 @@ async function sendTurn() {
     return;
   }
   if (sessionPersistenceError) throw new Error(sessionPersistenceError);
+  if (sessionAgentError) throw new Error(sessionAgentError);
   if (interactionLoadError) throw new Error(interactionLoadError);
   if (interactionLoading || currentInteractions()?.busy || currentInteractions()?.pending)
     throw new Error('请先确认或关闭原交互记录。');
@@ -4497,6 +4578,7 @@ async function prepareTurnMutation(
   if (actionSending || pendingAction || sending || pending)
     throw new Error('请先确认原会话的上一次操作。');
   if (sessionPersistenceError) throw new Error(sessionPersistenceError);
+  if (sessionAgentError) throw new Error(sessionAgentError);
   if (interactionLoadError) throw new Error(interactionLoadError);
   if (interactionLoading || currentInteractions()?.busy || currentInteractions()?.pending)
     throw new Error('请先确认或关闭原交互记录。');

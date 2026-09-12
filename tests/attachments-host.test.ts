@@ -341,6 +341,9 @@ test('unsupported, unconfirmed, mismatched and cross-session attachment referenc
 test('unknown Agent input capabilities reject attachments until explicit capability refresh', async (t) => {
   const f = fixture(':memory:', undefined);
   t.after(f.close);
+  const rootPath = mkdtempSync(join(tmpdir(), 'moor-attachment-agent-options-'));
+  t.after(() => rmSync(rootPath, { recursive: true, force: true }));
+  f.store.machine.set(['localProject', 'project-a'], { ...ws.projects[0], rootPath });
   // Clear the persisted capability record to model a host that has never probed this Agent.
   f.store.machine.set(['inputCapabilities', 'agent-a'], undefined as never);
   f.host.updateCatalogue();
