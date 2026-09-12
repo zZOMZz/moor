@@ -35,6 +35,7 @@ function fixture(file = ':memory:') {
   const dispatched: any[] = [];
   let callbacks: Parameters<AgentDriver['open']>[3];
   let complete!: () => void;
+  let finishRequested = false;
   let prompted!: () => void;
   const started = new Promise<void>((r) => (prompted = r));
   const driver: AgentDriver = {
@@ -47,7 +48,10 @@ function fixture(file = ':memory:') {
           dispatches++;
           dispatched.push(input);
           prompted();
-          await new Promise<void>((r) => (complete = r));
+          await new Promise<void>((r) => {
+            complete = r;
+            if (finishRequested) complete();
+          });
         },
         async cancel() {
           complete?.();
@@ -86,8 +90,10 @@ function fixture(file = ':memory:') {
       }),
     finish: async () => {
       const done = [...host.active.values()].map((r) => r.done);
+      finishRequested = true;
       complete?.();
       await Promise.all(done);
+      finishRequested = false;
     },
     close: () => {
       host.close();
@@ -785,13 +791,16 @@ test('attention permission persistence failure leaves no actionable memory reque
   t.after(f.close);
   await f.host.mutate(request(f));
   await f.started;
+  const before = mirror(f.store.doc('session-a'), 'session-a');
+  const originalItems = structuredClone(before.getState().history.at(-1)!.items);
+  before.dispose();
   f.journal.db.exec(
     "CREATE TRIGGER fail_attention_fact BEFORE INSERT ON attention_item BEGIN SELECT RAISE(ABORT, 'synthetic fact failure'); END",
   );
   strict.deepEqual(await f.permission(), { outcome: { outcome: 'cancelled' } });
   strict.equal(f.host.active.get('session-a')!.permissions.size, 0);
   const view = mirror(f.store.doc('session-a'), 'session-a');
-  strict.equal(view.getState().history.at(-1)!.items!.length, 0);
+  strict.deepEqual(view.getState().history.at(-1)!.items, originalItems);
   view.dispose();
   strict.equal(f.host.attentionList(attentionContext(f), attentionQuery).total, 0);
   f.journal.db.exec('DROP TRIGGER fail_attention_fact');

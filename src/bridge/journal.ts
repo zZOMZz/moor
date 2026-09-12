@@ -2,6 +2,18 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { assert, type Mutation, type SessionAction } from '../protocol';
 import type { AttachmentAction, AttachmentReceipt } from '../attachment-protocol';
+import type {
+  QuestionAnswer,
+  QuestionReceipt,
+  SteerRequest,
+  SteerReceipt,
+} from '../interaction-protocol';
+export type JournalOperation =
+  | Mutation
+  | SessionAction
+  | AttachmentAction
+  | QuestionAnswer
+  | SteerRequest;
 export class Journal {
   db: DatabaseSync;
   constructor(file: string) {
@@ -20,16 +32,12 @@ export class Journal {
   has(id: string) {
     return Boolean(this.db.prepare('SELECT 1 FROM operation WHERE id=?').get(id));
   }
-  fingerprint(
-    workspace: string,
-    m: Mutation | SessionAction | AttachmentAction,
-    binding?: unknown,
-  ) {
+  fingerprint(workspace: string, m: JournalOperation, binding?: unknown) {
     return createHash('sha256')
       .update(JSON.stringify(binding === undefined ? [workspace, m] : [workspace, m, binding]))
       .digest('hex');
   }
-  lookup(workspace: string, m: Mutation | SessionAction | AttachmentAction, binding?: unknown) {
+  lookup(workspace: string, m: JournalOperation, binding?: unknown) {
     const r = this.db.prepare('SELECT * FROM operation WHERE id=?').get(m.operationId) as any;
     if (r)
       assert(
@@ -84,6 +92,42 @@ export class Journal {
         'accepted',
         JSON.stringify(result),
       );
+    return result;
+  }
+  acceptQuestion(workspace: string, answer: QuestionAnswer, result: QuestionReceipt) {
+    this.db
+      .prepare('INSERT INTO operation(id,fingerprint,phase,turn_id,result) VALUES(?,?,?,?,?)')
+      .run(
+        answer.operationId,
+        this.fingerprint(workspace, answer),
+        'accepted',
+        answer.expectedTurnId,
+        JSON.stringify(result),
+      );
+    return result;
+  }
+  stageSteer(workspace: string, request: SteerRequest) {
+    assert(!this.lookup(workspace, request), 409, '追加指令编号已使用');
+    this.db
+      .prepare('INSERT INTO operation(id,fingerprint,phase,turn_id,result) VALUES(?,?,?,?,NULL)')
+      .run(
+        request.operationId,
+        this.fingerprint(workspace, request),
+        'steer-staged',
+        request.expectedTurnId,
+      );
+  }
+  settleSteer(
+    workspace: string,
+    request: SteerRequest,
+    phase: 'accepted' | 'steer-unknown' | 'steer-rejected',
+    result: SteerReceipt | { message: string },
+  ) {
+    const record = this.lookup(workspace, request);
+    assert(record?.phase === 'steer-staged', 409, '追加指令状态已变化');
+    this.db
+      .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
+      .run(phase, JSON.stringify(result), request.operationId);
     return result;
   }
   close() {

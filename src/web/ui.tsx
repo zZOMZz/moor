@@ -154,6 +154,12 @@ export function Shell({
             <div id="target">
               <Content name="#target" />
             </div>
+            <div id="session-search-control">
+              <Content name="#session-search-control" />
+            </div>
+            <div id="project-content-controls">
+              <Content name="#project-content-controls" />
+            </div>
           </header>
           <div id="notice" role="alert" />
           <section id="attention-view" aria-label="待我处理工作台" hidden>
@@ -169,6 +175,7 @@ export function Shell({
             </div>
           </div>
           <div id="session-action-state" role="status" hidden />
+          <div id="session-persistence-state" role="alert" hidden />
           <form
             id="composer"
             hidden
@@ -179,6 +186,9 @@ export function Shell({
           >
             <div id="new-options">
               <Content name="#new-options" />
+            </div>
+            <div id="interaction-controls">
+              <Content name="#interaction-controls" />
             </div>
             <div id="attachment-controls">
               <Content name="#attachment-controls" />
@@ -248,6 +258,9 @@ export function Shell({
       </dialog>
       <dialog id="workspace-dialog" aria-label="管理工作区" />
       <Content name="#attachment-preview" />
+      <Content name="#project-content-view" />
+      <Content name="#session-search-view" />
+      <Content name="#interaction-view" />
     </div>
   );
 }
