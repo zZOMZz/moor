@@ -55,6 +55,7 @@ export const sessionExecutionSchema = z
     branch: gitBranchSchema.optional(),
     baseOid: gitOidSchema.optional(),
     reason: issue.optional(),
+    disposition: z.enum(['removed', 'detached']).optional(),
   })
   .strict()
   .refine((value) => value.mode !== 'worktree' || Boolean(value.executionId));
@@ -69,9 +70,11 @@ export const gitStateResultSchema = scope
     execution: sessionExecutionSchema,
     canPrepare: z.boolean(),
     canRemove: z.boolean(),
+    boundSessions: z.number().int().nonnegative().safe().default(1),
+    canDetach: z.boolean().default(false),
   })
   .strict();
-export type GitStateResult = z.infer<typeof gitStateResultSchema>;
+export type GitStateResult = z.input<typeof gitStateResultSchema>;
 const action = scope.extend({
   operationId: id,
   expectedRevision: z
@@ -95,7 +98,14 @@ export const gitRemoveSchema = action
     expectedStateVersion: contentVersionSchema,
   })
   .strict();
-export const gitActionSchema = z.discriminatedUnion('action', [gitPrepareSchema, gitRemoveSchema]);
+export const gitDetachSchema = action
+  .extend({ action: z.literal('detach'), executionId: id })
+  .strict();
+export const gitActionSchema = z.discriminatedUnion('action', [
+  gitPrepareSchema,
+  gitRemoveSchema,
+  gitDetachSchema,
+]);
 export type GitAction = z.infer<typeof gitActionSchema>;
 export type GitPrepare = z.infer<typeof gitPrepareSchema>;
 export type GitRemove = z.infer<typeof gitRemoveSchema>;

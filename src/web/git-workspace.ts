@@ -266,6 +266,27 @@ export class GitWorkspaceController {
       await this.deliver(true);
     });
   }
+  detach() {
+    return this.work(async () => {
+      if (this.pending || this.loadError || !this.loaded) throw new Error('请先确认原 Git 操作。');
+      await this.readState();
+      this.current();
+      const state = this.state!;
+      if (!state.canDetach || state.execution.mode !== 'worktree' || !state.execution.executionId)
+        throw new Error(state.execution.reason || '此会话当前不能脱离共享工作目录。');
+      await this.stage(
+        gitActionSchema.parse({
+          ...this.scope(),
+          gitVersion: 1,
+          operationId: this.dependencies.uuid?.() ?? crypto.randomUUID(),
+          expectedRevision: state.execution.revision,
+          action: 'detach',
+          executionId: state.execution.executionId,
+        }),
+      );
+      await this.deliver(true);
+    });
+  }
   private async stage(request: GitAction) {
     const pending = { target: this.target, request };
     await this.save({ pending });
@@ -318,7 +339,11 @@ export class GitWorkspaceController {
           ? execution.status !== 'ready' ||
             execution.branch !== request.newBranch ||
             execution.baseOid !== request.expectedOid
-          : execution.status !== 'removed' || execution.executionId !== request.executionId)
+          : execution.status !== 'removed' ||
+            execution.executionId !== request.executionId ||
+            (request.action === 'detach'
+              ? execution.disposition !== 'detached'
+              : execution.disposition === 'detached'))
       )
         throw new Error('主机确认的工作目录与原 Git 操作不匹配，请手动重试确认。');
     }

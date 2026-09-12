@@ -13,7 +13,14 @@ import { capabilities } from './capabilities';
 import type { AgentDriver, AgentRunBinding, AgentSteerResult } from './agent';
 import { resolveRunSelection, selectionFromInput } from '../run-config';
 import { promptContent } from './attachment-input';
-import { assert } from '../protocol';
+import { AppError, assert } from '../protocol';
+import {
+  forkCapabilities,
+  ForkAnchorObservation,
+  forkResult,
+  nativeForkRequest,
+  validateForkInput,
+} from './agent-fork';
 import { steerRequestSchema } from '../interaction-protocol';
 import { bridgeElicitation, claudeSteerParams } from './elicitation';
 import {
@@ -31,7 +38,29 @@ const launchAcp = (command: string, args: string[], options: SpawnOptionsWithout
   spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
 // Injection changes only the owned child process. Protocol handling remains real.
 export function createAcpDriver(launch = launchAcp): AgentDriver {
-  return {
+  const driver: AgentDriver = {
+    async fork(config, input) {
+      validateForkInput(config, input);
+      let source;
+      try {
+        source = await driver.open(config, input.sourceCwd, input.sourceNativeId, {
+          update: () => {},
+          permission: async () => ({ outcome: { outcome: 'cancelled' } }),
+        });
+      } catch {
+        throw new AppError(409, '原生 Fork 尚未执行，无法读取来源 Agent 会话', true);
+      }
+      try {
+        if (!source.fork) throw new AppError(409, '此 Agent 不支持原生会话 Fork', true);
+        return await source.fork(input);
+      } finally {
+        // A confirmed fork response remains confirmed even if process cleanup
+        // subsequently fails; retrying creation could duplicate the native fork.
+        await Promise.resolve()
+          .then(() => source.close())
+          .catch(() => {});
+      }
+    },
     async open(config, cwd, nativeId, callbacks) {
       const custom = config.customAcp;
       if (custom && !isAbsolute(custom.command)) throw new Error('ACP 启动程序必须为本机绝对路径');
@@ -69,9 +98,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         binding?: AgentRunBinding;
         cancelled: boolean;
         questions: Map<string, () => void>;
+        forkAnchor: ForkAnchorObservation;
       };
       let activeRun: Run | undefined,
         steeringPending = false,
+        forking = false,
         eventState: SessionEventState | undefined,
         observedQuestion = false;
       const startupCommands = new Map<string, SessionEvent>();
@@ -144,6 +175,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                 observe(normalized.event);
               return;
             }
+            activeRun.forkAnchor.observe(value.update);
             if (normalized.status === 'accepted') observe(normalized.event, activeRun);
             else if (
               [
@@ -265,11 +297,13 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                     : '该 Agent 尚未验证支持活动回合追加指令',
               }),
         };
+        const nativeForkCapabilities = forkCapabilities(config, init);
         return {
           id,
           capabilities: choices,
           inputCapabilities,
           interactionCapabilities,
+          forkCapabilities: nativeForkCapabilities,
           get runtimeFeatures() {
             return runtimeFeatureReport(init, eventState, observedQuestion);
           },
@@ -277,15 +311,77 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             return eventState;
           },
           close,
+          async fork(input) {
+            validateForkInput(config, input);
+            if (
+              stopped ||
+              activeRun ||
+              steeringPending ||
+              forking ||
+              input.sourceNativeId !== id ||
+              input.sourceCwd !== cwd ||
+              !nativeForkCapabilities.sameDirectory ||
+              (input.targetCwd !== cwd && !nativeForkCapabilities.worktree) ||
+              (input.anchor && !nativeForkCapabilities.turnCutoff)
+            )
+              throw new AppError(409, '原生 Fork 的来源或能力已失效', true);
+            try {
+              input.assertCurrent?.();
+            } catch {
+              throw new AppError(409, '原生 Fork 尚未执行，来源或目标执行目录已失效', true);
+            }
+            forking = true;
+            try {
+              // Entering this call is irreversible from Moor's perspective:
+              // errors, disconnects and malformed responses may follow a fork.
+              const result = forkResult(
+                await bounded(
+                  conn.unstable_forkSession(
+                    nativeForkRequest(input, nativeForkCapabilities.adapter!),
+                  ),
+                ),
+                id,
+              );
+              if (input.onNativeId)
+                await bounded(Promise.resolve(input.onNativeId(result.nativeId)));
+              if (
+                nativeForkCapabilities.adapter === 'claude-agent-acp' &&
+                input.targetCwd !== cwd
+              ) {
+                // Claude stores the new native transcript under the source cwd.
+                // Load only its returned child ID at the target before confirming
+                // the full operation. No prompt, replay callbacks or source move.
+                input.assertCurrent?.();
+                await bounded(
+                  conn.loadSession({
+                    sessionId: result.nativeId,
+                    cwd: input.targetCwd,
+                    mcpServers: [],
+                  }),
+                );
+              }
+              return result;
+            } catch {
+              throw new AppError(
+                502,
+                '原生 Fork 结果尚未确认，请确认原操作；不会再次创建会话',
+                false,
+              );
+            } finally {
+              forking = false;
+            }
+          },
           async prompt(input, binding) {
             assert(!stopped, 409, 'Agent 已停止');
             assert(!activeRun && !steeringPending, 409, 'Agent 已有活动回合或待确认追加指令');
+            assert(!forking, 409, 'Agent 的原生 Fork 尚未确认');
             const content = promptContent(input, inputCapabilities);
             resolveRunSelection(selectionFromInput(input, choices), choices);
             const run: Run = {
               binding: binding ? runBindingSchema.parse(binding) : undefined,
               cancelled: false,
               questions: new Map(),
+              forkAnchor: new ForkAnchorObservation(),
             };
             activeRun = run;
             try {
@@ -318,6 +414,17 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               }
               if (!['end_turn', 'cancelled'].includes(result.stopReason))
                 throw new Error('Agent 停止执行：' + result.stopReason);
+              if (
+                result.stopReason === 'end_turn' &&
+                !stopped &&
+                !run.cancelled &&
+                activeRun === run &&
+                run.binding &&
+                nativeForkCapabilities.turnCutoff
+              ) {
+                const anchor = run.forkAnchor.complete(config, id);
+                if (anchor) callbacks.forkAnchor?.(anchor, { ...run.binding });
+              }
             } finally {
               acceptingUpdates = false;
               cancelQuestions(run);
@@ -374,5 +481,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       }
     },
   };
+  return driver;
 }
 export const acpDriver = createAcpDriver();

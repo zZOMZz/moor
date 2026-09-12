@@ -195,7 +195,9 @@ docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay 
 
 M2/M3 的当前实现已通过 `pnpm check`、419 项自动测试、`pnpm build` 和 `pnpm format:check`。实际 Moor 主机与合成 ACP 的浏览器检查覆盖文件浏览、各类 diff、旧基线不变、问题回答、命令草稿、计划与上报用量、正文搜索，以及通知设置、只读定位和过期提示；390×844 视口未发现横向溢出或页面错误。追加指令由固定适配器的合成 stdio 与主机测试验证，实际浏览器没有执行追加。真实 Agent、Mac 安装包、系统通知及附件落盘、iPhone/Safari/PWA 后台送达仍待第二轮设备验收。具体通过和未测范围见[设备验收记录](docs/validation.md#结果与通过口径)，后续进展按[roadmap](docs/roadmap.md)记录。
 
-M4.1 已接通本地 Git 状态、新会话独立 worktree 和手动安全清理，四项仓库检查与 479 项自动测试通过。浏览器验证覆盖刷新后恢复目录、首条指令隔离、脏目录保护和清理后历史/diff 保留；真实 Agent、Mac 安装包与 iPhone 仍待专项验收。使用方式、保守限制与代码备份范围见[Git 与会话工作目录](docs/git-workspaces.md)，下一批推进原生 Fork。
+M4.1 已接通本地 Git 状态、新会话独立 worktree 和手动安全清理，四项仓库检查与 479 项自动测试通过。浏览器验证覆盖刷新后恢复目录、首条指令隔离、脏目录保护和清理后历史/diff 保留；真实 Agent、Mac 安装包与 iPhone 仍待专项验收。使用方式、保守限制与代码备份范围见[Git 与会话工作目录](docs/git-workspaces.md)。
+
+M4.2 已接通原生 Fork，支持明确上下文截止点、原目录或独立 worktree，以及共享目录保护和手动恢复。浏览器已验证确认后导航、刷新恢复、文件隔离、来源草稿保留与共享目录脱离；真实 Agent 上下文与设备验收仍待完成。详见[原生会话 Fork](docs/session-fork.md)，下一批推进 GitHub 仓库与 PR/CI 读取。
 
 当前不支持团队成员权限、SSO、服务端历史副本、跨主机迁移项目、任意远程终端及额外 MCP 配置。架构保留独立的账号与设备边界，后续可扩展。
 

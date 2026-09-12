@@ -1,6 +1,9 @@
 import { GIT_WORKTREE_FEATURE } from '../git-protocol';
 import { GitWorkspaceController, gitWorkspaceKey, type GitTarget } from './git-workspace';
 import { showGitWorkspaceControl, showGitWorkspacePanel } from './git-workspace-ui';
+import { SESSION_FORK_FEATURE, forkOriginSchema, type ForkReceipt } from '../fork-protocol';
+import { SessionForkController, sessionForkKey, type ForkTarget } from './session-fork';
+import { showSessionForkControl, showSessionForkPanel, showForkOrigin } from './session-fork-ui';
 import { NotificationController } from './notifications';
 import {
   notificationBrowser,
@@ -652,12 +655,296 @@ function renderInteractions() {
   });
 }
 
+let sessionFork: SessionForkController | undefined;
+let forkGeneration = 0,
+  forkPanelOpen = false,
+  forkTurnId: string | undefined;
+let forkResource: GitWorkspaceController | undefined;
+function resetSessionFork() {
+  forkGeneration++;
+  sessionFork = undefined;
+  forkPanelOpen = false;
+  forkTurnId = undefined;
+  forkResource = undefined;
+  showSessionForkPanel();
+  showSessionForkControl();
+  showForkOrigin();
+}
+function forkTarget(): ForkTarget | undefined {
+  if (!owner || !selected || !workspace || !activeWorkspace || !replica || !sessionId) return;
+  return {
+    owner,
+    deviceId: selected.id,
+    userId: workspace.userId,
+    machineId: workspace.machineId,
+    workspaceId: workspace.id,
+    localProjectId: replica.localProjectId,
+    sessionId,
+    catalogWorkspaceId: activeWorkspace.id,
+    replicaId: replica.id,
+  };
+}
+function currentSessionFork() {
+  const target = forkTarget();
+  return target && sessionFork && sessionForkKey(target) === sessionForkKey(sessionFork.target)
+    ? sessionFork
+    : undefined;
+}
+function forkBlocksComposer() {
+  return !!sessionId && (!currentSessionFork() || currentSessionFork()!.blocked);
+}
+function forkReason() {
+  if (!authenticated || !connected || !selected?.online || !replica?.available)
+    return '执行电脑离线，可阅读缓存选项；连接后请手动操作。';
+  if (!workspace?.features?.includes(SESSION_FORK_FEATURE))
+    return '执行电脑尚不支持会话 Fork，请更新 Moor 后重新读取能力。';
+  if (sessionPersistenceError) return sessionPersistenceError;
+  return '';
+}
+async function loadSessionFork() {
+  const target = forkTarget(),
+    generation = ++forkGeneration;
+  sessionFork = undefined;
+  if (!target) return;
+  const controller: SessionForkController = new SessionForkController(target, {
+    read: cache.read,
+    compareWrite: cache.compareWrite,
+    request: api,
+    current: () => generation === forkGeneration && currentSessionFork() === controller,
+    changed: () => {
+      if (generation === forkGeneration) updateComposer();
+    },
+  });
+  sessionFork = controller;
+  try {
+    await controller.load();
+  } catch (cause) {
+    if (generation === forkGeneration) throw cause;
+  }
+}
+async function openSessionFork(turnId?: string) {
+  const controller = currentSessionFork();
+  if (!controller) return;
+  gitPanelOpen = false;
+  showGitWorkspacePanel();
+  forkResource = undefined;
+  forkPanelOpen = true;
+  forkTurnId = turnId;
+  renderSessionFork();
+  if (!forkReason()) await forkOperation((value) => value.refresh(turnId));
+}
+async function forkOperation<T>(work: (controller: SessionForkController) => Promise<T>) {
+  const controller = currentSessionFork(),
+    generation = forkGeneration;
+  if (!controller || forkReason()) throw new Error(forkReason() || 'Fork 记录尚未恢复。');
+  if (
+    sending ||
+    pending ||
+    actionSending ||
+    pendingAction ||
+    attachmentWorking ||
+    currentAttachments()?.busyId ||
+    currentInteractions()?.busy ||
+    currentInteractions()?.pending ||
+    currentGitWorkspace()?.pending ||
+    currentGitWorkspace()?.busy
+  )
+    throw new Error('请先确认源会话的当前操作。');
+  try {
+    return await work(controller);
+  } catch (cause) {
+    if (generation === forkGeneration) throw cause;
+  }
+}
+async function openForkChild(controller: SessionForkController, receipt: ForkReceipt) {
+  if (
+    controller !== currentSessionFork() ||
+    receipt.phase !== 'accepted' ||
+    controller.receipt !== receipt
+  )
+    return;
+  const generation = forkGeneration;
+  await loadSessions();
+  if (generation !== forkGeneration || controller !== currentSessionFork()) return;
+  await openSession(receipt.childSessionId, controller.target.replicaId);
+}
+async function openForkWorkspace(childSessionId: string) {
+  const source = currentSessionFork(),
+    receipt =
+      source?.receipt?.childSessionId === childSessionId
+        ? source.receipt
+        : source?.resources.find((resource) => resource.receipt.childSessionId === childSessionId)
+            ?.receipt;
+  if (!source || receipt?.execution?.mode !== 'worktree') return;
+  const generation = forkGeneration;
+  const controller: GitWorkspaceController = new GitWorkspaceController(
+    { ...source.target, sessionId: receipt.childSessionId },
+    {
+      read: cache.read,
+      compareWrite: cache.compareWrite,
+      request: api,
+      current: () =>
+        generation === forkGeneration &&
+        source === currentSessionFork() &&
+        forkResource === controller,
+      changed: () => {
+        if (generation === forkGeneration) renderSessionFork();
+      },
+    },
+  );
+  forkResource = controller;
+  gitPanelOpen = false;
+  showSessionForkPanel();
+  try {
+    await controller.load();
+    if (generation !== forkGeneration) return;
+    renderSessionFork();
+    if (!gitOnlineReason()) {
+      await controller.refresh();
+      await recordForkCleanup(controller);
+    }
+  } catch (cause) {
+    if (generation === forkGeneration && forkResource === controller) throw cause;
+  }
+}
+async function recordForkCleanup(resource: GitWorkspaceController) {
+  const source = currentSessionFork();
+  if (
+    forkResource !== resource ||
+    !source ||
+    resource.source !== 'host' ||
+    resource.state?.execution.status !== 'removed'
+  )
+    return;
+  const receipt =
+    source.receipt?.childSessionId === resource.target.sessionId
+      ? source.receipt
+      : source.resources.find((item) => item.receipt.childSessionId === resource.target.sessionId)
+          ?.receipt;
+  if (receipt?.phase === 'rejected')
+    await source.confirmResourceCleanup(resource.target.sessionId, resource.state);
+}
+function renderSessionFork() {
+  const controller = currentSessionFork(),
+    generation = forkGeneration;
+  showSessionForkControl(
+    sessionId
+      ? { onOpen: () => run(() => openSessionFork()), disabled: !controller?.loaded }
+      : undefined,
+  );
+  const origin = forkOriginSchema.safeParse(meta?.forkOrigin);
+  showForkOrigin(
+    origin.success
+      ? {
+          origin: origin.data,
+          onOpen: () =>
+            run(async () => {
+              if (generation !== forkGeneration || controller !== currentSessionFork()) return;
+              const target = forkTarget();
+              if (!target) return;
+              await openSession(origin.data.sourceSessionId, target.replicaId);
+              if (sessionId !== origin.data.sourceSessionId || replica?.id !== target.replicaId)
+                return;
+              if (origin.data.cutoff.kind === 'turn') {
+                const turnId = origin.data.cutoff.turnId;
+                const found = Array.from(
+                  document.querySelectorAll<HTMLElement>('[data-search-turn]'),
+                ).find((el) => el.dataset.searchTurn === turnId);
+                found?.scrollIntoView?.({ block: 'center' });
+                found?.classList.add('search-located');
+              }
+            }),
+        }
+      : undefined,
+  );
+  if (!forkPanelOpen) return;
+  if (forkResource) {
+    const resource = forkResource;
+    const act = (work: (value: GitWorkspaceController) => Promise<void>) =>
+      run(async () => {
+        if (generation !== forkGeneration || forkResource !== resource) return;
+        if (gitOnlineReason()) throw new Error(gitOnlineReason());
+        try {
+          await work(resource);
+        } catch (cause) {
+          if (generation === forkGeneration && forkResource === resource) throw cause;
+        }
+      });
+    showSessionForkPanel();
+    showGitWorkspacePanel({
+      controller: resource,
+      newSession: false,
+      reason: gitOnlineReason(),
+      onClose: () => {
+        forkResource = undefined;
+        showGitWorkspacePanel();
+        renderSessionFork();
+      },
+      onRefresh: () =>
+        act(async (value) => {
+          await value.refresh();
+          await recordForkCleanup(value);
+        }),
+      onRemove: () =>
+        act(async (value) => {
+          await value.remove();
+          await recordForkCleanup(value);
+        }),
+      onDetach: () =>
+        act(async (value) => {
+          await value.detach();
+          await recordForkCleanup(value);
+        }),
+      onRetry: () =>
+        act(async (value) => {
+          await value.retry();
+          await recordForkCleanup(value);
+        }),
+      onPrepare: () => {},
+      onNewDraft: () => {},
+    });
+    return;
+  }
+  const act = (work: (value: SessionForkController) => Promise<unknown>) =>
+    run(async () => {
+      if (generation !== forkGeneration || controller !== currentSessionFork()) return;
+      await forkOperation(work);
+    });
+  showSessionForkPanel({
+    controller,
+    sourceTitle: String(meta?.title ?? ''),
+    initialTurnId: forkTurnId,
+    reason: forkReason(),
+    onClose: () => {
+      forkPanelOpen = false;
+      showSessionForkPanel();
+    },
+    onRefresh: (turnId) => act((value) => value.refresh(turnId)),
+    onCreate: (cutoff, directory) =>
+      act(async (value) => {
+        const receipt = await value.create(cutoff, directory);
+        await openForkChild(value, receipt);
+      }),
+    onRetry: () =>
+      act(async (value) => {
+        const receipt = await value.retry();
+        await openForkChild(value, receipt);
+      }),
+    onOpenChild: () =>
+      run(async () => {
+        if (controller?.receipt) await openForkChild(controller, controller.receipt);
+      }),
+    onOpenWorkspace: (childSessionId) => run(() => openForkWorkspace(childSessionId)),
+  });
+}
+
 let gitWorkspace: GitWorkspaceController | undefined;
 let gitLoading = false,
   gitLoadError = '',
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetSessionFork();
   gitGeneration++;
   gitWorkspace = undefined;
   gitLoading = false;
@@ -764,6 +1051,9 @@ async function gitOperation(work: (controller: GitWorkspaceController) => Promis
   }
 }
 function openGitWorkspace() {
+  forkPanelOpen = false;
+  forkResource = undefined;
+  showSessionForkPanel();
   gitPanelOpen = true;
   renderGitWorkspace();
 }
@@ -796,6 +1086,7 @@ function renderGitWorkspace() {
         await value.prepare(branch, oid, name);
       }),
     onRemove: () => act((value) => value.remove()),
+    onDetach: () => act((value) => value.detach()),
     onRetry: () => act((value) => value.retry()),
     onNewDraft: () =>
       act(async (value) => {
@@ -915,6 +1206,7 @@ async function loadAttachmentDraft() {
     await controller.load();
     if (token === attachmentGeneration && generation === sessionGeneration)
       await loadGitWorkspace();
+    if (token === attachmentGeneration && generation === sessionGeneration) await loadSessionFork();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -1673,6 +1965,7 @@ function pairComputer() {
   });
 }
 function logout() {
+  resetSessionFork();
   notificationAccountGeneration++;
   notificationController = undefined;
   notificationPanelOpen = false;
@@ -2658,7 +2951,7 @@ function renderHistory() {
             )
             .join(
               '',
-            )}${renderFileChanges(turn.fileDiff, turn.id + '/files')}${turn.role === 'assistant' && workspace?.features?.includes(PROJECT_DIFF_FEATURE) ? `<button type="button" class="project-turn-open" data-project-turn="${esc(turn.id)}">查看回合文件变更</button>` : ''}${turn.role === 'assistant' && !turn.finished ? '<span class="working">Agent 正在处理</span>' : ''}</article>`,
+            )}${renderFileChanges(turn.fileDiff, turn.id + '/files')}${turn.role === 'assistant' && workspace?.features?.includes(PROJECT_DIFF_FEATURE) ? `<button type="button" class="project-turn-open" data-project-turn="${esc(turn.id)}">查看回合文件变更</button>` : ''}${turn.role === 'assistant' && turn.finished && workspace?.features?.includes(SESSION_FORK_FEATURE) ? `<button type="button" class="project-turn-open" data-fork-turn="${esc(turn.id)}">从此回合创建副本</button>` : ''}${turn.role === 'assistant' && !turn.finished ? '<span class="working">Agent 正在处理</span>' : ''}</article>`,
       )
       .join('') || '<p class="empty">会话已建立，等待第一条消息。</p>';
   const expanded = new Map(
@@ -2681,6 +2974,13 @@ function renderHistory() {
   });
   container.querySelectorAll<HTMLButtonElement>('[data-project-turn]').forEach((button) => {
     button.onclick = () => run(() => openProjectContent('changes', button.dataset.projectTurn));
+  });
+  container.querySelectorAll<HTMLButtonElement>('[data-fork-turn]').forEach((button) => {
+    const generation = sessionGeneration;
+    button.onclick = () =>
+      run(async () => {
+        if (generation === sessionGeneration) await openSessionFork(button.dataset.forkTurn);
+      });
   });
   container.querySelectorAll<HTMLButtonElement>('[data-open-question]').forEach((button) => {
     const item = interactionSnapshot().questions.find(
@@ -2845,6 +3145,7 @@ function renderRunOptions() {
 
 function updateComposer() {
   renderGitWorkspace();
+  renderSessionFork();
   const persistenceState = document.querySelector('#session-persistence-state');
   if (persistenceState) {
     persistenceState.textContent = sessionPersistenceError;
@@ -2865,6 +3166,7 @@ function updateComposer() {
   send.disabled =
     sending ||
     gitBlocksComposer() ||
+    forkBlocksComposer() ||
     (!!sessionPersistenceError && !pending) ||
     !!interactionLoadError ||
     interactionLoading ||
@@ -2896,15 +3198,19 @@ function updateComposer() {
   $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending || attachmentWorking;
   const state = document.querySelector('#draft-state');
   if (state)
-    state.textContent = gitBlocksComposer()
-      ? currentGitWorkspace()?.execution?.status === 'removed'
-        ? '工作目录已清理，请创建另一份新会话'
-        : '请先在 Git 与工作目录中确认原操作'
-      : pending
-        ? '提交结果待确认，重试会使用同一编号'
-        : !connected || !selected?.online
-          ? '执行电脑离线 · 输入保留为草稿'
-          : '';
+    state.textContent = forkBlocksComposer()
+      ? '请先在会话副本中确认原 Fork 操作'
+      : gitBlocksComposer()
+        ? currentGitWorkspace()?.execution?.status === 'removed'
+          ? currentGitWorkspace()?.execution?.disposition === 'detached'
+            ? '此会话已脱离共享目录，请创建另一份新会话'
+            : '工作目录已清理，请创建另一份新会话'
+          : '请先在 Git 与工作目录中确认原操作'
+        : pending
+          ? '提交结果待确认，重试会使用同一编号'
+          : !connected || !selected?.online
+            ? '执行电脑离线 · 输入保留为草稿'
+            : '';
   if (state) state.toggleAttribute('hidden', !state.textContent);
   let active = false;
   if (sessionId) {
@@ -2972,6 +3278,7 @@ async function submit(m: Mutation) {
   }
 }
 async function sendTurn() {
+  if (forkBlocksComposer()) throw new Error('请先在会话副本中确认原 Fork 操作。');
   if (gitBlocksComposer())
     throw new Error(gitLoadError || '请先在 Git 与工作目录中确认当前目录状态。');
   if (attachmentLoadError) throw new Error(attachmentLoadError);

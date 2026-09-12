@@ -2,6 +2,12 @@ import type { RunCapabilities } from '../run-config';
 import type { PromptInputCapabilities } from '../attachment-protocol';
 import type { QuestionAnswer, QuestionRequest } from '../interaction-protocol';
 import type { RuntimeFeatureReport, SessionEvent, SessionEventState } from './session-events';
+import type {
+  AgentForkAnchor,
+  AgentForkCapabilities,
+  AgentForkInput,
+  AgentForkResult,
+} from './agent-fork';
 export type AgentConfig = {
   id: string;
   name: string;
@@ -24,6 +30,7 @@ export type AgentCallbacks = {
   permission(value: any): Promise<{ outcome: PermissionOutcome }>;
   event?(event: SessionEvent, binding: AgentRunBinding): void;
   question?(request: QuestionRequest): Promise<QuestionAnswer>;
+  forkAnchor?(anchor: AgentForkAnchor, binding: AgentRunBinding): void;
 };
 export type AgentInteractionCapabilities = {
   questions: boolean;
@@ -41,12 +48,15 @@ export type AgentSession = {
   runtimeFeatures?: RuntimeFeatureReport;
   interactionCapabilities?: AgentInteractionCapabilities;
   currentEvents?: SessionEventState;
+  forkCapabilities?: AgentForkCapabilities;
+  fork?(input: AgentForkInput): Promise<AgentForkResult>;
   prompt(input: any, binding?: AgentRunBinding): Promise<void>;
   steer?(input: { expectedTurnId: string; prompt: string }): Promise<AgentSteerResult>;
   cancel(): Promise<void>;
   close(): void | Promise<void>;
 };
 export type AgentDriver = {
+  fork?(config: AgentConfig, input: AgentForkInput): Promise<AgentForkResult>;
   open(
     config: AgentConfig,
     cwd: string,

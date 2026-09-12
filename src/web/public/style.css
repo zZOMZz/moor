@@ -2850,3 +2850,59 @@ dialog pre {
   border-radius: 8px;
   padding: 12px;
 }
+.session-fork-panel {
+  width: min(700px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.session-fork-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.session-fork-panel p {
+  margin: 12px 0;
+  line-height: 1.6;
+}
+.session-fork-panel form,
+.session-fork-panel section {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding-top: 16px;
+}
+.session-fork-panel label {
+  display: grid;
+  gap: 8px;
+}
+.session-fork-panel select,
+.session-fork-panel input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--background);
+}
+.session-fork-panel button,
+.fork-origin button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.fork-origin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.fork-origin span {
+  min-width: 0;
+  flex: 1;
+}

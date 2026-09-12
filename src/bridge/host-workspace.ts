@@ -1,7 +1,13 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta } from '../model';
-import { assert, sessionActionSchema, type Mutation, type SessionAction } from '../protocol';
+import {
+  AppError,
+  assert,
+  sessionActionSchema,
+  type Mutation,
+  type SessionAction,
+} from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { RuntimeStore, type AttachmentScope } from '../runtime/store';
 import type {
@@ -93,6 +99,8 @@ import {
 } from '../notification-protocol';
 import { GIT_WORKTREE_FEATURE, type GitAction, type GitStateRead } from '../git-protocol';
 import { SessionExecutionManager, type ExecutionLease } from '../runtime/session-execution';
+import { SessionForkManager } from '../runtime/session-fork';
+import { SESSION_FORK_FEATURE, type ForkOptionsRead, type SessionFork } from '../fork-protocol';
 
 type Active = {
   turnId: string;
@@ -120,6 +128,7 @@ export class HostWorkspace {
   settlementFailures = new Map<string, LoroDoc>();
   interactions: SessionInteractions<Active>;
   executionManager: SessionExecutionManager;
+  forkManager: SessionForkManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -140,6 +149,7 @@ export class HostWorkspace {
     git?: ConstructorParameters<typeof SessionExecutionManager>[1],
   ) {
     this.executionManager = new SessionExecutionManager(this, git);
+    this.forkManager = new SessionForkManager(this, driver);
     this.interactions = new SessionInteractions<Active>({
       journal: store.journal,
       getRun: (sessionId) => this.active.get(sessionId),
@@ -171,6 +181,7 @@ export class HostWorkspace {
       STEER_FEATURE,
       NOTIFICATIONS_FEATURE,
       GIT_WORKTREE_FEATURE,
+      SESSION_FORK_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -384,7 +395,26 @@ export class HostWorkspace {
   readGitState(input: GitStateRead, localProjectId?: string) {
     return this.executionManager.read(input, localProjectId);
   }
+  async readForkOptions(input: ForkOptionsRead, localProjectId?: string) {
+    try {
+      return await this.forkManager.options(input, localProjectId);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(409, 'Fork 来源状态不可读取，请重新检查执行电脑');
+    }
+  }
+  async forkSession(input: SessionFork, localProjectId?: string) {
+    try {
+      const result = await this.forkManager.action(input, localProjectId);
+      this.changed(input.childSessionId);
+      return result;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(409, 'Fork 检查或保存失败，请重新读取原操作状态');
+    }
+  }
   async gitAction(input: GitAction, localProjectId?: string) {
+    assert(!this.forkManager.busy.has(input.sessionId), 409, '此会话正在处理 Fork，请等待原操作');
     const result = await this.executionManager.action(input, localProjectId);
     this.changed(input.sessionId);
     return result;
@@ -535,11 +565,19 @@ export class HostWorkspace {
         message: '运行事件数量达到历史保存上限；部分计划快照未保存。',
       });
   }
-  saveAgentFeatures(id: string, run: Active, session: AgentSession) {
+  saveAgentFeatures(id: string, run: Active, session: AgentSession, agent: AgentConfig) {
     const runtime = runtimeFeatureReportSchema.safeParse(session.runtimeFeatures);
     const current = sessionEventStateSchema.safeParse(session.currentEvents);
     const capabilities = session.interactionCapabilities;
     this.edit(id, run, (turn) => {
+      if (session.forkCapabilities)
+        this.store.forks.saveCapabilities(
+          run.projectScope,
+          run.execution,
+          session.id,
+          session.forkCapabilities,
+          agent,
+        );
       (turn.items ??= []).push({
         type: 'agent_features',
         ...(runtime.success ? { runtimeFeatures: runtime.data } : {}),
@@ -802,11 +840,26 @@ export class HostWorkspace {
   }
   async mutate(m: Mutation, localProjectId?: string) {
     assert(
+      !this.forkManager.busy.has(m.sessionId) && !this.store.forks.blocked(m.sessionId),
+      409,
+      '此会话的 Fork 尚未确认，请先处理原操作',
+    );
+    assert(
       !this.executionManager.busy.has(m.sessionId),
       409,
       '此会话正在处理 Git 操作，指令未送达',
     );
     return this.serial(m.sessionId, async () => {
+      assert(
+        !this.forkManager.busy.has(m.sessionId) && !this.store.forks.blocked(m.sessionId),
+        409,
+        '此会话的 Fork 尚未确认，请先处理原操作',
+      );
+      assert(
+        !this.executionManager.busy.has(m.sessionId),
+        409,
+        '此会话正在处理 Git 操作，指令未送达',
+      );
       this.ensureConnected();
       assert(
         m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
@@ -1064,6 +1117,23 @@ export class HostWorkspace {
         {
           update: (value) => this.update(id, run, value),
           event: (event, binding) => this.sessionEvent(id, run, event, binding),
+          forkAnchor: (anchor, binding) => {
+            if (!this.boundRun(id, run, binding)) return;
+            try {
+              if (anchor.sourceNativeId === this.store.nativeSession(id, run.execution))
+                this.store.transaction(() =>
+                  this.store.forks.saveAnchor(
+                    run.projectScope,
+                    run.execution,
+                    run.turnId,
+                    anchor,
+                    agent,
+                  ),
+                );
+            } catch {
+              /* Missing or unpersisted anchors remain unavailable for a turn cutoff. */
+            }
+          },
           question: (input) => {
             const request = questionRequestSchema.parse(input);
             const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
@@ -1111,7 +1181,7 @@ export class HostWorkspace {
       }
       this.checkExecutionLease(run.execution);
       this.store.setNativeSession(id, session.id, run.execution);
-      this.saveAgentFeatures(id, run, session);
+      this.saveAgentFeatures(id, run, session, agent);
       const view = mirror(run.doc, id),
         input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig as Record<
           string,

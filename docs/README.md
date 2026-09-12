@@ -16,6 +16,7 @@ Moor 把访问界面、执行主机和中转服务分开：你可以换一台设
 | [Agent 交互](agent-interactions.md)     | 如何回答问题、使用命令、查看用量和向活动回合追加说明？   |
 | [任务通知](notifications.md)            | 如何开启桌面或 PWA 通知，确认、去重与过期如何处理？      |
 | [Git 与会话工作目录](git-workspaces.md) | 如何创建独立 worktree，安全清理和确认未知结果？          |
+| [原生会话 Fork](session-fork.md)        | 如何选择上下文截止点与代码基线，恢复结果和保留共享目录？ |
 | [运行与恢复](runtime.md)                | 本机服务如何启动？进程退出后恢复什么？                   |
 | [开发与验证](development.md)            | 修改不同部分时，应验证哪些行为？                         |
 | [设备验收](validation.md)               | 何时做真机测试，两台 Mac 和 iPhone 测什么？              |

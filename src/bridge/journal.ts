@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { assert, type Mutation, type SessionAction } from '../protocol';
 import type { AttachmentAction, AttachmentReceipt } from '../attachment-protocol';
 import type { GitAction, GitActionReceipt } from '../git-protocol';
+import type { SessionFork, ForkReceipt } from '../fork-protocol';
 import type {
   QuestionAnswer,
   QuestionReceipt,
@@ -15,7 +16,8 @@ export type JournalOperation =
   | AttachmentAction
   | QuestionAnswer
   | SteerRequest
-  | GitAction;
+  | GitAction
+  | SessionFork;
 export class Journal {
   db: DatabaseSync;
   constructor(file: string) {
@@ -153,5 +155,22 @@ export class Journal {
   }
   close() {
     this.db.close();
+  }
+  stageFork(scope: string, request: SessionFork) {
+    assert(!this.lookup(scope, request), 409, 'Fork 操作编号已使用');
+    this.db
+      .prepare('INSERT INTO operation(id,fingerprint,phase,turn_id,result) VALUES(?,?,?,NULL,NULL)')
+      .run(request.operationId, this.fingerprint(scope, request), 'fork-staged');
+  }
+  settleFork(scope: string, request: SessionFork, result: ForkReceipt) {
+    const previous = this.lookup(scope, request);
+    assert(
+      previous && ['fork-staged', 'fork-unknown'].includes(previous.phase),
+      409,
+      'Fork 操作状态已变化',
+    );
+    this.db
+      .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
+      .run('fork-' + result.phase, JSON.stringify(result), request.operationId);
   }
 }

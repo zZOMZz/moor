@@ -64,6 +64,13 @@ import {
   gitActionSchema,
   gitActionReceiptSchema,
 } from '../git-protocol';
+import {
+  SESSION_FORK_FEATURE,
+  forkOptionsReadSchema,
+  forkOptionsResultSchema,
+  sessionForkSchema,
+  forkReceiptSchema,
+} from '../fork-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -238,6 +245,7 @@ export function createApp(
           'read-diff-file',
           'search-sessions',
           'git-state',
+          'fork-options',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -320,8 +328,8 @@ export function createApp(
     setupToken: z.string().optional(),
   });
   const server = createServer(async (req, res) => {
-    let gitActionRequest = false,
-      gitActionDispatched = false;
+    let scopedActionRequest = false,
+      scopedActionDispatched = false;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader(
@@ -331,9 +339,9 @@ export function createApp(
     try {
       const url = new URL(req.url ?? '/', origin),
         path = url.pathname;
-      gitActionRequest =
+      scopedActionRequest =
         req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/git\/action$/.test(path);
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(git|fork)\/action$/.test(path);
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
@@ -525,6 +533,140 @@ export function createApp(
             '项目副本离线或已从主机移除',
           );
           if (
+            parts[5] === 'fork' &&
+            ['options', 'action'].includes(parts[6] ?? '') &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            assert(runtime, 409, '执行主机不可用');
+            const action = parts[6] === 'action';
+            const value = await body(req, 16 * 1024);
+            const actionInput = action ? sessionForkSchema.parse(value) : undefined;
+            const input = actionInput ?? forkOptionsReadSchema.parse(value);
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              'Fork 请求与项目副本不匹配',
+            );
+            assert(
+              runtime.features?.includes(SESSION_FORK_FEATURE),
+              409,
+              '请先升级执行电脑上的 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            // Authentication can expire while the request body is being read.
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            store.device(owner!, host.device_id);
+            const dispatchReplica = store.catalog.replica(owner!, workspaceId, replica.id);
+            const dispatchRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              dispatchReplica.host.device_id === host.device_id &&
+                dispatchReplica.host.runtime_id === input.workspaceId &&
+                dispatchReplica.local_id === input.localProjectId &&
+                dispatchRuntime?.userId === runtime.userId &&
+                dispatchRuntime?.machineId === runtime.machineId &&
+                dispatchRuntime.features?.includes(SESSION_FORK_FEATURE) &&
+                dispatchRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              'Fork 请求的执行范围已变化',
+            );
+            scopedActionDispatched = action;
+            let raw: unknown, rpcError: { cause: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                action ? 'fork-action' : 'fork-options',
+                host.runtime_id,
+                input,
+                replica.local_id,
+              );
+            } catch (cause) {
+              rpcError = { cause };
+            }
+            // A lost receipt after native Fork started is never proof of rejection.
+            // Host errors may also contain private data: reauthorize both outcomes.
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            store.device(owner!, host.device_id);
+            const currentReplica = store.catalog.replica(owner!, workspaceId, replica.id);
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              currentReplica.host.device_id === host.device_id &&
+                currentReplica.host.runtime_id === input.workspaceId &&
+                currentReplica.local_id === input.localProjectId &&
+                online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.userId === runtime.userId &&
+                currentRuntime?.machineId === runtime.machineId &&
+                currentRuntime.features?.includes(SESSION_FORK_FEATURE) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              'Fork 请求的执行目标已变化，请手动确认原操作',
+            );
+            if (rpcError) throw rpcError.cause;
+            const parsed = action
+              ? forkReceiptSchema.safeParse(raw)
+              : forkOptionsResultSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行主机返回的 Fork 结果格式无效');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId &&
+                Buffer.byteLength(JSON.stringify(result)) <= 2 * 1024 * 1024,
+              502,
+              '执行主机返回的 Fork 结果与请求不匹配',
+            );
+            if (actionInput) {
+              assert(
+                'operationId' in result &&
+                  result.operationId === actionInput.operationId &&
+                  result.childSessionId === actionInput.childSessionId,
+                502,
+                'Fork 操作或子会话确认不匹配',
+              );
+              if (result.origin) {
+                assert(
+                  result.origin.sourceSessionId === actionInput.sessionId &&
+                    result.origin.sourceVersion === actionInput.expectedSourceVersion &&
+                    JSON.stringify(result.origin.cutoff) === JSON.stringify(actionInput.cutoff) &&
+                    result.origin.directory === actionInput.directory.kind,
+                  502,
+                  'Fork 来源或历史截止点不匹配',
+                );
+              }
+              if (result.phase === 'accepted') {
+                const execution = result.execution!;
+                assert(
+                  actionInput.directory.kind === 'worktree'
+                    ? execution.mode === 'worktree' &&
+                        execution.revision === 1 &&
+                        execution.branch === actionInput.directory.newBranch &&
+                        execution.baseOid === actionInput.directory.expectedOid &&
+                        result.origin?.branch === actionInput.directory.newBranch &&
+                        result.origin?.baseOid === actionInput.directory.expectedOid
+                    : execution.revision === actionInput.expectedExecutionRevision &&
+                        execution.mode ===
+                          (actionInput.expectedExecutionRevision === 0 ? 'shared' : 'worktree'),
+                  502,
+                  'Fork 确认的工作目录与原请求不匹配',
+                );
+              }
+            } else if ('turnId' in input && input.turnId) {
+              assert(
+                'turns' in result &&
+                  result.turns.length === 1 &&
+                  result.turns[0]?.turnId === input.turnId,
+                502,
+                'Fork 选项不属于所选回合',
+              );
+            }
+            return json(res, 200, result);
+          }
+          if (
             parts[5] === 'git' &&
             ['state', 'action'].includes(parts[6] ?? '') &&
             parts.length === 7 &&
@@ -566,16 +708,22 @@ export function createApp(
                 409,
                 'Git 请求的执行范围已变化',
               );
-              gitActionDispatched = action;
-              const raw = await request(
-                host.device_id,
-                action ? 'git-action' : 'git-state',
-                host.runtime_id,
-                input,
-                replica.local_id,
-              );
+              scopedActionDispatched = action;
+              let raw: unknown, rpcError: { cause: unknown } | undefined;
+              try {
+                raw = await request(
+                  host.device_id,
+                  action ? 'git-action' : 'git-state',
+                  host.runtime_id,
+                  input,
+                  replica.local_id,
+                );
+              } catch (cause) {
+                rpcError = { cause };
+              }
               // A Git operation can finish after logout or regrouping. Returning
               // no receipt here must never be interpreted as "Git did not run".
+              // Apply the same scope checks before exposing an RPC error message.
               assert(store.owner(cookie(req)) === owner, 401, '请先登录');
               store.device(owner!, host.device_id);
               const current = store.catalog.replica(owner!, workspaceId, replica.id);
@@ -595,6 +743,7 @@ export function createApp(
                 409,
                 'Git 请求的执行目标已变化，请手动确认原操作',
               );
+              if (rpcError) throw rpcError.cause;
               const parsed = action
                 ? gitActionReceiptSchema.safeParse(raw)
                 : gitStateResultSchema.safeParse(raw);
@@ -627,7 +776,10 @@ export function createApp(
                           result.execution.branch === actionInput.newBranch &&
                           result.execution.baseOid === actionInput.expectedOid
                       : result.execution.status === 'removed' &&
-                          result.execution.executionId === actionInput.executionId,
+                          result.execution.executionId === actionInput.executionId &&
+                          (actionInput.action === 'detach'
+                            ? result.execution.disposition === 'detached'
+                            : result.execution.disposition !== 'detached'),
                     502,
                     'Git 操作确认目标不匹配',
                   );
@@ -635,7 +787,7 @@ export function createApp(
               }
               return json(res, 200, result);
             } catch (error) {
-              if (action && !gitActionDispatched) {
+              if (action && !scopedActionDispatched) {
                 if (error instanceof AppError)
                   throw new AppError(error.status, error.message, true);
                 if (error instanceof z.ZodError) throw new AppError(400, 'Git 操作参数无效', true);
@@ -1156,7 +1308,8 @@ export function createApp(
                 ? '请求格式无效'
                 : '服务暂时不可用',
           rejected:
-            (gitActionRequest && !gitActionDispatched) || (e instanceof AppError && e.rejected),
+            (scopedActionRequest && !scopedActionDispatched) ||
+            (e instanceof AppError && e.rejected),
         });
       else res.end();
     }
