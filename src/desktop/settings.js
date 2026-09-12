@@ -765,3 +765,235 @@ window.addEventListener('beforeunload', () => {
   agentClosed = true;
   agentGeneration++;
 });
+
+let mcpState,
+  mcpBusy = false,
+  mcpClosed = false,
+  mcpGeneration = 0;
+const selectedMcpPreset = () =>
+  mcpState?.presets.find((preset) => preset.id === $('mcp-preset').value);
+function renderMcpPrivate() {
+  const preset = selectedMcpPreset(),
+    transport = $('mcp-transport').value;
+  const sameTransport = preset?.connection.transport === transport;
+  const names = sameTransport
+    ? transport === 'stdio'
+      ? preset.connection.envNames
+      : preset.connection.headerNames
+    : [];
+  $('mcp-private-label').textContent = transport === 'stdio' ? '环境变量' : '请求头';
+  $('mcp-private-names').textContent = names.length
+    ? `已保存的键：${names.join('、')}。值不会回传。`
+    : '此连接方式尚未保存私有值。';
+  const mode = $('mcp-private-mode').value;
+  $('mcp-private-editor').hidden = mode !== 'replace';
+  $('mcp-private-help').textContent =
+    mode === 'keep'
+      ? sameTransport
+        ? '保留这组已保存的值。'
+        : '新连接方式没有可保留的值；切换方式不会继承原凭据。'
+      : mode === 'clear'
+        ? '保存后清空这组全部值。'
+        : '保存后用输入内容替换整组值。';
+}
+function renderMcpTransport() {
+  const stdio = $('mcp-transport').value === 'stdio';
+  $('mcp-stdio-fields').hidden = !stdio;
+  $('mcp-network-fields').hidden = stdio;
+  renderMcpPrivate();
+}
+function renderMcpPreset() {
+  const preset = selectedMcpPreset();
+  $('mcp-name').value = preset?.name ?? '';
+  $('mcp-description').value = preset?.description ?? '';
+  $('mcp-transport').value = preset?.connection.transport ?? 'stdio';
+  $('mcp-command').value = preset?.connection.command ?? '';
+  $('mcp-args').value = JSON.stringify(preset?.connection.args ?? [], null, 2);
+  $('mcp-url').value = preset?.connection.url ?? '';
+  $('mcp-enabled').checked = preset?.enabled === true;
+  $('mcp-private-mode').value = 'keep';
+  $('mcp-private').value = '';
+  $('mcp-projects').replaceChildren();
+  for (const project of mcpState?.projects ?? []) {
+    const label = document.createElement('label'),
+      input = document.createElement('input');
+    label.className = 'check';
+    input.type = 'checkbox';
+    input.value = project.id;
+    input.checked = preset?.projectIds.includes(project.id) === true;
+    label.append(input, document.createTextNode(project.name));
+    $('mcp-projects').append(label);
+  }
+  const missing = preset?.projectIds.some((id) => !mcpState.projects.some((p) => p.id === id));
+  $('mcp-version').textContent = preset
+    ? `当前版本：${preset.versionId}${missing ? '。部分项目已移除，请重新选择并保存。' : ''}`
+    : '新配置默认禁用；至少选择一个项目后保存。';
+  $('mcp-save').textContent = preset ? '保存新版本' : '登记 MCP';
+  $('mcp-save').disabled = !mcpState?.projects.length;
+  $('mcp-toggle').disabled = !preset;
+  $('mcp-toggle').textContent = preset?.enabled ? '停用服务' : '启用服务';
+  $('mcp-remove').disabled = !preset;
+  renderMcpTransport();
+}
+function renderMcps(value, action) {
+  const previous = mcpState?.presets.map((preset) => preset.id) ?? [];
+  mcpState = value;
+  const created =
+    action.action === 'save' && !action.id
+      ? value.presets.find((preset) => !previous.includes(preset.id))?.id
+      : undefined;
+  optionsFor(
+    'mcp-preset',
+    value.presets.map((preset) => ({
+      id: preset.id,
+      label: preset.name + (preset.enabled ? '（已启用）' : '（已停用）'),
+    })),
+    created ?? $('mcp-preset').value,
+    '新增 MCP',
+  );
+  renderMcpPreset();
+  $('mcp-status').textContent =
+    action.action === 'read'
+      ? '已读取本机配置；未启动或连接 MCP。'
+      : '本机配置已保存；会话需要授权当前版本。';
+}
+async function mcpAction(action) {
+  if (mcpBusy || mcpClosed) return;
+  mcpBusy = true;
+  const generation = ++mcpGeneration;
+  $('mcp-controls').disabled = true;
+  $('mcp-refresh').disabled = true;
+  $('mcp-status').textContent = '正在处理本机 MCP 设置…';
+  try {
+    const pending = window.personal.mcpConfig(action);
+    $('mcp-private').value = '';
+    const value = await pending;
+    if (mcpClosed || generation !== mcpGeneration) return;
+    renderMcps(value, action);
+  } catch {
+    if (mcpClosed || generation !== mcpGeneration) return;
+    mcpState = undefined;
+    $('mcp-status').textContent = '操作结果尚未确认。请刷新后检查配置与版本；不会自动重试。';
+  } finally {
+    $('mcp-private').value = '';
+    if (!mcpClosed && generation === mcpGeneration) {
+      mcpBusy = false;
+      $('mcp-controls').disabled = !mcpState;
+      $('mcp-refresh').disabled = false;
+    }
+  }
+}
+function editMcp(action) {
+  if (!mcpState || mcpBusy || mcpClosed) return;
+  return mcpAction({ expectedRevision: mcpState.revision, ...action });
+}
+$('mcp-settings').ontoggle = () => {
+  if ($('mcp-settings').open && !mcpState && !mcpBusy) void mcpAction({ action: 'read' });
+};
+$('mcp-refresh').onclick = () => mcpAction({ action: 'read' });
+$('mcp-preset').onchange = renderMcpPreset;
+$('mcp-transport').onchange = () => {
+  $('mcp-private').value = '';
+  $('mcp-private-mode').value = 'keep';
+  renderMcpTransport();
+};
+$('mcp-private-mode').onchange = () => {
+  $('mcp-private').value = '';
+  renderMcpPrivate();
+};
+$('mcp-save').onclick = () => {
+  if (!mcpState || mcpBusy || mcpClosed) return;
+  let args, values;
+  try {
+    if ($('mcp-transport').value === 'stdio') {
+      args = JSON.parse($('mcp-args').value);
+      if (
+        !Array.isArray(args) ||
+        args.length > 128 ||
+        args.some((arg) => typeof arg !== 'string' || arg.length > 4096 || arg.includes('\0'))
+      )
+        throw new Error();
+    }
+    if ($('mcp-private-mode').value === 'replace') {
+      values = JSON.parse($('mcp-private').value);
+      if (
+        !values ||
+        typeof values !== 'object' ||
+        Array.isArray(values) ||
+        Object.keys(values).length > 32 ||
+        Object.values(values).some(
+          (value) => typeof value !== 'string' || value.length > 8192 || value.includes('\0'),
+        )
+      )
+        throw new Error();
+    } else if ($('mcp-private-mode').value === 'clear') values = {};
+  } catch {
+    $('mcp-status').textContent =
+      '请检查参数与私有值：参数须为有效的 JSON 字符串数组，私有值须为 JSON 字符串键值对象。';
+    return;
+  }
+  const projectIds = [...$('mcp-projects').querySelectorAll('input:checked')].map(
+    (input) => input.value,
+  );
+  if (!projectIds.length) {
+    $('mcp-status').textContent = '请至少选择一个本机项目。';
+    return;
+  }
+  const transport = $('mcp-transport').value,
+    id = $('mcp-preset').value;
+  const connection =
+    transport === 'stdio'
+      ? {
+          transport,
+          command: $('mcp-command').value,
+          args,
+          ...(values === undefined ? {} : { env: values }),
+        }
+      : {
+          transport,
+          url: $('mcp-url').value,
+          ...(values === undefined ? {} : { headers: values }),
+        };
+  return editMcp({
+    action: 'save',
+    ...(id ? { id } : {}),
+    name: $('mcp-name').value.trim(),
+    description: $('mcp-description').value,
+    projectIds,
+    enabled: $('mcp-enabled').checked,
+    connection,
+  });
+};
+$('mcp-toggle').onclick = () => {
+  const preset = selectedMcpPreset();
+  if (preset) return editMcp({ action: 'enabled', id: preset.id, enabled: !preset.enabled });
+};
+$('mcp-remove').onclick = () => {
+  const preset = selectedMcpPreset();
+  if (preset) return editMcp({ action: 'remove', id: preset.id });
+};
+$('mcp-choose').onclick = async () => {
+  if (!mcpState || mcpBusy || mcpClosed) return;
+  mcpBusy = true;
+  const generation = ++mcpGeneration;
+  $('mcp-controls').disabled = true;
+  $('mcp-refresh').disabled = true;
+  try {
+    const command = await window.personal.mcpExecutable();
+    if (command && !mcpClosed && generation === mcpGeneration) $('mcp-command').value = command;
+  } catch {
+    if (!mcpClosed && generation === mcpGeneration)
+      $('mcp-status').textContent = '程序选择失败，请重试。';
+  } finally {
+    if (!mcpClosed && generation === mcpGeneration) {
+      mcpBusy = false;
+      $('mcp-controls').disabled = !mcpState;
+      $('mcp-refresh').disabled = false;
+    }
+  }
+};
+window.addEventListener('beforeunload', () => {
+  mcpClosed = true;
+  mcpGeneration++;
+  $('mcp-private').value = '';
+});

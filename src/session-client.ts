@@ -4,6 +4,7 @@ import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from './model';
 import { resolveRunSelection, type RunSelection } from './run-config';
 import { sessionReadResponseSchema, validateSessionBundle } from './session-responses';
 import { taskPlanSchema, type TaskPlan } from './task-protocol';
+import { mcpServerIdsSchema } from './mcp-protocol';
 export type SessionClientScope = {
   userId: string;
   machineId: string;
@@ -47,6 +48,7 @@ export function buildSessionTurn(input: {
   peerId: string;
   now: string;
   taskPlan?: TaskPlan;
+  mcpServerIds?: string[];
 }) {
   const read = readClientSession(input.read, input.scope),
     agent = agentSchema.parse(input.agent),
@@ -99,7 +101,7 @@ export function buildSessionTurn(input: {
           prompt: input.prompt,
           cliType: agent.cliType,
           agentType: agent.agentType,
-          mcpServerIds: [],
+          mcpServerIds: mcpServerIdsSchema.parse(input.mcpServerIds ?? []),
           taskToolsEnabled: !!taskPlan,
           ...(taskPlan ? { taskPlan } : {}),
         },

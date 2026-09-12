@@ -38,6 +38,15 @@ import { SessionControlManager } from '../runtime/session-control';
 import { SESSION_CONTROL_FEATURE } from '../session-control-protocol';
 import { SessionTaskManager } from '../runtime/session-tasks';
 import { createTaskMcp } from '../runtime/task-mcp';
+import { McpSettings } from '../runtime/mcp-settings';
+import {
+  MCP_FEATURE,
+  mcpReadSchema,
+  validateMcpRead,
+  mcpServerIdsSchema,
+  type McpRead,
+} from '../mcp-protocol';
+import { MCP_UNSUPPORTED_TRANSPORT, MCP_AUTHORIZATION_EXPIRED } from '../runtime/acp';
 import {
   SESSION_TASKS_FEATURE,
   taskPlanSchema,
@@ -152,6 +161,10 @@ type Active = {
   snapshotIssues: ProjectContentIssue[];
   terminal?: { status: string; message?: string };
   finalizing?: Promise<void>;
+  mcp?: {
+    lease: ReturnType<McpSettings['authorize']>;
+    authority: TaskAuthorityLease;
+  };
   task?: {
     grantId: string;
     authority: TaskAuthorityLease;
@@ -178,6 +191,7 @@ export class HostWorkspace {
   rolesManager: SessionRolesManager;
   controlManager: SessionControlManager;
   taskManager: SessionTaskManager;
+  mcpSettings: McpSettings;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -208,6 +222,10 @@ export class HostWorkspace {
     this.rolesManager = new SessionRolesManager(this);
     this.controlManager = new SessionControlManager(this);
     this.taskManager = new SessionTaskManager(this);
+    this.mcpSettings = new McpSettings(store, () => {
+      this.invalidateMcp();
+      this.catalogue();
+    });
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -253,6 +271,7 @@ export class HostWorkspace {
       AGENT_VERSIONS_FEATURE,
       SESSION_CONTROL_FEATURE,
       SESSION_TASKS_FEATURE,
+      MCP_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -268,7 +287,66 @@ export class HostWorkspace {
       )
       .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
     this.taskManager.invalidateUnavailable();
+    this.invalidateMcp();
     this.catalogue();
+  }
+  readMcp(input: McpRead, localProjectId?: string) {
+    this.ensureConnected();
+    const request = mcpReadSchema.parse(input);
+    const execution = this.executionLease(request, localProjectId, true);
+    const scope: AttachmentScope = {
+      workspaceId: execution.workspaceId,
+      userId: execution.userId,
+      machineId: execution.machineId,
+      localProjectId: execution.localProjectId,
+      sessionId: execution.sessionId,
+    };
+    const servers = this.mcpSettings.catalog(scope);
+    assert(
+      isDeepStrictEqual(this.executionLease(request, localProjectId, true), execution),
+      409,
+      'MCP 读取的执行目录已变化',
+    );
+    return validateMcpRead(
+      {
+        ...request,
+        confirmed: true,
+        catalogRevision: this.mcpSettings.read().revision,
+        servers,
+      },
+      request,
+    );
+  }
+  invalidateMcp() {
+    for (const [id, run] of this.active) {
+      if (!run.mcp || run.stopped) continue;
+      try {
+        this.checkExecutionLease(run.execution);
+        run.mcp.authority.current();
+        run.mcp.lease.assertCurrent();
+      } catch {
+        // Withdraw this exact turn before awaiting process cleanup. The native
+        // Agent may already have dispatched an upstream action; this is not a
+        // confirmation that that remote action has been undone or stopped.
+        run.stopped = true;
+        run.terminal = {
+          status: 'canceled',
+          message: '本回合 MCP 授权已撤销，已请求停止执行；已派发的外部操作请核查原结果。',
+        };
+        this.interactions.cancelPending(id, run);
+        for (const permission of run.permissions.values())
+          permission.resolve({ outcome: { outcome: 'cancelled' } });
+        void Promise.resolve()
+          .then(async () => {
+            try {
+              await run.session?.cancel();
+            } finally {
+              await run.session?.close();
+            }
+          })
+          .catch(() => {});
+      }
+    }
   }
   agentDescriptor(a: AgentConfig) {
     const options = runCapabilitiesSchema.safeParse(this.machine.get(['capabilities', a.id]));
@@ -801,19 +879,34 @@ export class HostWorkspace {
     this.edit(id, run, (turn) => this.applyTurnEvent(turn, parsed.data));
   }
   applyTurnEvent(turn: InteractionTurn, event: SessionEvent) {
+    if (event.kind === 'context-usage' && event.rateLimit) {
+      // ACP combines two independent observations. Freeze each separately so a
+      // later context-only report cannot erase a quota window on history reload.
+      this.applyTurnEvent(turn, {
+        version: 1,
+        source: 'acp',
+        kind: 'account-rate-limit',
+        rateLimit: event.rateLimit,
+      });
+      const { rateLimit: _rateLimit, ...context } = event;
+      this.applyTurnEvent(turn, context);
+      return;
+    }
     const items = (turn.items ??= []);
     // Each turn freezes its latest bounded observations. Replacing an existing
     // observation keeps ordinary message/tool navigation indexes stable.
     const key = (value: SessionEvent) =>
       value.kind === 'plan' || value.kind === 'plan-removed'
         ? ['plan', value.planId ?? null]
-        : [value.kind];
+        : value.kind === 'account-rate-limit'
+          ? [value.kind, value.rateLimit.rateLimitType ?? null]
+          : [value.kind];
     const existing = items.findIndex(
       (item) => item?.type === 'session_event' && isDeepStrictEqual(key(item.event), key(event)),
     );
     const item = { type: 'session_event', event };
     if (existing >= 0) items[existing] = item;
-    else if (items.filter((item) => item?.type === 'session_event').length < 104) items.push(item);
+    else if (items.filter((item) => item?.type === 'session_event').length < 111) items.push(item);
     else if (!items.some((item) => item?.type === 'system_notice' && item.name === 'event_limit'))
       items.push({
         type: 'system_notice',
@@ -856,6 +949,13 @@ export class HostWorkspace {
           });
         for (const plan of state.plans)
           this.applyTurnEvent(turn, { version: 1, source: 'acp', kind: 'plan', ...plan });
+        for (const rateLimit of state.rateLimits ?? [])
+          this.applyTurnEvent(turn, {
+            version: 1,
+            source: 'acp',
+            kind: 'account-rate-limit',
+            rateLimit,
+          });
         if (state.contextUsage) this.applyTurnEvent(turn, state.contextUsage);
         if (state.tokenUsage) this.applyTurnEvent(turn, state.tokenUsage);
       }
@@ -1201,8 +1301,23 @@ export class HostWorkspace {
       const inputView = mirror(validated.doc, m.sessionId);
       const inputConfig =
         m.kind === 'turn'
-          ? (inputView.getState().history.at(-1)!.inputConfig as { taskPlan?: TaskPlan })
+          ? (inputView.getState().history.at(-1)!.inputConfig as {
+              taskPlan?: TaskPlan;
+              mcpServerIds: string[];
+              attachments?: AttachmentReference[];
+            })
           : undefined;
+      const attachments = inputConfig?.attachments ?? [];
+      inputView.dispose();
+      const mcpServerIds = inputConfig ? mcpServerIdsSchema.parse(inputConfig.mcpServerIds) : [];
+      const mcpLease = mcpServerIds.length
+        ? this.mcpSettings.authorize(attachmentScope, mcpServerIds)
+        : undefined;
+      if (mcpLease) {
+        assert(authority, 409, 'MCP 授权需要当前账号与设备连接，请升级后重新发送');
+        authority.current();
+        mcpLease.assertCurrent();
+      }
       const taskPlan = inputConfig?.taskPlan
         ? taskPlanSchema.parse(inputConfig.taskPlan)
         : undefined;
@@ -1212,15 +1327,6 @@ export class HostWorkspace {
         const { current: _current, ...identity } = authority;
         this.taskManager.validatePlan(attachmentScope, taskPlan, identity);
       }
-      const attachments: AttachmentReference[] =
-        m.kind === 'turn'
-          ? ((
-              inputView.getState().history.at(-1)!.inputConfig as {
-                attachments?: AttachmentReference[];
-              }
-            ).attachments ?? [])
-          : [];
-      inputView.dispose();
       if (attachments.length) {
         this.attachmentData(attachmentScope, attachments);
         const capabilities = validationWorkspace.agents.find(
@@ -1277,6 +1383,29 @@ export class HostWorkspace {
       try {
         result = this.store.transaction(() => {
           journal.stage(this.workspace.id, m, turnId);
+          if (mcpLease) {
+            authority!.current();
+            mcpLease.assertCurrent();
+            const { current: _current, ...identity } = authority!;
+            const grant = {
+              version: 1,
+              scope: attachmentScope,
+              authority: identity,
+              operationId: m.operationId,
+              userTurnId: turnId,
+              assistantTurnId: assistantId,
+              serverIds: mcpServerIds,
+            };
+            // Private authorization is accepted atomically with the original
+            // input and receipt. Startup never activates or replays this record.
+            const key =
+              'mcp-grant-v1/' +
+              createHash('sha256')
+                .update(JSON.stringify([attachmentScope, turnId]))
+                .digest('hex');
+            assert(!this.store.load(key), 409, '原 MCP 回合授权已经存在');
+            this.store.save(key, Buffer.from(JSON.stringify(grant)));
+          }
           if (taskPlan) {
             authority!.current();
             const { current: _current, ...identity } = authority!;
@@ -1329,6 +1458,7 @@ export class HostWorkspace {
           agent,
           snapshotIssues: [],
           permissions: new Map(),
+          ...(mcpLease ? { mcp: { lease: mcpLease, authority: authority! } } : {}),
           ...(taskGrantId
             ? { task: { grantId: taskGrantId, authority: authority!, promptStarted: false } }
             : {}),
@@ -1427,6 +1557,13 @@ export class HostWorkspace {
       const project = this.workspace.projects.find(
         (p) => p.id === (meta.project as any).localProjectId,
       )!;
+      const currentMcp = () => {
+        if (!run.mcp) return;
+        assert(this.boundRun(id, run, this.runBinding(id, run)), 409, MCP_AUTHORIZATION_EXPIRED);
+        run.mcp.authority.current();
+        run.mcp.lease.assertCurrent();
+      };
+      currentMcp();
       let taskTools: ReturnType<SessionTaskManager['activate']> | undefined;
       if (run.task) {
         const task = run.task;
@@ -1508,25 +1645,38 @@ export class HostWorkspace {
               });
             },
           },
-          run.task?.server && taskTools
-            ? {
-                taskTools: {
-                  ...run.task.server.endpoint,
-                  assertCurrent: taskTools.current,
-                  onPromptDispatch: () => {
-                    taskTools!.current();
-                    run.task!.promptStarted = true;
+          {
+            ...(run.mcp
+              ? {
+                  mcp: {
+                    servers: run.mcp.lease.servers,
+                    redact: run.mcp.lease.redact,
+                    assertCurrent: currentMcp,
                   },
-                },
-              }
-            : undefined,
+                }
+              : {}),
+            ...(run.task?.server && taskTools
+              ? {
+                  taskTools: {
+                    ...run.task.server.endpoint,
+                    assertCurrent: taskTools.current,
+                    onPromptDispatch: () => {
+                      taskTools!.current();
+                      run.task!.promptStarted = true;
+                    },
+                  },
+                }
+              : {}),
+          },
         )
         .catch((error) => {
           if (
-            run.task &&
             error instanceof AppError &&
             error.status === 409 &&
-            error.message === '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务'
+            ((run.task &&
+              error.message === '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务') ||
+              (run.mcp &&
+                [MCP_UNSUPPORTED_TRANSPORT, MCP_AUTHORIZATION_EXPIRED].includes(error.message)))
           )
             throw error;
           throw new AppError(502, 'Agent 启动或恢复失败，请在执行电脑检查本机配置');
@@ -1537,6 +1687,7 @@ export class HostWorkspace {
         return;
       }
       this.checkExecutionLease(run.execution);
+      currentMcp();
       this.store.agents.assertCurrent(run.projectScope, agent);
       this.store.setNativeSession(id, session.id, run.execution, agent.id);
       this.saveAgentFeatures(id, run, session, agent);

@@ -108,9 +108,7 @@ test('ACP new and load receive only the ephemeral HTTP descriptor, never launch 
     const f = fixture(t),
       session = await f.open(nativeId);
     try {
-      const params = f.wires.find(
-        (wire) => wire.method === (nativeId ? 'session/load' : 'session/new'),
-      ).params;
+      const params = (await f.wait(nativeId ? 'session/load' : 'session/new')).params;
       assert.deepEqual(params.mcpServers, [
         {
           type: 'http',
@@ -132,7 +130,7 @@ test('ACP new and load receive only the ephemeral HTTP descriptor, never launch 
   const f = fixture(t),
     session = await f.driver.open(f.config, f.cwd, undefined, f.callbacks);
   try {
-    assert.deepEqual(f.wires.find((wire) => wire.method === 'session/new').params.mcpServers, []);
+    assert.deepEqual((await f.wait('session/new')).params.mcpServers, []);
   } finally {
     await session.close();
   }

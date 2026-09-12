@@ -5,6 +5,25 @@ import { spawnSync } from 'node:child_process';
 import { archiveRelay } from './relay-package.mjs';
 const require = createRequire(import.meta.url);
 const mode = process.argv[2] ?? 'relay';
+const desktopFiles = [
+  'entry.cjs',
+  'main.cjs',
+  'preload.cjs',
+  'web-preload.cjs',
+  'preview-settings.cjs',
+  'preview-renderer.cjs',
+  'notifications.cjs',
+  'github-settings.cjs',
+  'attachment-save.cjs',
+  'skills-settings.cjs',
+  'recovery.cjs',
+  'agent-settings.cjs',
+  'mcp-settings.cjs',
+  'page-loader.cjs',
+  'settings.css',
+  'settings.html',
+  'settings.js',
+];
 async function packageDir(name, from = process.cwd()) {
   let entry;
   try {
@@ -131,7 +150,7 @@ if (mode === 'relay') {
   const resources = join(app, 'Contents', 'Resources'),
     root = join(resources, 'app');
   await mkdir(root, { recursive: true });
-  await cp('src/desktop', root, { recursive: true });
+  for (const file of desktopFiles) await cp(join('src/desktop', file), join(root, file));
   await cp('src/web/public/icon-192.png', join(root, 'icon-192.png'));
   await cp('src/web/public/moor-logo.png', join(root, 'moor-logo.png'));
   await cp('assets/brand/moor.icns', join(resources, 'moor.icns'));

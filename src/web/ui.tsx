@@ -166,6 +166,7 @@ export function Shell({
               <Content name="#skills-control" />
               <Content name="#roles-control" />
               <Content name="#tasks-control" />
+              <Content name="#mcp-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -201,6 +202,7 @@ export function Shell({
             </div>
             <Content name="#preview-annotation-cards" />
             <Content name="#task-plan-card" />
+            <Content name="#mcp-card" />
             <div className="prompt-surface">
               <label className="sr-only" htmlFor="prompt">
                 发送给 Agent 的指令
@@ -278,6 +280,7 @@ export function Shell({
       <Content name="#skills-view" />
       <Content name="#roles-view" />
       <Content name="#tasks-view" />
+      <Content name="#mcp-view" />
     </div>
   );
 }

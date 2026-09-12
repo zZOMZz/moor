@@ -270,6 +270,120 @@
         >
       </fieldset>
     </details>
+    <details id="mcp-settings" class="health-panel">
+      <summary>本机 MCP 服务</summary>
+      <p>
+        为指定项目登记额外
+        MCP。连接地址、程序参数和凭据只保存在这台执行电脑；每次发送指令仍需在会话中选择授权的服务版本。
+      </p>
+      <button type="button" id="mcp-refresh">刷新 MCP 设置</button>
+      <p id="mcp-status" role="status">展开后读取本机配置，不会启动或连接 MCP。</p>
+      <fieldset id="mcp-controls" disabled>
+        <legend>MCP 配置与项目授权</legend>
+        <label
+          >已登记服务<select id="mcp-preset">
+            <option value="">新增 MCP</option>
+          </select></label
+        >
+        <label
+          >名称<input id="mcp-name" maxlength="100" autocomplete="off" placeholder="例如：项目资料"
+        /></label>
+        <label
+          >说明<input
+            id="mcp-description"
+            maxlength="2000"
+            autocomplete="off"
+            placeholder="向自己的设备说明此服务提供什么能力"
+        /></label>
+        <fieldset>
+          <legend>允许使用的本机项目（至少选择一个）</legend>
+          <div id="mcp-projects"></div>
+        </fieldset>
+        <small>先在下方添加并保存本机项目。项目目录被替换后，需要在这里重新保存授权。</small>
+        <label
+          >连接方式<select id="mcp-transport">
+            <option value="stdio">本机程序（stdio）</option>
+            <option value="http">HTTP</option>
+            <option value="sse">SSE</option>
+          </select></label
+        >
+        <div id="mcp-stdio-fields">
+          <label
+            >本机程序绝对路径<input
+              id="mcp-command"
+              maxlength="4096"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="选择 MCP 可执行程序"
+          /></label>
+          <button type="button" id="mcp-choose">选择程序</button>
+          <label
+            >程序参数（JSON 字符串数组）<textarea
+              id="mcp-args"
+              rows="3"
+              maxlength="65536"
+              autocomplete="off"
+              spellcheck="false"
+            >
+[]</textarea
+            >
+          </label>
+          <small>每个数组元素是一个独立参数，不经过 shell 展开。</small>
+        </div>
+        <div id="mcp-network-fields" hidden>
+          <label
+            >服务 URL<input
+              id="mcp-url"
+              maxlength="4096"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="https://mcp.example.com/mcp"
+          /></label>
+          <small
+            >使用 HTTPS；本机回环地址也可使用
+            HTTP。地址不能包含账号、查询参数或片段；认证信息填写到请求头。</small
+          >
+        </div>
+        <p id="mcp-private-names"></p>
+        <label
+          ><span id="mcp-private-label">环境变量</span
+          ><select id="mcp-private-mode">
+            <option value="keep">保留已保存的值</option>
+            <option value="replace">替换整组值</option>
+            <option value="clear">清空全部值</option>
+          </select></label
+        >
+        <div id="mcp-private-editor" hidden>
+          <label
+            >新的完整键值对象（JSON）<textarea
+              id="mcp-private"
+              rows="4"
+              maxlength="65536"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder='{"API_KEY":"新的值"}'
+            ></textarea>
+          </label>
+          <small
+            >此输入不会回填已保存的值。替换整组会移除未填写的键；保存请求发出后清除输入。</small
+          >
+        </div>
+        <p id="mcp-private-help"></p>
+        <label class="check"
+          ><input id="mcp-enabled" type="checkbox" />允许在所选项目的会话中授权此服务</label
+        >
+        <p id="mcp-version"></p>
+        <div class="actions">
+          <button type="button" id="mcp-save">登记 MCP</button
+          ><button type="button" id="mcp-toggle" disabled>启用服务</button
+          ><button type="button" id="mcp-remove" disabled>删除登记</button>
+        </div>
+        <small
+          >新配置默认禁用。保存和启用不会探测或启动服务；修改、停用或删除会撤销旧授权，并停止正在使用该授权的回合。具体连接能力取决于所选
+          Agent。</small
+        >
+      </fieldset>
+    </details>
     <form id="settings">
       <label>电脑名称<input id="name" maxlength="100" required /></label
       ><label

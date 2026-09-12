@@ -143,6 +143,7 @@ import {
   validateRoleReceipt,
   validateRolesInspect,
 } from '../role-protocol';
+import { MCP_FEATURE, MCP_LIMITS, mcpReadSchema, validateMcpRead } from '../mcp-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -326,6 +327,7 @@ export function createApp(
           'preview-read',
           'skills-read',
           'roles-read',
+          'mcp-read',
           'roles-action',
           'agent-options',
           'sessions',
@@ -838,6 +840,78 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'mcp' &&
+            parts[6] === 'read' &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            assert(runtime, 409, '执行电脑暂时不可用');
+            const input = mcpReadSchema.parse(await body(req, MCP_LIMITS.requestBytes));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              'MCP 请求与项目副本不匹配',
+            );
+            assert(runtime.features?.includes(MCP_FEATURE), 409, '请先升级执行电脑上的 Moor');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const r = store.catalog.replica(owner!, workspaceId, replica.id);
+              const w = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                r.host.device_id === host.device_id &&
+                  r.host.runtime_id === input.workspaceId &&
+                  r.local_id === input.localProjectId &&
+                  r.project_id === replica.project_id &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  w?.userId === runtime.userId &&
+                  w?.machineId === runtime.machineId &&
+                  w.features?.includes(MCP_FEATURE) &&
+                  w.projects.some((p) => p.id === input.localProjectId),
+                409,
+                'MCP 请求的执行范围已变化，请重新读取',
+              );
+            };
+            current();
+            let raw: unknown, failed: unknown;
+            try {
+              raw = await request(
+                host.device_id,
+                'mcp-read',
+                host.runtime_id,
+                input,
+                replica.local_id,
+              );
+            } catch (error) {
+              failed = error;
+            }
+            current();
+            if (failed)
+              throw new AppError(
+                failed instanceof AppError &&
+                  [400, 401, 403, 404, 409, 413, 429, 504].includes(failed.status)
+                  ? failed.status
+                  : 502,
+                'MCP 目录读取失败，请手动重新读取',
+              );
+            assert(
+              Buffer.byteLength(JSON.stringify(raw) ?? '') <= MCP_LIMITS.responseBytes,
+              502,
+              'MCP 响应超过限制',
+            );
+            let result;
+            try {
+              result = validateMcpRead(raw, input);
+            } catch {
+              throw new AppError(502, 'MCP 目录响应不可验证');
+            }
+            return json(res, 200, result);
+          }
           if (
             parts[5] === 'roles' &&
             ['read', 'action'].includes(parts[6] ?? '') &&
@@ -2461,16 +2535,30 @@ export function createApp(
                   scope: 'doc',
                   docId: message.sessionId,
                 });
-              } else if (message.type === 'github-changed' || message.type === 'skills-changed') {
+              } else if (
+                message.type === 'github-changed' ||
+                message.type === 'skills-changed' ||
+                message.type === 'mcp-changed'
+              ) {
                 const event = z
                   .object({
-                    type: z.enum(['github-changed', 'skills-changed']),
+                    type: z.enum(['github-changed', 'skills-changed', 'mcp-changed']),
                     workspaceId: z.string().min(1).max(200),
                   })
                   .strict()
                   .parse(message);
-                const feature = event.type === 'skills-changed' ? SKILLS_FEATURE : GITHUB_FEATURE;
-                const scope = event.type === 'skills-changed' ? 'skills' : 'github';
+                const feature =
+                  event.type === 'mcp-changed'
+                    ? MCP_FEATURE
+                    : event.type === 'skills-changed'
+                      ? SKILLS_FEATURE
+                      : GITHUB_FEATURE;
+                const scope =
+                  event.type === 'mcp-changed'
+                    ? 'mcp'
+                    : event.type === 'skills-changed'
+                      ? 'skills'
+                      : 'github';
                 assert(
                   bridges
                     .get(d.id)

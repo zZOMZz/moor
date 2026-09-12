@@ -158,7 +158,7 @@ corepack pnpm package:mac
 node dist/bridge.mjs --server https://moor.example.com --pair PAIR_CODE --project /absolute/project --builtin-agent codex
 ```
 
-`--runtime-data /absolute/host.sqlite`（或 `MOOR_RUNTIME_DATA`）指定主机数据库。只有本机设置可选择可执行程序，远程请求不能传入命令、环境变量或额外 MCP。合成验证可在独立目录运行 `pnpm exec tsx scripts/prepare-validation.ts /tmp/moor-synthetic/host.sqlite /tmp/synthetic-project`，然后启动桥接时指定同一数据库。该脚本要求主机已停止。
+`--runtime-data /absolute/host.sqlite`（或 `MOOR_RUNTIME_DATA`）指定主机数据库。只有本机设置可选择可执行程序，远程请求不能传入命令、环境变量或 MCP 连接参数；额外 MCP 只能选择本机登记的配置版本并逐回合授权。合成验证可在独立目录运行 `pnpm exec tsx scripts/prepare-validation.ts /tmp/moor-synthetic/host.sqlite /tmp/synthetic-project`，然后启动桥接时指定同一数据库。该脚本要求主机已停止。
 
 ### 中转服务包
 
@@ -213,9 +213,11 @@ M4.4 已接通[审阅与代码发布](docs/github-writes.md)的实现与合成�
 
 M4.5 已接通[项目网页预览](docs/preview.md)：在执行电脑登记当前目录的 HTTP 服务，查看响应式画面、定位元素并手动交互；标注可保存为原会话草稿，截图可单独作为附件。新会话的标注、刷新恢复、PNG 上传与合成 Agent 送达已通过实际浏览器检查。
 
-M5.1 已接通 [Skills 发现与引用](docs/skills.md)：按会话实际执行目录发现项目 Skill，并查看本机明确登记的全局目录；完整说明和版本可加入可编辑草稿，随后普通发送。发现不代表原生 Agent 已启用，附带脚本和资源不自动读取。M5.2 已接通[本机 Agent 设置与项目角色预设](docs/agent-roles.md)：自定义 ACP 的保存与显式检查留在执行电脑，配置变化保留已有会话的启动版本。角色保存模型、effort、模式与说明，预览确认后加入草稿，再手动发送。接下来推进 CLI 与受限多 Agent 协作；M6 仍按明确需求与验收条件启动。
+M5.1 已接通 [Skills 发现与引用](docs/skills.md)：按会话实际执行目录发现项目 Skill，并查看本机明确登记的全局目录；完整说明和版本可加入可编辑草稿，随后普通发送。发现不代表原生 Agent 已启用，附带脚本和资源不自动读取。M5.2 已接通[本机 Agent 设置与项目角色预设](docs/agent-roles.md)：自定义 ACP 的保存与显式检查留在执行电脑，配置变化保留已有会话的启动版本。角色保存模型、effort、模式与说明，预览确认后加入草稿，再手动发送。M5.3 会话 CLI、M5.4 有限协作与 M5.5 额外 MCP 的进展见 [roadmap](docs/roadmap.md)；M6 仍按明确需求与验收条件启动。
 
-当前不支持团队成员权限、SSO、服务端历史副本、跨主机迁移项目、任意远程终端及额外 MCP 配置。架构保留独立的账号与设备边界，后续可扩展。
+额外 MCP 支持本机登记 stdio、HTTP 或 SSE 连接，并限定允许使用的项目。会话只看到安全目录，审查固定版本后随一次普通指令授权；配置与凭据留在执行电脑，停用会撤销原回合授权。读取、选择和恢复连接均不执行，Fork 与协作子任务不继承选择。用法和原生 Agent 兼容限制见[本机 MCP](docs/mcp.md)。
+
+当前不支持团队成员权限、SSO、服务端历史副本、跨主机迁移项目或任意远程终端。架构保留独立的账号与设备边界，后续可扩展。
 
 ## 开源与品牌
 

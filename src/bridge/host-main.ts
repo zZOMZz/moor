@@ -36,6 +36,8 @@ import { GitHubConfig } from '../runtime/github-config';
 import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
 import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
+import { McpSettings } from '../runtime/mcp-settings';
+import { mcpReadSchema } from '../mcp-protocol';
 import { AgentSettings } from '../runtime/agent-settings';
 import { sessionControlActionSchema, sessionOperationSchema } from '../session-control-protocol';
 import { taskAuthoritySchema, taskReadSchema, taskActionSchema } from '../task-protocol';
@@ -69,13 +71,15 @@ const { values } = parseArgs({
     'preview-config-stdin': { type: 'boolean' },
     'skills-config-stdin': { type: 'boolean' },
     'agent-config-stdin': { type: 'boolean' },
+    'mcp-config-stdin': { type: 'boolean' },
   },
 });
 const configurationOnly =
   values['github-config-stdin'] ||
   values['preview-config-stdin'] ||
   values['skills-config-stdin'] ||
-  values['agent-config-stdin'];
+  values['agent-config-stdin'] ||
+  values['mcp-config-stdin'];
 if (
   values.local &&
   (values.desktop || values.pair || values.server !== undefined || configurationOnly)
@@ -86,13 +90,30 @@ if (
   );
   process.exit(1);
 }
-const configurationLabel = values['agent-config-stdin']
-  ? 'Agent'
-  : values['skills-config-stdin']
-    ? 'Skills'
-    : values['preview-config-stdin']
-      ? '预览'
-      : 'GitHub';
+const configurationLabel = values['mcp-config-stdin']
+  ? 'MCP'
+  : values['agent-config-stdin']
+    ? 'Agent'
+    : values['skills-config-stdin']
+      ? 'Skills'
+      : values['preview-config-stdin']
+        ? '预览'
+        : 'GitHub';
+if (
+  values['mcp-config-stdin'] &&
+  (values.desktop ||
+    values.pair ||
+    values['agent-config-stdin'] ||
+    values['skills-config-stdin'] ||
+    values['preview-config-stdin'] ||
+    values['github-config-stdin'])
+) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({ error: 'MCP 本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
+  );
+  process.exit(1);
+}
 if (
   values['agent-config-stdin'] &&
   (values.desktop ||
@@ -180,6 +201,12 @@ const agentSettings = new AgentSettings(runtime, acpDriver, () => {
   if (!configurationOnly) {
     for (const host of workspaces.values()) host.updateCatalogue();
     hello();
+  }
+});
+const mcpSettings = new McpSettings(runtime, () => {
+  if (!configurationOnly) {
+    for (const host of workspaces.values()) host.invalidateMcp();
+    broadcast({ type: 'mcp-changed', workspaceId: runtime.workspace.id });
   }
 });
 const githubConfig = new GitHubConfig(
@@ -308,20 +335,22 @@ if (configurationOnly) {
       const chunk = Buffer.from(value);
       bytes += chunk.length;
       assert(
-        bytes <= (values['agent-config-stdin'] ? 64 : 16) * 1024,
+        bytes <= (values['agent-config-stdin'] || values['mcp-config-stdin'] ? 64 : 16) * 1024,
         413,
         configurationLabel + ' 本机配置请求过大',
       );
       chunks.push(chunk);
     }
     const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    const result = values['agent-config-stdin']
-      ? await agentSettings.handle(input)
-      : values['skills-config-stdin']
-        ? skillsConfig.handle(input)
-        : values['preview-config-stdin']
-          ? previewConfig.handle(input)
-          : await githubConfig.handle(input);
+    const result = values['mcp-config-stdin']
+      ? await mcpSettings.handle(input)
+      : values['agent-config-stdin']
+        ? await agentSettings.handle(input)
+        : values['skills-config-stdin']
+          ? skillsConfig.handle(input)
+          : values['preview-config-stdin']
+            ? previewConfig.handle(input)
+            : await githubConfig.handle(input);
     writeFileSync(process.stdout.fd, JSON.stringify(result) + '\n');
   } catch (error) {
     exitCode = 1;
@@ -526,7 +555,11 @@ function connect(target: Target) {
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
           else if (m.method === 'roles-read')
             result = await workspace.readRoles(rolesReadSchema.parse(m.params), m.localProjectId);
-          else if (m.method === 'session-control')
+          else if (m.method === 'mcp-read') {
+            const input = mcpReadSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = workspace.readMcp(input, m.localProjectId);
+          } else if (m.method === 'session-control')
             result = await workspace.controlManager.control(
               sessionControlActionSchema.parse(m.params),
               m.localProjectId,
@@ -729,6 +762,7 @@ function connect(target: Target) {
     for (const host of workspaces.values()) {
       host.previewManager.invalidate();
       host.taskManager.invalidateUnavailable();
+      host.invalidateMcp();
     }
     const watches = [...target.watches.values()];
     target.watches.clear();
@@ -889,6 +923,41 @@ if (values.desktop) {
     return true;
   });
   process.on('message', (message) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      message.type === 'mcp-config'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+        stopped ||
+        !process.connected
+      )
+        return;
+      const requestId = request.requestId;
+      void Promise.resolve()
+        .then(() => mcpSettings.handle(request.action))
+        .then(
+          (state) => {
+            if (!stopped && process.connected)
+              process.send?.({ type: 'mcp-config-result', requestId, ok: true, state });
+          },
+          (error) => {
+            if (!stopped && process.connected)
+              process.send?.({
+                type: 'mcp-config-result',
+                requestId,
+                ok: false,
+                error:
+                  error instanceof AppError ? error.message : 'MCP 本机设置未能确认，请重新读取',
+              });
+          },
+        );
+      return;
+    }
     if (
       message &&
       typeof message === 'object' &&

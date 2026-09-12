@@ -1,4 +1,7 @@
 import { SESSION_TASKS_FEATURE, taskOriginSchema } from '../task-protocol';
+import { MCP_FEATURE } from '../mcp-protocol';
+import { McpController, mcpKey, type McpReview } from './mcp';
+import { showMcpControl, showMcpPanel, showMcpCard } from './mcp-ui';
 import { TasksController, tasksKey, validateTaskReview } from './tasks';
 import { showTasksControl, showTasksPanel, showTaskPlanCard, showTaskOrigin } from './tasks-ui';
 import { ROLE_FEATURE, type RoleView } from '../role-protocol';
@@ -732,6 +735,114 @@ function persistComposerDraft(draftKey: string, value: string) {
   const writing = composerDraftWrites.catch(() => {}).then(() => cache.write(draftKey, value));
   composerDraftWrites = writing;
   return writing;
+}
+
+let mcp: McpController | undefined;
+let mcpGeneration = 0,
+  mcpPanelOpen = false,
+  mcpLoading = false,
+  mcpLoadError = '';
+function currentMcp() {
+  const target = gitTarget();
+  return target && mcp && mcpKey(target) === mcpKey(mcp.target) ? mcp : undefined;
+}
+function mcpReason() {
+  return !authenticated ||
+    !connected ||
+    !selected?.online ||
+    !replica?.available ||
+    navigator.onLine === false
+    ? '执行电脑离线；MCP 选择只保存在草稿中，连接后请手动操作。'
+    : !workspace?.features?.includes(MCP_FEATURE)
+      ? '此执行电脑尚不支持额外 MCP，请升级 Moor。'
+      : '';
+}
+function mcpSendReason() {
+  return (
+    mcpLoadError ||
+    currentMcp()?.loadError ||
+    (mcpLoading || currentMcp()?.busy
+      ? '请等待 MCP 草稿恢复或保存。'
+      : currentMcp()?.selected.length
+        ? mcpReason()
+        : '')
+  );
+}
+function resetMcp() {
+  mcpGeneration++;
+  mcp?.dispose();
+  mcp = undefined;
+  mcpPanelOpen = false;
+  mcpLoading = false;
+  mcpLoadError = '';
+  showMcpPanel();
+  showMcpCard();
+}
+async function loadMcp() {
+  const target = gitTarget(),
+    generation = ++mcpGeneration;
+  mcp = undefined;
+  mcpLoading = true;
+  mcpLoadError = '';
+  try {
+    if (!target) return;
+    const controller: McpController = new McpController(target, {
+      read: cache.read,
+      compareWrite: cache.compareWrite,
+      compareSubmission: cache.compareTaskSubmission,
+      request: api,
+      current: () => generation === mcpGeneration && currentMcp() === controller,
+      online: () => !mcpReason(),
+      changed: () => {
+        if (generation === mcpGeneration) updateComposer();
+      },
+    });
+    mcp = controller;
+    await controller.load();
+  } catch (error) {
+    if (generation === mcpGeneration) mcpLoadError = 'MCP 草稿无法恢复，请重新打开原会话。';
+    throw error;
+  } finally {
+    if (generation === mcpGeneration) {
+      mcpLoading = false;
+      updateComposer();
+    }
+  }
+}
+function openMcp() {
+  mcpPanelOpen = true;
+  renderMcp();
+}
+function renderMcp() {
+  const controller = currentMcp(),
+    generation = mcpGeneration;
+  showMcpControl({
+    disabled: !gitTarget(),
+    count: controller?.selected.length ?? 0,
+    onOpen: openMcp,
+  });
+  showMcpCard(controller ? { controller, onOpen: openMcp } : undefined);
+  if (!mcpPanelOpen) return;
+  const current = () => generation === mcpGeneration && controller === currentMcp() && mcpPanelOpen;
+  showMcpPanel({
+    controller,
+    reason: mcpLoadError || mcpReason(),
+    sending,
+    onClose: () => {
+      if (current()) {
+        mcpPanelOpen = false;
+        showMcpPanel();
+      }
+    },
+    onRefresh: () =>
+      run(async () => {
+        if (current() && controller) await controller.refresh();
+      }),
+    onApply: async (servers) => {
+      if (!current() || !controller) throw new Error('MCP 面板或执行目标已改变。');
+      await controller.apply(servers);
+    },
+  });
 }
 
 let tasks: TasksController | undefined;
@@ -2393,6 +2504,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetMcp();
   resetTasks();
   resetRoles();
   resetSkills();
@@ -2667,6 +2779,7 @@ async function loadAttachmentDraft() {
     if (token === attachmentGeneration && generation === sessionGeneration)
       await loadProjectPreview();
     if (token === attachmentGeneration && generation === sessionGeneration) await loadTasks();
+    if (token === attachmentGeneration && generation === sessionGeneration) await loadMcp();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -3429,6 +3542,7 @@ function pairComputer() {
   });
 }
 function logout() {
+  resetMcp();
   resetRoles();
   sessionAgent = undefined;
   sessionAgentError = '';
@@ -3511,6 +3625,7 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
+    currentMcp()?.invalidate('执行电脑连接已关闭；原 MCP 选择保留，请手动重新读取。');
     currentTasks()?.invalidate('执行电脑连接已关闭，请手动重新读取任务状态。');
     invalidateRoles('执行电脑连接已关闭，请手动重新读取角色。');
     invalidateSkills('执行电脑连接已关闭，请手动重新读取 Skills。');
@@ -3537,7 +3652,16 @@ function connect() {
       ) {
         roleDraftAbort?.abort();
         currentRoles()?.catalogChanged();
+        currentMcp()?.invalidate();
       }
+
+      if (
+        message.type === 'changed' &&
+        message.room?.scope === 'mcp' &&
+        message.deviceId === selected?.id &&
+        message.workspaceId === workspace?.id
+      )
+        currentMcp()?.invalidate();
 
       if (
         message.type === 'changed' &&
@@ -4727,6 +4851,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderMcp();
   renderTasks();
   renderRoles();
   renderSkills();
@@ -4756,6 +4881,7 @@ function updateComposer() {
     sending ||
     skillsDraftAppending ||
     roleApplying ||
+    (!pending && !!mcpSendReason()) ||
     !!currentTasks()?.busy ||
     (!pending && !!tasksSendReason()) ||
     !!currentPreviewAnnotations()?.busy ||
@@ -4834,7 +4960,11 @@ function updateComposer() {
   $<HTMLButtonElement>('#cancel').hidden = !active;
   $<HTMLButtonElement>('#cancel').disabled = !connected || !selected?.online;
 }
-async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
+async function submit(
+  m: Mutation,
+  annotations?: PreviewAnnotationSubmission,
+  mcpReview?: McpReview,
+) {
   if (sending) return;
   const generation = sessionGeneration,
     pendingKey = key('pending'),
@@ -4861,6 +4991,8 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
     retrying = !!pending,
     taskSubmission =
       m.kind === 'turn' && !!(taskController?.delivery || (!retrying && taskController?.enabled));
+  const mcpController = currentMcp(),
+    mcpSubmission = m.kind === 'turn' && !!(mcpController?.delivery || (!retrying && mcpReview));
   const creatingSession = !sessionId;
   pending = m;
   pendingAnnotationDelivery = annotationDelivery;
@@ -4875,12 +5007,26 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
           annotationDelivery,
         })
       : m;
-    if (taskSubmission) {
+    if (mcpSubmission && !retrying) {
+      if (!mcpController || !mcpReview) throw new Error('MCP 草稿授权无法恢复。');
+      await mcpController.stageSubmission(
+        m,
+        mcpReview,
+        pendingKey,
+        pendingValue,
+        taskSubmission
+          ? (entry, current) =>
+              taskController!.stageSubmission(m, pendingKey, pendingValue, [entry], current)
+          : undefined,
+      );
+    } else if (taskSubmission) {
       if (!retrying) await taskController!.stageSubmission(m, pendingKey, pendingValue);
     } else await cache.write(pendingKey, pendingValue);
     durable = true;
     if (taskSubmission && !(await taskController!.verifySubmission(m)))
       throw new Error('原任务授权无法恢复。');
+    if (mcpSubmission && !(await mcpController!.verifySubmission(m)))
+      throw new Error('原 MCP 授权无法恢复。');
     const confirmation = await api(endpoint, m);
     if (
       confirmation?.accepted !== true ||
@@ -4891,6 +5037,10 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
     if (taskSubmission) {
       if (generation !== sessionGeneration) return;
       await taskController!.confirmSubmission(m.operationId);
+    }
+    if (mcpSubmission) {
+      if (generation !== sessionGeneration) return;
+      await mcpController!.confirmSubmission(m.operationId);
     }
     if (annotationDelivery) {
       // Keep the original outbox until its own page can finish local confirmation cleanup.
@@ -4919,11 +5069,13 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
     // Relay offline/timeout errors cannot invalidate the original operation id.
     if (
       (!durable && !retrying) ||
-      (e instanceof ApiError && e.rejected && !(taskSubmission && retrying))
+      (e instanceof ApiError && e.rejected && !((taskSubmission || mcpSubmission) && retrying))
     ) {
       if (taskSubmission && durable && generation === sessionGeneration)
         await taskController!.confirmSubmission(m.operationId, false);
-      if (!taskSubmission || durable) await cache.write(pendingKey, undefined);
+      if (mcpSubmission && durable && generation === sessionGeneration)
+        await mcpController!.confirmSubmission(m.operationId, false);
+      if (!(taskSubmission || mcpSubmission) || durable) await cache.write(pendingKey, undefined);
       if (generation === sessionGeneration) pending = undefined;
       if (generation === sessionGeneration) pendingAnnotationDelivery = undefined;
     }
@@ -4950,6 +5102,7 @@ async function sendTurn() {
     return;
   }
   if (tasksSendReason()) throw new Error(tasksSendReason());
+  if (mcpSendReason()) throw new Error(mcpSendReason());
   if (sessionPersistenceError) throw new Error(sessionPersistenceError);
   if (sessionAgentError) throw new Error(sessionAgentError);
   if (interactionLoadError) throw new Error(interactionLoadError);
@@ -4963,8 +5116,9 @@ async function sendTurn() {
     (!annotationStore.loaded || annotationStore.loadError || annotationStore.busy)
   )
     throw new Error(annotationStore.loadError || '请等待标注草稿恢复或保存。');
-  const composed = annotationStore?.compose($<HTMLTextAreaElement>('#prompt').value.trim()),
-    prompt = composed?.prompt ?? $<HTMLTextAreaElement>('#prompt').value.trim();
+  const composerText = $<HTMLTextAreaElement>('#prompt').value,
+    composed = annotationStore?.compose(composerText.trim()),
+    prompt = composed?.prompt ?? composerText.trim();
   const attachmentController = currentAttachments();
   if (!prompt && !attachmentController?.items.length) return;
   const generation = sessionGeneration;
@@ -4981,6 +5135,9 @@ async function sendTurn() {
   const selectedConfig = resolveRunSelection(runSelection, agent.runConfig);
   const taskController = currentTasks(),
     taskReview = taskController?.enabled;
+  const mcpController = currentMcp(),
+    mcpReview = await mcpController?.prepareSend();
+  if (generation !== sessionGeneration || mcpController !== currentMcp()) return;
   if (taskReview && (meta?.taskOrigin || taskReview.parentAgentId !== agent.id))
     throw new Error('请重新审查当前父 Agent 的任务计划。');
   if (attachmentController?.items.length) {
@@ -5014,6 +5171,15 @@ async function sendTurn() {
   )
     throw new Error('任务计划已改变，请重新审查。');
   const attached = attachmentController?.references() ?? [];
+  mcpController?.assertReview(mcpReview);
+  if (
+    mcpReview &&
+    (composerText !== $<HTMLTextAreaElement>('#prompt').value ||
+      currentAgent()?.id !== agent.id ||
+      JSON.stringify(resolveRunSelection(runSelection, currentAgent()?.runConfig)) !==
+        JSON.stringify(selectedConfig))
+  )
+    throw new Error('读取 MCP 期间指令或运行设置已改变，请核对后重新发送。');
   const candidate = new LoroDoc();
   candidate.import(doc.export({ mode: 'snapshot' }));
   const localFlock = Flock.fromJson(
@@ -5030,7 +5196,7 @@ async function sendTurn() {
     prompt,
     cliType: agent.cliType,
     agentType: agent.agentType,
-    mcpServerIds: [],
+    mcpServerIds: mcpReview?.servers.map((server) => server.id) ?? [],
     taskToolsEnabled: !!taskReview,
     ...(taskReview ? { taskPlan: taskReview.plan } : {}),
     ...(attached.length ? { attachments: attached } : {}),
@@ -5083,6 +5249,7 @@ async function sendTurn() {
       metaBundle: localFlock.exportJson(metaVersion),
     },
     composed?.submission.selection.length ? composed.submission : undefined,
+    mcpReview,
   );
 }
 async function respondPermission(requestId: string, optionId: string) {
@@ -5133,6 +5300,7 @@ window.addEventListener('online', () => {
   }
 });
 window.addEventListener('offline', () => {
+  currentMcp()?.invalidate('当前离线；原 MCP 选择保留，连接后请手动重新读取。');
   currentTasks()?.invalidate('当前离线，请手动重新读取任务状态。');
   invalidateRoles('当前离线，请连接后手动重新读取角色。');
   invalidateSkills('当前离线；Skills 正文已清除，连接后可手动重新读取。');

@@ -258,6 +258,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       'personal:preview-config',
       'personal:skills-config',
       'personal:agent-config',
+      'personal:mcp-config',
     ])
       assert.throws(() => invoke(method, { action: 'read' }, event), /无效的本机设置请求/);
   const previewReading = invoke('personal:preview-config', { action: 'read' });
@@ -294,6 +295,27 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     state: { revision: 0, presets: [], privateMetadata: 'not-public' },
   });
   assert.deepEqual(await agentReading, { revision: 0, presets: [] });
+  const mcpReading = invoke('personal:mcp-config', { action: 'read' });
+  const mcpRequest = children[0].sent.at(-1);
+  assert.equal(mcpRequest.type, 'mcp-config');
+  children[0].emit('message', {
+    type: 'mcp-config-result',
+    requestId: mcpRequest.requestId,
+    ok: true,
+    state: { revision: 0, projects: [], presets: [], privateMetadata: 'not-public' },
+  });
+  assert.deepEqual(await mcpReading, { revision: 0, projects: [], presets: [] });
+  assert.equal(await invoke('personal:mcp-executable'), null);
+  const mcpPickerGate = gate();
+  directoryGate = mcpPickerGate;
+  const mcpExecutable = invoke('personal:mcp-executable');
+  const staleMcpExecutable = assert.rejects(mcpExecutable, /无效的本机设置请求/);
+  await mcpPickerGate.entered;
+  const mcpFrame = settingsWindow.webContents.mainFrame;
+  settingsWindow.webContents.mainFrame = { ...mcpFrame };
+  mcpPickerGate.release();
+  await staleMcpExecutable;
+  settingsWindow.webContents.mainFrame = mcpFrame;
   assert.equal(await invoke('personal:agent-executable'), null);
   const executableGate = gate();
   directoryGate = executableGate;
@@ -590,9 +612,12 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   const previewRestartRejection = assert.rejects(previewBeforeRestart, /已重启/);
   const skillsBeforeRestart = invoke('personal:skills-config', { action: 'read' });
   const skillsRestartRejection = assert.rejects(skillsBeforeRestart, /已重启/);
+  const mcpBeforeRestart = invoke('personal:mcp-config', { action: 'read' });
+  const mcpRestartRejection = assert.rejects(mcpBeforeRestart, /已重启/);
   await invoke('personal:recover');
   await previewRestartRejection;
   await skillsRestartRejection;
+  await mcpRestartRejection;
   const replacementReady = emitMessage(children.at(-1), {
     type: 'local-ready',
     origin: 'http://127.0.0.1:4532',

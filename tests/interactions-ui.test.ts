@@ -217,6 +217,22 @@ test('React question forms preserve all field types, save offline drafts and kee
             size: 100,
             cost: { amount: 0, currency: 'USD' },
           },
+          rateLimits: [
+            {
+              source: 'claude-agent-acp',
+              adapterVersion: '0.76.0',
+              status: 'allowed',
+              rateLimitType: 'five_hour',
+              utilization: 0,
+            },
+            {
+              source: 'claude-agent-acp',
+              adapterVersion: '0.76.0',
+              status: 'rejected',
+              rateLimitType: 'seven_day',
+              resetsAt: 1,
+            },
+          ],
         },
         canFill: true,
         onFill: async (name) => {
@@ -229,6 +245,12 @@ test('React question forms preserve all field types, save offline drafts and kee
     assert.match(document.querySelector('.agent-usage')!.textContent!, /0 \/ 100/);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /0 USD/);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /未提供/);
+    const limits = [...document.querySelectorAll('.agent-rate-limit')];
+    assert.equal(limits.length, 2);
+    assert.match(limits[0]!.textContent!, /5 小时.*已用比例0%/s);
+    assert.match(limits[1]!.textContent!, /7 天.*上报状态已受限.*已用比例未提供/s);
+    assert.match(limits[1]!.textContent!, /1970-01-01T00:00:01.000Z/);
+    assert.match(document.querySelector('.interaction-dialog')!.textContent!, /不会推断额度已恢复/);
     await act(async () =>
       document.querySelector<HTMLButtonElement>('.agent-commands button')!.click(),
     );

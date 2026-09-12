@@ -4,6 +4,7 @@ import { assert, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '../model';
 import { promptAttachmentsSchema } from '../attachment-protocol';
 import { taskPlanSchema, SESSION_TASKS_FEATURE } from '../task-protocol';
+import { MCP_FEATURE, mcpServerIdsSchema } from '../mcp-protocol';
 const clone = (source: LoroDoc) => {
   const d = new LoroDoc();
   d.import(source.export({ mode: 'snapshot' }));
@@ -175,7 +176,13 @@ export function validateMutation(
       400,
       '模型或审批设置包含不支持的选项',
     );
-    assert(isDeepStrictEqual(turn.inputConfig.mcpServerIds, []), 400, '不允许远程注入额外 MCP');
+    const mcpSelection = mcpServerIdsSchema.safeParse(turn.inputConfig.mcpServerIds);
+    assert(mcpSelection.success, 400, 'MCP 选择必须是本机登记的配置版本编号');
+    assert(
+      !mcpSelection.data.length || ws.features?.includes(MCP_FEATURE),
+      409,
+      '执行主机尚不支持额外 MCP，请升级后重新审查',
+    );
     if (turn.inputConfig.taskToolsEnabled === true) {
       assert(ws.features?.includes(SESSION_TASKS_FEATURE), 409, '执行主机尚不支持受限子任务');
       const plan = taskPlanSchema.safeParse(turn.inputConfig.taskPlan);
