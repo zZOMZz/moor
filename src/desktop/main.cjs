@@ -129,22 +129,21 @@ function lockedWindow(origin, partition) {
       sandbox: true,
     },
   });
-  contentWindows.set(window.webContents, { window, origin });
-  window.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
-    if (mainFrame) attachmentSaver.invalidate(window.webContents);
+  const contents = window.webContents;
+  contentWindows.set(contents, { window, origin });
+  contents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
+    if (mainFrame) attachmentSaver.invalidate(contents);
   });
   window.on('closed', () => {
-    attachmentSaver.invalidate(window.webContents);
-    contentWindows.delete(window.webContents);
+    attachmentSaver.invalidate(contents);
+    contentWindows.delete(contents);
   });
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  window.webContents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== contentWindows.get(window.webContents)?.origin)
-      event.preventDefault();
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('will-navigate', (event, url) => {
+    if (new URL(url).origin !== contentWindows.get(contents)?.origin) event.preventDefault();
   });
-  window.webContents.on('will-redirect', (event, url) => {
-    if (new URL(url).origin !== contentWindows.get(window.webContents)?.origin)
-      event.preventDefault();
+  contents.on('will-redirect', (event, url) => {
+    if (new URL(url).origin !== contentWindows.get(contents)?.origin) event.preventDefault();
   });
   return window;
 }
@@ -536,10 +535,13 @@ ipcMain.handle('personal:agent-executable', async (event) => {
 });
 ipcMain.handle('personal:project', async (event) => {
   trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
   const result = await dialog.showOpenDialog(settingsWindow, {
     properties: ['openDirectory'],
     title: '选择本机项目',
   });
+  trusted({ sender, senderFrame: frame });
   return result.canceled ? null : result.filePaths[0];
 });
 ipcMain.handle('personal:skills-directory', async (event) => {
@@ -567,12 +569,8 @@ ipcMain.handle('personal:save', async (event, value) => {
   )
     throw new Error('项目目录无效');
   const agents = value.agents;
-  if (
-    !Array.isArray(agents) ||
-    !agents.length ||
-    agents.some((a) => !['codex', 'claude'].includes(a))
-  )
-    throw new Error('请选择 Agent');
+  if (!Array.isArray(agents) || agents.some((a) => !['codex', 'claude'].includes(a)))
+    throw new Error('内置 Agent 配置无效');
   const code = String(value.code ?? '').trim();
   if (code) {
     if (!server) throw new Error('请先填写服务地址');

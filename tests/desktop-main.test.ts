@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createRequire as createPackageRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +27,13 @@ function gate() {
 test('actual desktop main limits IPC, acknowledges native events, keeps notifications after window close and opens only scoped read links', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'moor-desktop-main-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
+  const projectDirectory = await mkdtemp(join(tmpdir(), 'moor-desktop-project-'));
+  t.after(() => rm(projectDirectory, { recursive: true, force: true }));
+  await writeFile(
+    join(directory, 'settings.json'),
+    JSON.stringify({ server: '', name: 'Synthetic desktop', projects: [], agents: [] }),
+    { mode: 0o600 },
+  );
   const localRequire = createPackageRequire(resolve('src/desktop/main.cjs'));
   const handlers = new Map<string, (...args: any[]) => any>(),
     windows: any[] = [],
@@ -53,11 +60,17 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   });
   class Window extends EventEmitter {
     destroyed = false;
-    webContents: any;
+    private contents: any;
+    get webContents() {
+      // Electron throws when the BrowserWindow getter is accessed after destruction,
+      // including from its own `closed` callback.
+      if (this.destroyed) throw new Error('Object has been destroyed');
+      return this.contents;
+    }
     urls: string[] = [];
     constructor(readonly options: any) {
       super();
-      this.webContents = Object.assign(new EventEmitter(), {
+      this.contents = Object.assign(new EventEmitter(), {
         mainFrame: { url: 'about:blank', origin: 'null' },
         isDestroyed: () => this.destroyed,
         setWindowOpenHandler: (fn: unknown) => {
@@ -105,7 +118,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     }
   }
   let dialogResult: any = { canceled: true };
-  let directoryGate: ReturnType<typeof gate> | undefined;
+  let directoryGate: ReturnType<typeof gate> | undefined,
+    directoryResult = directory;
   const electron = {
     app: application,
     BrowserWindow: Window,
@@ -120,7 +134,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
           waiting.enter();
           await waiting.waiting;
         }
-        return { canceled: !waiting, filePaths: [directory] };
+        return { canceled: !waiting, filePaths: [directoryResult] };
       },
       showMessageBox: async () => ({ response: 0 }),
     },
@@ -162,13 +176,14 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     stop() {}
     ready() {}
   }
-  const spawn = () => {
+  const spawn = (_command: string, args: string[]) => {
     const child = Object.assign(new EventEmitter(), {
       stderr: new EventEmitter(),
       connected: true,
       exitCode: 0,
       signalCode: null,
       sent: [] as any[],
+      args: [...args],
       send(value: any) {
         this.sent.push(value);
       },
@@ -301,6 +316,22 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   choosingGate.release();
   await staleChoice;
   settingsWindow.webContents.mainFrame = originalSettingsFrame;
+  await t.test(
+    'project picker discards its path when the settings frame changes while open',
+    async () => {
+      assert.equal(await invoke('personal:project'), null);
+      const choosing = gate();
+      directoryGate = choosing;
+      const result = invoke('personal:project');
+      const stale = assert.rejects(result, /无效的本机设置请求/);
+      await choosing.entered;
+      const frame = settingsWindow.webContents.mainFrame;
+      settingsWindow.webContents.mainFrame = { ...frame };
+      choosing.release();
+      await stale;
+      settingsWindow.webContents.mainFrame = frame;
+    },
+  );
   assert.throws(
     () =>
       invoke(
@@ -424,7 +455,13 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     createHash('sha256')
       .update(notificationIdentity(next as any))
       .digest('hex');
-  localWindow.close();
+  await t.test(
+    'closing a content window never reads its destroyed BrowserWindow properties',
+    () => {
+      assert.doesNotThrow(() => localWindow.close());
+      assert.throws(() => localWindow.webContents, /Object has been destroyed/);
+    },
+  );
   const sending = emitMessage(children[0], { type: 'notification', event: next });
   assert.equal(notices.length, 2);
   assert.equal(
@@ -504,14 +541,36 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     }),
     /保存来源/,
   );
+  await t.test(
+    'actual settings form saves a project with no builtin Agents and does not add one',
+    async () => {
+      assert.deepEqual(Array.from((await invoke('personal:settings')).agents), []);
+      const choosing = gate();
+      directoryGate = choosing;
+      directoryResult = projectDirectory;
+      const add = dom.window.document.querySelector<HTMLButtonElement>('#add')!;
+      const adding = (add.onclick as any)(new dom.window.MouseEvent('click'));
+      await choosing.entered;
+      choosing.release();
+      await adding;
+      assert.equal(
+        dom.window.document.querySelector('#projects')!.textContent,
+        projectDirectory + '移除',
+      );
+      const form = dom.window.document.querySelector<HTMLFormElement>('#settings')!;
+      await (form.onsubmit as any)(new dom.window.Event('submit', { cancelable: true }));
+      assert.match(dom.window.document.querySelector('#status')!.textContent!, /设置已保存/);
+      const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
+      assert.deepEqual(saved.projects, [projectDirectory]);
+      assert.deepEqual(saved.agents, []);
+      assert.equal(children.at(-1).args.includes('--builtin-agent'), false);
+      assert.equal(children.at(-1).args.includes(projectDirectory), true);
+      for (const agents of [null, 'codex', ['custom'], ['codex', '/synthetic/program']]) {
+        await assert.rejects(invoke('personal:save', { ...saved, agents, code: '' }), /Agent/);
+      }
+    },
+  );
   // A replaced child cannot deliver events or receive acknowledgements.
-  await invoke('personal:save', {
-    server: '',
-    name: 'Synthetic desktop',
-    projects: [],
-    agents: ['codex'],
-    code: '',
-  });
   const previousCount = notices.length,
     ackCount = children[0].sent.length;
   await emitMessage(children[0], { type: 'notification', event: { ...next, turnId: 'wrong' } });
