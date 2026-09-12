@@ -28,6 +28,8 @@ import {
   type AttachmentReference,
 } from '../content-protocol';
 import { readProjectFileBytes } from '../runtime/project-files';
+import { SKILLS_FEATURE, type SkillsRead } from '../skills-protocol';
+import { SessionSkillsManager, type SessionSkillsOptions } from '../runtime/session-skills';
 import {
   normalizeAgentContent,
   normalizeAgentToolContent,
@@ -151,6 +153,7 @@ export class HostWorkspace {
   githubManager: SessionGithubManager;
   githubWriteManager: SessionGithubWriteManager;
   previewManager: SessionPreviewManager;
+  skillsManager: SessionSkillsManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -172,10 +175,12 @@ export class HostWorkspace {
     github?: SessionGithubOptions,
     githubWrite?: SessionGithubWriteOptions,
     preview?: SessionPreviewOptions,
+    skills?: SessionSkillsOptions,
   ) {
     this.executionManager = new SessionExecutionManager(this, git);
     this.forkManager = new SessionForkManager(this, driver);
     this.previewManager = new SessionPreviewManager(this, preview);
+    this.skillsManager = new SessionSkillsManager(this, skills);
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -216,6 +221,7 @@ export class HostWorkspace {
       GITHUB_FEATURE,
       GITHUB_WRITE_FEATURE,
       PREVIEW_FEATURE,
+      SKILLS_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -431,6 +437,9 @@ export class HostWorkspace {
   }
   readPreview(input: PreviewRead, localProjectId?: string) {
     return this.previewManager.read(input, localProjectId);
+  }
+  readSkills(input: SkillsRead, localProjectId?: string) {
+    return this.skillsManager.read(input, localProjectId);
   }
   previewAction(input: PreviewAction, localProjectId?: string) {
     return this.previewManager.action(input, localProjectId);

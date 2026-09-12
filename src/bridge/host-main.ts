@@ -33,6 +33,8 @@ import {
 import { GitHubConfig } from '../runtime/github-config';
 import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
 import { createPreviewRenderer } from '../runtime/preview-renderer';
+import { SkillsConfig } from '../runtime/skills-config';
+import { skillsReadSchema } from '../skills-protocol';
 import {
   previewReadSchema,
   previewActionSchema,
@@ -53,9 +55,26 @@ const { values } = parseArgs({
     'github-config-dir': { type: 'string' },
     'github-config-stdin': { type: 'boolean' },
     'preview-config-stdin': { type: 'boolean' },
+    'skills-config-stdin': { type: 'boolean' },
   },
 });
-const configurationOnly = values['github-config-stdin'] || values['preview-config-stdin'];
+const configurationOnly =
+  values['github-config-stdin'] || values['preview-config-stdin'] || values['skills-config-stdin'];
+const configurationLabel = values['skills-config-stdin']
+  ? 'Skills'
+  : values['preview-config-stdin']
+    ? '预览'
+    : 'GitHub';
+if (
+  values['skills-config-stdin'] &&
+  (values.desktop || values.pair || values['github-config-stdin'] || values['preview-config-stdin'])
+) {
+  writeFileSync(
+    process.stdout.fd,
+    JSON.stringify({ error: 'Skills 本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
+  );
+  process.exit(1);
+}
 if (
   values['preview-config-stdin'] &&
   (values.desktop || values.pair || values['github-config-stdin'])
@@ -187,6 +206,51 @@ const previewConfig = new PreviewConfig(join(dirname(runtimeFile), 'preview-v1.j
       for (const host of workspaces.values()) host.previewManager.invalidate();
   },
 });
+const skillsConfig = new SkillsConfig(join(dirname(runtimeFile), 'skills-v1.json'), {
+  identity: () => ({
+    workspaceId: runtime.workspace.id,
+    machineId: runtime.workspace.machineId,
+    userId: runtime.workspace.userId,
+  }),
+  projectRoots: () => {
+    const projects = runtime.machine
+      .scan({ prefix: ['localProject'] })
+      .map((row) => row.value as { id: string; rootPath: string });
+    const roots = projects.map((project) => project.rootPath);
+    for (const row of runtime.journal.db
+      .prepare(
+        'SELECT session_id,project_id FROM session_execution WHERE workspace_id=? AND user_id=? AND machine_id=?',
+      )
+      .all(runtime.workspace.id, runtime.workspace.userId, runtime.workspace.machineId)) {
+      const project = projects.find((p) => p.id === row.project_id);
+      if (!project) continue;
+      try {
+        roots.push(
+          runtime.executions.lease({
+            workspaceId: runtime.workspace.id,
+            userId: runtime.workspace.userId,
+            machineId: runtime.workspace.machineId,
+            localProjectId: project.id,
+            sessionId: String(row.session_id),
+            rootPath: project.rootPath,
+          }).rootPath,
+        );
+      } catch {
+        /* Inactive execution directories cannot authorize reads. */
+      }
+    }
+    return roots;
+  },
+  privateRoots: [
+    dirname(runtimeFile),
+    dirname(configPath),
+    resolve(values['github-config-dir'] ?? dirname(runtimeFile)),
+  ],
+  changed: () => {
+    if (!configurationOnly)
+      broadcast({ type: 'skills-changed', workspaceId: runtime.workspace.id });
+  },
+});
 if (configurationOnly) {
   let exitCode = 0;
   try {
@@ -195,29 +259,22 @@ if (configurationOnly) {
     for await (const value of process.stdin) {
       const chunk = Buffer.from(value);
       bytes += chunk.length;
-      assert(
-        bytes <= 16 * 1024,
-        413,
-        values['preview-config-stdin'] ? '预览本机配置请求过大' : 'GitHub 本机配置请求过大',
-      );
+      assert(bytes <= 16 * 1024, 413, configurationLabel + ' 本机配置请求过大');
       chunks.push(chunk);
     }
     const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    const result = values['preview-config-stdin']
-      ? previewConfig.handle(input)
-      : await githubConfig.handle(input);
+    const result = values['skills-config-stdin']
+      ? skillsConfig.handle(input)
+      : values['preview-config-stdin']
+        ? previewConfig.handle(input)
+        : await githubConfig.handle(input);
     writeFileSync(process.stdout.fd, JSON.stringify(result) + '\n');
   } catch (error) {
     exitCode = 1;
     writeFileSync(
       process.stdout.fd,
       JSON.stringify({
-        error:
-          error instanceof AppError
-            ? error.message
-            : values['preview-config-stdin']
-              ? '预览本机配置请求无效'
-              : 'GitHub 本机配置请求无效',
+        error: error instanceof AppError ? error.message : configurationLabel + ' 本机配置请求无效',
       }) + '\n',
     );
   } finally {
@@ -300,6 +357,7 @@ async function refresh() {
         { config: githubConfig },
         undefined,
         { config: previewConfig, driver: previewRenderer },
+        { config: skillsConfig },
       );
       workspaces.set(runtime.workspace.id, host);
     }
@@ -406,7 +464,11 @@ function connect(target: Target) {
             result = await workspace.refreshAgentOptions(m.params.agentId, m.localProjectId);
           else if (m.method === 'session')
             result = await workspace.read(m.params.sessionId, m.params.version, m.localProjectId);
-          else if (m.method === 'preview-read') {
+          else if (m.method === 'skills-read') {
+            const input = skillsReadSchema.parse(m.params);
+            assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readSkills(input, m.localProjectId);
+          } else if (m.method === 'preview-read') {
             const input = previewReadSchema.parse(m.params);
             assert(input.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.readPreview(input, m.localProjectId);
@@ -610,6 +672,38 @@ if (values.desktop) {
     return true;
   });
   process.on('message', (message) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      message.type === 'skills-config'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)
+      )
+        return;
+      if (stopped || !process.connected) return;
+      try {
+        const state = skillsConfig.handle(request.action);
+        process.send?.({
+          type: 'skills-config-result',
+          requestId: request.requestId,
+          ok: true,
+          state,
+        });
+      } catch (error) {
+        process.send?.({
+          type: 'skills-config-result',
+          requestId: request.requestId,
+          ok: false,
+          error:
+            error instanceof AppError ? error.message : 'Skills 本机设置操作未完成，请重新读取',
+        });
+      }
+      return;
+    }
     if (
       message &&
       typeof message === 'object' &&

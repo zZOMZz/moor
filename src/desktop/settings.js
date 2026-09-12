@@ -479,3 +479,117 @@ window.addEventListener('beforeunload', () => {
   previewClosed = true;
   previewRevision++;
 });
+
+let skillsState,
+  skillsBusy = false,
+  skillsRevision = 0,
+  skillsClosed = false;
+function renderSkillsSource() {
+  const source = skillsState?.sources.find((s) => s.id === $('skills-source').value);
+  $('skills-label').value = source?.label ?? '';
+  $('skills-root').value = source?.rootPath ?? '';
+  $('skills-enabled').checked = source?.enabled ?? false;
+  $('skills-source-status').textContent = !source
+    ? '选择实际的 Skills 根目录；新登记默认停用。'
+    : !source.current
+      ? '原目录已变化；请确认路径并重新登记。'
+      : source.enabled
+        ? '此目录已启用。'
+        : '此目录已停用。';
+  $('skills-save').textContent = source ? '保存目录登记' : '登记目录';
+  $('skills-toggle').disabled = !source || (!source.current && !source.enabled);
+  $('skills-toggle').textContent = source?.enabled ? '停用目录' : '启用目录';
+  $('skills-remove').disabled = !source;
+}
+function renderSkills(value, action) {
+  skillsState = value;
+  const selected =
+    $('skills-source').value || (action.action === 'source-save' ? value.sources.at(-1)?.id : '');
+  optionsFor(
+    'skills-source',
+    value.sources.map((s) => ({
+      id: s.id,
+      label: s.label + (s.enabled ? '（启用）' : '（停用）'),
+    })),
+    selected,
+    '新增目录',
+  );
+  renderSkillsSource();
+  $('skills-status').textContent =
+    action.action === 'read' ? '已读取本机登记；未扫描目录或读取 Skill。' : '本机目录登记已保存。';
+}
+async function skillsAction(action) {
+  if (skillsBusy || skillsClosed) return;
+  skillsBusy = true;
+  const revision = ++skillsRevision;
+  $('skills-controls').disabled = true;
+  $('skills-refresh').disabled = true;
+  $('skills-status').textContent = '正在处理本机 Skills 设置…';
+  try {
+    const value = await window.personal.skillsConfig(action);
+    if (skillsClosed || skillsRevision !== revision) return;
+    renderSkills(value, action);
+  } catch (error) {
+    if (skillsClosed || skillsRevision !== revision) return;
+    skillsState = undefined;
+    $('skills-status').textContent =
+      (error.message || '操作结果尚未确认') + '。请刷新后检查；不会自动重试。';
+  } finally {
+    if (!skillsClosed && skillsRevision === revision) {
+      skillsBusy = false;
+      $('skills-controls').disabled = !skillsState;
+      $('skills-refresh').disabled = false;
+    }
+  }
+}
+function skillsEdit(action) {
+  if (!skillsState || skillsBusy) return;
+  return skillsAction({ expectedRevision: skillsState.revision, ...action });
+}
+$('skills-settings').ontoggle = () => {
+  if ($('skills-settings').open && !skillsState && !skillsBusy)
+    void skillsAction({ action: 'read' });
+};
+$('skills-refresh').onclick = () => skillsAction({ action: 'read' });
+$('skills-source').onchange = renderSkillsSource;
+$('skills-save').onclick = () => {
+  const id = $('skills-source').value;
+  return skillsEdit({
+    action: 'source-save',
+    ...(id ? { id } : {}),
+    label: $('skills-label').value.trim(),
+    rootPath: $('skills-root').value,
+    enabled: $('skills-enabled').checked,
+  });
+};
+$('skills-choose').onclick = async () => {
+  if (skillsBusy || skillsClosed || !skillsState) return;
+  skillsBusy = true;
+  const revision = ++skillsRevision;
+  $('skills-controls').disabled = true;
+  $('skills-refresh').disabled = true;
+  try {
+    const root = await window.personal.skillsDirectory();
+    if (root && !skillsClosed && skillsRevision === revision) $('skills-root').value = root;
+  } catch (error) {
+    if (!skillsClosed && skillsRevision === revision)
+      $('skills-status').textContent = error.message || '目录选择失败';
+  } finally {
+    if (!skillsClosed && skillsRevision === revision) {
+      skillsBusy = false;
+      $('skills-controls').disabled = !skillsState;
+      $('skills-refresh').disabled = false;
+    }
+  }
+};
+$('skills-remove').onclick = () =>
+  skillsEdit({ action: 'source-remove', id: $('skills-source').value });
+$('skills-toggle').onclick = () => {
+  const service = skillsState?.sources.find((s) => s.id === $('skills-source').value);
+  if (service)
+    return skillsEdit({ action: 'source-enabled', id: service.id, enabled: !service.enabled });
+};
+window.addEventListener('beforeunload', () => {
+  skillsClosed = true;
+  skillsRevision++;
+});

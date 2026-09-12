@@ -81,6 +81,8 @@ GitHub 配置入口只属于本机。远端读取接受类型化的项目与会�
 
 ## 发布与真实设备验证
 
+Skills 测试使用临时项目、全局目录和实际 worktree，覆盖有界发现、UTF-8/摘要、目录及文件替换、来源撤权、配置快照与并发读取限额。CLI 和桌面 IPC 使用同一主机锁；Web 用实际 app 与 IndexedDB 事务模拟确定性草稿竞争和原编号重试。测试不访问用户的 `~/.agents`、`~/.claude` 或 `~/.codex`，也不调用真实模型。实现与读取限制见 [Skills](skills.md)。
+
 macOS 包需在目标架构的 Mac 上构建；中转包应只包含打包后的程序文件。发布步骤与数据备份见[项目首页](../README.md)和[部署与迁移](../deploy/README.md)，不要把会话记录、凭据、数据库、生成包或内部任务记录提交进 Git。提交主题使用 Conventional Commits，例如 `docs: explain session delivery and recovery`。
 
 第一轮完整真机验收安排在 M0 回归基线与 M1 会话管理实现完成、四项检查通过之后，进入 M2 开发前。第二轮在 M2/M3 各自的可交付流程完成后，重点检查附件、文件预览、通知和 Agent 能力兼容性。涉及休眠、退出、Keychain、PWA 后台或系统权限的改动，应在对应实现完成后提前做一次专项人工检查。步骤与通过条件见[设备验收](validation.md)。

@@ -3164,3 +3164,74 @@ dialog pre {
     flex: 1 1 180px;
   }
 }
+.skills-panel {
+  width: min(960px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.skills-tools {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-block: 16px;
+}
+.skills-tools label {
+  flex: 1;
+  min-width: 180px;
+}
+.skills-tools input {
+  width: 100%;
+}
+.skills-sources,
+.skills-issues {
+  font-size: 13px;
+  margin-block: 12px;
+}
+.skills-sources p,
+.skills-issues p {
+  margin-block: 4px;
+}
+.skills-issues {
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+}
+.skills-columns {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.3fr);
+  gap: 20px;
+}
+.skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.skills-list button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: 100%;
+}
+.skills-list span,
+.skills-list small {
+  font-size: 12px;
+}
+.skills-detail {
+  min-width: 0;
+}
+.skills-detail .markdown {
+  margin-top: 18px;
+}
+.skills-detail pre {
+  overflow: auto;
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .skills-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

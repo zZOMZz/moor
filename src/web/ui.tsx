@@ -163,6 +163,7 @@ export function Shell({
               <Content name="#session-fork-control" />
               <Content name="#github-control" />
               <Content name="#project-preview-control" />
+              <Content name="#skills-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -270,6 +271,7 @@ export function Shell({
       <Content name="#github-view" />
       <Content name="#github-write-view" />
       <Content name="#project-preview-view" />
+      <Content name="#skills-view" />
     </div>
   );
 }

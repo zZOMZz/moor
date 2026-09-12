@@ -104,6 +104,73 @@ export const compareWrite = createCacheCompareWrite({
   schedule: (callback) => setTimeout(callback, 5000),
   cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 });
+/** Preserve the existing plain-text draft format while appending reviewed content atomically. */
+export function createCacheCompareText(deps: {
+  database(): Promise<IDBDatabase>;
+  schedule(callback: () => void): unknown;
+  cancel(timer: unknown): void;
+}) {
+  return async (
+    key: string,
+    expected: string | undefined,
+    value: string,
+    current: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    const requireCurrent = () => {
+      if (signal?.aborted || !current()) throw new Error('草稿或执行目标已改变，请重新加入说明。');
+    };
+    requireCurrent();
+    const database = await deps.database();
+    requireCurrent();
+    return new Promise<boolean>((resolve, reject) => {
+      const tx = database.transaction('cache', 'readwrite');
+      let settled = false,
+        written = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        deps.cancel(timer);
+        signal?.removeEventListener('abort', cancelled);
+        if (error) reject(error);
+        else resolve(written);
+      };
+      const abort = (error: unknown) => {
+        finish(error);
+        try {
+          tx.abort();
+        } catch {
+          /* Already complete. */
+        }
+      };
+      const cancelled = () => abort(new Error('草稿或执行目标已改变，请重新加入说明。'));
+      const timer = deps.schedule(() => abort(new Error('草稿保存超时，请重新加入说明。')));
+      signal?.addEventListener('abort', cancelled, { once: true });
+      const store = tx.objectStore('cache'),
+        request = store.get(key);
+      request.onsuccess = () => {
+        if (settled) return;
+        try {
+          requireCurrent();
+          if (request.result !== expected) return;
+          store.put(value, key);
+          written = true;
+        } catch (error) {
+          abort(error);
+        }
+      };
+      request.onerror = () => abort(request.error ?? new Error('草稿无法读取。'));
+      tx.oncomplete = () => finish();
+      tx.onerror = () => abort(tx.error ?? new Error('草稿未保存。'));
+      tx.onabort = () => finish(tx.error ?? new Error('草稿保存被中止。'));
+    });
+  };
+}
+export const compareText = createCacheCompareText({
+  database: () => bounded(db),
+  schedule: (callback) => setTimeout(callback, 5000),
+  cancel: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+});
 export async function clear() {
   const d = await bounded(db);
   return bounded(

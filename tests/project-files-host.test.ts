@@ -93,6 +93,8 @@ test('Moor GitHub credential and temporary files are reserved even when their pa
     'src/GITHUB-V1.JSON',
     'preview-v1.json',
     'src/preview-v1.json.tmp-synthetic',
+    'skills-v1.json',
+    'src/SKILLS-v1.JSON.tmp-synthetic',
     'src/PREVIEW-V1.JSON',
   ]) {
     writeFileSync(join(f.root, path), '{"token":"synthetic-private-github-token"}');

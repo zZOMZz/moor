@@ -97,6 +97,7 @@ import {
   previewReceiptSchema,
 } from '../preview-protocol';
 import { validatePreviewFrame } from '../preview-validation';
+import { SKILLS_FEATURE, skillsReadSchema, validateSkillsRead } from '../skills-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -275,6 +276,7 @@ export function createApp(
           'github-read',
           'github-write-read',
           'preview-read',
+          'skills-read',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -569,6 +571,78 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'skills' &&
+            parts[6] === 'read' &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            const input = skillsReadSchema.parse(await body(req, 16 * 1024));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              'Skills 请求与项目副本不匹配',
+            );
+            assert(runtime, 409, '执行电脑暂时不可用');
+            assert(runtime.features?.includes(SKILLS_FEATURE), 409, '请先升级执行电脑上的 Moor');
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const current = () => {
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const r = store.catalog.replica(owner!, workspaceId, replica.id);
+              const w = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                r.host.device_id === host.device_id &&
+                  r.host.runtime_id === input.workspaceId &&
+                  r.local_id === input.localProjectId &&
+                  r.project_id === replica.project_id &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  w?.userId === runtime.userId &&
+                  w?.machineId === runtime.machineId &&
+                  w.features?.includes(SKILLS_FEATURE) &&
+                  w.projects.some((p) => p.id === input.localProjectId),
+                409,
+                'Skills 请求的执行范围已变化，请重新读取',
+              );
+            };
+            current();
+            let raw: unknown, failed: { error: unknown } | undefined;
+            try {
+              raw = await request(
+                host.device_id,
+                'skills-read',
+                host.runtime_id,
+                input,
+                replica.local_id,
+              );
+            } catch (error) {
+              failed = { error };
+            }
+            current();
+            if (failed) throw failed.error;
+            assert(
+              Buffer.byteLength(JSON.stringify(raw) ?? '') <= 4 * 1024 * 1024,
+              502,
+              'Skills 响应超过限制',
+            );
+            let result;
+            try {
+              result = validateSkillsRead(raw, input);
+            } catch {
+              throw new AppError(502, '执行电脑返回的 Skills 响应不可验证');
+            }
+            if (result.view === 'detail')
+              assert(
+                result.skill.version ===
+                  'sha256:' + createHash('sha256').update(result.text, 'utf8').digest('hex'),
+                502,
+                'Skill 正文摘要不匹配',
+              );
+            return json(res, 200, result);
+          }
           if (
             parts[5] === 'preview' &&
             ['read', 'action', 'inspect', 'close'].includes(parts[6] ?? '') &&
@@ -1848,22 +1922,24 @@ export function createApp(
                   scope: 'doc',
                   docId: message.sessionId,
                 });
-              } else if (message.type === 'github-changed') {
+              } else if (message.type === 'github-changed' || message.type === 'skills-changed') {
                 const event = z
                   .object({
-                    type: z.literal('github-changed'),
+                    type: z.enum(['github-changed', 'skills-changed']),
                     workspaceId: z.string().min(1).max(200),
                   })
                   .strict()
                   .parse(message);
+                const feature = event.type === 'skills-changed' ? SKILLS_FEATURE : GITHUB_FEATURE;
+                const scope = event.type === 'skills-changed' ? 'skills' : 'github';
                 assert(
                   bridges
                     .get(d.id)
                     ?.workspaces.some(
-                      (w) => w.id === event.workspaceId && w.features?.includes(GITHUB_FEATURE),
+                      (w) => w.id === event.workspaceId && w.features?.includes(feature),
                     ),
                   409,
-                  'GitHub 配置事件范围不匹配',
+                  '配置事件范围不匹配',
                 );
                 for (const [viewer, identity] of viewers) {
                   if (identity.owner !== d.owner) continue;
@@ -1873,7 +1949,7 @@ export function createApp(
                       type: 'changed',
                       deviceId: d.id,
                       workspaceId: event.workspaceId,
-                      room: { scope: 'github' },
+                      room: { scope },
                     });
                   } catch {
                     viewer.close(1008, 'login expired');
