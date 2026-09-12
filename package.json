@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",
+    "@hpke/core": "1.9.0",
     "@loro-dev/flock-wasm": "0.4.3",
     "jose": "6.2.12",
     "loro-crdt": "1.15.1",

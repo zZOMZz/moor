@@ -63,11 +63,27 @@ export const taskOriginSchema = z
 export type TaskOrigin = z.infer<typeof taskOriginSchema>;
 export const taskScopeSchema = contentScopeSchema.extend({ taskVersion: z.literal(1) }).strict();
 export type TaskScope = z.infer<typeof taskScopeSchema>;
+// Canonical, unpadded base64url encoding of exactly 32 bytes. Keep the shared
+// task protocol independent of the endpoint cryptography implementation.
+const secureDigest = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
+export const taskSecureChannelSchema = z
+  .object({
+    version: z.literal(1),
+    clientDeviceId: id,
+    clientKeyId: secureDigest,
+    rootKeyId: secureDigest,
+    trustEpoch: z.number().int().positive().safe(),
+    trustDigest: secureDigest,
+    hostChallenge: secureDigest,
+    clientChallenge: secureDigest,
+  })
+  .strict();
 export const taskAuthoritySchema = z
   .object({
     serverOrigin: z.string().url().max(2048),
     ownerId: z.string().min(1).max(1000),
     deviceId: id,
+    secureChannel: taskSecureChannelSchema.optional(),
   })
   .strict();
 export type TaskAuthority = z.infer<typeof taskAuthoritySchema>;
