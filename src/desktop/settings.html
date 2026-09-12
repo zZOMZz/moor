@@ -35,6 +35,74 @@
       <p id="notifications-status" role="status"></p>
       <small>通知仅提醒查看状态，不提供批准操作。系统权限、专注设置与应用签名会影响显示。</small>
     </section>
+    <details id="github-settings" class="health-panel">
+      <summary>GitHub 账号与项目</summary>
+      <p>
+        仅配置这台执行电脑的 GitHub.com 访问。已保存的 token
+        不会回传到设置窗口，也不会发给中转服务。
+      </p>
+      <button type="button" id="github-refresh">刷新 GitHub 设置</button>
+      <p id="github-status" role="status">展开后读取本机配置。</p>
+      <fieldset id="github-controls" disabled>
+        <legend>GitHub 个人访问 token</legend>
+        <label
+          >已保存的凭据<select id="github-credential">
+            <option value="">新增凭据</option>
+          </select></label
+        >
+        <label
+          >备注名称<input
+            id="github-label"
+            maxlength="100"
+            autocomplete="off"
+            placeholder="例如：个人项目"
+        /></label>
+        <label
+          >新增或替换 token<input
+            id="github-token"
+            type="password"
+            maxlength="4096"
+            autocomplete="new-password"
+            spellcheck="false"
+            placeholder="每次保存都需要重新输入"
+        /></label>
+        <p id="github-credential-status"></p>
+        <div class="actions">
+          <button type="button" id="github-credential-save">保存 token</button>
+          <button type="button" id="github-credential-check">检查账号连接</button>
+          <button type="button" id="github-credential-remove">移除 token 与关联</button>
+        </div>
+        <small
+          >优先使用仅授权所需仓库的细粒度 token。账号连接检查不代表有目标仓库的读写权限。替换 token
+          后需重新验证关联项目。</small
+        >
+      </fieldset>
+      <fieldset id="github-project-controls" disabled>
+        <legend>登记项目对应的 GitHub 仓库</legend>
+        <label>已保存的本机项目<select id="github-project"></select></label>
+        <label>使用的凭据<select id="github-project-credential"></select></label>
+        <label
+          >仓库所有者<input id="github-owner" maxlength="39" autocomplete="off" placeholder="owner"
+        /></label>
+        <label
+          >仓库名称<input
+            id="github-repo"
+            maxlength="100"
+            autocomplete="off"
+            placeholder="repository"
+        /></label>
+        <p id="github-project-status"></p>
+        <div class="actions">
+          <button type="button" id="github-project-bind">登记并验证仓库</button>
+          <button type="button" id="github-project-check">重新验证登记</button>
+          <button type="button" id="github-project-unbind">解除仓库登记</button>
+        </div>
+        <small
+          >请先在下方添加并保存本机项目。只有验证过的项目登记才能从会话访问
+          GitHub；登记会固定仓库身份，仓库重建后需手动重新登记。</small
+        >
+      </fieldset>
+    </details>
     <form id="settings">
       <label>电脑名称<input id="name" maxlength="100" required /></label
       ><label

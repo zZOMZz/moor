@@ -71,6 +71,28 @@ input:not([type='checkbox']) {
   font: inherit;
   margin-top: 5px;
 }
+#github-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+#github-settings label {
+  display: block;
+  margin: 12px 0;
+}
+#github-settings select {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+#github-settings .actions {
+  flex-wrap: wrap;
+}
 button {
   border: 1px solid var(--border);
   background: var(--surface);

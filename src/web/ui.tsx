@@ -162,6 +162,7 @@ export function Shell({
               <Content name="#project-content-controls" />
               <Content name="#git-workspace-control" />
               <Content name="#session-fork-control" />
+              <Content name="#github-control" />
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -268,6 +269,7 @@ export function Shell({
       <Content name="#notification-view" />
       <Content name="#git-workspace-view" />
       <Content name="#session-fork-view" />
+      <Content name="#github-view" />
     </div>
   );
 }

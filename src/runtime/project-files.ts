@@ -12,6 +12,15 @@ export type ProjectFileReadOptions = {
 };
 type Directory = { path: string; identity: BigIntStats };
 
+// Reserved host data remains unreadable even if a parent directory is later
+// registered as a project. Case folding also protects case-insensitive volumes.
+export function isHostPrivateProjectPath(path: string) {
+  return path.split('/').some((part) => {
+    const name = part.toLowerCase();
+    return name === 'github-v1.json' || name.startsWith('github-v1.json.tmp-');
+  });
+}
+
 function sameIdentity(a: BigIntStats, b: BigIntStats) {
   return a.dev === b.dev && a.ino === b.ino && a.mode === b.mode;
 }
@@ -45,6 +54,7 @@ export async function readProjectFileBytes(
   options: ProjectFileReadOptions = {},
 ) {
   projectFilePathSchema.parse(relativePath);
+  assert(!isHostPrivateProjectPath(relativePath), 403, '项目文件属于 Moor 主机私有配置，不可读取');
   assert(isAbsolute(rootPath) && resolve(rootPath) === rootPath, 403, '项目目录不可用');
   try {
     const fullPath = join(rootPath, relativePath),

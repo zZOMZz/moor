@@ -49,15 +49,18 @@ flowchart TD
 
 ## 数据文件与版本
 
-| 内容         | 当前位置或名称                               | 用途                             |
-| ------------ | -------------------------------------------- | -------------------------------- |
-| 主机数据     | 默认在配对配置同目录的 `runtime-v1.sqlite`   | Moor 身份、会话、项目和操作凭据  |
-| 主机锁       | 主机数据库路径追加 `.ownership.sqlite`       | 独占执行主机所有权               |
-| 远程配对     | 默认 `bridge-v3.json`                        | 服务地址与设备凭据，属于私有数据 |
-| 本机组织目录 | 配对配置路径追加 `.catalog.sqlite`           | 本机模式的账号与组织关系         |
-| 浏览器存储   | 当前 origin 下的 `moor-runtime-v1` IndexedDB | 草稿、待确认请求与会话缓存       |
+| 内容         | 当前位置或名称                               | 用途                                             |
+| ------------ | -------------------------------------------- | ------------------------------------------------ |
+| 主机数据     | 默认在配对配置同目录的 `runtime-v1.sqlite`   | Moor 身份、会话、项目和操作凭据                  |
+| 主机锁       | 主机数据库路径追加 `.ownership.sqlite`       | 独占执行主机所有权                               |
+| GitHub 配置  | 默认在主机数据库同目录的 `github-v1.json`    | 本机 token、项目仓库及验证身份；必须位于项目之外 |
+| 远程配对     | 默认 `bridge-v3.json`                        | 服务地址与设备凭据，属于私有数据                 |
+| 本机组织目录 | 配对配置路径追加 `.catalog.sqlite`           | 本机模式的账号与组织关系                         |
+| 浏览器存储   | 当前 origin 下的 `moor-runtime-v1` IndexedDB | 草稿、待确认请求与会话缓存                       |
 
 命令行 `--runtime-data` 或环境变量 `MOOR_RUNTIME_DATA` 可以指定主机数据库，前者优先。桌面调试可用 `MOOR_DESKTOP_DATA_DIR` 选择隔离目录。主机数据与配对文件都不应进入仓库或程序包。
+
+GitHub 配置目录可单独用 `--github-config-dir` 指定，后续启动时需沿用同一目录。文件使用 `0600` 权限和原子替换，当前为本机私有 JSON，没有 Keychain 或额外文件加密。该目录必须在所有登记项目之外；项目文件接口也拒绝保留的配置文件名。桌面配置经私有 IPC 处理，CLI 需先停止主机，通过 stdin 提交，不能把 token 放进参数。具体步骤见[GitHub 本机配置](github.md)。
 
 Moor 桥接协议当前为 v3，会话格式为 v1；ACP 使用锁定 SDK 的协议版本，两者独立。升级中转和客户端时需保持桥接协议一致，旧协议连接会被拒绝。
 
@@ -69,7 +72,7 @@ Moor 桥接协议当前为 v3，会话格式为 v1；ACP 使用锁定 SDK 的协
 
 ## 主机停机备份与恢复
 
-主机的 `runtime-v1.sqlite` 同时保存主机身份、项目和 Agent 配置、会话正文与元数据、operation 去重记录，以及 Moor 会话到 Agent 原生会话 ID 的映射。完整复制数据库及仍存在的 WAL/SHM 文件，才能保留同一次备份中的这些关系。不要只导出会话正文，也不要在主机运行时分别复制几个表。
+主机的 `runtime-v1.sqlite` 同时保存主机身份、项目和 Agent 配置、会话正文与元数据、operation 去重记录、GitHub 最小会话关联，以及 Moor 会话到 Agent 原生会话 ID 的映射。GitHub token 和项目仓库配置另存于 `github-v1.json`。完整复制数据库及仍存在的 WAL/SHM 文件，才能保留同一次备份中的这些关系。不要只导出会话正文，也不要在主机运行时分别复制几个表。
 
 备份前明确退出 Moor，或停止命令行启动的桥接进程，并确认该数据目录已没有写入者；关闭窗口不等于退出。不要为备份删除所有权锁，也不要终止无关进程。下列路径均为占位符，必须改为操作者已确认的 Moor 数据路径；命令只复制明确列出的 Moor 文件，不扫描 Agent 或其他应用的数据目录。
 
@@ -82,6 +85,7 @@ umask 077
 moor_host_db='/absolute/path/to/moor-host-data/runtime-v1.sqlite'
 moor_bridge_config='/absolute/path/to/moor-host-data/bridge-v3.json'
 moor_settings_file='/absolute/path/to/moor-host-data/settings.json'
+moor_github_config='/absolute/path/to/private-github-data/github-v1.json'
 moor_backup_dir='/absolute/path/to/private-backups/moor-host-backup-unique'
 test -f "$moor_host_db" || exit 1
 mkdir "$moor_backup_dir" || exit 1
@@ -99,9 +103,14 @@ done
 if test -f "$moor_settings_file"; then
   cp "$moor_settings_file" "$moor_backup_dir/settings.json" || exit 1
 fi
+if test -f "$moor_github_config"; then
+  cp "$moor_github_config" "$moor_backup_dir/github-v1.json" || exit 1
+fi
 ```
 
 本机未配对或纯 CLI 使用时，部分配置文件可能不存在。保留配对配置、组织目录、桌面设置和本机端口记录，可保留原服务关系、项目设置及本机页面 origin；这些文件可能含设备凭据，只保存在私有备份中。主机所有权锁是运行时互斥设施，无需备份或复制到目标目录。
+
+GitHub 配置备份含完整 token，不是可分发的程序文件；没有使用 GitHub 时可以省略。配置曾指定其他目录时填写实际路径，不能据数据库路径猜测。私有备份也须保存在项目和发布目录之外，不把配置或临时写入文件放进程序包。
 
 项目文件与 Agent 自己持有的上下文/登录状态不在这份数据库备份中。项目文件应由操作者另行备份；Git 历史不包含未提交修改。Moor 保存原生会话 ID，并不保存 Agent 的原生会话内容。恢复到另一台机器时，仅凭 Moor 数据库不能保证原生上下文可继续，需由操作者通过 Agent 自己支持的方式处理其状态和登录；Moor 不读取其他应用数据库。
 
@@ -118,7 +127,7 @@ moor_restore_dir='/absolute/path/to/moor-restored-host-unique'
 test -f "$moor_backup_dir/runtime-v1.sqlite" || exit 1
 mkdir "$moor_restore_dir" || exit 1
 cp "$moor_backup_dir/runtime-v1.sqlite" "$moor_restore_dir/runtime-v1.sqlite" || exit 1
-for moor_name in runtime-v1.sqlite-wal runtime-v1.sqlite-shm bridge-v3.json bridge-v3.json.catalog.sqlite bridge-v3.json.catalog.sqlite-wal bridge-v3.json.catalog.sqlite-shm bridge-v3.json.local-port settings.json; do
+for moor_name in runtime-v1.sqlite-wal runtime-v1.sqlite-shm bridge-v3.json bridge-v3.json.catalog.sqlite bridge-v3.json.catalog.sqlite-wal bridge-v3.json.catalog.sqlite-shm bridge-v3.json.local-port settings.json github-v1.json; do
   if test -f "$moor_backup_dir/$moor_name"; then
     cp "$moor_backup_dir/$moor_name" "$moor_restore_dir/$moor_name" || exit 1
   fi
@@ -126,6 +135,8 @@ done
 ```
 
 先使用与备份兼容的 Moor 版本启动；当前数据格式是 v1。桌面通过 `MOOR_DESKTOP_DATA_DIR` 指定恢复目录，CLI 分别通过 `--runtime-data` 和 `--config` 指定恢复后的文件。恢复后的数据库保留原主机身份；源目录与恢复目录不能同时启动为两个相同身份的主机，目录锁只保护各自的数据库路径，无法阻止这种身份复制。
+
+恢复目录必须位于项目之外。上例将 GitHub 配置恢复到数据库旁；若另行存放，CLI 需用 `--github-config-dir` 指向实际目录。项目目录身份发生变化时应在本机设置重新确认仓库，不能用复制配置绕过绑定校验。恢复文件不保证 token 仍有效，账号和仓库访问需手动验证。
 
 恢复后先核对原主机/项目身份、标题、置顶与归档状态及历史可读性。首次加载会收束备份内未完成的回合，不自动执行。使用合成项目和合成 Agent 验证原 operationId 重试返回原凭据、不增加回合；只有明确手动发送新指令才尝试继续 Agent 原生会话。实际项目路径、Agent 可执行文件与原生上下文也必须仍可用；恢复失败时保留恢复目录排查，不用旧备份直接覆盖新产生的数据。
 

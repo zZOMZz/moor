@@ -84,6 +84,25 @@ function fixture(
 }
 const status = (expected: number) => (error: any) => error.status === expected;
 
+test('Moor GitHub credential and temporary files are reserved even when their parent is a registered project', async (t) => {
+  const f = fixture(t);
+  for (const path of [
+    'github-v1.json',
+    'src/github-v1.json',
+    'src/github-v1.json.tmp-synthetic',
+    'src/GITHUB-V1.JSON',
+  ]) {
+    writeFileSync(join(f.root, path), '{"token":"synthetic-private-github-token"}');
+    await strict.rejects(f.host.readProjectFile({ ...f.request, path }), status(403));
+  }
+  writeFileSync(join(f.root, 'src/github-v1.json.example'), '{"token":"replace-me"}');
+  strict.equal(
+    (await f.host.readProjectFile({ ...f.request, path: 'src/github-v1.json.example' })).status,
+    'content',
+  );
+  strict.equal(f.dispatches(), 0);
+});
+
 test('host confirms scoped bytes without invoking an Agent or persisting content', async (t) => {
   const f = fixture(t),
     beforeMeta = f.store.meta.exportJson(),

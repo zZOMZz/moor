@@ -13,6 +13,7 @@ const {
   notificationUrl,
 } = require('./notifications.cjs');
 const { createAttachmentSaver } = require('./attachment-save.cjs');
+const { DesktopGitHubSettings } = require('./github-settings.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -48,6 +49,7 @@ let settingsWindow,
 let requestedView = 'local';
 let localReadyGeneration = 0,
   localReadyChain = Promise.resolve();
+const githubSettings = new DesktopGitHubSettings({ bridge: () => bridge });
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -219,6 +221,7 @@ function showSettings() {
   settingsWindow.webContents.on('will-navigate', (e) => e.preventDefault());
   settingsWindow.on('closed', () => {
     settingsWindow = null;
+    githubSettings.invalidate();
   });
   void settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
 }
@@ -284,6 +287,7 @@ function startBridge() {
   child.stderr.on('data', () => {}); // Do not surface raw process logs or local secrets in settings.
   child.on('message', async (message) => {
     if (bridge !== child) return;
+    if (githubSettings.receive(child, message)) return;
     if (message?.type === 'notification') {
       let status = 'failed';
       try {
@@ -364,6 +368,7 @@ function startBridge() {
     bridgeStatus = '连接组件启动失败，请重新连接。';
   });
   child.on('exit', () => {
+    githubSettings.disconnect(child);
     if (bridge !== child) return;
     bridge = null;
     localOrigin = '';
@@ -394,6 +399,7 @@ async function restartBridgeOnce() {
   clearTimeout(restart);
   localOrigin = '';
   const old = bridge;
+  if (old) githubSettings.disconnect(old);
   bridge = null;
   if (old && old.exitCode === null && old.signalCode === null) {
     await new Promise((resolve) => {
@@ -420,6 +426,19 @@ ipcMain.handle('personal:settings', (event) => {
 ipcMain.handle('personal:health', (event) => {
   trusted(event);
   return health();
+});
+ipcMain.handle('personal:github-config', (event, value) => {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  return githubSettings.request(value, () => {
+    try {
+      trusted({ sender, senderFrame: frame });
+      return true;
+    } catch {
+      return false;
+    }
+  });
 });
 ipcMain.handle('personal:recover', async (event) => {
   trusted(event);
@@ -555,6 +574,7 @@ else {
   app.on('before-quit', () => {
     quitting = true;
     nativeNotifications.close();
+    githubSettings.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

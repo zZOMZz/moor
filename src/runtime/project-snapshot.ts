@@ -5,7 +5,7 @@ import { lstat, opendir } from 'node:fs/promises';
 import { isAbsolute, join, parse, resolve } from 'node:path';
 import { CONTENT_LIMITS, projectFilePathSchema } from '../content-protocol';
 import { AppError, assert } from '../protocol';
-import { readProjectFileBytes } from './project-files';
+import { readProjectFileBytes, isHostPrivateProjectPath } from './project-files';
 
 export const PROJECT_SNAPSHOT_LIMITS = {
   entries: 5000,
@@ -49,6 +49,8 @@ export const PROJECT_SNAPSHOT_EXCLUDES = [
   '.netrc',
   '.env',
   '.env.*',
+  'github-v1.json',
+  'github-v1.json.tmp-*',
 ] as const;
 export type ProjectSnapshotIssue = {
   reason:
@@ -174,6 +176,7 @@ function issues(initial: ProjectSnapshotIssue[] = []) {
   return { values, add };
 }
 function excluded(path: string) {
+  if (isHostPrivateProjectPath(path)) return true;
   return path
     .split('/')
     .some(
