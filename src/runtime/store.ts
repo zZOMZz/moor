@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, chmodSync, statSync, realpathSync } from 'node:fs';
-import { dirname, basename } from 'node:path';
+import { dirname, basename, join, resolve } from 'node:path';
 import { Flock, LoroDoc, mirror, putMeta } from '../model';
 import { Journal } from '../bridge/journal';
 import { assert, type RuntimeWorkspace } from '../protocol';
@@ -11,6 +11,7 @@ import { SessionSearchIndex, type SearchScope } from './session-search';
 import { expireSessionInteractions } from '../bridge/session-interactions';
 import { HostNotifications } from './host-notifications';
 import { notificationScopeSchema } from '../notification-protocol';
+import { SessionExecutionStore } from './session-execution';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -32,10 +33,11 @@ export class RuntimeStore {
   projectHistory: ProjectHistoryStore;
   sessionSearch: SessionSearchIndex;
   notifications: HostNotifications;
+  executions: SessionExecutionStore;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
-  constructor(file: string, options: { now?: () => number } = {}) {
+  constructor(file: string, options: { now?: () => number; worktreeRoot?: string } = {}) {
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.journal = new Journal(file);
     this.projectHistory = new ProjectHistoryStore(this.journal.db);
@@ -71,6 +73,20 @@ export class RuntimeStore {
     `);
     this.sessionSearch = new SessionSearchIndex(this.journal.db);
     this.notifications = new HostNotifications(this.journal.db, options);
+    this.executions = new SessionExecutionStore(
+      this.journal.db,
+      options.worktreeRoot ??
+        (file === ':memory:' ? undefined : join(dirname(resolve(file)), 'worktrees')),
+    );
+    const nativeColumns = this.journal.db.prepare('PRAGMA table_info(agent_session)').all();
+    if (!nativeColumns.some((column) => column.name === 'execution_id'))
+      this.journal.db.exec(
+        "ALTER TABLE agent_session ADD COLUMN execution_id TEXT NOT NULL DEFAULT 'shared'",
+      );
+    if (!nativeColumns.some((column) => column.name === 'execution_revision'))
+      this.journal.db.exec(
+        'ALTER TABLE agent_session ADD COLUMN execution_revision INTEGER NOT NULL DEFAULT 0',
+      );
     const identity = this.load('identity');
     this.workspace = identity
       ? JSON.parse(Buffer.from(identity).toString())
@@ -219,12 +235,31 @@ export class RuntimeStore {
     this.machine.commit();
     this.save('machine', this.machine.exportFile());
   }
-  nativeSession(id: string) {
-    return this.journal.db.prepare('SELECT native_id FROM agent_session WHERE id=?').get(id)
-      ?.native_id as string | undefined;
+  hasNativeSession(id: string) {
+    return !!this.journal.db.prepare('SELECT 1 FROM agent_session WHERE id=?').get(id);
   }
-  setNativeSession(id: string, nativeId: string) {
-    this.journal.db.prepare('INSERT OR REPLACE INTO agent_session VALUES(?,?)').run(id, nativeId);
+  nativeSession(id: string, execution = { executionId: 'shared', executionRevision: 0 }) {
+    const row = this.journal.db.prepare('SELECT * FROM agent_session WHERE id=?').get(id);
+    if (!row) return;
+    assert(
+      row.execution_id === execution.executionId &&
+        row.execution_revision === execution.executionRevision,
+      409,
+      '原生 Agent 上下文属于其他执行目录，不能恢复',
+    );
+    return row.native_id as string;
+  }
+  setNativeSession(
+    id: string,
+    nativeId: string,
+    execution = { executionId: 'shared', executionRevision: 0 },
+  ) {
+    this.nativeSession(id, execution);
+    this.journal.db
+      .prepare(
+        'INSERT OR REPLACE INTO agent_session(id,native_id,execution_id,execution_revision) VALUES(?,?,?,?)',
+      )
+      .run(id, nativeId, execution.executionId, execution.executionRevision);
   }
   attachmentScopeMatches(scope: AttachmentScope) {
     const row = this.journal.db

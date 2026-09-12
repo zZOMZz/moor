@@ -57,6 +57,13 @@ import {
   sessionSearchRequestSchema,
   sessionSearchResultSchema,
 } from '../search-protocol';
+import {
+  GIT_WORKTREE_FEATURE,
+  gitStateReadSchema,
+  gitStateResultSchema,
+  gitActionSchema,
+  gitActionReceiptSchema,
+} from '../git-protocol';
 export function createApp(
   store: Store,
   options: {
@@ -230,6 +237,7 @@ export function createApp(
           'read-turn-diff',
           'read-diff-file',
           'search-sessions',
+          'git-state',
         ].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
@@ -312,6 +320,8 @@ export function createApp(
     setupToken: z.string().optional(),
   });
   const server = createServer(async (req, res) => {
+    let gitActionRequest = false,
+      gitActionDispatched = false;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader(
@@ -321,6 +331,9 @@ export function createApp(
     try {
       const url = new URL(req.url ?? '/', origin),
         path = url.pathname;
+      gitActionRequest =
+        req.method === 'POST' &&
+        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/git\/action$/.test(path);
       if (req.method !== 'GET' && !bearer(req))
         assert(req.headers.origin === origin, 403, '请求来源不匹配');
       if (path === '/healthz') return json(res, 200, { ok: true });
@@ -511,6 +524,125 @@ export function createApp(
             409,
             '项目副本离线或已从主机移除',
           );
+          if (
+            parts[5] === 'git' &&
+            ['state', 'action'].includes(parts[6] ?? '') &&
+            parts.length === 7 &&
+            req.method === 'POST'
+          ) {
+            const action = parts[6] === 'action';
+            try {
+              assert(runtime, 409, '执行主机不可用');
+              const value = await body(req, 16 * 1024);
+              const actionInput = action ? gitActionSchema.parse(value) : undefined;
+              const input = actionInput ?? gitStateReadSchema.parse(value);
+              assert(
+                input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+                400,
+                'Git 请求与项目副本不匹配',
+              );
+              assert(
+                runtime.features?.includes(GIT_WORKTREE_FEATURE),
+                409,
+                '请先升级执行电脑上的 Moor',
+              );
+              const requestSocket = bridges.get(host.device_id)?.socket;
+              // Reading even a small request body yields. Recheck authorization
+              // before starting a filesystem operation, as well as on its reply.
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const dispatchReplica = store.catalog.replica(owner!, workspaceId, replica.id);
+              const dispatchRuntime = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === input.workspaceId);
+              assert(
+                dispatchReplica.host.device_id === host.device_id &&
+                  dispatchReplica.host.runtime_id === input.workspaceId &&
+                  dispatchReplica.local_id === input.localProjectId &&
+                  dispatchRuntime?.userId === runtime.userId &&
+                  dispatchRuntime?.machineId === runtime.machineId &&
+                  dispatchRuntime?.features?.includes(GIT_WORKTREE_FEATURE) &&
+                  dispatchRuntime.projects.some((p) => p.id === input.localProjectId),
+                409,
+                'Git 请求的执行范围已变化',
+              );
+              gitActionDispatched = action;
+              const raw = await request(
+                host.device_id,
+                action ? 'git-action' : 'git-state',
+                host.runtime_id,
+                input,
+                replica.local_id,
+              );
+              // A Git operation can finish after logout or regrouping. Returning
+              // no receipt here must never be interpreted as "Git did not run".
+              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+              store.device(owner!, host.device_id);
+              const current = store.catalog.replica(owner!, workspaceId, replica.id);
+              const currentRuntime = bridges
+                .get(host.device_id)
+                ?.workspaces.find((w) => w.id === host.runtime_id);
+              assert(
+                current.host.device_id === host.device_id &&
+                  current.host.runtime_id === input.workspaceId &&
+                  current.local_id === input.localProjectId &&
+                  online(host.device_id) &&
+                  bridges.get(host.device_id)?.socket === requestSocket &&
+                  currentRuntime?.userId === runtime.userId &&
+                  currentRuntime?.machineId === runtime.machineId &&
+                  currentRuntime?.features?.includes(GIT_WORKTREE_FEATURE) &&
+                  currentRuntime.projects.some((p) => p.id === input.localProjectId),
+                409,
+                'Git 请求的执行目标已变化，请手动确认原操作',
+              );
+              const parsed = action
+                ? gitActionReceiptSchema.safeParse(raw)
+                : gitStateResultSchema.safeParse(raw);
+              assert(parsed.success, 502, '执行主机返回的 Git 结果格式无效');
+              const result = parsed.data;
+              assert(
+                result.workspaceId === input.workspaceId &&
+                  result.localProjectId === input.localProjectId &&
+                  result.sessionId === input.sessionId &&
+                  Buffer.byteLength(JSON.stringify(result)) <= 2 * 1024 * 1024,
+                502,
+                '执行主机返回的 Git 结果与请求不匹配',
+              );
+              if (actionInput) {
+                assert(
+                  'operationId' in result && result.operationId === actionInput.operationId,
+                  502,
+                  'Git 操作确认编号不匹配',
+                );
+                if (result.phase === 'accepted') {
+                  assert(
+                    result.execution.revision === actionInput.expectedRevision + 1 &&
+                      result.execution.mode === 'worktree',
+                    502,
+                    'Git 操作确认版本不匹配',
+                  );
+                  assert(
+                    actionInput.action === 'prepare'
+                      ? result.execution.status === 'ready' &&
+                          result.execution.branch === actionInput.newBranch &&
+                          result.execution.baseOid === actionInput.expectedOid
+                      : result.execution.status === 'removed' &&
+                          result.execution.executionId === actionInput.executionId,
+                    502,
+                    'Git 操作确认目标不匹配',
+                  );
+                }
+              }
+              return json(res, 200, result);
+            } catch (error) {
+              if (action && !gitActionDispatched) {
+                if (error instanceof AppError)
+                  throw new AppError(error.status, error.message, true);
+                if (error instanceof z.ZodError) throw new AppError(400, 'Git 操作参数无效', true);
+              }
+              throw error;
+            }
+          }
           if (parts[5] === 'agent-options' && req.method === 'POST') {
             const input = z
               .object({ agentId: z.string().min(1).max(160) })
@@ -1023,7 +1155,8 @@ export function createApp(
               : e instanceof z.ZodError
                 ? '请求格式无效'
                 : '服务暂时不可用',
-          rejected: e instanceof AppError && e.rejected,
+          rejected:
+            (gitActionRequest && !gitActionDispatched) || (e instanceof AppError && e.rejected),
         });
       else res.end();
     }

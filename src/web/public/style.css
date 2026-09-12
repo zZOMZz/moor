@@ -2765,3 +2765,88 @@ dialog pre {
   color: var(--muted-foreground);
   font-size: 12px;
 }
+
+.git-workspace-panel {
+  width: min(680px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.git-workspace-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+.git-workspace-panel p {
+  margin: 12px 0;
+  line-height: 1.6;
+}
+.git-workspace-panel button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.git-workspace-panel form,
+.git-workspace-panel section {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+.git-workspace-panel label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.git-workspace-panel label:has(input[type='checkbox']) {
+  flex-wrap: nowrap;
+}
+.git-workspace-panel input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--foreground);
+}
+.git-workspace-panel section > h3,
+.git-workspace-panel section > p {
+  margin: 0;
+}
+.git-workspace-panel select,
+.git-workspace-panel input:not([type='checkbox']) {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--background);
+}
+.git-oid {
+  display: block;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.git-changes {
+  list-style: none;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+.git-changes li {
+  display: flex;
+  gap: 12px;
+  margin: 8px 0;
+}
+.git-changes code {
+  white-space: pre;
+  flex-shrink: 0;
+}
+.git-pending {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}

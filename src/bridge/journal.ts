@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { assert, type Mutation, type SessionAction } from '../protocol';
 import type { AttachmentAction, AttachmentReceipt } from '../attachment-protocol';
+import type { GitAction, GitActionReceipt } from '../git-protocol';
 import type {
   QuestionAnswer,
   QuestionReceipt,
@@ -13,7 +14,8 @@ export type JournalOperation =
   | SessionAction
   | AttachmentAction
   | QuestionAnswer
-  | SteerRequest;
+  | SteerRequest
+  | GitAction;
 export class Journal {
   db: DatabaseSync;
   constructor(file: string) {
@@ -119,6 +121,34 @@ export class Journal {
     this.db
       .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
       .run(phase, JSON.stringify(result), request.operationId);
+    return result;
+  }
+  stageGit(scope: string, action: GitAction, plan: unknown) {
+    assert(!this.lookup(scope, action), 409, 'Git 操作编号已使用');
+    this.db
+      .prepare(
+        'INSERT INTO operation(id,fingerprint,phase,turn_id,result,approval) VALUES(?,?,?,NULL,NULL,?)',
+      )
+      .run(action.operationId, this.fingerprint(scope, action), 'git-staged', JSON.stringify(plan));
+  }
+  settleGit(scope: string, action: GitAction, result: GitActionReceipt) {
+    const record = this.lookup(scope, action);
+    assert(
+      record && ['git-staged', 'git-unknown'].includes(record.phase),
+      409,
+      'Git 操作状态已变化',
+    );
+    this.db
+      .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
+      .run(
+        result.phase === 'accepted'
+          ? 'git-accepted'
+          : result.phase === 'rejected'
+            ? 'git-rejected'
+            : 'git-unknown',
+        JSON.stringify(result),
+        action.operationId,
+      );
     return result;
   }
   close() {

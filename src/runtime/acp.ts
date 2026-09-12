@@ -48,7 +48,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         {
           cwd,
           env: {
-            ...process.env,
+            // The host-selected cwd owns Git routing for both new and loaded
+            // sessions. Shell-inherited Git overrides must not redirect it.
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')),
+            ),
             ...(config.runtimeOverrides?.codexPath
               ? { CODEX_PATH: config.runtimeOverrides.codexPath }
               : {}),

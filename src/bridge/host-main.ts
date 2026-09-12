@@ -21,6 +21,7 @@ import {
 import { questionAnswerSchema, steerRequestSchema } from '../interaction-protocol';
 import { sessionSearchRequestSchema } from '../search-protocol';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
+import { gitStateReadSchema, gitActionSchema } from '../git-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -289,6 +290,14 @@ function connect(target: Target) {
             const body = sessionSearchRequestSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.searchSessions(body, m.localProjectId);
+          } else if (m.method === 'git-state') {
+            const body = gitStateReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readGitState(body, m.localProjectId);
+          } else if (m.method === 'git-action') {
+            const body = gitActionSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.gitAction(body, m.localProjectId);
           } else if (m.method === 'cancel')
             result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');
@@ -302,7 +311,9 @@ function connect(target: Target) {
               message: e instanceof AppError ? e.message : '本地主机处理失败',
               rejected:
                 (e instanceof AppError && e.rejected) ||
-                (['mutate', 'session-action', 'attachment-action'].includes(m.method) &&
+                (['mutate', 'session-action', 'attachment-action', 'git-action'].includes(
+                  m.method,
+                ) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
             },
