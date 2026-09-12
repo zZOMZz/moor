@@ -51,11 +51,8 @@ export function Login({ setup, onSubmit }: LoginProps) {
         <canvas ref={canvas} />
         <div className="login-water-haze" />
       </div>
-      <div className="login-wordmark" aria-label="Moor 泊点">
-        <img src="/icon-192.png" alt="" />
-        <span>
-          Moor<span className="login-brand-cn">泊点</span>
-        </span>
+      <div className="login-wordmark">
+        <img className="moor-logo" src="/moor-logo.png" alt="Moor" width="132" height="44" />
       </div>
       <section className="auth" aria-labelledby="login-title">
         <div className="auth-heading">

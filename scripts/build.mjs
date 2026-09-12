@@ -110,6 +110,7 @@ const assets = [
   'style.css',
   'THIRD_PARTY_NOTICES.txt',
   'manifest.webmanifest',
+  'moor-logo.png',
   'icon-192.png',
   'icon-512.png',
   'apple-touch-icon.png',

@@ -132,6 +132,7 @@ if (mode === 'relay') {
   await mkdir(root, { recursive: true });
   await cp('src/desktop', root, { recursive: true });
   await cp('src/web/public/icon-192.png', join(root, 'icon-192.png'));
+  await cp('src/web/public/moor-logo.png', join(root, 'moor-logo.png'));
   await cp('assets/brand/moor.icns', join(resources, 'moor.icns'));
   await writeFile(
     join(root, 'package.json'),

@@ -1,12 +1,12 @@
 {
   "id": "/",
-  "name": "Moor · 泊点",
+  "name": "Moor",
   "short_name": "Moor",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#fafaf7",
-  "theme_color": "#133f43",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "icons": [
     {
       "src": "/icon-192.png",

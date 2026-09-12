@@ -21,16 +21,16 @@ void main() {
   vec2 p = (uv - .5) * vec2(resolution.x / resolution.y, 1.0) * 3.0;
   float w = water(p);
   float depth = smoothstep(-1.5, 1.4, w + (uv.y - .5) * 1.2);
-  vec3 deep = mix(vec3(.18, .43, .40), vec3(.025, .13, .14), dark);
-  vec3 shallow = mix(vec3(.72, .85, .77), vec3(.13, .34, .32), dark);
-  vec3 pearl = mix(vec3(.95, .96, .87), vec3(.32, .51, .44), dark);
+  vec3 deep = mix(vec3(.68), vec3(.07), dark);
+  vec3 shallow = mix(vec3(.88), vec3(.18), dark);
+  vec3 pearl = mix(vec3(.98), vec3(.31), dark);
   vec3 color = mix(deep, shallow, depth);
   color = mix(color, pearl, smoothstep(.3, 1.0, uv.y) * .72);
   // Broad refracted ribbons with thin caustic edges, softened behind the form.
   float ribbon = exp(-abs(w - .35) * 5.0);
   float caustic = pow(max(0.0, 1.0 - abs(w - .35)), 28.0);
-  color += vec3(.18, .22, .16) * ribbon * mix(.35, .17, dark);
-  color += vec3(.32, .37, .25) * caustic * mix(.22, .10, dark);
+  color += vec3(.20) * ribbon * mix(.35, .17, dark);
+  color += vec3(.34) * caustic * mix(.22, .10, dark);
   float vignette = smoothstep(.2, 1.25, length((uv - .5) * vec2(1.0, .75)));
   color *= 1.0 - vignette * .16;
   gl_FragColor = vec4(color, 1.0);

@@ -207,7 +207,7 @@ app
             assert.equal(state.gradient, 'none');
             assert.equal(
               state.background,
-              config.theme === 'dark' ? 'rgb(27, 33, 30)' : 'rgb(252, 252, 250)',
+              config.theme === 'dark' ? 'rgb(25, 25, 25)' : 'rgb(255, 255, 255)',
             );
             assert.equal(state.sidebar === 'none', !!config.mobile);
             fs.writeFileSync(

@@ -4,6 +4,7 @@ import {
   showShell,
   showNavigation,
   showTarget,
+  showNewSessionControls,
   showRunControls,
   showAuth,
   closeNavigation,
@@ -47,6 +48,9 @@ let events: WebSocket | null = null,
   pending: Mutation | undefined,
   sending = false;
 let sessionList: SessionSummary[] = [];
+let newProjectId = '',
+  newAgentId = '',
+  newSessionControlsReady = false;
 const $ = <T extends HTMLElement>(s: string) => document.querySelector<T>(s)!;
 const rendered = new WeakMap<HTMLElement, string>();
 function renderInto(selector: string, html: string) {
@@ -110,6 +114,8 @@ function resetWorkspace() {
   catalog = [];
   sessionList = [];
   sessionId = '';
+  newProjectId = newAgentId = '';
+  newSessionControlsReady = false;
   pending = undefined;
   meta = null;
   restoredSelection = false;
@@ -390,8 +396,7 @@ function renderDevices() {
 }
 
 function selectReplica(expectedProjectId?: string) {
-  const localProjectId =
-    expectedProjectId ?? document.querySelector<HTMLSelectElement>('#project')?.value;
+  const localProjectId = expectedProjectId ?? newProjectId;
   const host = activeWorkspace?.hosts.find(
     (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
   );
@@ -401,6 +406,44 @@ function selectReplica(expectedProjectId?: string) {
   renderTarget();
   void persistSelection().catch(error);
   updateComposer();
+}
+function renderNewSessionControls() {
+  if (sessionId || !workspace || !newSessionControlsReady) {
+    showNewSessionControls(null);
+    return;
+  }
+  const generation = sessionGeneration;
+  const host = activeWorkspace?.hosts.find(
+    (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
+  );
+  const change = (field: 'project' | 'agent', value: string) => {
+    if (generation !== sessionGeneration || sessionId || sending || pending || !workspace) return;
+    if (field === 'project') {
+      if (value === newProjectId || !workspace.projects.some((p) => p.id === value)) return;
+      newProjectId = value;
+    } else {
+      if (value === newAgentId || !workspace.agents.some((a) => a.id === value)) return;
+      newAgentId = value;
+    }
+    selectReplica();
+    if (field === 'agent') void restoreRunOptions().catch(error);
+    void cache.write(key('options'), { project: newProjectId, agent: newAgentId }).catch(error);
+  };
+  showNewSessionControls({
+    projects: workspace.projects.map((p) => {
+      const copy = activeWorkspace?.replicas.find(
+        (r) => r.localProjectId === p.id && r.hostId === host?.id,
+      );
+      const project = activeWorkspace?.projects.find((logical) => logical.id === copy?.projectId);
+      return { id: p.id, name: project?.name ?? p.name };
+    }),
+    agents: workspace.agents.map(({ id, name }) => ({ id, name })),
+    projectId: newProjectId,
+    agentId: newAgentId,
+    disabled: sending || !!pending,
+    onProject: (value) => change('project', value),
+    onAgent: (value) => change('agent', value),
+  });
 }
 function renderTarget() {
   const project = activeWorkspace?.projects.find((p) => p.id === replica?.projectId);
@@ -516,8 +559,11 @@ async function selectWorkspace(id: string, saved?: Partial<Selection>) {
   workspace = undefined;
   replica = undefined;
   sessionId = '';
+  newProjectId = newAgentId = '';
+  newSessionControlsReady = false;
   pending = undefined;
   sessionGeneration++;
+  renderNewSessionControls();
   renderDevices();
   renderNavigation();
   watch();
@@ -583,6 +629,9 @@ async function selectDevice(id: string, explicit?: Partial<Selection>) {
     workspace = undefined;
     replica = undefined;
     sessionId = '';
+    newProjectId = newAgentId = '';
+    newSessionControlsReady = false;
+    renderNewSessionControls();
     watch();
     sessionList = [];
     meta = null;
@@ -741,6 +790,9 @@ async function openSession(id: string, replicaId?: string) {
   runOptionsReady = false;
   runOptionsGeneration++;
   sessionId = id;
+  newProjectId = newAgentId = '';
+  newSessionControlsReady = false;
+  renderNewSessionControls();
   closeNavigation();
   void persistSelection().catch(error);
   doc = new LoroDoc();
@@ -756,9 +808,6 @@ async function openSession(id: string, replicaId?: string) {
   if (generation !== sessionGeneration) return;
   $<HTMLTextAreaElement>('#prompt').value = draft ?? '';
   resizeComposer();
-  $('#new-options').innerHTML = id
-    ? ''
-    : `<label>项目<select id="project">${workspace.projects.map((p) => `<option value="${esc(p.id)}">${esc(activeWorkspace?.projects.find((logical) => logical.id === activeWorkspace?.replicas.find((r) => r.localProjectId === p.id && activeWorkspace?.hosts.some((h) => h.id === r.hostId && h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id))?.projectId)?.name ?? p.name)}</option>`).join('')}</select></label><label>Agent<select id="agent">${workspace.agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></label>`;
   let pendingProject: string | undefined;
   if (!id) {
     const options = await cache.read<{ project: string; agent: string }>(key('options'));
@@ -782,22 +831,14 @@ async function openSession(id: string, replicaId?: string) {
       ? (metas(pendingMeta)['session-' + pending.sessionId]?.project as any)?.localProjectId
       : undefined;
     const project = pendingProject || filtered?.localProjectId || options?.project;
-    if (workspace.projects.some((p) => p.id === project))
-      $<HTMLSelectElement>('#project').value = project!;
+    newProjectId = workspace.projects.some((p) => p.id === project)
+      ? project!
+      : (workspace.projects[0]?.id ?? '');
     const agentId = pendingAgent || options?.agent;
-    if (workspace.agents.some((a) => a.id === agentId))
-      $<HTMLSelectElement>('#agent').value = String(agentId);
-    for (const selector of ['#project', '#agent'])
-      $(selector).onchange = () => {
-        selectReplica();
-        if (selector === '#agent') void restoreRunOptions().catch(error);
-        void cache
-          .write(key('options'), {
-            project: $<HTMLSelectElement>('#project').value,
-            agent: $<HTMLSelectElement>('#agent').value,
-          })
-          .catch(error);
-      };
+    newAgentId = workspace.agents.some((a) => a.id === agentId)
+      ? String(agentId)
+      : (workspace.agents[0]?.id ?? '');
+    newSessionControlsReady = true;
   }
   if (!id) selectReplica(pendingProject);
   watch();
@@ -823,7 +864,7 @@ async function openSession(id: string, replicaId?: string) {
     }
   } else
     $('#history').innerHTML =
-      '<div class="welcome compact"><span class="eyebrow">NEW SESSION</span><h1>开始一段新的工作。</h1><p>选择这台电脑上的项目和 Agent，然后发送第一条指令。</p></div>';
+      '<div class="welcome compact"><h1>今天，我们从哪里开始？</h1><p>选择项目和 Agent，让想法继续向前。</p></div>';
   if (generation !== sessionGeneration) return;
   await restoreRunOptions();
   updateComposer();
@@ -902,10 +943,7 @@ let runOptionsGeneration = 0;
 let runSelectionTouched = false;
 const capabilityAttempts = new Set<string>();
 function currentAgent() {
-  return workspace?.agents.find(
-    (a) =>
-      a.id === (meta?.agentConfigId ?? document.querySelector<HTMLSelectElement>('#agent')?.value),
-  );
+  return workspace?.agents.find((a) => a.id === (meta?.agentConfigId ?? newAgentId));
 }
 function runOptionsKey() {
   return key('run-options') + '/' + currentAgent()?.id;
@@ -1024,15 +1062,12 @@ function renderRunOptions() {
 
 function updateComposer() {
   const invalidRunOptions = renderRunOptions();
+  renderNewSessionControls();
   document
     .querySelectorAll<HTMLButtonElement>('[data-permission]')
     .forEach((b) => (b.disabled = sending || !!pending || !connected || !selected?.online));
   const create = document.querySelector<HTMLButtonElement>('#new');
   if (create) create.disabled = !workspace;
-  for (const selector of ['#project', '#agent']) {
-    const field = document.querySelector<HTMLSelectElement>(selector);
-    if (field) field.disabled = sending || !!pending;
-  }
   const send = document.querySelector<HTMLButtonElement>('#send');
   if (!send) return;
   send.disabled =
@@ -1117,14 +1152,12 @@ async function sendTurn() {
   const generation = sessionGeneration;
   if (!sessionId)
     await cache.write(key('options'), {
-      project: $<HTMLSelectElement>('#project').value,
-      agent: $<HTMLSelectElement>('#agent').value,
+      project: newProjectId,
+      agent: newAgentId,
     });
   if (generation !== sessionGeneration) return;
   const id = sessionId || crypto.randomUUID(),
-    agent = workspace.agents.find(
-      (a) => a.id === (meta?.agentConfigId ?? $<HTMLSelectElement>('#agent')?.value),
-    );
+    agent = currentAgent();
   if (!agent) throw new Error('这台电脑还没有可用的 Agent 配置');
   if (!runOptionsReady || runOptionsLoading) throw new Error('正在读取运行设置，请稍后发送');
   const selectedConfig = resolveRunSelection(runSelection, agent.runConfig);
@@ -1176,7 +1209,7 @@ async function sendTurn() {
         agentConfigId: agent.id,
         status: { type: 'idle' },
         isArchived: false,
-        project: { kind: 'local', localProjectId: $<HTMLSelectElement>('#project').value },
+        project: { kind: 'local', localProjectId: newProjectId },
         latestUserMsgId: turnId,
         lastMessageAt: Date.now(),
       };

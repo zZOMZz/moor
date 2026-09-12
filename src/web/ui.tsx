@@ -8,6 +8,7 @@ import { Select } from '@base-ui/react/select';
 import { Popover } from '@base-ui/react/popover';
 import {
   ArrowUp,
+  Bot,
   ChevronDown,
   Check,
   Cpu,
@@ -19,7 +20,6 @@ import {
   Plus,
   Search,
   Settings2,
-  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -106,16 +106,14 @@ export function Shell({
         <Dialog.Portal keepMounted>
           <Dialog.Backdrop className="nav-backdrop" />
           <Dialog.Popup
-            className="sidebar-glass"
+            className="sidebar"
             initialFocus={mobile}
             id="navigation"
             aria-label="工作区与会话"
           >
             <Dialog.Title className="sr-only">工作区与会话</Dialog.Title>
             <div className="sidebar-brand">
-              <img src="/icon-192.png" alt="" />
-              <span>Moor</span>
-              <span className="brand-sub">泊点</span>
+              <img className="moor-logo" src="/moor-logo.png" alt="Moor" width="108" height="36" />
               <Dialog.Close className="icon-button mobile-only" aria-label="关闭会话列表">
                 <X />
               </Dialog.Close>
@@ -156,29 +154,28 @@ export function Shell({
               onSend();
             }}
           >
-            <div id="new-options" />
-            <label className="sr-only" htmlFor="prompt">
-              发送给 Agent 的指令
-            </label>
-            <textarea
-              id="prompt"
-              placeholder="描述接下来要做的事…"
-              rows={1}
-              onChange={(e) => {
-                resizeComposer(e.currentTarget);
-                onDraft(e.currentTarget.value);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  document.querySelector<HTMLButtonElement>('#send')?.click();
-                }
-              }}
-            />
-            <div className="composer-toolbar">
-              <div id="run-options">
-                <Content name="#run-options" />
-              </div>
+            <div id="new-options">
+              <Content name="#new-options" />
+            </div>
+            <div className="prompt-surface">
+              <label className="sr-only" htmlFor="prompt">
+                发送给 Agent 的指令
+              </label>
+              <textarea
+                id="prompt"
+                placeholder="描述接下来要做的事…"
+                rows={1}
+                onChange={(e) => {
+                  resizeComposer(e.currentTarget);
+                  onDraft(e.currentTarget.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    document.querySelector<HTMLButtonElement>('#send')?.click();
+                  }
+                }}
+              />
               <div className="composer-actions">
                 <button
                   type="button"
@@ -194,6 +191,9 @@ export function Shell({
                   <Content name="#send" />
                 </button>
               </div>
+            </div>
+            <div id="run-options">
+              <Content name="#run-options" />
             </div>
             <div id="draft-state" role="status" />
           </form>
@@ -250,6 +250,8 @@ export function Picker({
   disabled,
   placeholder,
   onChange,
+  allowEmpty = true,
+  variant = 'compact',
 }: {
   id: string;
   label: string;
@@ -259,37 +261,59 @@ export function Picker({
   disabled?: boolean;
   placeholder: string;
   onChange: (value: string) => void;
+  allowEmpty?: boolean;
+  variant?: 'compact' | 'context';
 }) {
   const all = [
-    { id: '', name: placeholder },
+    ...(allowEmpty ? [{ id: '', name: placeholder }] : []),
     ...(value && !items.some((i) => i.id === value)
-      ? [{ id: value, name: `${value}（不可用）` }]
+      ? [{ id: value, name: `${value}（不可用）`, disabled: true }]
       : []),
     ...items,
   ];
   return (
     <Select.Root
-      value={value ?? ''}
-      onValueChange={(v) => onChange(v ?? '')}
+      value={allowEmpty ? (value ?? '') : value || null}
+      onValueChange={(v) => {
+        if (allowEmpty || v) onChange(v ?? '');
+      }}
       items={all.map((i) => ({ value: i.id, label: i.name }))}
-      disabled={disabled}
+      disabled={disabled || (!allowEmpty && !items.length)}
     >
-      <Select.Trigger id={id} className="picker-trigger" aria-label={label}>
+      <Select.Trigger
+        id={id}
+        className={`picker-trigger ${variant === 'context' ? 'context-picker' : ''}`}
+        aria-label={label}
+      >
         {icon}
         <span className="picker-label">{label}</span>
-        <Select.Value />
-        <Select.Icon>
+        <Select.Value className="picker-value" placeholder={placeholder} />
+        <Select.Icon className="picker-chevron">
           <ChevronDown />
         </Select.Icon>
       </Select.Trigger>
       <Select.Portal>
-        <Select.Positioner sideOffset={8} alignItemWithTrigger={false} className="popup-positioner">
+        <Select.Positioner
+          sideOffset={8}
+          align="start"
+          alignItemWithTrigger={false}
+          className="popup-positioner"
+        >
           <Select.Popup className="menu-popup select-popup">
-            <Select.List>
+            <div className="select-heading" aria-hidden="true">
+              {icon}
+              <span>选择{label === 'Agent' ? ' Agent' : label}</span>
+            </div>
+            <Select.List className="select-list">
               {all.map((i) => (
-                <Select.Item key={i.id} value={i.id} className="menu-item">
-                  <Select.ItemText>{i.name}</Select.ItemText>
-                  <Select.ItemIndicator className="item-indicator">
+                <Select.Item
+                  key={i.id}
+                  value={i.id}
+                  disabled={'disabled' in i && i.disabled === true}
+                  className="menu-item select-option"
+                >
+                  <Select.ItemText className="select-option-text">{i.name}</Select.ItemText>
+                  <Select.ItemIndicator className="item-indicator select-check" keepMounted>
                     <Check />
                   </Select.ItemIndicator>
                 </Select.Item>
@@ -299,6 +323,46 @@ export function Picker({
         </Select.Positioner>
       </Select.Portal>
     </Select.Root>
+  );
+}
+
+export type NewSessionControlsProps = {
+  projects: { id: string; name: string }[];
+  agents: { id: string; name: string }[];
+  projectId: string;
+  agentId: string;
+  disabled: boolean;
+  onProject: (value: string) => void;
+  onAgent: (value: string) => void;
+};
+export function NewSessionControls(p: NewSessionControlsProps) {
+  return (
+    <>
+      <Picker
+        id="project"
+        label="项目"
+        icon={<Folder />}
+        value={p.projectId}
+        items={p.projects}
+        placeholder={p.projects.length ? '选择项目' : '无可用项目'}
+        disabled={p.disabled}
+        allowEmpty={false}
+        variant="context"
+        onChange={p.onProject}
+      />
+      <Picker
+        id="agent"
+        label="Agent"
+        icon={<Bot />}
+        value={p.agentId}
+        items={p.agents}
+        placeholder={p.agents.length ? '选择 Agent' : '无可用 Agent'}
+        disabled={p.disabled}
+        allowEmpty={false}
+        variant="context"
+        onChange={p.onAgent}
+      />
+    </>
   );
 }
 
@@ -617,48 +681,60 @@ export function RunControls(p: RunControlsProps) {
           placeholder="Agent 默认"
           onChange={(v) => p.onChange('modelId', v)}
         />
-        <Picker
-          id="effort"
-          label="Effort"
-          icon={<Sparkles />}
-          value={p.selection.reasoningEffort}
-          items={efforts.map((e) => ({ id: e, name: e }))}
-          disabled={p.disabled || !efforts.length}
-          placeholder={!p.selection.modelId ? '先选模型' : efforts.length ? '默认' : '不支持'}
-          onChange={(v) => p.onChange('reasoningEffort', v)}
-        />
-        <Picker
-          id="approval-mode"
-          label="审批"
-          icon={<ShieldCheck />}
-          value={p.selection.modeId}
-          items={modes.map((m) => ({ id: m.id, name: labels[m.id] || m.name }))}
-          disabled={p.disabled}
-          placeholder="Agent 默认"
-          onChange={(v) => p.onChange('modeId', v)}
-        />
         <Popover.Root>
-          <Popover.Trigger className="icon-button config-info" aria-label="运行设置说明">
-            <Settings2 />
+          {p.selection.modeId === 'agent-full-access' && (
+            <span className="permission-summary">完全访问</span>
+          )}
+          <Popover.Trigger className="run-settings-trigger" aria-label="运行设置">
+            <SlidersHorizontal />
+            <span>运行设置</span>
           </Popover.Trigger>
           <Popover.Portal>
-            <Popover.Positioner sideOffset={8} className="popup-positioner">
-              <Popover.Popup className="connection-popup">
-                <Popover.Title>运行设置</Popover.Title>
+            <Popover.Positioner sideOffset={10} align="end" className="popup-positioner">
+              <Popover.Popup className="connection-popup run-settings-popup">
+                <div className="run-settings-heading">
+                  <Popover.Title>运行设置</Popover.Title>
+                  <Popover.Close className="icon-button" aria-label="关闭运行设置">
+                    <X />
+                  </Popover.Close>
+                </div>
                 <Popover.Description>
-                  {p.existing ? '设置对下一条指令生效。' : '设置随第一条指令发送。'}
-                  选项来自当前执行电脑上的 Agent。
+                  {p.existing ? '应用于下一条指令。' : '应用于这段新会话。'}
                 </Popover.Description>
-                <p>
-                  {mode?.description ||
-                    (mode ? labels[mode.id] || mode.name : '留空时沿用 Agent 设置。')}
-                </p>
+                <div className="run-settings-row">
+                  <span>思考强度</span>
+                  <Picker
+                    id="effort"
+                    label="思考强度"
+                    value={p.selection.reasoningEffort}
+                    items={efforts.map((e) => ({ id: e, name: e }))}
+                    disabled={p.disabled || !efforts.length}
+                    placeholder={
+                      !p.selection.modelId ? '先选模型' : efforts.length ? '默认' : '不支持'
+                    }
+                    onChange={(v) => p.onChange('reasoningEffort', v)}
+                  />
+                </div>
+                <div className="run-settings-row">
+                  <span>审批权限</span>
+                  <Picker
+                    id="approval-mode"
+                    label="审批"
+                    value={p.selection.modeId}
+                    items={modes.map((m) => ({ id: m.id, name: labels[m.id] || m.name }))}
+                    disabled={p.disabled}
+                    placeholder="Agent 默认"
+                    onChange={(v) => p.onChange('modeId', v)}
+                  />
+                </div>
+                {mode?.description && <p>{mode.description}</p>}
                 {p.selection.modeId === 'agent-full-access' && (
                   <p>完全访问允许更广的文件和执行权限。</p>
                 )}
                 <button
                   type="button"
                   id="refresh-run-options"
+                  className="refresh-run-options"
                   disabled={!p.canRefresh || p.disabled}
                   onClick={p.onRefresh}
                 >
@@ -696,6 +772,9 @@ export function showTarget(props: Parameters<typeof Target>[0]) {
 }
 export function showRunControls(props: RunControlsProps) {
   paint('#run-options', <RunControls {...props} />);
+}
+export function showNewSessionControls(props: NewSessionControlsProps | null) {
+  paint('#new-options', props ? <NewSessionControls {...props} /> : null);
 }
 export function sendIcon(state: 'sending' | 'pending' | 'ready') {
   paint(

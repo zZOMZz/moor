@@ -62,6 +62,10 @@ test('slow startup retains its skeleton, offers manual retry and accepts late re
     loadEntry: () => entry,
   });
   assert.equal(window.document.documentElement.dataset.theme, 'dark');
+  assert.equal(
+    window.document.querySelector('meta[name="theme-color"]')!.getAttribute('content'),
+    '#191919',
+  );
   expire();
   assert(window.document.querySelector('.startup-shell'));
   assert.match(window.document.querySelector('#startup-status')!.textContent!, /仍在加载/);
@@ -76,6 +80,13 @@ test('slow startup retains its skeleton, offers manual retry and accepts late re
   await entry;
   expire();
   assert.equal(window.document.querySelector('#app')!.textContent, 'synthetic workspace');
+  window.document.documentElement.dataset.theme = 'light';
+  await Promise.resolve();
+  assert.equal(
+    window.document.querySelector('meta[name="theme-color"]')!.getAttribute('content'),
+    '#ffffff',
+    'browser chrome follows appearance changes after startup',
+  );
   dom.window.close();
 });
 

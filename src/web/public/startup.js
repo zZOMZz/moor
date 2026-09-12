@@ -8,6 +8,20 @@ try {
 } catch {
   // The system theme also works when browser storage is unavailable.
 }
+const systemAppearance = window.matchMedia?.('(prefers-color-scheme: dark)');
+function updateThemeColor() {
+  const appearance = document.documentElement.dataset.theme;
+  const dark = appearance === 'dark' || (appearance !== 'light' && systemAppearance?.matches);
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', dark ? '#191919' : '#ffffff');
+}
+updateThemeColor();
+systemAppearance?.addEventListener('change', updateThemeColor);
+new window.MutationObserver(updateThemeColor).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ['data-theme'],
+});
 let ready = false;
 function failed(message) {
   if (ready) return;

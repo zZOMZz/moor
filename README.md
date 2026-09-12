@@ -1,6 +1,6 @@
 <img src="assets/brand/moor-master.png" width="96" alt="Moor icon" />
 
-# Moor · 泊点
+# Moor
 
 **代码留在自己的电脑，工作从任意设备继续。**
 
