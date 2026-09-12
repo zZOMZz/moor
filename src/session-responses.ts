@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { agentSchema, assert, id, type SessionAction } from './protocol';
 import { forkOriginSchema } from './fork-protocol';
+import { taskOriginSchema } from './task-protocol';
 
 export const SESSION_RESPONSE_LIMITS = {
   readBytes: 48 * 1024 * 1024,
@@ -42,6 +43,7 @@ export const sessionMetadataSchema = z.object({
   latestUserMsgId: id.optional(),
   lastHandledUserMsgId: id.optional(),
   forkOrigin: forkOriginSchema.optional(),
+  taskOrigin: taskOriginSchema.optional(),
 });
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 export const sessionListSchema = z

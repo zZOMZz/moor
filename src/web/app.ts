@@ -1,3 +1,6 @@
+import { SESSION_TASKS_FEATURE, taskOriginSchema } from '../task-protocol';
+import { TasksController, tasksKey, validateTaskReview } from './tasks';
+import { showTasksControl, showTasksPanel, showTaskPlanCard, showTaskOrigin } from './tasks-ui';
 import { ROLE_FEATURE, type RoleView } from '../role-protocol';
 import {
   RolesController,
@@ -742,6 +745,254 @@ function persistComposerDraft(draftKey: string, value: string) {
     });
   composerDraftWrites = writing;
   return writing;
+}
+
+let tasks: TasksController | undefined;
+let tasksGeneration = 0,
+  tasksPanelOpen = false,
+  tasksLoading = false,
+  tasksLoadError = '',
+  tasksReviewing = false;
+function currentTasks() {
+  const target = gitTarget();
+  return target && tasks && tasksKey(target) === tasksKey(tasks.target) ? tasks : undefined;
+}
+function tasksReason() {
+  return !authenticated ||
+    !connected ||
+    !selected?.online ||
+    !replica?.available ||
+    navigator.onLine === false
+    ? '执行电脑离线；任务草稿不会执行，请连接后手动操作。'
+    : !workspace?.features?.includes(SESSION_TASKS_FEATURE)
+      ? '此执行电脑尚不支持协作任务，请升级 Moor。'
+      : '';
+}
+function taskChildOrigin() {
+  const result = taskOriginSchema.safeParse(meta?.taskOrigin);
+  return result.success ? result.data : undefined;
+}
+function taskDraftReason() {
+  return meta?.taskOrigin
+    ? '子任务会话不能再次授权协作任务。'
+    : pending
+      ? '请先确认原父指令，再启用下一份任务计划。'
+      : meta?.isArchived
+        ? '请先恢复会话。'
+        : sessionPersistenceError || sessionAgentError || '';
+}
+function tasksSendReason() {
+  const c = currentTasks();
+  return (
+    tasksLoadError ||
+    c?.loadError ||
+    (tasksLoading || c?.saving || tasksReviewing
+      ? '请等待任务草稿恢复或保存。'
+      : c?.enabled && (taskChildOrigin() || c.enabled.parentAgentId !== currentAgent()?.id)
+        ? '父会话或 Agent 已变化，请重新审查任务计划。'
+        : c?.enabled
+          ? tasksReason()
+          : '')
+  );
+}
+function resetTasks() {
+  tasksGeneration++;
+  tasks?.dispose();
+  tasks = undefined;
+  tasksPanelOpen = false;
+  tasksLoading = false;
+  tasksLoadError = '';
+  tasksReviewing = false;
+  showTasksPanel();
+  showTaskPlanCard();
+  showTaskOrigin();
+}
+async function loadTasks() {
+  const target = gitTarget(),
+    generation = ++tasksGeneration;
+  tasks = undefined;
+  tasksLoading = true;
+  tasksLoadError = '';
+  try {
+    if (!target) return;
+    const controller: TasksController = new TasksController(target, {
+      read: cache.read,
+      compareWrite: cache.compareWrite,
+      compareSubmission: cache.compareTaskSubmission,
+      request: api,
+      current: () => generation === tasksGeneration && currentTasks() === controller,
+      online: () => !tasksReason(),
+      changed: () => {
+        if (generation === tasksGeneration) updateComposer();
+      },
+    });
+    tasks = controller;
+    await controller.load();
+  } catch (e) {
+    if (generation === tasksGeneration) tasksLoadError = '任务草稿无法恢复，请重新打开原会话。';
+    throw e;
+  } finally {
+    if (generation === tasksGeneration) {
+      tasksLoading = false;
+      updateComposer();
+    }
+  }
+}
+function openTasks() {
+  tasksPanelOpen = true;
+  renderTasks();
+}
+async function reviewTasks() {
+  const controller = currentTasks(),
+    git = currentGitWorkspace(),
+    agent = currentAgent(),
+    generation = tasksGeneration;
+  if (!controller || !git || !agent) throw new Error('任务执行目标尚未就绪。');
+  if (tasksReason() || taskDraftReason()) throw new Error(tasksReason() || taskDraftReason());
+  const expected = JSON.stringify(controller.draft),
+    parent = agent.id;
+  tasksReviewing = true;
+  updateComposer();
+  try {
+    await controller.flush();
+    await git.refresh();
+    if (
+      generation !== tasksGeneration ||
+      controller !== currentTasks() ||
+      !tasksPanelOpen ||
+      parent !== currentAgent()?.id ||
+      expected !== JSON.stringify(controller.draft) ||
+      tasksReason() ||
+      taskDraftReason()
+    )
+      throw new Error('任务草稿或执行范围已改变，请重新审查。');
+    if (
+      git.source !== 'host' ||
+      !git.state?.repository.writeSupported ||
+      git.execution?.status !== 'ready'
+    )
+      throw new Error('当前目录不能准备独立任务工作目录。');
+    return validateTaskReview(controller.draft, {
+      parentAgentId: parent,
+      child: !!meta?.taskOrigin,
+      agents: workspace?.agents ?? [],
+      branches: git.state.repository.branches,
+    });
+  } finally {
+    if (generation === tasksGeneration) {
+      tasksReviewing = false;
+      updateComposer();
+    }
+  }
+}
+async function refreshTaskAgent(id: string) {
+  const controller = currentTasks(),
+    generation = tasksGeneration,
+    agent = workspace?.agents.find((a) => a.id === id);
+  if (!controller || !agent || tasksReason() || pending || sending)
+    throw new Error('当前不能刷新子任务 Agent 选项。');
+  const updated = agentSchema.parse(await api(prefix() + '/agent-options', { agentId: id }));
+  if (
+    generation !== tasksGeneration ||
+    controller !== currentTasks() ||
+    !tasksPanelOpen ||
+    tasksReason()
+  )
+    return;
+  if (
+    updated.id !== id ||
+    updated.cliType !== agent.cliType ||
+    updated.agentType !== agent.agentType
+  )
+    throw new Error('模型选项不属于所选子任务 Agent。');
+  Object.assign(agent, updated);
+  updateComposer();
+}
+function renderTasks() {
+  const controller = currentTasks(),
+    generation = tasksGeneration,
+    origin = taskChildOrigin();
+  showTasksControl(attentionVisible ? undefined : { disabled: !gitTarget(), onOpen: openTasks });
+  showTaskOrigin(
+    !attentionVisible && origin
+      ? {
+          origin,
+          onOpen: () => {
+            if (generation === tasksGeneration) run(() => openSession(origin.parentSessionId));
+          },
+        }
+      : undefined,
+  );
+  const selectedPlan = controller?.delivery?.review ?? controller?.enabled;
+  showTaskPlanCard(
+    !attentionVisible && selectedPlan
+      ? {
+          count: selectedPlan.plan.tasks.length,
+          pending: !!controller?.delivery,
+          disabled: sending || !!controller?.busy,
+          onOpen: openTasks,
+          onRemove: () =>
+            run(async () => {
+              if (controller === currentTasks()) await controller?.disable();
+            }),
+        }
+      : undefined,
+  );
+  if (!tasksPanelOpen) return;
+  const operate = (work: (c: TasksController) => Promise<unknown>) =>
+    run(async () => {
+      if (generation !== tasksGeneration || !controller || controller !== currentTasks()) return;
+      try {
+        await work(controller);
+      } catch (e) {
+        if (generation === tasksGeneration && controller === currentTasks()) throw e;
+      }
+    });
+  const git = currentGitWorkspace();
+  showTasksPanel({
+    controller,
+    reason: tasksReason(),
+    draftReason: taskDraftReason(),
+    sending: sending || tasksReviewing,
+    existing: !!sessionId,
+    agents: workspace?.agents ?? [],
+    branches: git?.source === 'host' ? (git.state?.repository.branches ?? []) : [],
+    branchesPartial: !!git?.state?.repository.partial,
+    onClose: () => {
+      if (generation !== tasksGeneration || controller !== currentTasks()) return;
+      tasksPanelOpen = false;
+      controller?.invalidate();
+      showTasksPanel();
+    },
+    onEdit: (draft) => operate((c) => c.edit(draft)),
+    onReadBranches: () =>
+      operate(async () => {
+        if (tasksReason()) throw new Error(tasksReason());
+        await currentGitWorkspace()?.refresh();
+      }),
+    onRefreshAgent: (id) => operate(() => refreshTaskAgent(id)),
+    onReview: () => {
+      if (generation !== tasksGeneration || controller !== currentTasks() || !tasksPanelOpen)
+        throw new Error('任务审查所属会话已改变。');
+      return reviewTasks();
+    },
+    onEnable: (plan) =>
+      operate(async (c) => {
+        if (taskDraftReason() || tasksReason()) throw new Error(taskDraftReason() || tasksReason());
+        const fresh = await reviewTasks();
+        if (JSON.stringify(plan) !== JSON.stringify(fresh))
+          throw new Error('审查内容已变化，请重新核对。');
+        await c.enable(fresh, currentAgent()!.id);
+      }),
+    onDisable: () => operate((c) => c.disable()),
+    onRefresh: () => operate((c) => c.refresh()),
+    onAction: (action, grantId, operationId, cleanup) =>
+      operate((c) => c.action(action, grantId, operationId, cleanup)),
+    onRetry: () => operate((c) => c.retry()),
+    onOpenSession: (id) => {
+      if (generation === tasksGeneration) run(() => openSession(id));
+    },
+  });
 }
 
 let roles: RolesController | undefined;
@@ -2176,6 +2427,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
+  resetTasks();
   resetRoles();
   resetSkills();
   resetProjectPreview();
@@ -2470,6 +2722,9 @@ function setAttentionVisible(visible: boolean) {
   if (persistenceState)
     persistenceState.hidden = visible || !(sessionPersistenceError || sessionAgentError);
   if (visible) {
+    tasksPanelOpen = false;
+    currentTasks()?.invalidate();
+    showTasksPanel();
     resetRoles();
     resetSkills();
     projectPreviewPanelOpen = false;
@@ -2637,6 +2892,7 @@ async function loadAttachmentDraft() {
     if (token === attachmentGeneration && generation === sessionGeneration) await loadGithubWrite();
     if (token === attachmentGeneration && generation === sessionGeneration)
       await loadProjectPreview();
+    if (token === attachmentGeneration && generation === sessionGeneration) await loadTasks();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -3494,6 +3750,7 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
+    currentTasks()?.invalidate('执行电脑连接已关闭，请手动重新读取任务状态。');
     invalidateRoles('执行电脑连接已关闭，请手动重新读取角色。');
     invalidateSkills('执行电脑连接已关闭，请手动重新读取 Skills。');
     currentGithub()?.invalidate();
@@ -3685,6 +3942,8 @@ function renderNewSessionControls() {
       attachmentWorking ||
       githubDraftAppending ||
       roleApplying ||
+      tasksReviewing ||
+      !!currentTasks()?.busy ||
       gitLoading ||
       currentGitWorkspace()?.busy ||
       currentGitWorkspace()?.pending ||
@@ -3721,6 +3980,8 @@ function renderNewSessionControls() {
       attachmentWorking ||
       githubDraftAppending ||
       roleApplying ||
+      tasksReviewing ||
+      !!currentTasks()?.busy ||
       gitLoading ||
       !!currentGitWorkspace()?.busy ||
       !!currentGitWorkspace()?.pending ||
@@ -3731,6 +3992,7 @@ function renderNewSessionControls() {
 }
 function renderTarget() {
   renderProjectControls();
+  renderTasks();
   renderRoles();
   renderSkills();
   renderProjectPreview();
@@ -4731,6 +4993,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderTasks();
   renderRoles();
   renderSkills();
   renderProjectPreview();
@@ -4762,6 +5025,8 @@ function updateComposer() {
     sending ||
     skillsDraftAppending ||
     roleApplying ||
+    !!currentTasks()?.busy ||
+    (!pending && !!tasksSendReason()) ||
     !!currentPreviewAnnotations()?.busy ||
     (!!currentPreviewAnnotations()?.loadError && !pending) ||
     !!currentGithubWrite()?.blocksExecution ||
@@ -4861,6 +5126,10 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
         previewAnnotationKey(annotationDelivery.submission.target))
   )
     throw new Error('指令标注与当前执行范围不匹配。');
+  const taskController = currentTasks(),
+    retrying = !!pending,
+    taskSubmission =
+      m.kind === 'turn' && !!(taskController?.delivery || (!retrying && taskController?.enabled));
   const creatingSession = !sessionId;
   pending = m;
   pendingAnnotationDelivery = annotationDelivery;
@@ -4868,17 +5137,19 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
   updateComposer();
   let durable = false;
   try {
-    await cache.write(
-      pendingKey,
-      annotationDelivery
-        ? pendingPreviewMutationSchema.parse({
-            previewDraftVersion: 1,
-            mutation: m,
-            annotationDelivery,
-          })
-        : m,
-    );
+    const pendingValue = annotationDelivery
+      ? pendingPreviewMutationSchema.parse({
+          previewDraftVersion: 1,
+          mutation: m,
+          annotationDelivery,
+        })
+      : m;
+    if (taskSubmission) {
+      if (!retrying) await taskController!.stageSubmission(m, pendingKey, pendingValue);
+    } else await cache.write(pendingKey, pendingValue);
     durable = true;
+    if (taskSubmission && !(await taskController!.verifySubmission(m)))
+      throw new Error('原任务授权无法恢复。');
     const confirmation = await api(endpoint, m);
     if (
       confirmation?.accepted !== true ||
@@ -4886,6 +5157,10 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
       confirmation.operationId !== m.operationId
     )
       throw new Error('指令尚未获得有效的主机确认，请使用原请求手动重试。');
+    if (taskSubmission) {
+      if (generation !== sessionGeneration) return;
+      await taskController!.confirmSubmission(m.operationId);
+    }
     if (annotationDelivery) {
       // Keep the original outbox until its own page can finish local confirmation cleanup.
       if (generation !== sessionGeneration) return;
@@ -4911,8 +5186,13 @@ async function submit(m: Mutation, annotations?: PreviewAnnotationSubmission) {
   } catch (e) {
     // Only an explicit rejection from the host proves this operation was never staged.
     // Relay offline/timeout errors cannot invalidate the original operation id.
-    if (!durable || (e instanceof ApiError && e.rejected)) {
-      await cache.write(pendingKey, undefined);
+    if (
+      (!durable && !retrying) ||
+      (e instanceof ApiError && e.rejected && !(taskSubmission && retrying))
+    ) {
+      if (taskSubmission && durable && generation === sessionGeneration)
+        await taskController!.confirmSubmission(m.operationId, false);
+      if (!taskSubmission || durable) await cache.write(pendingKey, undefined);
       if (generation === sessionGeneration) pending = undefined;
       if (generation === sessionGeneration) pendingAnnotationDelivery = undefined;
     }
@@ -4938,6 +5218,7 @@ async function sendTurn() {
     await submit(pending);
     return;
   }
+  if (tasksSendReason()) throw new Error(tasksSendReason());
   if (sessionPersistenceError) throw new Error(sessionPersistenceError);
   if (sessionAgentError) throw new Error(sessionAgentError);
   if (interactionLoadError) throw new Error(interactionLoadError);
@@ -4962,17 +5243,20 @@ async function sendTurn() {
       agent: newAgentId,
     });
   if (generation !== sessionGeneration) return;
-  const mutation = await prepareTurnMutation(prompt, attachmentController);
+  const mutation = await prepareTurnMutation(prompt, attachmentController, true);
   if (!mutation || generation !== sessionGeneration) return;
   await submit(mutation, composed?.submission.selection.length ? composed.submission : undefined);
 }
 async function prepareTurnMutation(
   prompt: string,
   attachmentController?: AttachmentDraftController,
+  includeComposerSelections = false,
 ): Promise<Mutation | undefined> {
   // Only the composer selects its attachment draft for this turn. Continuing an
   // attention item sends its reviewed text and preserves separate composer attachments and annotations.
   const generation = sessionGeneration;
+  if (currentTasks()?.busy || tasksSendReason())
+    throw new Error(tasksSendReason() || '请先确认当前任务操作。');
   if (roleApplying) throw new Error('请等待角色草稿保存完成。');
   if (skillsDraftAppending) throw new Error('请等待 Skill 说明保存到草稿。');
   const annotationStore = currentPreviewAnnotations();
@@ -5011,6 +5295,10 @@ async function prepareTurnMutation(
   if (!agent) throw new Error('这台电脑还没有可用的 Agent 配置');
   if (!runOptionsReady || runOptionsLoading) throw new Error('正在读取运行设置，请稍后发送');
   const selectedConfig = resolveRunSelection(runSelection, agent.runConfig);
+  const taskController = currentTasks(),
+    taskReview = includeComposerSelections ? taskController?.enabled : undefined;
+  if (taskReview && (meta?.taskOrigin || taskReview.parentAgentId !== agent.id))
+    throw new Error('请重新审查当前父 Agent 的任务计划。');
   if (attachmentController?.items.length) {
     if (attachmentController.items.some((item) => item.pending))
       throw new Error('附件结果待确认，请先手动重试。');
@@ -5036,6 +5324,11 @@ async function prepareTurnMutation(
     }
     if (generation !== sessionGeneration) return;
   }
+  if (
+    taskReview &&
+    (taskController !== currentTasks() || taskController?.enabled?.reviewId !== taskReview.reviewId)
+  )
+    throw new Error('任务计划已改变，请重新审查。');
   const attached = attachmentController?.references() ?? [];
   const candidate = new LoroDoc();
   candidate.import(doc.export({ mode: 'snapshot' }));
@@ -5054,7 +5347,8 @@ async function prepareTurnMutation(
     cliType: agent.cliType,
     agentType: agent.agentType,
     mcpServerIds: [],
-    taskToolsEnabled: false,
+    taskToolsEnabled: !!taskReview,
+    ...(taskReview ? { taskPlan: taskReview.plan } : {}),
     ...(attached.length ? { attachments: attached } : {}),
   };
   view.setState((s: any) => {
@@ -5153,6 +5447,7 @@ window.addEventListener('online', () => {
   }
 });
 window.addEventListener('offline', () => {
+  currentTasks()?.invalidate('当前离线，请手动重新读取任务状态。');
   invalidateRoles('当前离线，请连接后手动重新读取角色。');
   invalidateSkills('当前离线；Skills 正文已清除，连接后可手动重新读取。');
   void currentProjectPreview()?.dispose();

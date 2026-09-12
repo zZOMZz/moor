@@ -175,6 +175,7 @@ type Host = {
   store: RuntimeStore;
   active: ReadonlyMap<string, unknown>;
   settlementFailures: ReadonlyMap<string, unknown>;
+  taskManager?: { allowsGit(sessionId: string, operationId: string): boolean };
   ensureConnected(): void;
   projectRootLease(input: ContentScope, localProjectId?: string): RootLease;
   serial<T>(id: string, work: () => Promise<T>): Promise<T>;
@@ -320,6 +321,11 @@ export class SessionExecutionManager {
   }
   async action(input: GitAction, localProjectId?: string): Promise<GitActionReceipt> {
     const action = gitActionSchema.parse(input);
+    assert(
+      this.host.taskManager?.allowsGit(action.sessionId, action.operationId) !== false,
+      409,
+      '协作子任务的目录操作尚未解除保护',
+    );
     assert(
       this.host.store.forks.allowsGit(action.sessionId, action.operationId),
       409,

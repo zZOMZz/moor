@@ -40,6 +40,16 @@ export type AgentInteractionCapabilities = {
 export type AgentSteerResult =
   | { outcome: 'injected' }
   | { outcome: 'promptRequired'; reason: 'noRunningTurn' };
+// Ephemeral execution-host capability; never persisted in AgentConfig or a
+// shared user input. The caller owns the service and revokes it with the turn.
+export type AgentOpenOptions = {
+  taskTools?: {
+    url: string;
+    token: string;
+    assertCurrent(): void;
+    onPromptDispatch(): void;
+  };
+};
 export type AgentSession = {
   id: string;
   capabilities: RunCapabilities;
@@ -62,5 +72,6 @@ export type AgentDriver = {
     cwd: string,
     nativeId: string | undefined,
     callbacks: AgentCallbacks,
+    options?: AgentOpenOptions,
   ): Promise<AgentSession>;
 };

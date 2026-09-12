@@ -696,6 +696,28 @@ function attentionContext(f: ReturnType<typeof fixture>, sessionId?: string): At
   };
 }
 
+function attentionAuthority(context: AttentionContext) {
+  return {
+    serverOrigin: 'https://synthetic.invalid',
+    ownerId: context.actor.accountId,
+    deviceId: context.executionDeviceId,
+    current() {},
+  };
+}
+function invalidAttentionAuthorities(context: AttentionContext) {
+  const lease = attentionAuthority(context);
+  return [
+    { ...lease, ownerId: 'another-account' },
+    { ...lease, deviceId: 'another-device' },
+    {
+      ...lease,
+      current() {
+        throw new Error('synthetic expired authority');
+      },
+    },
+  ];
+}
+
 test('attention approval reads never approve; exact scoped retry responds only once', async (t) => {
   const f = fixture();
   t.after(f.close);
@@ -736,7 +758,17 @@ test('attention approval reads never approve; exact scoped retry responds only o
     strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'pending');
     busy.delete(item.sessionId);
   }
-  const receipt = await f.host.attentionPermission(context, item.itemId, choice);
+  for (const lease of invalidAttentionAuthorities(context)) {
+    await strict.rejects(f.host.attentionPermission(context, item.itemId, choice, lease));
+    strict.equal(f.journal.has(choice.operationId), false);
+    strict.equal(f.host.active.get(item.sessionId)!.permissions.size, 1);
+  }
+  const receipt = await f.host.attentionPermission(
+    context,
+    item.itemId,
+    choice,
+    attentionAuthority(context),
+  );
   strict.deepEqual(await waiting, { outcome: { outcome: 'selected', optionId: 'allow' } });
   strict.deepEqual(await f.host.attentionPermission(context, item.itemId, choice), receipt);
   await strict.rejects(
@@ -810,6 +842,12 @@ test('attention continuation commits the new turn and original disposition atomi
     strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
     busy.delete(item.sessionId);
   }
+  for (const lease of invalidAttentionAuthorities(context)) {
+    await strict.rejects(f.host.attentionContinue(context, item.itemId, continuation, lease));
+    strict.equal(f.journal.has(continuation.mutation.operationId), false);
+    strict.equal(f.dispatches(), 1);
+    strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
+  }
   const busyRoots = (f.host.githubWriteManager as unknown as { busyRoots: Set<string> }).busyRoots;
   busyRoots.add(ws.projects[0].rootPath);
   await strict.rejects(f.host.attentionContinue(context, item.itemId, continuation), /准备提交/);
@@ -828,7 +866,12 @@ test('attention continuation commits the new turn and original disposition atomi
   strict.equal(doc.getState().history.length, 2);
   doc.dispose();
   f.journal.db.exec('DROP TRIGGER fail_attention_receipt');
-  const receipt = await f.host.attentionContinue(context, item.itemId, continuation);
+  const receipt = await f.host.attentionContinue(
+    context,
+    item.itemId,
+    continuation,
+    attentionAuthority(context),
+  );
   strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'continued');
   strict.deepEqual(await f.host.attentionContinue(context, item.itemId, continuation), receipt);
   await strict.rejects(f.host.mutate(continuation.mutation));

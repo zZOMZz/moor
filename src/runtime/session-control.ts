@@ -129,6 +129,11 @@ export class SessionControlManager {
       if (known) return known.status === 'stopping' ? this.settleStop(action, original) : known;
       if (action.action === 'create') {
         assert(
+          this.host.taskManager.allowsCreate(action.sessionId, action.operationId),
+          409,
+          '协作子任务槽位只允许原授权创建',
+        );
+        assert(
           !this.host.forkManager.busy.has(action.sessionId) &&
             !this.host.store.forks.blocked(action.sessionId) &&
             !this.host.executionManager.busy.has(action.sessionId),
@@ -162,6 +167,7 @@ export class SessionControlManager {
         doc.commit();
         const next = Flock.fromFile(this.host.meta.exportFile()),
           now = new Date().toISOString();
+        const taskOrigin = this.host.store.tasks.origin(context.lease);
         putMeta(next, 'session-' + action.sessionId, {
           id: action.sessionId,
           machineId: action.machineId,
@@ -178,6 +184,7 @@ export class SessionControlManager {
           isPinned: false,
           metadataRevision: 0,
           project: { kind: 'local', localProjectId: action.localProjectId },
+          ...(taskOrigin ? { taskOrigin } : {}),
         });
         const result = receipt(action, original, 'accepted'),
           previous = this.host.store.meta;

@@ -18,6 +18,7 @@ import { SessionForkStore } from './session-fork';
 import { SessionGithubStore } from './session-github';
 import { SessionAgentStore, agentConfigSnapshot } from './session-agent';
 import type { AgentConfig } from './agent';
+import { TaskStore } from './session-tasks';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -43,6 +44,7 @@ export class RuntimeStore {
   forks: SessionForkStore;
   github: SessionGithubStore;
   agents: SessionAgentStore;
+  tasks: TaskStore;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
@@ -86,6 +88,7 @@ export class RuntimeStore {
     this.forks = new SessionForkStore(this.journal.db);
     this.github = new SessionGithubStore(this.journal.db);
     this.agents = new SessionAgentStore(this.journal.db);
+    this.tasks = new TaskStore(this.journal.db, options);
     this.executions = new SessionExecutionStore(
       this.journal.db,
       options.worktreeRoot ??

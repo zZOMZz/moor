@@ -57,6 +57,14 @@ import { ROLE_FEATURE, type RolesRead, type RolesActionRequest } from '../role-p
 import { SessionRolesManager } from '../runtime/session-roles';
 import { SessionControlManager } from '../runtime/session-control';
 import { SESSION_CONTROL_FEATURE } from '../session-control-protocol';
+import { SessionTaskManager } from '../runtime/session-tasks';
+import { createTaskMcp } from '../runtime/task-mcp';
+import {
+  SESSION_TASKS_FEATURE,
+  taskPlanSchema,
+  type TaskPlan,
+  type TaskAuthorityLease,
+} from '../task-protocol';
 import {
   normalizeAgentContent,
   normalizeAgentToolContent,
@@ -166,6 +174,12 @@ type Active = {
   terminal?: { status: string; message?: string };
   finalizing?: Promise<void>;
   attentionSettlementFailed?: boolean;
+  task?: {
+    grantId: string;
+    authority: TaskAuthorityLease;
+    promptStarted: boolean;
+    server?: Awaited<ReturnType<typeof createTaskMcp>>;
+  };
   permissions: Map<
     string,
     { options: any[]; toolCall: unknown; resolve: (value: { outcome: PermissionOutcome }) => void }
@@ -189,6 +203,7 @@ export class HostWorkspace {
   skillsManager: SessionSkillsManager;
   rolesManager: SessionRolesManager;
   controlManager: SessionControlManager;
+  taskManager: SessionTaskManager;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -218,6 +233,7 @@ export class HostWorkspace {
     this.skillsManager = new SessionSkillsManager(this, skills);
     this.rolesManager = new SessionRolesManager(this);
     this.controlManager = new SessionControlManager(this);
+    this.taskManager = new SessionTaskManager(this);
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -265,6 +281,7 @@ export class HostWorkspace {
       ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
       SESSION_CONTROL_FEATURE,
+      SESSION_TASKS_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -279,6 +296,7 @@ export class HostWorkspace {
           this.machine.get(['disabledAgent', a.id]) !== true,
       )
       .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
+    this.taskManager.invalidateUnavailable();
     this.catalogue();
   }
   agentDescriptor(a: AgentConfig) {
@@ -661,6 +679,12 @@ export class HostWorkspace {
     }
   }
   async forkSession(input: SessionFork, localProjectId?: string) {
+    assert(
+      this.taskManager.allowsGit(input.sessionId, input.operationId) &&
+        this.taskManager.allowsCreate(input.childSessionId, input.operationId),
+      409,
+      '协作子任务尚未结束或原操作需要核查，不能 Fork',
+    );
     try {
       const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
         this.forkManager.action(input, localProjectId),
@@ -1224,10 +1248,12 @@ export class HostWorkspace {
     input: AttentionContext,
     itemId: string,
     inputRequest: AttentionContinue,
+    authority?: TaskAuthorityLease,
   ) {
     const request = attentionContinueSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
     this.checkExecutionIdle(context.sessionId!);
+    this.checkAttentionAuthority(context, authority);
     assert(
       request.mutation.sessionId === context.sessionId &&
         request.mutation.workspaceId === context.runtimeWorkspaceId,
@@ -1236,6 +1262,7 @@ export class HostWorkspace {
     );
     return this.serial(context.sessionId!, async () => {
       this.attentionTarget(context, true);
+      this.checkAttentionAuthority(context, authority);
       const previous = this.store.attention.lookupReceipt(
         context,
         itemId,
@@ -1245,10 +1272,16 @@ export class HostWorkspace {
       );
       if (previous) return previous;
       this.store.attention.prepareContinue(context, itemId, request);
-      const result = await this.mutateAccepted(request.mutation, context.localProjectId, {
-        binding: this.attentionBinding(context, itemId, 'continue', request),
-        commit: (userTurnId) => this.store.attention.continue(context, itemId, request, userTurnId),
-      });
+      const result = await this.mutateAccepted(
+        request.mutation,
+        context.localProjectId,
+        {
+          binding: this.attentionBinding(context, itemId, 'continue', request),
+          commit: (userTurnId) =>
+            this.store.attention.continue(context, itemId, request, userTurnId),
+        },
+        authority,
+      );
       this.attentionChanged(context.actor, context.sessionId!);
       return result;
     });
@@ -1257,12 +1290,15 @@ export class HostWorkspace {
     input: AttentionContext,
     itemId: string,
     inputRequest: AttentionPermission,
+    authority?: TaskAuthorityLease,
   ) {
     const request = attentionPermissionSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
     this.checkExecutionIdle(context.sessionId!);
+    this.checkAttentionAuthority(context, authority);
     return this.serial(context.sessionId!, async () => {
       this.attentionTarget(context, true);
+      this.checkAttentionAuthority(context, authority);
       const previous = this.store.attention.lookupReceipt(
         context,
         itemId,
@@ -1310,18 +1346,33 @@ export class HostWorkspace {
         requestId: request.requestId,
         update: delta(candidate, before),
       };
-      return this.mutateAccepted(mutation, context.localProjectId, {
-        binding: this.attentionBinding(context, itemId, 'permission', request),
-        commit: () =>
-          this.store.attention.acceptReceipt(
-            context,
-            itemId,
-            'permission',
-            request,
-            request.operationId,
-          ),
-      });
+      return this.mutateAccepted(
+        mutation,
+        context.localProjectId,
+        {
+          binding: this.attentionBinding(context, itemId, 'permission', request),
+          commit: () =>
+            this.store.attention.acceptReceipt(
+              context,
+              itemId,
+              'permission',
+              request,
+              request.operationId,
+            ),
+        },
+        authority,
+      );
     });
+  }
+  private checkAttentionAuthority(context: AttentionContext, authority?: TaskAuthorityLease) {
+    if (!authority) return;
+    assert(
+      authority.ownerId === context.actor.accountId &&
+        authority.deviceId === context.executionDeviceId,
+      403,
+      '协作授权不属于当前待办账号或设备',
+    );
+    authority.current();
   }
   private checkExecutionIdle(sessionId: string) {
     assert(
@@ -1331,9 +1382,11 @@ export class HostWorkspace {
     );
     assert(!this.executionManager.busy.has(sessionId), 409, '此会话正在处理 Git 操作，指令未送达');
   }
-  async mutate(m: Mutation, localProjectId?: string) {
+  async mutate(m: Mutation, localProjectId?: string, authority?: TaskAuthorityLease) {
     this.checkExecutionIdle(m.sessionId);
-    return this.serial(m.sessionId, () => this.mutateAccepted(m, localProjectId));
+    return this.serial(m.sessionId, () =>
+      this.mutateAccepted(m, localProjectId, undefined, authority),
+    );
   }
   private async mutateAccepted(
     m: Mutation,
@@ -1342,8 +1395,10 @@ export class HostWorkspace {
       binding: unknown;
       commit: (userTurnId: string) => AttentionReceipt;
     },
+    authority?: TaskAuthorityLease,
   ) {
     this.ensureConnected();
+    authority?.current();
     this.checkExecutionIdle(m.sessionId);
     assert(
       m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
@@ -1366,6 +1421,12 @@ export class HostWorkspace {
       this.checkProject(m.sessionId, localProjectId);
     if (record && ['accepted', 'operation-abandoned'].includes(record.phase))
       return JSON.parse(record.result);
+    if (m.kind === 'turn')
+      assert(
+        this.taskManager.allowsMutation(m.sessionId, m.operationId),
+        409,
+        '协作子任务的原操作或授权尚未结束，请先核查',
+      );
     assert(
       !this.settlementFailures.has(m.sessionId),
       409,
@@ -1417,6 +1478,17 @@ export class HostWorkspace {
     // Reject a mismatched restored context before confirming a new turn.
     this.store.nativeSession(m.sessionId, execution, agent.id);
     const inputView = mirror(validated.doc, m.sessionId);
+    const inputConfig =
+      m.kind === 'turn'
+        ? (inputView.getState().history.at(-1)!.inputConfig as { taskPlan?: TaskPlan })
+        : undefined;
+    const taskPlan = inputConfig?.taskPlan ? taskPlanSchema.parse(inputConfig.taskPlan) : undefined;
+    if (taskPlan) {
+      assert(authority, 409, '子任务授权需要当前账号与设备连接，请升级中转并重新发送');
+      authority.current();
+      const { current: _current, ...identity } = authority;
+      this.taskManager.validatePlan(attachmentScope, taskPlan, identity);
+    }
     const attachments: AttachmentReference[] =
       m.kind === 'turn'
         ? ((
@@ -1452,6 +1524,7 @@ export class HostWorkspace {
     const previousMeta = this.store.meta;
     let result: ReturnType<typeof journal.accept>;
     const assistantId = randomUUID();
+    let taskGrantId: string | undefined;
     if (m.kind === 'turn') {
       const view = mirror(validated.doc, m.sessionId);
       view.setState((s) => {
@@ -1480,7 +1553,19 @@ export class HostWorkspace {
     }
     try {
       result = this.store.transaction(() => {
+        authority?.current();
         journal.stage(this.workspace.id, m, turnId, undefined, effect?.binding);
+        if (taskPlan) {
+          authority!.current();
+          const { current: _current, ...identity } = authority!;
+          taskGrantId = this.store.tasks.prepareGrant(
+            attachmentScope,
+            turnId,
+            assistantId,
+            taskPlan,
+            identity,
+          ).id;
+        }
         this.store.agents.bind(attachmentScope, agent);
         this.store.reserveAttachmentScope(attachmentScope);
         for (const attachment of attachments)
@@ -1530,6 +1615,9 @@ export class HostWorkspace {
         agent,
         snapshotIssues: [],
         permissions: new Map(),
+        ...(taskGrantId
+          ? { task: { grantId: taskGrantId, authority: authority!, promptStarted: false } }
+          : {}),
       };
       this.active.set(m.sessionId, run);
       run.done = this.execute(m.sessionId, run).catch((error) => {
@@ -1645,93 +1733,134 @@ export class HostWorkspace {
       const project = this.workspace.projects.find(
         (p) => p.id === (meta.project as any).localProjectId,
       )!;
+      let taskTools: ReturnType<SessionTaskManager['activate']> | undefined;
+      if (run.task) {
+        const task = run.task;
+        taskTools = this.taskManager.activate(
+          task.grantId,
+          () => {
+            task.authority.current();
+            assert(this.boundRun(id, run, this.runBinding(id, run)), 409, '父任务活动回合已结束');
+          },
+          {
+            canDispatch: () =>
+              assert(task.promptStarted, 409, '父任务尚未发送指令，协作工具暂不可执行'),
+          },
+        );
+        task.server = await createTaskMcp({ current: taskTools.current, call: taskTools.call });
+        taskTools.current();
+      }
       const session = await this.driver
-        .open(agent, run.rootPath, this.store.nativeSession(id, run.execution, agent.id), {
-          update: (value) => this.update(id, run, value),
-          event: (event, binding) => this.sessionEvent(id, run, event, binding),
-          forkAnchor: (anchor, binding) => {
-            if (!this.boundRun(id, run, binding)) return;
-            try {
-              if (anchor.sourceNativeId === this.store.nativeSession(id, run.execution))
-                this.store.transaction(() =>
-                  this.store.forks.saveAnchor(
-                    run.projectScope,
-                    run.execution,
-                    run.turnId,
-                    anchor,
-                    agent,
-                  ),
-                );
-            } catch {
-              /* Missing or unpersisted anchors remain unavailable for a turn cutoff. */
-            }
-          },
-          question: (input) => {
-            const request = questionRequestSchema.parse(input);
-            const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
-            return this.boundRun(id, run, {
-              workspaceId,
-              localProjectId,
-              sessionId,
-              expectedTurnId,
-            })
-              ? this.interactions.receiveQuestion(request)
-              : Promise.resolve(cancelledQuestionAnswer(request));
-          },
-          permission: (value) => {
-            if (!this.boundRun(id, run, this.runBinding(id, run)))
-              return Promise.resolve({ outcome: { outcome: 'cancelled' } });
-            const requestId = randomUUID();
-            return new Promise((resolve) => {
-              const request = structuredClone(value);
-              run.permissions.set(requestId, {
-                options: request.options,
-                toolCall: request.toolCall,
-                resolve,
-              });
+        .open(
+          agent,
+          run.rootPath,
+          this.store.nativeSession(id, run.execution, agent.id),
+          {
+            update: (value) => this.update(id, run, value),
+            event: (event, binding) => this.sessionEvent(id, run, event, binding),
+            forkAnchor: (anchor, binding) => {
+              if (!this.boundRun(id, run, binding)) return;
               try {
-                this.edit(
-                  id,
-                  run,
-                  (turn) => {
-                    let item = turn.items.findLast(
-                      (i: any) =>
-                        i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
-                    );
-                    // A tool may ask again or have concurrent permission requests.
-                    // Keep every request addressable by its own immutable id.
-                    if (!item || item.permissionRequest) turn.items.push((item = {}));
-                    Object.assign(item, request.toolCall, {
-                      type: 'tool_call',
-                      permissionRequest: { requestId, options: request.options },
-                    });
-                  },
-                  false,
-                  () => {
-                    this.store.notifications.record(
-                      { ...run.projectScope, turnId: run.turnId },
-                      'approval-required',
-                      requestId,
-                    );
-                    this.store.attention.recordPermission({
-                      sessionId: id,
-                      assistantTurnId: run.turnId,
-                      userTurnId: run.userTurnId,
-                      localProjectId: project.id,
-                      requestId,
-                      summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
-                    });
-                  },
-                );
-              } catch (error) {
-                run.permissions.delete(requestId);
-                resolve({ outcome: { outcome: 'cancelled' } });
-                throw error;
+                if (anchor.sourceNativeId === this.store.nativeSession(id, run.execution))
+                  this.store.transaction(() =>
+                    this.store.forks.saveAnchor(
+                      run.projectScope,
+                      run.execution,
+                      run.turnId,
+                      anchor,
+                      agent,
+                    ),
+                  );
+              } catch {
+                /* Missing or unpersisted anchors remain unavailable for a turn cutoff. */
               }
-            });
+            },
+            question: (input) => {
+              const request = questionRequestSchema.parse(input);
+              const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
+              return this.boundRun(id, run, {
+                workspaceId,
+                localProjectId,
+                sessionId,
+                expectedTurnId,
+              })
+                ? this.interactions.receiveQuestion(request)
+                : Promise.resolve(cancelledQuestionAnswer(request));
+            },
+            permission: (value) => {
+              if (!this.boundRun(id, run, this.runBinding(id, run)))
+                return Promise.resolve({ outcome: { outcome: 'cancelled' } });
+              const requestId = randomUUID();
+              return new Promise((resolve) => {
+                const request = structuredClone(value);
+                run.permissions.set(requestId, {
+                  options: request.options,
+                  toolCall: request.toolCall,
+                  resolve,
+                });
+                try {
+                  this.edit(
+                    id,
+                    run,
+                    (turn) => {
+                      let item = turn.items.findLast(
+                        (i: any) =>
+                          i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
+                      );
+                      // A tool may ask again or have concurrent permission requests.
+                      // Keep every request addressable by its own immutable id.
+                      if (!item || item.permissionRequest) turn.items.push((item = {}));
+                      Object.assign(item, request.toolCall, {
+                        type: 'tool_call',
+                        permissionRequest: { requestId, options: request.options },
+                      });
+                    },
+                    false,
+                    () => {
+                      this.store.notifications.record(
+                        { ...run.projectScope, turnId: run.turnId },
+                        'approval-required',
+                        requestId,
+                      );
+                      this.store.attention.recordPermission({
+                        sessionId: id,
+                        assistantTurnId: run.turnId,
+                        userTurnId: run.userTurnId,
+                        localProjectId: project.id,
+                        requestId,
+                        summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
+                      });
+                    },
+                  );
+                } catch (error) {
+                  run.permissions.delete(requestId);
+                  resolve({ outcome: { outcome: 'cancelled' } });
+                  throw error;
+                }
+              });
+            },
           },
-        })
-        .catch(() => {
+          run.task?.server && taskTools
+            ? {
+                taskTools: {
+                  ...run.task.server.endpoint,
+                  assertCurrent: taskTools.current,
+                  onPromptDispatch: () => {
+                    taskTools!.current();
+                    run.task!.promptStarted = true;
+                  },
+                },
+              }
+            : undefined,
+        )
+        .catch((error) => {
+          if (
+            run.task &&
+            error instanceof AppError &&
+            error.status === 409 &&
+            error.message === '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务'
+          )
+            throw error;
           throw new AppError(502, 'Agent 启动或恢复失败，请在执行电脑检查本机配置');
         });
       run.session = session;
@@ -1756,8 +1885,11 @@ export class HostWorkspace {
       });
       const attachmentData = this.attachmentData(attachmentScope, input.attachments ?? []);
       this.assertAttachmentCapabilities(input.attachments ?? [], session.inputCapabilities);
+      const effectiveInput = taskTools
+        ? { ...input, prompt: String(input.prompt ?? '') + '\n\n' + taskTools.promptContext }
+        : input;
       await session.prompt(
-        attachmentData.length ? { ...input, attachmentData } : input,
+        attachmentData.length ? { ...effectiveInput, attachmentData } : effectiveInput,
         this.runBinding(id, run),
       );
       run.terminal ??= { status: 'handled' };
@@ -1771,6 +1903,13 @@ export class HostWorkspace {
       run.permissions.clear();
       run.stopped = true;
       this.interactions.cancelPending(id, run);
+      if (run.task) {
+        await run.task.server?.close().catch(() => {});
+        if (!this.closed)
+          await this.taskManager
+            .endParent(run.projectScope, run.turnId, 'canceled')
+            .catch(() => {});
+      }
       await Promise.resolve(run.session?.close()).catch(() => {});
       if (!this.closed) {
         try {
@@ -1903,6 +2042,27 @@ export class HostWorkspace {
   async cancel(sessionId: string, turnId: string, localProjectId?: string) {
     return this.serial(sessionId, () => this.cancelLocked(sessionId, turnId, localProjectId));
   }
+  // Internal grant revocation must still stop its exact turn after a project is unregistered.
+  async cancelTaskTurn(scope: AttachmentScope, assistantTurnId: string, userTurnId: string) {
+    await this.serial(scope.sessionId, async () => {
+      const run = this.active.get(scope.sessionId);
+      if (
+        !run ||
+        run.stopped ||
+        run.turnId !== assistantTurnId ||
+        run.userTurnId !== userTurnId ||
+        !isDeepStrictEqual(run.projectScope, scope)
+      )
+        return;
+      run.terminal = { status: 'canceled' };
+      run.stopped = true;
+      this.interactions.cancelPending(scope.sessionId, run);
+      for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
+      await run.session?.cancel().catch(() => {});
+      await Promise.resolve(run.session?.close()).catch(() => {});
+      await run.done;
+    });
+  }
   sessionChanged(sessionId: string) {
     this.changed(sessionId);
   }
@@ -1933,6 +2093,12 @@ export class HostWorkspace {
   }
   close() {
     if (this.closed) return;
+    try {
+      this.taskManager.close();
+    } catch {
+      // Persistence failure must not retain live capabilities or Agent processes.
+    }
+    for (const run of this.active.values()) void run.task?.server?.close().catch(() => {});
     void this.previewManager.closeAll().catch(() => {});
     const errors: unknown[] = [];
     for (const [id, run] of this.active) {
