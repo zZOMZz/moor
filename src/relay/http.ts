@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { serveStatic } from './static';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { Store, type Device } from './accounts';
 import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
@@ -12,6 +13,13 @@ import {
   projectFileReadSchema,
   projectFileResultSchema,
 } from '../content-protocol';
+import {
+  ATTACHMENTS_FEATURE,
+  attachmentActionSchema,
+  attachmentReadSchema,
+  attachmentReceiptSchema,
+  attachmentContentSchema,
+} from '../attachment-protocol';
 export function createApp(
   store: Store,
   options: { origin: string; setupToken: string; publicDir?: string; localOnly?: boolean },
@@ -64,7 +72,7 @@ export function createApp(
     for (const [id, pending] of commands)
       if (
         pending.device === device &&
-        pending.method === 'file-content' &&
+        ['file-content', 'read-attachment'].includes(pending.method) &&
         (!socket || pending.socket === socket)
       ) {
         clearTimeout(pending.timer);
@@ -427,6 +435,86 @@ export function createApp(
               502,
               '执行主机返回的文件内容与请求不匹配',
             );
+            return json(res, 200, result);
+          }
+          if (
+            req.method === 'POST' &&
+            ((parts[5] === 'attachment-actions' && parts.length === 6) ||
+              (parts[5] === 'attachments' && parts[6] === 'read' && parts.length === 7))
+          ) {
+            const action = parts[5] === 'attachment-actions';
+            const input = action
+              ? attachmentActionSchema.parse(await body(req, 12 * 1024 * 1024))
+              : attachmentReadSchema.parse(await body(req, 16 * 1024));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '附件请求与项目副本不匹配',
+            );
+            assert(
+              runtime?.features?.includes(ATTACHMENTS_FEATURE),
+              409,
+              '请先升级执行电脑上的 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const raw = await request(
+              host.device_id,
+              action ? 'attachment-action' : 'read-attachment',
+              host.runtime_id,
+              input,
+              replica.local_id,
+            );
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            const current = store.catalog.replica(owner!, workspaceId, replica.id);
+            assert(
+              current.host.device_id === host.device_id &&
+                current.host.runtime_id === input.workspaceId &&
+                current.local_id === input.localProjectId,
+              409,
+              '附件请求的执行目标已变更',
+            );
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.features?.includes(ATTACHMENTS_FEATURE) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              '执行主机已不可达，请手动确认附件',
+            );
+            const parsed = action
+              ? attachmentReceiptSchema.safeParse(raw)
+              : attachmentContentSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行主机返回的附件确认无效');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId,
+              502,
+              '附件响应与请求范围不匹配',
+            );
+            if ('action' in input) {
+              assert(
+                'operationId' in result && result.operationId === input.operationId,
+                502,
+                '附件响应的操作编号不匹配',
+              );
+              if (input.action === 'upload')
+                assert(
+                  isDeepStrictEqual(result.attachment, input.attachment),
+                  502,
+                  '附件确认与上传内容不匹配',
+                );
+              else assert('removed' in result && result.removed === true, 502, '附件移除尚未确认');
+            } else
+              assert(
+                result.attachment?.attachmentId === input.attachmentId,
+                502,
+                '附件响应与请求不匹配',
+              );
             return json(res, 200, result);
           }
           if (parts[5] === 'cancel' && req.method === 'POST') {

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { id } from './protocol';
 
 // Content envelopes are versioned independently of the session document. Only
-// project-file reads are advertised in v1; references do not authorize a read.
+// each operation has its own advertised capability; references do not authorize a read.
 export const CONTENT_VERSION = 1;
 export const FILE_CONTENT_FEATURE = 'file-content-v1';
 export const CONTENT_LIMITS = {
@@ -11,6 +11,17 @@ export const CONTENT_LIMITS = {
   diffFiles: 500,
   pathLength: 4096,
 } as const;
+export function isCanonicalBase64(value: string) {
+  if (value.length % 4 !== 0) return false;
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const body = padding ? value.slice(0, -padding) : value;
+  if (/[^A-Za-z0-9+/]/.test(body)) return false;
+  const last = body.at(-1) ?? '';
+  return (
+    !padding ||
+    (padding === 2 ? 'AQgw'.includes(last) && !!last : 'AEIMQUYcgkosw048'.includes(last) && !!last)
+  );
+}
 export const contentVersionSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const projectFilePathSchema = z
   .string()
@@ -54,7 +65,7 @@ const fileResponseBase = contentScopeSchema.extend({
 const base64Schema = z
   .string()
   .max(4 * Math.ceil(CONTENT_LIMITS.fileBytes / 3))
-  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$/);
+  .refine(isCanonicalBase64);
 export const projectFileResultSchema = z
   .discriminatedUnion('status', [
     fileResponseBase
@@ -71,8 +82,8 @@ export const projectFileResultSchema = z
     '内容字节数不匹配',
   );
 
-// Reserved contracts for M2.2/M2.3. No upload, attachment execution or saved-diff
-// endpoint is enabled by defining these types. The host must grant scoped access.
+// References describe immutable content, while the host grants scoped access
+// through the separately advertised attachment and saved-diff operations.
 export const attachmentReferenceSchema = z
   .object({
     contentVersion: z.literal(CONTENT_VERSION),

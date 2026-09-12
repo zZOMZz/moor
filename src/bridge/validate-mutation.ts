@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { resolveRunSelection, selectionFromInput } from '../run-config';
 import { assert, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '../model';
+import { promptAttachmentsSchema } from '../attachment-protocol';
 const clone = (source: LoroDoc) => {
   const d = new LoroDoc();
   d.import(source.export({ mode: 'snapshot' }));
@@ -113,12 +114,16 @@ export function validateMutation(
       400,
       '用户回合不匹配',
     );
+    const attachments = promptAttachmentsSchema.parse(turn.inputConfig?.attachments ?? []);
     assert(
       turn.finished === true &&
         turn.status === 'pending' &&
         !turn.read &&
         !turn.userTurnId &&
-        isDeepStrictEqual(turn.items, [{ type: 'text', text: turn.inputConfig?.prompt }]) &&
+        isDeepStrictEqual(turn.items, [
+          { type: 'text', text: turn.inputConfig?.prompt },
+          ...attachments.map((attachment) => ({ type: 'attachment', attachment })),
+        ]) &&
         turn.fileDiff === null,
       400,
       '用户回合包含不支持的状态或内容',
@@ -130,7 +135,7 @@ export function validateMutation(
     );
     assert(
       typeof turn.inputConfig.prompt === 'string' &&
-        turn.inputConfig.prompt.length > 0 &&
+        (turn.inputConfig.prompt.length > 0 || attachments.length > 0) &&
         turn.inputConfig.prompt.length <= 100000,
       400,
       '指令为空或过长',
@@ -139,6 +144,7 @@ export function validateMutation(
       Object.keys(turn.inputConfig).every((k) =>
         [
           'prompt',
+          'attachments',
           'cliType',
           'agentType',
           'mcpServerIds',

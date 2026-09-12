@@ -3,7 +3,22 @@ import { mkdirSync, chmodSync, statSync, realpathSync } from 'node:fs';
 import { dirname, basename } from 'node:path';
 import { Flock, LoroDoc, mirror, putMeta } from '../model';
 import { Journal } from '../bridge/journal';
-import type { RuntimeWorkspace } from '../protocol';
+import { assert, type RuntimeWorkspace } from '../protocol';
+import type { AttachmentReference, ContentScope } from '../content-protocol';
+
+export type AttachmentScope = ContentScope & { userId: string; machineId: string };
+export type StoredAttachment = {
+  reference: AttachmentReference;
+  bytes?: Buffer;
+  referenced: boolean;
+};
+const attachmentScopeValues = (scope: AttachmentScope) => [
+  scope.workspaceId,
+  scope.userId,
+  scope.machineId,
+  scope.localProjectId,
+  scope.sessionId,
+];
 
 // One host-owned database commits documents, metadata and delivery receipts together.
 export class RuntimeStore {
@@ -19,6 +34,16 @@ export class RuntimeStore {
       CREATE TABLE IF NOT EXISTS runtime_state(key TEXT PRIMARY KEY, value BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS session(id TEXT PRIMARY KEY, snapshot BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_session(id TEXT PRIMARY KEY, native_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS attachment_scope(
+        workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL,
+        project_id TEXT NOT NULL, session_id TEXT PRIMARY KEY
+      );
+      CREATE TABLE IF NOT EXISTS attachment(
+        workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL,
+        project_id TEXT NOT NULL, session_id TEXT NOT NULL, id TEXT NOT NULL,
+        reference TEXT NOT NULL, bytes BLOB, referenced INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(workspace_id,user_id,machine_id,project_id,session_id,id)
+      );
       PRAGMA user_version=1;
     `);
     const identity = this.load('identity');
@@ -114,6 +139,86 @@ export class RuntimeStore {
   }
   setNativeSession(id: string, nativeId: string) {
     this.journal.db.prepare('INSERT OR REPLACE INTO agent_session VALUES(?,?)').run(id, nativeId);
+  }
+  attachmentScopeMatches(scope: AttachmentScope) {
+    const row = this.journal.db
+      .prepare('SELECT * FROM attachment_scope WHERE session_id=?')
+      .get(scope.sessionId);
+    return (
+      !row ||
+      (row.workspace_id === scope.workspaceId &&
+        row.user_id === scope.userId &&
+        row.machine_id === scope.machineId &&
+        row.project_id === scope.localProjectId)
+    );
+  }
+  reserveAttachmentScope(scope: AttachmentScope) {
+    assert(this.attachmentScopeMatches(scope), 404, '附件会话不属于该项目副本');
+    this.journal.db
+      .prepare('INSERT OR IGNORE INTO attachment_scope VALUES(?,?,?,?,?)')
+      .run(...attachmentScopeValues(scope));
+  }
+  attachment(scope: AttachmentScope, id: string): StoredAttachment | undefined {
+    const row = this.journal.db
+      .prepare(
+        'SELECT reference,bytes,referenced FROM attachment WHERE workspace_id=? AND user_id=? AND machine_id=? AND project_id=? AND session_id=? AND id=?',
+      )
+      .get(...attachmentScopeValues(scope), id);
+    return row
+      ? {
+          reference: JSON.parse(String(row.reference)),
+          bytes: row.bytes === null ? undefined : Buffer.from(row.bytes as Uint8Array),
+          referenced: row.referenced === 1,
+        }
+      : undefined;
+  }
+  generatedAttachment(scope: AttachmentScope, reference: AttachmentReference) {
+    const row = this.journal.db
+      .prepare(
+        "SELECT reference FROM attachment WHERE workspace_id=? AND user_id=? AND machine_id=? AND project_id=? AND session_id=? AND referenced=1 AND bytes IS NOT NULL AND id GLOB 'attachment_*' AND json_extract(reference,'$.name')=? AND json_extract(reference,'$.content.version')=? AND json_extract(reference,'$.content.mediaType')=? LIMIT 1",
+      )
+      .get(
+        ...attachmentScopeValues(scope),
+        reference.name,
+        reference.content.version,
+        reference.content.mediaType,
+      );
+    return row ? (JSON.parse(String(row.reference)) as AttachmentReference) : undefined;
+  }
+  attachmentBytes(scope: AttachmentScope) {
+    return Number(
+      this.journal.db
+        .prepare(
+          'SELECT coalesce(sum(length(bytes)),0) AS size FROM attachment WHERE workspace_id=? AND user_id=? AND machine_id=? AND project_id=? AND session_id=?',
+        )
+        .get(...attachmentScopeValues(scope))!.size,
+    );
+  }
+  saveAttachment(scope: AttachmentScope, reference: AttachmentReference, bytes: Buffer) {
+    this.journal.db
+      .prepare(
+        'INSERT INTO attachment(workspace_id,user_id,machine_id,project_id,session_id,id,reference,bytes) VALUES(?,?,?,?,?,?,?,?)',
+      )
+      .run(
+        ...attachmentScopeValues(scope),
+        reference.attachmentId,
+        JSON.stringify(reference),
+        bytes,
+      );
+  }
+  removeAttachment(scope: AttachmentScope, id: string) {
+    this.journal.db
+      .prepare(
+        'UPDATE attachment SET bytes=NULL WHERE workspace_id=? AND user_id=? AND machine_id=? AND project_id=? AND session_id=? AND id=? AND referenced=0',
+      )
+      .run(...attachmentScopeValues(scope), id);
+  }
+  referenceAttachment(scope: AttachmentScope, id: string) {
+    this.journal.db
+      .prepare(
+        'UPDATE attachment SET referenced=1 WHERE workspace_id=? AND user_id=? AND machine_id=? AND project_id=? AND session_id=? AND id=? AND bytes IS NOT NULL',
+      )
+      .run(...attachmentScopeValues(scope), id);
   }
   close() {
     this.journal.close();

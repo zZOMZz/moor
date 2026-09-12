@@ -71,6 +71,7 @@ const detail = (id: string, label: string, body: string) =>
 const json = (value: unknown) =>
   typeof value === 'string' ? value : (JSON.stringify(value, null, 2) ?? '');
 function toolContent(c: any, key: string): string {
+  if (c.type === 'attachment') return renderAttachment(c.attachment);
   if (c.type === 'diff')
     return detail(
       key,
@@ -99,6 +100,7 @@ function toolContent(c: any, key: string): string {
   return '';
 }
 export function renderItem(item: any, finished: boolean, key: string): string {
+  if (item.type === 'attachment') return renderAttachment(item.attachment);
   if (item.type === 'text') return markdown(item.text ?? '');
   if (item.type === 'thought') return detail(key, '思考过程', markdown(item.text ?? ''));
   if (item.type === 'tool_call') {
@@ -131,6 +133,12 @@ export function renderItem(item: any, finished: boolean, key: string): string {
   }
   return '';
 }
+function renderAttachment(value: unknown): string {
+  const parsed = attachmentReferenceSchema.safeParse(value);
+  if (!parsed.success) return '<p class="subtle">附件记录不可用</p>';
+  const attachment = parsed.data;
+  return `<button type="button" class="attachment-card" data-open-attachment="${esc(attachment.attachmentId)}"><span>${esc(attachment.name)}<small>${esc(attachment.content.mediaType)} · ${formatAttachmentSize(attachment.content.byteLength)}</small></span><span aria-hidden="true">↗</span></button>`;
+}
 export function renderFileChanges(files: any, key: string): string {
   if (!Array.isArray(files) || !files.length) return '';
   return detail(
@@ -139,3 +147,5 @@ export function renderFileChanges(files: any, key: string): string {
     `<ul class="file-changes">${files.map((f) => `<li><span>${esc(f.filePath)}</span><span class="added-count">+${Number(f.add) || 0}</span><span class="removed-count">−${Number(f.del) || 0}</span></li>`).join('')}</ul>`,
   );
 }
+import { attachmentReferenceSchema } from '../content-protocol';
+import { formatAttachmentSize } from './attachments';

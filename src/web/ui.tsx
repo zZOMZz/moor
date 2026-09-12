@@ -30,10 +30,22 @@ import {
   SquarePen,
   X,
   RefreshCw,
+  Paperclip,
+  File,
+  Download,
+  Upload,
 } from 'lucide-react';
 import type { Workspace } from '../catalog';
 import type { RunCapabilities, RunSelection } from '../run-config';
 import type { SessionSummary } from './navigation';
+import type { AttachmentReference } from '../content-protocol';
+import {
+  attachmentPreviewUrl,
+  attachmentText,
+  formatAttachmentSize,
+  type AttachmentDraftItem,
+} from './attachments';
+import { markdown } from './content';
 
 // React owns the chrome and controls. The existing protocol controller owns only
 // the empty content slots, preserving the host-confirmed delivery state machine.
@@ -78,10 +90,12 @@ export function Shell({
   onSend,
   onDraft,
   onCancel,
+  onFiles,
 }: {
   onSend: () => void;
   onDraft: (value: string) => void;
   onCancel: () => void;
+  onFiles?: (files: globalThis.File[]) => void;
 }) {
   const [mobile, setMobile] = useState(() => matchMedia('(max-width: 760px)').matches);
   const [open, setOpen] = useState(false);
@@ -162,6 +176,9 @@ export function Shell({
             <div id="new-options">
               <Content name="#new-options" />
             </div>
+            <div id="attachment-controls">
+              <Content name="#attachment-controls" />
+            </div>
             <div className="prompt-surface">
               <label className="sr-only" htmlFor="prompt">
                 发送给 Agent 的指令
@@ -170,6 +187,17 @@ export function Shell({
                 id="prompt"
                 placeholder="描述接下来要做的事…"
                 rows={1}
+                onPaste={(e) => {
+                  if (!onFiles) return;
+                  const images = Array.from(e.clipboardData.items)
+                    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+                    .map((item) => item.getAsFile())
+                    .filter((file): file is globalThis.File => file !== null);
+                  if (images.length) {
+                    e.preventDefault();
+                    onFiles(images);
+                  }
+                }}
                 onChange={(e) => {
                   resizeComposer(e.currentTarget);
                   onDraft(e.currentTarget.value);
@@ -215,6 +243,7 @@ export function Shell({
         </button>
       </dialog>
       <dialog id="workspace-dialog" aria-label="管理工作区" />
+      <Content name="#attachment-preview" />
     </div>
   );
 }
@@ -1014,4 +1043,204 @@ export function sendIcon(state: 'sending' | 'pending' | 'ready') {
 export function showAuth(props: LoginProps) {
   disposeUI();
   paint('#app', <Login {...props} />);
+}
+
+export type AttachmentControlsProps = {
+  items: readonly AttachmentDraftItem[];
+  reason?: string;
+  itemReason?: (reference: AttachmentReference) => string | undefined;
+  disabled?: boolean;
+  busyId?: string;
+  onFiles: (files: globalThis.File[]) => void;
+  onUpload: (id: string) => void;
+  onRetry: (id: string) => void;
+  onRemove: (id: string) => void;
+  onPreview: (item: AttachmentDraftItem) => void;
+};
+export function AttachmentControls(props: AttachmentControlsProps) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div className="attachments">
+      <div className="attachment-select">
+        <button
+          type="button"
+          className="attachment-add"
+          disabled={props.disabled || !!props.busyId || props.items.length >= 8}
+          onClick={() => input.current?.click()}
+        >
+          <Paperclip />
+          添加附件
+        </button>
+        <span className="subtle">每个最多 8 MiB · 最多 8 个</span>
+        <input
+          ref={input}
+          id="attachment-input"
+          type="file"
+          multiple
+          hidden
+          disabled={props.disabled || !!props.busyId || props.items.length >= 8}
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files ?? []);
+            event.currentTarget.value = '';
+            if (files.length) props.onFiles(files);
+          }}
+        />
+      </div>
+      {props.reason && (
+        <p className="attachment-reason" role="status">
+          {props.reason}
+        </p>
+      )}
+      {props.items.length > 0 && (
+        <ul className="attachment-list" aria-label="指令附件">
+          {props.items.map((item) => {
+            const id = item.reference.attachmentId;
+            const preview = attachmentPreviewUrl(item.reference, item.data);
+            const reason = props.itemReason?.(item.reference);
+            const busy = props.busyId === id;
+            const removing = item.pending?.request.action === 'remove';
+            const state = busy
+              ? removing
+                ? '正在移除…'
+                : '正在上传…'
+              : item.pending
+                ? removing
+                  ? '移除结果待确认'
+                  : '上传结果待确认'
+                : item.uploaded
+                  ? '主机已确认'
+                  : '仅保存在此浏览器';
+            return (
+              <li key={id} className="attachment-entry">
+                <button
+                  type="button"
+                  className="attachment-open"
+                  onClick={() => props.onPreview(item)}
+                  aria-label={`预览附件：${item.reference.name}`}
+                >
+                  {preview ? <img src={preview} alt="" /> : <File />}
+                  <span className="attachment-description">
+                    <strong>{item.reference.name}</strong>
+                    <small>
+                      {formatAttachmentSize(item.reference.content.byteLength)} · {state}
+                    </small>
+                  </span>
+                </button>
+                <div className="attachment-entry-actions">
+                  {item.pending ? (
+                    <button
+                      type="button"
+                      disabled={props.disabled || !!props.busyId || !!props.reason}
+                      onClick={() => props.onRetry(id)}
+                      aria-label={`手动重试附件：${item.reference.name}`}
+                    >
+                      <RefreshCw />
+                      重试确认
+                    </button>
+                  ) : (
+                    !item.uploaded && (
+                      <button
+                        type="button"
+                        disabled={props.disabled || !!props.busyId || !!props.reason || !!reason}
+                        onClick={() => props.onUpload(id)}
+                        aria-label={`上传附件：${item.reference.name}`}
+                      >
+                        <Upload />
+                        上传
+                      </button>
+                    )
+                  )}
+                  <button
+                    type="button"
+                    className="icon-button"
+                    disabled={
+                      props.disabled ||
+                      !!props.busyId ||
+                      !!item.pending ||
+                      (item.uploaded && !!props.reason)
+                    }
+                    onClick={() => props.onRemove(id)}
+                    aria-label={`移除附件：${item.reference.name}`}
+                  >
+                    <X />
+                  </button>
+                </div>
+                {reason && <p className="attachment-item-reason">{reason}</p>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+export function showAttachmentControls(props: AttachmentControlsProps | null) {
+  paint('#attachment-controls', props ? <AttachmentControls {...props} /> : null);
+}
+export type AttachmentPreviewProps = {
+  reference: AttachmentReference;
+  data: string;
+  source?: 'host' | 'cache' | 'draft';
+  onClose: () => void;
+  onDownload: () => void;
+};
+export function AttachmentPreview(props: AttachmentPreviewProps) {
+  const image = attachmentPreviewUrl(props.reference, props.data);
+  const text = attachmentText(props.reference, props.data);
+  const preview = text?.slice(0, 120_000);
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Backdrop className="session-dialog-backdrop" />
+        <Dialog.Popup className="session-dialog attachment-preview">
+          <div className="attachment-preview-heading">
+            <Dialog.Title>{props.reference.name}</Dialog.Title>
+            <Dialog.Close className="icon-button" aria-label="关闭附件预览">
+              <X />
+            </Dialog.Close>
+          </div>
+          <Dialog.Description>
+            {formatAttachmentSize(props.reference.content.byteLength)} ·{' '}
+            {props.reference.content.mediaType}
+            {props.source === 'cache'
+              ? ' · 离线缓存'
+              : props.source === 'draft'
+                ? ' · 本机草稿'
+                : ' · 主机已确认'}
+          </Dialog.Description>
+          <div className="attachment-preview-body">
+            {image ? (
+              <img src={image} alt={props.reference.name} />
+            ) : preview !== undefined ? (
+              props.reference.content.mediaType === 'text/markdown' ? (
+                <div dangerouslySetInnerHTML={{ __html: markdown(preview) }} />
+              ) : (
+                <pre>{preview}</pre>
+              )
+            ) : (
+              <p>此文件不支持预览，可下载后查看。</p>
+            )}
+            {text && text.length > 120_000 && (
+              <p className="subtle">预览已截断，下载可查看完整内容。</p>
+            )}
+          </div>
+          <div className="session-dialog-actions">
+            <button type="button" onClick={props.onDownload}>
+              <Download />
+              下载附件
+            </button>
+            <Dialog.Close>关闭</Dialog.Close>
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+export function showAttachmentPreview(props?: AttachmentPreviewProps | null) {
+  paint('#attachment-preview', props ? <AttachmentPreview {...props} /> : null);
 }

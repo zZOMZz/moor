@@ -10,7 +10,20 @@ import {
   closeNavigation,
   resizeComposer,
   sendIcon,
+  showAttachmentControls,
+  showAttachmentPreview,
 } from './ui';
+import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
+import { attachmentReferenceSchema, type AttachmentReference } from '../content-protocol';
+import {
+  AttachmentDraftController,
+  attachmentDraftKey,
+  attachmentInputReason,
+  attachmentBytes,
+  readAttachment,
+  type AttachmentScope,
+  type AttachmentTarget,
+} from './attachments';
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
 import { agentSchema, type Mutation, type RuntimeWorkspace, type SessionAction } from '../protocol';
 import {
@@ -64,6 +77,11 @@ let archived = false,
   actionSending = false,
   actionError = '';
 let pendingAction: PendingSessionAction | undefined;
+let attachments: AttachmentDraftController | undefined,
+  attachmentGeneration = 0,
+  attachmentLoading = false,
+  attachmentWorking = false,
+  attachmentLoadError = '';
 let newProjectId = '',
   newAgentId = '',
   newSessionControlsReady = false;
@@ -104,6 +122,205 @@ function query() {
 function key(kind: string) {
   return [owner, selected?.id, workspace?.id, sessionId || 'new', kind].join('/');
 }
+function draftAttachmentSessionKey(scope: Omit<AttachmentScope, 'sessionId'>) {
+  return (
+    'attachment-session-v1/' +
+    JSON.stringify([scope.owner, scope.deviceId, scope.workspaceId, scope.localProjectId])
+  );
+}
+function currentAttachmentBase() {
+  if (!owner || !selected || !workspace || !replica) return undefined;
+  return {
+    owner,
+    deviceId: selected.id,
+    workspaceId: workspace.id,
+    localProjectId: replica.localProjectId,
+  };
+}
+function currentAttachments() {
+  const base = currentAttachmentBase();
+  if (!base || !attachments) return undefined;
+  const id = sessionId || pending?.sessionId || attachments.scope.sessionId;
+  return attachmentDraftKey({ ...base, sessionId: id }) === attachmentDraftKey(attachments.scope)
+    ? attachments
+    : undefined;
+}
+function attachmentTarget(controller: AttachmentDraftController): AttachmentTarget {
+  const base = currentAttachmentBase();
+  if (!base || !activeWorkspace || !replica || controller !== currentAttachments())
+    throw new Error('附件执行目标已改变，请重新打开原会话。');
+  return { ...controller.scope, catalogWorkspaceId: activeWorkspace.id, replicaId: replica.id };
+}
+async function loadAttachmentDraft() {
+  const token = ++attachmentGeneration,
+    base = currentAttachmentBase(),
+    generation = sessionGeneration;
+  attachments = undefined;
+  attachmentLoading = true;
+  attachmentLoadError = '';
+  updateComposer();
+  try {
+    if (!base) return;
+    let id = sessionId || pending?.sessionId;
+    if (!id) {
+      const draftKey = draftAttachmentSessionKey(base);
+      const saved = await cache.read<string>(draftKey);
+      id =
+        typeof saved === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(saved)
+          ? saved
+          : crypto.randomUUID();
+      if (id !== saved) await cache.write(draftKey, id);
+    }
+    if (token !== attachmentGeneration || generation !== sessionGeneration) return;
+    const controller = new AttachmentDraftController(
+      { ...base, sessionId: id },
+      {
+        read: cache.read,
+        write: cache.write,
+        request: api,
+        onChange: () => {
+          if (attachments === controller) updateComposer();
+        },
+      },
+    );
+    attachments = controller;
+    await controller.load();
+  } catch (e) {
+    if (token === attachmentGeneration)
+      attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
+    throw e;
+  } finally {
+    if (token === attachmentGeneration) {
+      attachmentLoading = false;
+      updateComposer();
+    }
+  }
+}
+function assertAttachmentOnline() {
+  if (!authenticated || !connected || !selected?.online || !replica?.available)
+    throw new Error('执行电脑离线，附件草稿已保留；连接后请手动重试。');
+  if (!workspace?.features?.includes(ATTACHMENTS_FEATURE))
+    throw new Error('请更新执行电脑上的 Moor，以使用附件。');
+}
+async function attachmentOperation(
+  work: (controller: AttachmentDraftController) => Promise<unknown>,
+) {
+  if (
+    sending ||
+    pending ||
+    actionSending ||
+    pendingAction ||
+    attachmentWorking ||
+    attachmentLoading
+  )
+    throw new Error('请先确认当前操作。');
+  const controller = currentAttachments();
+  if (!controller) throw new Error('附件草稿尚未就绪，请重新打开会话。');
+  attachmentWorking = true;
+  updateComposer();
+  try {
+    await work(controller);
+  } finally {
+    attachmentWorking = false;
+    updateComposer();
+  }
+}
+async function addAttachments(files: File[]) {
+  await attachmentOperation((controller) => controller.add(files));
+}
+function previewAttachment(
+  reference: AttachmentReference,
+  data: string,
+  source: 'host' | 'cache' | 'draft',
+) {
+  showAttachmentPreview({
+    reference,
+    data,
+    source,
+    onClose: () => showAttachmentPreview(undefined),
+    onDownload: () => {
+      const bytes = attachmentBytes(data);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = reference.name;
+      link.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+}
+async function openHistoryAttachment(reference: AttachmentReference) {
+  const controller = currentAttachments(),
+    generation = sessionGeneration;
+  if (!controller || !sessionId) throw new Error('请先打开附件所属会话。');
+  const result = await readAttachment(
+    attachmentTarget(controller),
+    reference,
+    authenticated && connected && selected?.online === true,
+    { read: cache.read, write: cache.write, request: api },
+  );
+  if (generation === sessionGeneration)
+    previewAttachment(reference, result.result.data, result.source);
+}
+function renderAttachmentControls() {
+  const controller = currentAttachments();
+  const reason =
+    attachmentLoadError ||
+    (attachmentLoading
+      ? '正在恢复附件草稿…'
+      : !workspace?.features?.includes(ATTACHMENTS_FEATURE)
+        ? '执行电脑需要更新 Moor 才能上传附件。'
+        : !connected || !selected?.online
+          ? '附件保留在本机，连接后请手动上传。'
+          : undefined);
+  showAttachmentControls({
+    items: controller?.items ?? [],
+    reason,
+    itemReason: (reference) =>
+      meta?.isArchived
+        ? '请先恢复已归档会话，再上传附件。'
+        : attachmentInputReason(reference, currentAgent()?.inputCapabilities),
+    disabled:
+      !controller ||
+      !!attachmentLoadError ||
+      attachmentLoading ||
+      attachmentWorking ||
+      sending ||
+      !!pending ||
+      actionSending ||
+      !!pendingAction,
+    busyId: controller?.busyId,
+    onFiles: (files) => run(() => addAttachments(files)),
+    onUpload: (id) =>
+      run(() =>
+        attachmentOperation(async (current) => {
+          assertAttachmentOnline();
+          if (meta?.isArchived) throw new Error('请先恢复已归档会话，再上传附件。');
+          const item = current.items.find((item) => item.reference.attachmentId === id);
+          const why =
+            item && attachmentInputReason(item.reference, currentAgent()?.inputCapabilities);
+          if (why) throw new Error(why);
+          await current.upload(id, attachmentTarget(current));
+        }),
+      ),
+    onRetry: (id) =>
+      run(() =>
+        attachmentOperation(async (current) => {
+          assertAttachmentOnline();
+          await current.retry(id, attachmentTarget(current));
+        }),
+      ),
+    onRemove: (id) =>
+      run(() =>
+        attachmentOperation(async (current) => {
+          const item = current.items.find((item) => item.reference.attachmentId === id);
+          if (item?.uploaded) assertAttachmentOnline();
+          await current.remove(id, item?.uploaded ? attachmentTarget(current) : undefined);
+        }),
+      ),
+    onPreview: (item) => previewAttachment(item.reference, item.data, 'draft'),
+  });
+}
 function run(fn: () => Promise<unknown>) {
   void fn().catch(error);
 }
@@ -120,6 +337,10 @@ function resetWorkspace() {
   connected = false;
   authenticated = false;
   sessionGeneration++;
+  attachmentGeneration++;
+  attachments = undefined;
+  attachmentLoading = false;
+  showAttachmentPreview(undefined);
   runOptionsGeneration++;
   owner = '';
   selected = undefined;
@@ -230,6 +451,7 @@ function shell() {
       void cache.write(key('draft'), value).catch(error);
     },
     onCancel: cancelTurn,
+    onFiles: (files) => run(() => addAttachments(files)),
   });
   window.dispatchEvent(new Event('moor:ready'));
   renderNavigation();
@@ -439,7 +661,16 @@ function renderNewSessionControls() {
     (h) => h.deviceId === selected?.id && h.runtimeWorkspaceId === workspace?.id,
   );
   const change = (field: 'project' | 'agent', value: string) => {
-    if (generation !== sessionGeneration || sessionId || sending || pending || !workspace) return;
+    if (
+      generation !== sessionGeneration ||
+      sessionId ||
+      sending ||
+      pending ||
+      attachmentWorking ||
+      currentAttachments()?.busyId ||
+      !workspace
+    )
+      return;
     if (field === 'project') {
       if (value === newProjectId || !workspace.projects.some((p) => p.id === value)) return;
       newProjectId = value;
@@ -448,6 +679,7 @@ function renderNewSessionControls() {
       newAgentId = value;
     }
     selectReplica();
+    if (field === 'project') void loadAttachmentDraft().catch(error);
     if (field === 'agent') void restoreRunOptions().catch(error);
     void cache.write(key('options'), { project: newProjectId, agent: newAgentId }).catch(error);
   };
@@ -462,7 +694,7 @@ function renderNewSessionControls() {
     agents: workspace.agents.map(({ id, name }) => ({ id, name })),
     projectId: newProjectId,
     agentId: newAgentId,
-    disabled: sending || !!pending,
+    disabled: sending || !!pending || attachmentWorking || !!currentAttachments()?.busyId,
     onProject: (value) => change('project', value),
     onAgent: (value) => change('agent', value),
   });
@@ -648,6 +880,10 @@ async function restoreSelection() {
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
   restoredSelection = true;
   const generation = ++sessionGeneration;
+  attachmentGeneration++;
+  attachments = undefined;
+  attachmentLoading = false;
+  showAttachmentPreview(undefined);
   selectionLoading = generation;
   try {
     selected = devices.find((d) => d.id === id);
@@ -1096,6 +1332,8 @@ async function openSession(id: string, replicaId?: string, keepNavigation = fals
     renderNavigation();
   }
   await restoreRunOptions();
+  if (generation !== sessionGeneration) return;
+  await loadAttachmentDraft();
   updateComposer();
 }
 async function loadSession() {
@@ -1163,6 +1401,27 @@ function renderHistory() {
         await navigator.clipboard.writeText(text);
         button.textContent = '已复制';
       });
+  });
+  const references: AttachmentReference[] = [];
+  for (const turn of state.history)
+    for (const item of turn.items ?? []) {
+      const value = item as any;
+      for (const candidate of [
+        value.attachment,
+        ...(Array.isArray(value.content)
+          ? value.content.map((entry: any) => entry.attachment ?? entry.content?.attachment)
+          : []),
+      ]) {
+        const parsed = attachmentReferenceSchema.safeParse(candidate);
+        if (parsed.success) references.push(parsed.data);
+      }
+    }
+  container.querySelectorAll<HTMLButtonElement>('[data-open-attachment]').forEach((button) => {
+    const reference = references.find(
+      (value) => value.attachmentId === button.dataset.openAttachment,
+    );
+    button.disabled = !reference;
+    button.onclick = () => reference && run(() => openHistoryAttachment(reference));
   });
   view.dispose();
   document.querySelectorAll<HTMLElement>('[data-permission]').forEach((el) => {
@@ -1270,7 +1529,7 @@ function renderRunOptions() {
     capabilities,
     selection: runSelection,
     agentType: currentAgent()?.agentType,
-    disabled: sending || !!pending || runOptionsLoading || !runOptionsReady,
+    disabled: sending || !!pending || attachmentWorking || runOptionsLoading || !runOptionsReady,
     loading: runOptionsLoading,
     canRefresh: connected && !!selected?.online && !!replica?.available,
     validation,
@@ -1296,6 +1555,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
+  renderAttachmentControls();
   renderSessionActionState();
   const invalidRunOptions = renderRunOptions();
   renderNewSessionControls();
@@ -1308,6 +1568,14 @@ function updateComposer() {
   if (!send) return;
   send.disabled =
     sending ||
+    !!attachmentLoadError ||
+    attachmentLoading ||
+    attachmentWorking ||
+    !!currentAttachments()?.busyId ||
+    currentAttachments()?.items.some((item) => !!item.pending) === true ||
+    currentAttachments()?.items.some(
+      (item) => !!attachmentInputReason(item.reference, currentAgent()?.inputCapabilities),
+    ) === true ||
     actionSending ||
     !!pendingAction ||
     (!!meta?.isArchived && !pending) ||
@@ -1323,7 +1591,7 @@ function updateComposer() {
   sendIcon(sending ? 'sending' : pending ? 'pending' : 'ready');
   send.setAttribute('aria-label', sending ? '提交中' : pending ? '重试确认' : '发送指令');
   send.classList.toggle('pending', !!pending);
-  $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending;
+  $<HTMLTextAreaElement>('#prompt').readOnly = sending || !!pending || attachmentWorking;
   const state = document.querySelector('#draft-state');
   if (state)
     state.textContent = pending
@@ -1352,6 +1620,8 @@ async function submit(m: Mutation) {
     pendingKey = key('pending'),
     draftKey = key('draft'),
     endpoint = prefix() + '/mutations' + query();
+  const attachmentController = currentAttachments();
+  const creatingSession = !sessionId;
   pending = m;
   sending = true;
   updateComposer();
@@ -1359,7 +1629,22 @@ async function submit(m: Mutation) {
   try {
     await cache.write(pendingKey, m);
     durable = true;
-    await api(endpoint, m);
+    const confirmation = await api(endpoint, m);
+    if (
+      confirmation?.accepted !== true ||
+      confirmation.delivered !== true ||
+      confirmation.operationId !== m.operationId
+    )
+      throw new Error('指令尚未获得有效的主机确认，请使用原请求手动重试。');
+    if (m.kind === 'turn' && attachmentController?.scope.sessionId === m.sessionId) {
+      await attachmentController.forget(
+        attachmentController.items.map((item) => item.reference.attachmentId),
+      );
+      if (creatingSession) {
+        const savedKey = draftAttachmentSessionKey(attachmentController.scope);
+        if ((await cache.read(savedKey)) === m.sessionId) await cache.write(savedKey, undefined);
+      }
+    }
     await cache.write(pendingKey, undefined);
     if (m.kind === 'turn') await cache.write(draftKey, '');
     if (generation !== sessionGeneration) return;
@@ -1381,6 +1666,9 @@ async function submit(m: Mutation) {
   }
 }
 async function sendTurn() {
+  if (attachmentLoadError) throw new Error(attachmentLoadError);
+  if (attachmentLoading || attachmentWorking || currentAttachments()?.busyId)
+    throw new Error('请等待附件操作完成。');
   if (actionSending || pendingAction) throw new Error('请先确认会话管理操作。');
   if (pending) {
     await submit(pending);
@@ -1389,7 +1677,8 @@ async function sendTurn() {
   if (meta?.isArchived) throw new Error('请先恢复会话，再发送新的指令。');
   if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
   const prompt = $<HTMLTextAreaElement>('#prompt').value.trim();
-  if (!prompt) return;
+  const attachmentController = currentAttachments();
+  if (!prompt && !attachmentController?.items.length) return;
   const generation = sessionGeneration;
   if (!sessionId)
     await cache.write(key('options'), {
@@ -1397,11 +1686,37 @@ async function sendTurn() {
       agent: newAgentId,
     });
   if (generation !== sessionGeneration) return;
-  const id = sessionId || crypto.randomUUID(),
+  const id = sessionId || attachmentController?.scope.sessionId || crypto.randomUUID(),
     agent = currentAgent();
   if (!agent) throw new Error('这台电脑还没有可用的 Agent 配置');
   if (!runOptionsReady || runOptionsLoading) throw new Error('正在读取运行设置，请稍后发送');
   const selectedConfig = resolveRunSelection(runSelection, agent.runConfig);
+  if (attachmentController?.items.length) {
+    if (attachmentController.items.some((item) => item.pending))
+      throw new Error('附件结果待确认，请先手动重试。');
+    assertAttachmentOnline();
+    for (const item of attachmentController.items) {
+      const why = attachmentInputReason(item.reference, agent.inputCapabilities);
+      if (why) throw new Error(why);
+    }
+    attachmentWorking = true;
+    updateComposer();
+    try {
+      for (const item of attachmentController.items)
+        if (!item.uploaded) {
+          if (generation !== sessionGeneration) return;
+          await attachmentController.upload(
+            item.reference.attachmentId,
+            attachmentTarget(attachmentController),
+          );
+        }
+    } finally {
+      attachmentWorking = false;
+      updateComposer();
+    }
+    if (generation !== sessionGeneration) return;
+  }
+  const attached = attachmentController?.references() ?? [];
   const candidate = new LoroDoc();
   candidate.import(doc.export({ mode: 'snapshot' }));
   const localFlock = Flock.fromJson(
@@ -1420,6 +1735,7 @@ async function sendTurn() {
     agentType: agent.agentType,
     mcpServerIds: [],
     taskToolsEnabled: false,
+    ...(attached.length ? { attachments: attached } : {}),
   };
   view.setState((s: any) => {
     s.history.push({
@@ -1430,7 +1746,10 @@ async function sendTurn() {
       status: 'pending',
       finished: true,
       inputConfig,
-      items: [{ type: 'text', text: prompt }],
+      items: [
+        { type: 'text', text: prompt },
+        ...attached.map((attachment) => ({ type: 'attachment', attachment })),
+      ],
       fileDiff: null,
     });
   });
@@ -1443,7 +1762,7 @@ async function sendTurn() {
         machineId: workspace.machineId,
         userId: workspace.userId,
         createdAt: now,
-        title: prompt.slice(0, 60),
+        title: prompt.slice(0, 60) || attached[0]?.name || '新会话',
         titleSource: 'user',
         cliType: agent.cliType,
         agentType: agent.agentType,

@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta } from '../model';
 import { assert, sessionActionSchema, type Mutation, type SessionAction } from '../protocol';
 import { validateMutation } from './validate-mutation';
-import { RuntimeStore } from '../runtime/store';
+import { RuntimeStore, type AttachmentScope } from '../runtime/store';
 import type { AgentConfig, AgentDriver, AgentSession, PermissionOutcome } from '../runtime/agent';
 import { runCapabilitiesSchema } from '../run-config';
 import {
@@ -11,8 +12,27 @@ import {
   projectFileReadSchema,
   type ProjectFileRead,
   type ProjectFileResult,
+  type ContentScope,
+  type AttachmentReference,
 } from '../content-protocol';
 import { readProjectFileBytes } from '../runtime/project-files';
+import {
+  normalizeAgentContent,
+  normalizeAgentToolContent,
+  safeAgentMetadata,
+} from '../runtime/agent-attachments';
+import {
+  ATTACHMENTS_FEATURE,
+  MAX_SESSION_ATTACHMENT_BYTES,
+  attachmentActionSchema,
+  attachmentReadSchema,
+  promptInputCapabilitiesSchema,
+  type AttachmentAction,
+  type AttachmentRead,
+  type AttachmentReceipt,
+  type AttachmentContent,
+  type PromptInputCapabilities,
+} from '../attachment-protocol';
 
 type Active = {
   turnId: string;
@@ -56,7 +76,7 @@ export class HostWorkspace {
     this.ensureConnected();
   }
   updateCatalogue() {
-    this.workspace.features = ['session-actions', FILE_CONTENT_FEATURE];
+    this.workspace.features = ['session-actions', FILE_CONTENT_FEATURE, ATTACHMENTS_FEATURE];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
       .map((r) => r.value as any);
@@ -66,12 +86,16 @@ export class HostWorkspace {
       .filter((a) => a.machineId === this.workspace.machineId)
       .map((a) => {
         const options = runCapabilitiesSchema.safeParse(this.machine.get(['capabilities', a.id]));
+        const input = promptInputCapabilitiesSchema.safeParse(
+          this.machine.get(['inputCapabilities', a.id]),
+        );
         return {
           id: a.id,
           name: a.name,
           cliType: a.cliType,
           agentType: a.agentType,
           runConfig: options.success ? options.data : undefined,
+          inputCapabilities: input.success ? input.data : undefined,
         };
       });
     this.catalogue();
@@ -92,6 +116,7 @@ export class HostWorkspace {
       try {
         this.ensureConnected();
         this.machine.set(['capabilities', agentId], session.capabilities as never);
+        this.machine.set(['inputCapabilities', agentId], session.inputCapabilities as never);
         this.store.saveMachine();
         this.updateCatalogue();
         return this.workspace.agents.find((a) => a.id === agentId)!;
@@ -258,6 +283,131 @@ export class HostWorkspace {
       ? { ...base, status: 'not-modified' }
       : { ...base, status: 'content', encoding: 'base64', data: bytes.toString('base64') };
   }
+  attachmentScope(input: ContentScope, localProjectId?: string): AttachmentScope {
+    this.ensureConnected();
+    assert(input.workspaceId === this.workspace.id, 400, '附件执行目标不匹配');
+    assert(!localProjectId || input.localProjectId === localProjectId, 400, '附件项目与副本不匹配');
+    const project = this.machine.get(['localProject', input.localProjectId]) as
+      | { id: string; rootPath: string }
+      | undefined;
+    assert(
+      project?.id === input.localProjectId &&
+        this.workspace.projects.some((p) => p.id === project.id && p.rootPath === project.rootPath),
+      404,
+      '项目副本已从主机移除',
+    );
+    if (metas(this.meta)['session-' + input.sessionId])
+      this.checkProject(input.sessionId, input.localProjectId);
+    const scope = {
+      workspaceId: input.workspaceId,
+      localProjectId: input.localProjectId,
+      sessionId: input.sessionId,
+      userId: this.workspace.userId,
+      machineId: this.workspace.machineId,
+    };
+    assert(this.store.attachmentScopeMatches(scope), 404, '附件会话不属于该项目副本');
+    return scope;
+  }
+  async attachmentAction(
+    input: AttachmentAction,
+    localProjectId?: string,
+  ): Promise<AttachmentReceipt> {
+    const action = attachmentActionSchema.parse(input);
+    return this.serial(action.sessionId, async () => {
+      const scope = this.attachmentScope(action, localProjectId);
+      const journal = this.store.journal;
+      const receipt = journal.lookup(this.workspace.id, action);
+      if (receipt?.phase === 'accepted') return JSON.parse(receipt.result);
+      const id = action.action === 'upload' ? action.attachment.attachmentId : action.attachmentId;
+      const stored = this.store.attachment(scope, id);
+      let bytes: Buffer | undefined;
+      if (action.action === 'upload') {
+        assert(
+          metas(this.meta)['session-' + action.sessionId]?.isArchived !== true,
+          409,
+          '请先恢复已归档会话，再上传附件',
+        );
+        assert(!stored, 409, '附件编号已使用，请重新添加附件');
+        bytes = Buffer.from(action.data, 'base64');
+        assert(
+          bytes.length === action.attachment.content.byteLength &&
+            'sha256:' + createHash('sha256').update(bytes).digest('hex') ===
+              action.attachment.content.version,
+          400,
+          '附件内容摘要或字节数不匹配',
+        );
+        assert(
+          this.store.attachmentBytes(scope) + bytes.length <= MAX_SESSION_ATTACHMENT_BYTES,
+          413,
+          '会话附件总量超过 64 MiB，请移除未发送的附件',
+        );
+      } else {
+        assert(stored, 404, '附件不存在');
+        assert(!stored.referenced, 409, '历史回合使用的附件不能删除');
+      }
+      return this.store.transaction(() => {
+        this.store.reserveAttachmentScope(scope);
+        if (action.action === 'upload') this.store.saveAttachment(scope, action.attachment, bytes!);
+        else this.store.removeAttachment(scope, id);
+        const result: AttachmentReceipt = {
+          contentVersion: CONTENT_VERSION,
+          workspaceId: action.workspaceId,
+          localProjectId: action.localProjectId,
+          sessionId: action.sessionId,
+          operationId: action.operationId,
+          accepted: true,
+          delivered: true,
+          ...(action.action === 'upload'
+            ? { attachment: action.attachment }
+            : { removed: true as const }),
+        };
+        return journal.acceptAttachmentAction(this.workspace.id, action, result);
+      });
+    });
+  }
+  async readAttachment(input: AttachmentRead, localProjectId?: string): Promise<AttachmentContent> {
+    const request = attachmentReadSchema.parse(input);
+    return this.serial(request.sessionId, async () => {
+      const scope = this.attachmentScope(request, localProjectId);
+      const stored = this.store.attachment(scope, request.attachmentId);
+      assert(stored?.bytes, 404, '附件不存在或已删除');
+      return {
+        contentVersion: CONTENT_VERSION,
+        workspaceId: request.workspaceId,
+        localProjectId: request.localProjectId,
+        sessionId: request.sessionId,
+        confirmed: true,
+        attachment: stored.reference,
+        data: stored.bytes.toString('base64'),
+      };
+    });
+  }
+  attachmentData(scope: AttachmentScope, attachments: AttachmentReference[]) {
+    return attachments.map((reference) => {
+      const stored = this.store.attachment(scope, reference.attachmentId);
+      assert(
+        stored?.bytes && isDeepStrictEqual(stored.reference, reference),
+        400,
+        '附件尚未送达、已删除或不属于当前会话',
+      );
+      return { reference, data: stored.bytes.toString('base64') };
+    });
+  }
+  assertAttachmentCapabilities(
+    attachments: AttachmentReference[],
+    capabilities?: PromptInputCapabilities,
+  ) {
+    for (const attachment of attachments) {
+      const category = attachment.content.mediaType.split('/')[0];
+      assert(
+        capabilities?.[
+          category === 'image' ? 'image' : category === 'audio' ? 'audio' : 'embeddedContext'
+        ] === true,
+        400,
+        '当前 Agent 不支持该附件类型，请刷新能力或移除附件',
+      );
+    }
+  }
   async mutate(m: Mutation, localProjectId?: string) {
     return this.serial(m.sessionId, async () => {
       this.ensureConnected();
@@ -266,6 +416,16 @@ export class HostWorkspace {
         400,
         '会话执行目标不匹配',
       );
+      const currentMeta = metas(this.meta)['session-' + m.sessionId];
+      if (currentMeta)
+        this.attachmentScope(
+          {
+            workspaceId: m.workspaceId,
+            sessionId: m.sessionId,
+            localProjectId: (currentMeta.project as any)?.localProjectId,
+          },
+          localProjectId,
+        );
       const journal = this.store.journal;
       const record = journal.lookup(this.workspace.id, m);
       if (metas(this.meta)['session-' + m.sessionId] || record)
@@ -287,6 +447,31 @@ export class HostWorkspace {
           400,
           '执行项目与副本不匹配',
         );
+      const attachmentScope = this.attachmentScope(
+        {
+          workspaceId: m.workspaceId,
+          sessionId: m.sessionId,
+          localProjectId: (meta.project as any).localProjectId,
+        },
+        localProjectId,
+      );
+      const inputView = mirror(validated.doc, m.sessionId);
+      const attachments: AttachmentReference[] =
+        m.kind === 'turn'
+          ? ((
+              inputView.getState().history.at(-1)!.inputConfig as {
+                attachments?: AttachmentReference[];
+              }
+            ).attachments ?? [])
+          : [];
+      inputView.dispose();
+      if (attachments.length) {
+        this.attachmentData(attachmentScope, attachments);
+        const capabilities = this.workspace.agents.find(
+          (agent) => agent.id === meta.agentConfigId,
+        )?.inputCapabilities;
+        this.assertAttachmentCapabilities(attachments, capabilities);
+      }
       const turnId = String(meta.latestUserMsgId);
       let permission: Active['permissions'] extends Map<string, infer V> ? V : never;
       let outcome: PermissionOutcome | undefined;
@@ -335,6 +520,9 @@ export class HostWorkspace {
       try {
         result = this.store.transaction(() => {
           journal.stage(this.workspace.id, m, turnId);
+          this.store.reserveAttachmentScope(attachmentScope);
+          for (const attachment of attachments)
+            this.store.referenceAttachment(attachmentScope, attachment.attachmentId);
           this.store.meta = validated.flock;
           this.store.persist(m.sessionId, validated.doc);
           return journal.accept(m);
@@ -365,14 +553,44 @@ export class HostWorkspace {
   edit(id: string, run: Active, edit: (turn: any) => void) {
     if (run.stopped || this.closed) return;
     const view = mirror(run.doc, id);
-    view.setState((s) => edit(s.history.find((t) => t.id === run.turnId)!));
-    view.dispose();
-    this.store.transaction(() => this.store.persist(id, run.doc));
+    try {
+      this.store.transaction(() => {
+        view.setState((s) => edit(s.history.find((t) => t.id === run.turnId)!));
+        this.store.persist(id, run.doc);
+      });
+    } catch (error) {
+      // Restore the last committed in-memory state too; otherwise a later chunk
+      // could persist a reference to a blob rolled back by this failed update.
+      run.doc = this.store.doc(id);
+      this.store.meta = this.store.loadFlock('meta');
+      throw error;
+    } finally {
+      view.dispose();
+    }
     this.changed(id);
   }
   update(id: string, run: Active, update: any) {
     this.edit(id, run, (turn) => {
       const items = (turn.items ??= []);
+      const meta = metas(this.meta)['session-' + id];
+      const scope = this.attachmentScope({
+        workspaceId: this.workspace.id,
+        localProjectId: (meta.project as any).localProjectId,
+        sessionId: id,
+      });
+      const save = (reference: AttachmentReference, bytes: Buffer) => {
+        const existing = this.store.generatedAttachment(scope, reference);
+        if (existing) return existing;
+        assert(
+          this.store.attachmentBytes(scope) + bytes.length <= MAX_SESSION_ATTACHMENT_BYTES,
+          413,
+          '会话附件容量不足',
+        );
+        this.store.reserveAttachmentScope(scope);
+        this.store.saveAttachment(scope, reference, bytes);
+        this.store.referenceAttachment(scope, reference.attachmentId);
+        return reference;
+      };
       if (
         ['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate) &&
         update.content?.type === 'text'
@@ -381,13 +599,19 @@ export class HostWorkspace {
         const last = items.at(-1);
         if (last?.type === type) last.text += update.content.text;
         else items.push({ type, text: update.content.text });
+      } else if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate)) {
+        items.push(normalizeAgentContent(update.content, save));
       } else if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
         let tool = items.find(
           (i: any) => i.type === 'tool_call' && i.toolCallId === update.toolCallId,
         );
         if (!tool) items.push((tool = { type: 'tool_call', toolCallId: update.toolCallId }));
-        for (const key of ['title', 'kind', 'status', 'content', 'rawInput', 'rawOutput'])
+        for (const key of ['title', 'kind', 'status'])
           if (update[key] !== undefined) tool[key] = update[key];
+        if (update.content !== undefined)
+          tool.content = normalizeAgentToolContent(update.content, save);
+        for (const key of ['rawInput', 'rawOutput'])
+          if (update[key] !== undefined) tool[key] = safeAgentMetadata(update[key]);
       }
     });
   }
@@ -428,9 +652,19 @@ export class HostWorkspace {
       }
       this.store.setNativeSession(id, session.id);
       const view = mirror(run.doc, id),
-        input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig;
+        input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig as Record<
+          string,
+          unknown
+        > & { attachments?: AttachmentReference[] };
       view.dispose();
-      await session.prompt(input);
+      const attachmentScope = this.attachmentScope({
+        workspaceId: this.workspace.id,
+        localProjectId: project.id,
+        sessionId: id,
+      });
+      const attachmentData = this.attachmentData(attachmentScope, input.attachments ?? []);
+      this.assertAttachmentCapabilities(input.attachments ?? [], session.inputCapabilities);
+      await session.prompt(attachmentData.length ? { ...input, attachmentData } : input);
       this.finish(id, run, 'handled');
     } catch (error) {
       this.finish(id, run, 'failed', error instanceof Error ? error.message : 'Agent 执行失败');

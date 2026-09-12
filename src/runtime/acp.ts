@@ -6,6 +6,7 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclie
 import { capabilities } from './capabilities';
 import type { AgentDriver } from './agent';
 import { resolveRunSelection, selectionFromInput } from '../run-config';
+import { promptContent } from './attachment-input';
 const agentRequire = nodeModule.createRequire(import.meta.url);
 export const acpDriver: AgentDriver = {
   async open(config, cwd, nativeId, callbacks) {
@@ -124,11 +125,18 @@ export const acpDriver: AgentDriver = {
       const id = nativeId ?? (response as { sessionId: string }).sessionId;
       activeSessionId = id;
       const choices = capabilities(response);
+      const inputCapabilities = {
+        image: init.agentCapabilities?.promptCapabilities?.image === true,
+        audio: init.agentCapabilities?.promptCapabilities?.audio === true,
+        embeddedContext: init.agentCapabilities?.promptCapabilities?.embeddedContext === true,
+      };
       return {
         id,
         capabilities: choices,
+        inputCapabilities,
         close,
         async prompt(input) {
+          const content = promptContent(input, inputCapabilities);
           resolveRunSelection(selectionFromInput(input, choices), choices);
           if (input.modelId)
             await bounded(
@@ -150,7 +158,7 @@ export const acpDriver: AgentDriver = {
           acceptingUpdates = true;
           try {
             const result = await Promise.race([
-              conn.prompt({ sessionId: id, prompt: [{ type: 'text', text: input.prompt }] }),
+              conn.prompt({ sessionId: id, prompt: content }),
               failed,
             ]);
             if (!['end_turn', 'cancelled'].includes(result.stopReason))

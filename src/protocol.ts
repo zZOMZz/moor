@@ -18,6 +18,10 @@ export const agentSchema = z.object({
   cliType: z.string(),
   agentType: z.string(),
   runConfig: runCapabilitiesSchema.optional(),
+  inputCapabilities: z
+    .object({ image: z.boolean(), audio: z.boolean(), embeddedContext: z.boolean() })
+    .strict()
+    .optional(),
 });
 // Execution-host scope; product workspaces organize these independently.
 export const runtimeWorkspaceSchema = z.object({
