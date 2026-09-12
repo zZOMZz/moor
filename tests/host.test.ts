@@ -11,6 +11,7 @@ import { Store } from '../src/relay/accounts';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../src/model';
 import type { AttentionContext, AttentionListQuery } from '../src/attention';
 import {
+  runtimeWorkspaceSchema,
   sessionActionSchema,
   type Mutation,
   type RuntimeWorkspace,
@@ -101,6 +102,26 @@ function fixture(file = ':memory:') {
     },
   };
 }
+test('the complete host capability catalogue passes the bounded runtime protocol', (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const catalogue = runtimeWorkspaceSchema.parse(f.host.workspace);
+  for (const feature of [
+    'attention-v1',
+    'actor-context-v1',
+    'attention-followup-v1',
+    'session-control-v1',
+  ])
+    strict.ok(catalogue.features?.includes(feature), feature);
+  strict.equal(
+    runtimeWorkspaceSchema.safeParse({
+      ...catalogue,
+      features: Array.from({ length: 65 }, (_, i) => 'synthetic-feature-' + i),
+    }).success,
+    false,
+  );
+});
+
 function request(
   f: ReturnType<typeof fixture>,
   sessionId = 'session-a',

@@ -55,6 +55,11 @@ test('automatic Git and directory snapshots exclude reserved GitHub credentials 
     'preview-v1.json',
     'private/preview-v1.json.tmp-save',
     'skills-v1.json',
+    'bridge.json.cli.json',
+    'private/BRIDGE.CLI.JSON.tmp-synthetic',
+    'moor-cli-v1.sqlite',
+    'private/moor-cli-v1.sqlite-wal',
+    'private/moor-cli-v1.sqlite-shm',
     'private/SKILLS-v1.JSON.tmp-save',
     'private/PREVIEW-V1.JSON',
   ])
@@ -69,6 +74,13 @@ test('automatic Git and directory snapshots exclude reserved GitHub credentials 
     strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('github-v1.json')));
     strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('preview-v1.json')));
     strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('skills-v1.json')));
+    strict.ok(
+      tree.entries.every(
+        (entry) =>
+          !entry.path.toLowerCase().includes('.cli.json') &&
+          !entry.path.toLowerCase().includes('moor-cli-v1.sqlite'),
+      ),
+    );
     strict.ok(tree.issues.some((issue) => issue.reason === 'policy-excluded'));
     strict.equal(JSON.stringify(snapshot).includes('synthetic-private-github-token'), false);
   }

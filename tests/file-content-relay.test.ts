@@ -129,7 +129,7 @@ test('file-content route rejects unauthenticated and other-account requests, inv
   assert.deepEqual(f.readCount(), [3, 0]);
 });
 
-test('file-content requests have a small body limit without changing existing route limits', async (t) => {
+test('file-content and metadata actions enforce their independent small body limits', async (t) => {
   const f = await fixture();
   t.after(f.close);
   const oversized = { ...f.input, padding: 'x'.repeat(16 * 1024) };
@@ -137,8 +137,8 @@ test('file-content requests have a small body limit without changing existing ro
   assert.equal(response.status, 413);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.deepEqual(f.readCount(), [0, 0]);
-  // The existing session-action route still parses a larger body and rejects its
-  // unknown field as a schema error, rather than applying the new file-read cap.
+  // Metadata actions have their own 4 KiB cap after shared-route hardening.
+  // Oversized input is rejected before parsing or dispatching either operation.
   const action = await f.api(f.path.replace('/file-content', '/session-actions'), {
     operationId: 'oversized-nonfile',
     workspaceId: f.input.workspaceId,
@@ -148,7 +148,8 @@ test('file-content requests have a small body limit without changing existing ro
     action: 'pin',
     padding: oversized.padding,
   });
-  assert.equal(action.status, 400);
+  assert.equal(action.status, 413);
+  assert.deepEqual(f.readCount(), [0, 0]);
 });
 
 test('file-content requests require advertised support and a current, online, nonrevoked binding', async (t) => {

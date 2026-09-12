@@ -7,6 +7,7 @@ import type { SessionFork, ForkReceipt } from '../fork-protocol';
 import type { GithubAction, GithubReceipt } from '../github-protocol';
 import type { GithubWriteAction } from '../github-write-protocol';
 import type { PreviewAction } from '../preview-protocol';
+import type { SessionControlAction } from '../session-control-protocol';
 import type {
   QuestionAnswer,
   QuestionReceipt,
@@ -14,6 +15,7 @@ import type {
   SteerReceipt,
 } from '../interaction-protocol';
 export type JournalOperation =
+  | SessionControlAction
   | Mutation
   | SessionAction
   | AttachmentAction

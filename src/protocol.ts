@@ -32,7 +32,7 @@ export const runtimeWorkspaceSchema = z.object({
   machineId: id,
   projects: z.array(localProjectSchema).max(500),
   agents: z.array(agentSchema).max(100),
-  features: z.array(id).max(20).optional(),
+  features: z.array(id).max(64).optional(),
 });
 export type RuntimeWorkspace = z.infer<typeof runtimeWorkspaceSchema>;
 export const helloSchema = z.object({

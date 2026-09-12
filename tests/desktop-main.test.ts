@@ -345,6 +345,11 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   const emitMessage = async (child: any, value: any) => {
     for (const listener of child.listeners('message')) await listener(value);
   };
+  await emitMessage(children[0], { type: 'cli-unavailable', message: 'SYNTHETIC_PRIVATE_PATH' });
+  const cliHealth = await invoke('personal:health');
+  assert.equal(cliHealth.cli.state, 'unavailable');
+  assert.match(cliHealth.cli.message, /私有配置目录/);
+  assert.doesNotMatch(JSON.stringify(cliHealth), /SYNTHETIC_PRIVATE_PATH/);
   await emitMessage(children[0], {
     type: 'local-ready',
     origin: 'http://127.0.0.1:4521',

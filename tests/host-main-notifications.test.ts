@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
@@ -41,8 +41,10 @@ test(
       JSON.stringify({ server: origin, id: 'synthetic-device', token: 'synthetic-token' }),
       { mode: 0o600 },
     );
+    const projectRoot = join(dir, 'project');
+    mkdirSync(projectRoot);
     const store = new RuntimeStore(file),
-      projectId = store.registerProject(dir);
+      projectId = store.registerProject(projectRoot);
     const scope = {
       userId: store.workspace.userId,
       machineId: store.workspace.machineId,
