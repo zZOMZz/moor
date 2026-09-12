@@ -1,7 +1,7 @@
 import test from 'node:test';
 import strict from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HostWorkspace } from '../src/bridge/host-workspace';
@@ -17,6 +17,33 @@ import type {
 import { attachmentActionSchema, MAX_SESSION_ATTACHMENT_BYTES } from '../src/attachment-protocol';
 import type { AttachmentReference } from '../src/content-protocol';
 import { syntheticCapabilities } from './support/agent-capabilities';
+import { runDeviceSecurityCommand } from '../src/security/commands';
+
+async function privateArtifactBytes(t: { after(fn: () => void): void }) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-private-attachments-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dataFile = join(root, 'custom-vault.json'),
+    recoveryCodeFile = join(root, 'custom-code.json'),
+    outputFile = join(root, 'custom-backup.json');
+  await runDeviceSecurityCommand(
+    {
+      action: 'initialize',
+      identity: {
+        accountId: 'synthetic-owner',
+        serverOrigin: 'https://relay.example.test',
+        deviceId: 'synthetic-mbp',
+        roles: ['host'],
+      },
+      recoveryCodeFile,
+    },
+    { dataFile },
+  );
+  await runDeviceSecurityCommand(
+    { action: 'export-recovery', recoveryCodeFile, outputFile },
+    { dataFile },
+  );
+  return [dataFile, recoveryCodeFile, outputFile].map((path) => readFileSync(path));
+}
 
 const ws = {
   id: 'attachments-workspace',
@@ -209,6 +236,122 @@ function request(
     metaBundle: flock.exportJson(version),
   };
 }
+
+test('private vault, code and capsule uploads reject before receipts, storage or Agent dispatch', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  for (const bytes of await privateArtifactBytes(t)) {
+    const action = upload('session-a', bytes);
+    await strict.rejects(f.host.attachmentAction(action), (error: any) => error.status === 403);
+    strict.equal(f.store.journal.lookup(ws.id, attachmentActionSchema.parse(action)), undefined);
+    strict.equal(
+      f.store.attachment(f.host.attachmentScope(action), action.attachment.attachmentId),
+      undefined,
+    );
+  }
+  strict.equal(f.store.journal.db.prepare('SELECT count(*) AS n FROM attachment').get()!.n, 0);
+  strict.equal(f.opens(), 0);
+});
+
+test('previously stored private envelope attachments cannot be read or hydrated into a new Agent turn', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  for (const bytes of await privateArtifactBytes(t)) {
+    const action = upload('session-a', bytes),
+      scope = f.host.attachmentScope(action);
+    // Represent bytes saved by an older host version, bypassing the current upload boundary.
+    f.store.reserveAttachmentScope(scope);
+    f.store.saveAttachment(scope, action.attachment, bytes);
+    await strict.rejects(f.host.readAttachment(read(action)), (error: any) => error.status === 403);
+    strict.throws(
+      () => f.host.attachmentData(scope, [action.attachment]),
+      (error: any) => error.status === 403,
+    );
+    await strict.rejects(
+      f.host.mutate(request(f, [action.attachment])),
+      (error: any) => error.status === 403,
+    );
+  }
+  strict.equal(f.opens(), 0);
+  strict.deepEqual(f.prompts, []);
+});
+
+test('complete private files in Agent artifacts, tool diffs and raw metadata are replaced with safe notices', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const artifacts = await privateArtifactBytes(t);
+  await f.host.mutate(request(f, [], 'session-a', 'project-a', { prompt: 'synthetic' }));
+  await f.started;
+  for (const [index, bytes] of artifacts.entries()) {
+    const text = bytes.toString('utf8'),
+      data = bytes.toString('base64');
+    for (const content of [
+      { type: 'text', text },
+      {
+        type: 'resource',
+        resource: { uri: 'file:///arbitrary-copy.json', mimeType: 'text/plain', text },
+      },
+      {
+        type: 'resource',
+        resource: {
+          uri: 'file:///arbitrary-copy.bin',
+          mimeType: 'application/octet-stream',
+          blob: data,
+        },
+      },
+      { type: 'image', mimeType: 'image/png', data },
+      { type: 'audio', mimeType: 'audio/wav', data },
+    ]) {
+      f.update({ sessionUpdate: 'agent_message_chunk', content });
+      if (content.type === 'text') f.update({ sessionUpdate: 'agent_thought_chunk', content });
+      f.update({
+        sessionUpdate: 'tool_call',
+        toolCallId: randomUUID(),
+        content: [{ type: 'content', content }],
+      });
+    }
+    f.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: `private-diff-${index}`,
+      content: [
+        { type: 'diff', path: 'copy.json', oldText: null, newText: text },
+        { type: 'diff', path: 'copy.json', oldText: text, newText: 'removed' },
+      ],
+      rawOutput: { document: text, parsed: JSON.parse(text) },
+    });
+    f.update({
+      sessionUpdate: 'tool_call',
+      toolCallId: `private-root-metadata-${index}`,
+      rawOutput: JSON.parse(text),
+    });
+  }
+  const ordinary = 'const example = "moor-private-endpoint-v1";';
+  f.update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: ordinary },
+  });
+  f.update({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'ordinary',
+    content: [{ type: 'diff', path: 'source.ts', oldText: null, newText: ordinary }],
+    rawOutput: { text: ordinary },
+  });
+  const view = mirror(f.store.doc('session-a'), 'session-a');
+  const items: any[] = view.getState().history[1].items!;
+  const ordinaryMessage = items.find((item) => item.type === 'text' && item.text === ordinary);
+  strict.ok(ordinaryMessage);
+  const ordinaryTool = items.find((item) => item.toolCallId === 'ordinary');
+  strict.equal(ordinaryTool.content[0].newText, ordinary);
+  strict.equal(ordinaryTool.rawOutput.text, ordinary);
+  const protectedItems = items.filter((item) => item !== ordinaryTool && item !== ordinaryMessage);
+  strict.ok(JSON.stringify(protectedItems).includes('Moor 主机私有配置'));
+  strict.ok(!JSON.stringify(protectedItems).includes('moor-private-endpoint-v1'));
+  for (const bytes of artifacts)
+    strict.ok(!JSON.stringify(protectedItems).includes(bytes.toString('base64')));
+  strict.equal(f.store.journal.db.prepare('SELECT count(*) AS n FROM attachment').get()!.n, 0);
+  view.dispose();
+  await f.finish();
+});
 
 test('upload confirms only after atomic receipt and bytes storage; duplicate retries preserve immutable data', async (t) => {
   const f = fixture();

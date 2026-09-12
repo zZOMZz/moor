@@ -4,6 +4,7 @@ import { lstat, open, opendir } from 'node:fs/promises';
 import { basename, isAbsolute, join, parse, resolve } from 'node:path';
 import { projectFilePathSchema } from '../content-protocol';
 import { AppError, assert } from '../protocol';
+import { isPrivateEndpointEnvelope } from '../security/private-content';
 import {
   SKILLS_LIMITS,
   skillSourceSchema,
@@ -202,6 +203,11 @@ async function discover(
       400,
       'Skills 来源目录不可用',
     );
+    if (isHostPrivateProjectPath(input.rootPath)) {
+      source.status = 'unavailable';
+      issue(source.id, 'unreadable');
+      continue;
+    }
     const directories: Directory[] = [];
     const anchor = parse(input.rootPath).root;
     let path = anchor;
@@ -275,6 +281,10 @@ async function discover(
           return;
         }
         const body = bytes.subarray(0, length);
+        if (isPrivateEndpointEnvelope(body)) {
+          issue(source.id, 'unreadable', relative);
+          return;
+        }
         let text: string;
         try {
           if (body.includes(0)) throw new Error();

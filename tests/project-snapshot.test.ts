@@ -2,6 +2,8 @@ import test from 'node:test';
 import strict from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -15,6 +17,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONTENT_LIMITS } from '../src/content-protocol';
+import { PrivateEndpointFile } from '../src/security/private-endpoint-file';
+import { runDeviceSecurityCommand } from '../src/security/commands';
 import {
   captureProjectSnapshot,
   compareProjectSnapshots,
@@ -44,6 +48,103 @@ const directoryOnly: ProjectSnapshotOptions = {
     throw Object.assign(new Error('synthetic non-repository'), { nonRepository: true });
   },
 };
+
+test('actual private endpoint files and arbitrary copies are unavailable in both Git and directory snapshots', async (t) => {
+  const p = project(t);
+  const privateDirectory = join(p.root, 'custom');
+  mkdirSync(privateDirectory, { mode: 0o700 });
+  const dataFile = join(privateDirectory, 'custom-device.json'),
+    codeFile = join(privateDirectory, 'custom-code.json'),
+    capsuleFile = join(privateDirectory, 'custom-backup.json');
+  await runDeviceSecurityCommand(
+    {
+      action: 'initialize',
+      identity: {
+        accountId: 'synthetic-owner',
+        serverOrigin: 'https://relay.example.test',
+        deviceId: 'synthetic-mbp',
+        roles: ['host'],
+      },
+      recoveryCodeFile: codeFile,
+    },
+    { dataFile },
+  );
+  await runDeviceSecurityCommand(
+    { action: 'export-recovery', recoveryCodeFile: codeFile, outputFile: capsuleFile },
+    { dataFile },
+  );
+  const sensitivePaths: string[] = [];
+  for (const [index, path] of [dataFile, codeFile, capsuleFile].entries()) {
+    const copied = `copy-${index}.txt`;
+    copyFileSync(path, join(p.root, copied));
+    sensitivePaths.push(`custom/${path.split('/').at(-1)!}`, copied);
+  }
+  p.write('safe.txt', 'ordinary public source');
+  for (const options of [directoryOnly, {}]) {
+    if (options !== directoryOnly) {
+      p.git('init', '--quiet');
+      p.git('add', '.');
+    }
+    const snapshot = await captureProjectSnapshot(p.root, options);
+    for (const path of sensitivePaths) {
+      const file = snapshot.files.find((file) => file.path === path);
+      strict.ok(file);
+      strict.equal(file.state, 'unavailable');
+      strict.equal(file.text, undefined);
+      strict.equal(file.version, undefined);
+    }
+    strict.equal(
+      snapshot.files.find((file) => file.path === 'safe.txt')!.text,
+      'ordinary public source',
+    );
+    strict.ok(!JSON.stringify(snapshot).includes('moor-private-endpoint-v1'));
+  }
+});
+
+test('reserved security paths are filtered and cannot themselves become snapshot roots', async (t) => {
+  const p = project(t);
+  for (const name of ['.moor-security', '.MOOR-SECURITY'])
+    p.write(`${name}/nested/plain.txt`, 'synthetic-secret');
+  for (const options of [directoryOnly, {}]) {
+    if (options !== directoryOnly) {
+      p.git('init', '--quiet');
+      p.git('add', '.');
+    }
+    const tree = await enumerateProjectFiles(p.root, options),
+      snapshot = await captureProjectSnapshot(p.root, options);
+    strict.ok(tree.entries.every((entry) => !entry.path.toLowerCase().includes('.moor-security')));
+    strict.ok(!JSON.stringify(snapshot).includes('synthetic-secret'));
+    for (const name of ['.moor-security', '.MOOR-SECURITY']) {
+      await strict.rejects(
+        enumerateProjectFiles(join(p.root, name), options),
+        (error: any) => error.status === 403,
+      );
+      await strict.rejects(
+        captureProjectSnapshot(join(p.root, name, 'nested'), options),
+        (error: any) => error.status === 403,
+      );
+    }
+  }
+});
+
+test('a private endpoint file at the project root is omitted from frozen text without hiding ordinary format documentation', async (t) => {
+  const p = project(t);
+  chmodSync(p.root, 0o700);
+  const file = PrivateEndpointFile.open(join(p.root, 'arbitrary-name.json'));
+  file.save(null, { code: 'synthetic-secret' });
+  file.close();
+  p.write('source.ts', 'const example = "moor-private-endpoint-v1";');
+  const snapshot = await captureProjectSnapshot(p.root, directoryOnly);
+  strict.equal(
+    snapshot.files.find((file) => file.path === 'arbitrary-name.json')!.state,
+    'unavailable',
+  );
+  strict.equal(
+    snapshot.files.find((file) => file.path === 'source.ts')!.text,
+    'const example = "moor-private-endpoint-v1";',
+  );
+  strict.ok(!JSON.stringify(snapshot).includes('synthetic-secret'));
+});
 
 test('automatic Git and directory snapshots exclude reserved GitHub credentials and temporary saves', async (t) => {
   const p = project(t);

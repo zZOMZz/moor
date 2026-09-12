@@ -72,6 +72,7 @@ async function fixture(t: TestContext) {
     [`${appRoot}/google-auth.cjs`]: '// synthetic Google desktop sign-in controller',
     [`${appRoot}/runtime/bridge.mjs`]: '// synthetic host',
     [`${appRoot}/runtime/cli.mjs`]: '// synthetic cli',
+    [`${appRoot}/runtime/security.mjs`]: '// synthetic local device security CLI',
     [`${appRoot}/runtime/public/index.html`]: '<title>Synthetic</title>',
     [`${appRoot}/licenses/Moor-LICENSE`]: 'synthetic Moor license',
     [`${appRoot}/licenses/Moor-NOTICE`]: 'synthetic attribution',
