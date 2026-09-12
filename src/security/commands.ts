@@ -11,6 +11,8 @@ import {
   trustPinSchema,
 } from './e2ee-trust';
 import { PrivateEndpointFile } from './private-endpoint-file';
+import { TrustClient, trustConnectionSchema, type TrustClientOptions } from './trust-client';
+import { TRUST_PUBLICATION_LIMITS, TRUST_PUBLICATION_VERSION } from './trust-publication';
 
 export const DEVICE_SECURITY_MAX_BYTES = 1024 * 1024;
 export const DEVICE_SECURITY_FAILED =
@@ -37,6 +39,22 @@ const recoveryCapsuleSchema = z
 /** Local operator input only. Credentials are read from private files, never command arguments. */
 export const deviceSecurityCommandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('read') }).strict(),
+  z.object({ action: z.literal('read-publications') }).strict(),
+  z
+    .object({
+      action: z.literal('publish-trust'),
+      expectedRevision: revisionSchema,
+      connectionFile: pathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('sync-trust'),
+      expectedRevision: revisionSchema,
+      connectionFile: pathSchema,
+      limit: z.number().int().min(1).max(TRUST_PUBLICATION_LIMITS.pageEntries).optional(),
+    })
+    .strict(),
   z
     .object({
       action: z.literal('initialize'),
@@ -133,10 +151,10 @@ function distinctPaths(paths: string[]) {
       if (resolved.includes(path + suffix)) fail();
 }
 
-/** One manual action. The caller owns input/output; this module never connects to a host or relay. */
+/** One manual action. Only publish-trust and sync-trust contact the fixed public trust endpoints. */
 export async function runDeviceSecurityCommand(
   input: unknown,
-  options: { dataFile: string },
+  options: { dataFile: string; trust?: TrustClientOptions },
 ): Promise<DeviceSecurityResult> {
   let manager: DeviceManager | undefined;
   const opened: PrivateEndpointFile[] = [];
@@ -146,6 +164,7 @@ export async function runDeviceSecurityCommand(
     if ('recoveryCodeFile' in command) paths.push(command.recoveryCodeFile);
     if ('capsuleFile' in command) paths.push(command.capsuleFile);
     if ('outputFile' in command) paths.push(command.outputFile);
+    if ('connectionFile' in command) paths.push(command.connectionFile);
     distinctPaths(paths);
     manager = await DeviceManager.open(options.dataFile);
     const open = (path: string) => {
@@ -176,6 +195,80 @@ export async function runDeviceSecurityCommand(
           if (current.revision !== status.revision) fail();
           data = { ...current, fingerprint };
         } else data = status;
+        break;
+      }
+      case 'read-publications':
+        data = manager.publications();
+        break;
+      case 'publish-trust':
+      case 'sync-trust': {
+        const publication = manager.publications();
+        if (publication.revision !== command.expectedRevision) fail();
+        const connectionFile = open(command.connectionFile);
+        const connection = trustConnectionSchema.parse(connectionFile.load()?.value);
+        if (
+          connection.owner !== publication.pin.accountId ||
+          connection.origin !== publication.pin.serverOrigin
+        )
+          fail();
+        const signal = AbortSignal.any([
+          ...(options.trust?.signal ? [options.trust.signal] : []),
+          (options.trust?.deadline ?? AbortSignal.timeout)(30000),
+        ]);
+        const current = () => {
+          options.trust?.current?.();
+          if (signal.aborted) fail();
+          connectionFile.load();
+          if (manager!.status().revision !== command.expectedRevision) fail();
+        };
+        current();
+        const client = new TrustClient(connection, {
+          ...options.trust,
+          signal,
+          deadline: () => signal,
+          current,
+        });
+        if (command.action === 'publish-trust') {
+          if (!publication.entries.length) {
+            data = { status: manager.status(), stored: [], pending: 0 };
+            break;
+          }
+          const receipt = await client.publish(publication);
+          current();
+          const status = manager.ackPublications({
+            expectedRevision: command.expectedRevision,
+            checkpoints: receipt.stored,
+          });
+          data = {
+            status,
+            stored: receipt.stored,
+            pending: manager.publications().entries.length,
+            relayHead: { checkpoint: receipt.head, verified: false },
+          };
+        } else {
+          const before = manager.status();
+          if (!('trust' in before) || !before.trust) fail();
+          const page = await client.read({
+            rootPublicKey: publication.rootPublicKey,
+            request: {
+              publicationVersion: TRUST_PUBLICATION_VERSION,
+              pin: publication.pin,
+              after: before.trust.checkpoint,
+              limit: command.limit ?? TRUST_PUBLICATION_LIMITS.pageEntries,
+            },
+          });
+          current();
+          const status = await manager.installTrustBatch(
+            { expectedRevision: command.expectedRevision, entries: page.entries },
+            { current },
+          );
+          data = {
+            status,
+            installed: page.entries.length,
+            complete: page.complete,
+            relayHead: { checkpoint: page.head, verified: page.complete },
+          };
+        }
         break;
       }
       case 'initialize':

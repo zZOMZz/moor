@@ -28,6 +28,52 @@ https://moor.example.com/api/auth/google/callback
 
 绑定和登录并不执行 Agent，也不配对新电脑。Google 登录成功后，所有会话请求仍使用原来的账号、设备、工作区、项目与会话归属校验。
 
+## CLI 系统浏览器接续
+
+CLI 可以登录已存在且已关联 Google 的个人账号。建号与绑定仍使用上面的浏览器或 Mac 设置流程；CLI 不接收初始化口令、Moor 密码或 Google 令牌来完成这两个动作。
+
+先构建程序，在项目外的私有 CLI 状态目录中开始一次接续：
+
+```sh
+node dist/cli.mjs auth google-start --server https://moor.example.com
+```
+
+成功结果 `data` 包含 `origin`、`browserUrl`、`code` 和 `expiresAt`。手动在系统浏览器打开返回的 `browserUrl`，选择 Google 身份，核对 Moor 服务地址、邮箱及与 CLI 一致的确认码，再明确确认。CLI 不自动打开应用、轮询浏览器或完成登录；URL 只含公开流程编号，接续密钥保存在本机私有 CLI 状态，绝不输出。
+
+回到同一个 CLI 状态目录，手动读取结果：
+
+```sh
+node dist/cli.mjs auth google-review
+```
+
+`data.status:"pending"` 表示浏览器尚未确认；`"ready"` 会返回 `email`、`origin`、`code` 和到期时间。核对实际显示的完整邮箱和确认码后，通过标准输入提交严格 JSON，仅包含这两个字段：
+
+```sh
+node dist/cli.mjs auth google-confirm --stdin <<'JSON'
+{"expectedEmail":"owner@example.com","expectedCode":"AB12-CD34"}
+JSON
+```
+
+示例邮箱和代码必须替换为本人刚核对的值；代码是大写十六进制 `XXXX-XXXX`。不支持把确认内容放进参数或用 `--file` 代替。成功仅输出已登录账号、邮箱和服务地址，登录 Cookie 留在私有状态。Google 授权不会因此批准设备根、配对请求或 Agent 执行。
+
+开始和最终提交前会持久记录流程状态，原状态目录中的另一次登录、退出或设置变化会使旧操作失效。`finishing` 表示最终提交可能已经派发：响应丢失时不会再次发送该 POST，也不能因报错断言尚未登录。若 Cookie 已以 `issued` 保存而最后的身份核查失败，可在流程有效且本机状态未改变时，手动再次提交相同 `google-confirm`；它只读取 `/api/me` 核对已有凭据，不再次申请登录。
+
+取消当前尝试使用：
+
+```sh
+node dist/cli.mjs auth google-cancel
+```
+
+取消会先使旧本机流程失效，再尝试取消中转流程；若已保存新 Cookie，则请求撤销该凭据。检查返回的 `serverConfirmed`，不能把仅本机取消等同于服务器撤销。已签发凭据的撤销结果不明时保留待处理状态；后续需手动核查或取消，不能用新登录覆盖未知结果。过期或未完成流程不会在重启后自动继续，重新开始前先手动取消。
+
+需要发布或同步设备公开信任版本时，先核对 CLI 的当前远程登录，再导出专用私有连接文件：
+
+```sh
+node dist/cli.mjs auth export-trust --output /private/device/.moor-security/trust-connection.json
+```
+
+父目录须为当前用户持有的 `0700` 私有目录，输出须是新的绝对文件路径；不会覆盖已有文件。本机 `--connection` 登录不能导出。输出文件含 Moor 登录 Cookie，不能加入项目、会话或仓库；终端只返回路径。发布/同步命令只传公开签名材料，具体流程见[设备安全命令](device-security.md#发布与同步公开信任版本)。
+
 ## 解除绑定与本机恢复
 
 已有 Moor 密码时，可以在设置中再次验证密码后解除 Google 绑定。解除绑定会撤销未完成的 Google 登录尝试，保留当前 Moor 登录与已配对电脑。Google 是唯一登录方式时不允许直接解除，以免失去访问入口。
@@ -50,8 +96,8 @@ MOOR_DATA_DIR=/private/moor-data node dist/server.mjs --recover-account < /priva
 
 ## 验证范围
 
-合成验证覆盖实际签名校验、短期 state/nonce/PKCE、单次消费、账号事务、密码恢复、浏览器和桌面确认、取消及异步竞争。Google 令牌验证使用锁定的 `jose`，实现遵循 [OpenID Connect ID Token 校验](https://openid.net/specs/openid-connect-core-1_0-errata2.html#IDTokenValidation)。中转重启不会继续旧认证流程。
+合成验证覆盖实际签名校验、短期 state/nonce/PKCE、单次消费、账号事务、密码恢复、浏览器和桌面确认、CLI 手动接续与私有连接导出、取消及异步竞争。Google 令牌验证使用锁定的 `jose`，实现遵循 [OpenID Connect ID Token 校验](https://openid.net/specs/openid-connect-core-1_0-errata2.html#IDTokenValidation)。中转重启不会继续旧认证流程。
 
-真实 Google 客户端、Mac 系统浏览器接回、iPhone Safari/PWA、Google 同意页面与撤销权限仍需在操作者环境中验收。这是身份认证功能；端到端加密与跨主机迁移按 M6 后续批次交付，不能将本批 HTTPS 或 Google 登录视为已实现它们。
+真实 Google 客户端、Mac 系统浏览器接回、Mac mini、MacBook Air、iPhone Safari/PWA、Google 同意页面与撤销权限仍需在操作者环境中验收。这是身份认证功能；M6.2 尚未完成，生产远程会话仍是明文 v3，跨主机迁移也未接通，不能将本批 HTTPS 或 Google 登录视为已实现它们。
 
 返回[文档目录](README.md)。

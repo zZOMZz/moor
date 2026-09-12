@@ -16,7 +16,8 @@ import {
   type TaskPlan,
 } from '../src/task-protocol';
 import type { AgentOpenOptions } from '../src/runtime/agent';
-import { metas } from '../src/model';
+import { metas, mirror } from '../src/model';
+import type { AttentionContext } from '../src/attention';
 
 function signal() {
   let resolve!: () => void;
@@ -454,3 +455,122 @@ test(
     await Promise.all(runs.map((run) => run.done));
   },
 );
+
+test('attention continuation rolls task and MCP grants back with its receipt, then retries the original operation once', async (t) => {
+  const f = await fixture(t);
+  await f.host.mutate(await f.mutation({}), f.scope.localProjectId, f.authority);
+  const initialRun = f.host.active.get(f.scope.sessionId)!;
+  await f.parentStarted.promise;
+  f.allowPrompt.resolve();
+  f.parentFinish.resolve();
+  await initialRun.done;
+  const context: AttentionContext = {
+    actor: { kind: 'relay', authorityId: 'synthetic-authority', accountId: f.authority.ownerId },
+    executionDeviceId: f.authority.deviceId,
+    machineId: f.scope.machineId,
+    runtimeWorkspaceId: f.scope.workspaceId,
+    localProjectId: f.scope.localProjectId,
+    catalogWorkspaceId: 'synthetic-catalog',
+    projectId: 'synthetic-logical-project',
+    replicaId: 'synthetic-replica',
+    sessionId: f.scope.sessionId,
+  };
+  const item = f.host.attentionItems(context, { view: 'pending', limit: 50 }).items[0]!;
+  assert.equal(item.kind, 'outcome');
+  await f.host.attentionDisposition(context, item.itemId, {
+    operationId: 'attention-needs-followup',
+    eventRevision: item.eventRevision,
+    observationRevision: 0,
+    disposition: 'needs_followup',
+  });
+  const mcpState = await f.host.mcpSettings.handle({
+    action: 'save',
+    expectedRevision: 0,
+    name: 'Synthetic attention MCP',
+    description: 'Explicit continuation tools',
+    projectIds: [f.scope.localProjectId],
+    enabled: true,
+    connection: { transport: 'http', url: 'https://synthetic.invalid/mcp' },
+  });
+  const mcpId = mcpState.presets[0]!.versionId;
+  const continuation = {
+    eventRevision: item.eventRevision,
+    observationRevision: 1,
+    mutation: buildSessionTurn({
+      scope: f.scope,
+      read: await f.host.read(f.scope.sessionId, undefined, f.scope.localProjectId),
+      agent: f.host.workspace.agents.find((agent) => agent.id === 'parent')!,
+      prompt: '明确继续原待办并授权合成任务及 MCP',
+      operationId: 'attention-continue-original',
+      turnId: 'attention-user-original',
+      peerId: 'fedcba0987654321',
+      now: '2026-09-13T00:00:00.000Z',
+      taskPlan: f.plan,
+      mcpServerIds: [mcpId],
+    }),
+  };
+  const persistedHistory = () => {
+    const view = mirror(f.store.doc(f.scope.sessionId), f.scope.sessionId);
+    try {
+      return structuredClone(view.getState().history);
+    } finally {
+      view.dispose();
+    }
+  };
+  const mcpGrants = () =>
+    f.store.journal.db
+      .prepare("SELECT value FROM runtime_state WHERE key LIKE 'mcp-grant-v1/%'")
+      .all();
+  const beforeHistory = persistedHistory();
+  const beforeMeta = structuredClone(metas(f.host.meta)['session-' + f.scope.sessionId]);
+  assert.equal(beforeHistory.length, 2);
+  f.store.journal.db.exec(
+    "CREATE TRIGGER fail_attention_granted_receipt BEFORE INSERT ON attention_receipt BEGIN SELECT RAISE(ABORT, 'synthetic attention grant receipt failure'); END",
+  );
+  await assert.rejects(
+    f.host.attentionContinue(context, item.itemId, continuation, f.authority),
+    /synthetic attention grant receipt failure/,
+  );
+  assert.deepEqual(persistedHistory(), beforeHistory);
+  assert.deepEqual(metas(f.host.meta)['session-' + f.scope.sessionId], beforeMeta);
+  assert.equal(f.store.journal.has(continuation.mutation.operationId), false);
+  assert.equal(
+    f.store.attention.hasReceipt(context.actor, continuation.mutation.operationId),
+    false,
+  );
+  assert.equal((await f.read()).grants.length, 0);
+  assert.equal(mcpGrants().length, 0);
+  assert.equal(f.host.active.size, 0);
+  assert.deepEqual(f.counts(), { parentPrompts: 1, childPrompts: 0, childCancels: 0 });
+  assert.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
+  f.store.journal.db.exec('DROP TRIGGER fail_attention_granted_receipt');
+
+  const receipt = await f.host.attentionContinue(context, item.itemId, continuation, f.authority);
+  const run = f.host.active.get(f.scope.sessionId)!;
+  assert.deepEqual(
+    await f.host.attentionContinue(context, item.itemId, continuation, f.authority),
+    receipt,
+  );
+  await run.done;
+  assert.deepEqual(f.counts(), { parentPrompts: 2, childPrompts: 0, childCancels: 0 });
+  assert.ok(f.options()?.taskTools);
+  assert.equal(f.options()?.mcp?.servers.length, 1);
+  const grants = (await f.read()).grants;
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0]!.parentUserTurnId, 'attention-user-original');
+  assert.equal(grants[0]!.parentAssistantTurnId, run.turnId);
+  assert.deepEqual(grants[0]!.plan, f.plan);
+  assert.equal(mcpGrants().length, 1);
+  const mcpGrant = JSON.parse(Buffer.from(mcpGrants()[0]!.value as Uint8Array).toString('utf8'));
+  assert.equal(mcpGrant.operationId, continuation.mutation.operationId);
+  assert.deepEqual(mcpGrant.scope, f.scope);
+  assert.deepEqual(mcpGrant.serverIds, [mcpId]);
+  assert.equal(persistedHistory().length, 4);
+  assert.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'continued');
+  assert.deepEqual(
+    await f.host.attentionContinue(context, item.itemId, continuation, f.authority),
+    receipt,
+  );
+  await assert.rejects(f.host.mutate(continuation.mutation, f.scope.localProjectId, f.authority));
+  assert.deepEqual(f.counts(), { parentPrompts: 2, childPrompts: 0, childCancels: 0 });
+});

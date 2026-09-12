@@ -174,6 +174,7 @@ export class CliState {
     this.db = new DatabaseSync(file);
     this.db.exec(
       'PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS setting(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,value TEXT NOT NULL);' +
+        'CREATE TABLE IF NOT EXISTS setting_revision(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL CHECK(revision>=0)); INSERT OR IGNORE INTO setting_revision VALUES(1,0);' +
         'CREATE INDEX IF NOT EXISTS pending_identity ON outbox (' +
         identityColumns.join(',') +
         ') WHERE ' +
@@ -190,14 +191,50 @@ export class CliState {
     return row ? JSON.parse(String(row.value)) : undefined;
   }
   set(key: string, value: unknown) {
+    this.compareAndSetSettings(this.settingsRevision(), { [key]: value });
+  }
+  settingsRevision() {
     this.assertCurrent();
-    if (value === undefined) this.db.prepare('DELETE FROM setting WHERE key=?').run(key);
-    else
-      this.db
-        .prepare(
-          'INSERT INTO setting VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-        )
-        .run(key, JSON.stringify(value));
+    const revision = this.db
+      .prepare('SELECT revision FROM setting_revision WHERE id=1')
+      .get()?.revision;
+    if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0)
+      throw new CliError('private-state', 'CLI 状态版本不可验证。', 1);
+    return revision;
+  }
+  /** One durable CAS for credentials and their pending handoff; every setting write advances it. */
+  compareAndSetSettings(expectedRevision: number, updates: Record<string, unknown>) {
+    this.assertCurrent();
+    if (
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
+      expectedRevision >= Number.MAX_SAFE_INTEGER
+    )
+      throw new CliError('private-state', 'CLI 状态版本不可验证。', 1);
+    const serialized = Object.entries(updates).map(
+      ([key, value]) => [key, value === undefined ? undefined : JSON.stringify(value)] as const,
+    );
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (this.settingsRevision() !== expectedRevision)
+        throw new CliError('conflict', 'CLI 状态已改变，请重新检查当前登录。', 4);
+      for (const [key, value] of serialized) {
+        if (value === undefined) this.db.prepare('DELETE FROM setting WHERE key=?').run(key);
+        else
+          this.db
+            .prepare(
+              'INSERT INTO setting VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+            )
+            .run(key, value);
+      }
+      this.db.prepare('UPDATE setting_revision SET revision=revision+1 WHERE id=1').run();
+      this.assertCurrent();
+      this.db.exec('COMMIT');
+      return expectedRevision + 1;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
   target() {
     const value = this.get('target');

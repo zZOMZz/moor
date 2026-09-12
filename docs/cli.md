@@ -48,6 +48,40 @@ node dist/cli.mjs targets list --json
 
 远程退出登录会请求中转撤销该 CLI 的登录凭据；请求失败仍清除客户端保存的登录，不能据此声称服务器已撤销。HTTPS 校验始终开启，不跟随重定向。HTTP 只允许明确的本机回环地址用于本机服务或隔离开发环境。
 
+已经关联 Google 的个人账号也可通过系统浏览器登录：
+
+```sh
+node dist/cli.mjs auth google-start --server https://moor.example.com
+```
+
+手动打开返回的 `data.browserUrl`，在浏览器核对服务、邮箱及与 CLI 相同的 `data.code` 并确认。回到同一个 CLI 状态目录，再明确执行：
+
+```sh
+node dist/cli.mjs auth google-review
+node dist/cli.mjs auth google-confirm --stdin <<'JSON'
+{"expectedEmail":"owner@example.com","expectedCode":"AB12-CD34"}
+JSON
+```
+
+只有 `google-review` 返回 `status:"ready"` 后才确认；将示例替换为刚核对的完整邮箱与大写确认码。输入严格只有 `expectedEmail`、`expectedCode`，不接受 `--file` 或参数中的凭据。取消使用 `auth google-cancel`。这些命令不自动打开浏览器、轮询或重试；CLI 仅提供既有账号登录，建号和绑定在浏览器或 Mac 设置完成。
+
+接续密钥和登录 Cookie 只保存在私有 CLI 状态，URL 不含这些值。最终 POST 前先保存 `finishing`，未知结果不会重复提交；若已保存 Cookie 为 `issued`，在有效期和原状态内手动再次确认只重读 `/api/me`。取消结果的 `serverConfirmed` 区分本机清理与中转确认，完整步骤及未知结果处理见[Google CLI 接续](google-login.md#cli-系统浏览器接续)。
+
+## 导出设备信任连接
+
+设备公开信任发布与同步使用独立的[设备安全入口](device-security.md)。先核对当前 CLI 的远程账号和服务，再导出到尚不存在的私有文件：
+
+```sh
+node dist/cli.mjs auth status
+node dist/cli.mjs auth export-trust --output /private/device/.moor-security/trust-connection.json
+```
+
+导出不联网、不重新登录，只把当前远程连接写入新文件；成功输出 `data.outputFile`。路径必须绝对，父目录属于当前用户且权限为 `0700`，文件使用 `0600`，禁止符号链接、硬链接和覆盖已有文件。本机 `--connection` 登录不能导出，也不能将其实例密钥当作远程 Cookie。
+
+文件含 Moor 登录凭据，必须放在项目与程序包之外，不输出、手写或共享其中的 Cookie。服务器撤销该 CLI 登录或凭据过期会使导出连接失效；退出请求失败时不能保证已撤销。重新登录后需明确导出新文件。Google 登录允许访问对应账号的公开版本，不能代替完整根 pin 和配对指纹的独立核对。
+
+设备安全命令有 15 个动作：原有 12 个动作和新增 `read-publications` 保持本机操作，只有 `publish-trust`、`sync-trust` 请求固定的公开信任接口，不执行会话或 Agent。待发布队列最多 16 项；发布确认严格匹配原前缀，同步每次完整验证一页后以一次本机 CAS 安装。参数、容量限制与手动恢复见[公开信任版本流程](device-security.md#发布与同步公开信任版本)。**会话 CLI 仍使用明文桥接 v3，公开版本同步不代表已启用端到端加密。**
+
 ## 创建、发送与阅读
 
 ```sh
@@ -139,8 +173,8 @@ node dist/cli.mjs operation abandon OPERATION_ID --json
 | 7      | 等待超时，未停止 Agent                                 |
 | 130    | Ctrl-C 中断 CLI，未停止 Agent                          |
 
-默认状态位于 `~/.moor-cli-v1/moor-cli-v1.sqlite`，可用 `--state-dir` 指定项目外的绝对私有目录。目录使用 `0700`，数据库使用 `0600`；文件、祖先目录或身份变化时停止请求。数据库包含登录凭据与待确认正文，没有额外文件加密，不能提交到 Git、复制到程序包或放入共享目录。项目文件读取与快照额外排除 CLI 保留文件名。
+默认状态位于 `~/.moor-cli-v1/moor-cli-v1.sqlite`，可用 `--state-dir` 指定项目外的绝对私有目录。目录使用 `0700`，数据库使用 `0600`；文件、祖先目录或身份变化时停止请求。数据库包含登录凭据、Google 待完成接续和待确认正文，没有额外文件加密，不能提交到 Git、复制到程序包或放入共享目录。同一次 Google 接续的所有命令必须使用相同的状态目录。项目文件读取与快照额外排除 CLI 保留文件名。
 
 备份前停止使用该状态目录的所有 CLI 进程，并完整保存其数据库和仍存在的 SQLite 辅助文件。客户端状态不替代[执行主机备份](runtime.md#主机停机备份与恢复)。连接描述文件是临时凭据，应由当前主机重新生成，不从备份恢复旧端口和密钥。删除待确认记录会丢失原编号与封存能力，应先处理这些操作。
 
-真实 ACP、双 Mac、iPhone 与安装包仍需[CLI 专项验收](validation.md#m53-cli-专项步骤)。返回[文档目录](README.md)。
+真实 Google、ACP、Mac mini、MacBook Air、iPhone 与安装包仍需[CLI 专项验收](validation.md#m53-cli-专项步骤)。M6.2 加密会话闭环及跨主机迁移尚未完成。返回[文档目录](README.md)。
