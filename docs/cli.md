@@ -2,7 +2,14 @@
 
 Moor CLI 通过与 Web 相同的主机接口创建、读取、发送和整理会话。主机确认后才报告送达；空会话创建、阅读、配置查看和恢复查询都不会启动 Agent。需要 Node.js 24+，运行 `pnpm build` 后可用 `node dist/cli.mjs` 或 `pnpm cli`。
 
-macOS 程序包同时包含 `Moor.app/Contents/Resources/app/runtime/cli.mjs`，可用 Node.js 24+ 执行该文件。CLI 不会安装全局命令，也不依赖其他应用的数据或源码。中转程序包只包含中转所需程序。
+macOS 程序包同时包含 `Moor.app/Contents/Resources/app/runtime/cli.mjs`。可用 Node.js 24+ 执行，也可使用包内 Electron 的 Node 模式，无需另装 Node：
+
+```sh
+ELECTRON_RUN_AS_NODE=1 /Applications/Moor.app/Contents/MacOS/Electron \
+  /Applications/Moor.app/Contents/Resources/app/runtime/cli.mjs --help
+```
+
+将 `--help` 换成下文的 CLI 参数即可。独立主机同样可用包内可执行文件运行 `runtime/bridge.mjs --local`；配置和数据必须放在程序包外的私有目录，已有桌面主机运行时直接连接它。CLI 不会安装全局命令，也不依赖其他应用的数据或源码。中转程序包只包含中转所需程序。
 
 ## 连接执行主机
 

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { RuntimeStore } from '../src/runtime/store';
@@ -20,6 +20,13 @@ test(
     const runtimeFile = join(privateRoot, 'runtime.sqlite'),
       config = join(privateRoot, 'bridge.json'),
       descriptor = config + '.cli.json';
+    const packagedApp = process.env.MOOR_TEST_PACKAGED_APP
+        ? realpathSync(process.env.MOOR_TEST_PACKAGED_APP)
+        : undefined,
+      executable = packagedApp ? join(packagedApp, 'Contents/MacOS/Electron') : process.execPath,
+      packagedRuntime = packagedApp && join(packagedApp, 'Contents/Resources/app/runtime'),
+      syntheticAgent = join(root, 'synthetic-acp-cli.mjs');
+    copyFileSync(resolve('tests/support/synthetic-acp-cli.mjs'), syntheticAgent);
     const runtime = new RuntimeStore(runtimeFile);
     runtime.registerProject(project);
     runtime.registerAgent('synthetic-cli', {
@@ -29,8 +36,8 @@ test(
       cliType: 'custom',
       agentType: 'synthetic',
       customAcp: {
-        command: process.execPath,
-        args: [resolve('tests/support/synthetic-acp-cli.mjs')],
+        command: executable,
+        args: [syntheticAgent],
       },
     });
     runtime.close();
@@ -44,15 +51,25 @@ test(
       rmSync(root, { recursive: true, force: true });
     });
     function child(entry: string, args: string[], input?: string) {
-      const bundled = process.env.MOOR_TEST_CLI_BUNDLES === '1';
+      const bundled = !!packagedRuntime || process.env.MOOR_TEST_CLI_BUNDLES === '1';
       const child = fork(
           resolve(
-            bundled ? (entry.includes('/bridge/') ? 'dist/bridge.mjs' : 'dist/cli.mjs') : entry,
+            bundled
+              ? join(
+                  packagedRuntime ?? 'dist',
+                  entry.includes('/bridge/') ? 'bridge.mjs' : 'cli.mjs',
+                )
+              : entry,
           ),
           args,
           {
+            ...(packagedRuntime ? { execPath: executable, cwd: root } : {}),
             execArgv: bundled ? [] : ['--import', 'tsx'],
-            env: { ...process.env, MOOR_RUNTIME_DATA: runtimeFile },
+            env: {
+              ...process.env,
+              MOOR_RUNTIME_DATA: runtimeFile,
+              ...(packagedRuntime ? { ELECTRON_RUN_AS_NODE: '1', NODE_PATH: '' } : {}),
+            },
             stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
           },
         ),
@@ -115,7 +132,7 @@ test(
         '--runtime-data',
         runtimeFile,
         '--public-dir',
-        resolve('src/web/public'),
+        packagedRuntime ? join(packagedRuntime, 'public') : resolve('src/web/public'),
       ]);
     }
     function cli(args: string[], input?: string) {

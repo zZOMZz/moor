@@ -469,7 +469,7 @@ function pageCommand(command, args) {
 }
 
 async function runWorker() {
-  const { app, BrowserWindow, session } = require('electron');
+  const { app, BrowserWindow, session, nativeImage } = require('electron');
   if (
     process.versions.electron !== PINNED_ELECTRON ||
     !process.env.MOOR_PREVIEW_DATA ||
@@ -534,25 +534,20 @@ async function runWorker() {
   }
   async function image() {
     const contents = wc();
-    // A compositor paint signal is reliable for hidden offscreen windows; capturePage can
-    // race the initial/resize surface and fail with UnknownVizError before its first paint.
-    let bitmap = await new Promise((resolve) => {
-      const painted = (_event, _dirty, value) => {
-        const size = value.getSize();
-        if (size.width !== binding.viewport.width || size.height !== binding.viewport.height) {
-          contents.invalidate();
-          return;
-        }
-        contents.removeListener('paint', painted);
-        resolve(value);
-      };
-      contents.on('paint', painted);
-      contents.invalidate();
+    // Electron 44 invalidate() re-emits its cached offscreen backing bitmap. A paint
+    // event can therefore predate an acknowledged input, even after page rAFs.
+    // CDP's surface screenshot requests a renderer redraw and waits for its copy
+    // result; never return the cached paint as an interaction receipt.
+    const snapshot = await contents.debugger.sendCommand('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      captureBeyondViewport: false,
     });
+    const bitmap = nativeImage.createFromBuffer(Buffer.from(snapshot.data, 'base64'));
     alive();
     const size = bitmap.getSize();
     if (size.width !== binding.viewport.width || size.height !== binding.viewport.height)
-      bitmap = bitmap.resize({ ...binding.viewport, quality: 'good' });
+      throw new Error('预览实际视口与请求不一致');
     const bytes = bitmap.toPNG();
     if (!bytes.length || bytes.length > MAX_IMAGE) throw new Error('预览画面超过大小限制');
     return {
@@ -564,8 +559,8 @@ async function runWorker() {
   }
   async function capture(attempt = 0) {
     const contents = wc();
-    // Input acknowledgement can precede the compositor update. Two rendering frames
-    // cross that boundary without sleeping or re-dispatching the interaction.
+    // Let page animation-frame handlers observe input before the compositor snapshot.
+    // image() separately waits for Chromium to redraw and copy the requested surface.
     await dom('settle');
     const capturingDocument = documentId;
     const observed = await dom('viewport');

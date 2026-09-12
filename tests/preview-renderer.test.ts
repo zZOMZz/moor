@@ -14,6 +14,17 @@ import { createPreviewRenderer } from '../src/runtime/preview-renderer';
 import type { PreviewFrame, PreviewAction } from '../src/preview-protocol';
 
 const workerPath = path.resolve('src/desktop/preview-renderer.cjs');
+function nativeRenderer() {
+  const packagedApp = process.env.MOOR_TEST_PACKAGED_APP;
+  return createPreviewRenderer({
+    workerPath:
+      process.env.MOOR_TEST_PREVIEW_WORKER ||
+      (packagedApp
+        ? path.join(packagedApp, 'Contents/Resources/app/runtime/preview-renderer.cjs')
+        : workerPath),
+    ...(packagedApp ? { electronPath: path.join(packagedApp, 'Contents/MacOS/Electron') } : {}),
+  });
+}
 const { createOriginProxy, serviceOrigin, canonicalPath } = previewRequire(import.meta.url)(
   workerPath,
 ) as {
@@ -386,9 +397,7 @@ test(
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    const driver = createPreviewRenderer({
-      workerPath: process.env.MOOR_TEST_PREVIEW_WORKER || workerPath,
-    });
+    const driver = nativeRenderer();
     const nativeBinding = {
       ...binding,
       origin: 'http://127.0.0.1:' + (server.address() as { port: number }).port,
@@ -421,6 +430,11 @@ test(
       );
       assert.equal(await valueSeen, '中文输入');
       const stableTyped = await driver.capture(binding.previewId, check);
+      assert.notEqual(
+        typed.image.version,
+        opened.image.version,
+        'input receipt must not reuse the pre-input bitmap',
+      );
       assert.equal(
         typed.image.version,
         stableTyped.image.version,
@@ -491,7 +505,7 @@ test(
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    const driver = createPreviewRenderer({ workerPath });
+    const driver = nativeRenderer();
     try {
       const opened = await driver.open(
         { ...binding, origin: 'http://127.0.0.1:' + (server.address() as { port: number }).port },
@@ -582,7 +596,7 @@ test(
     wss.on('connection', (socket) => socket.send('websocket:allowed'));
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    const driver = createPreviewRenderer({ workerPath });
+    const driver = nativeRenderer();
     try {
       await driver.open(
         { ...binding, origin: 'http://127.0.0.1:' + (server.address() as { port: number }).port },

@@ -18,6 +18,15 @@ corepack pnpm format:check
 
 构建同时生成 `dist/cli.mjs` 会话命令入口，并随 macOS 包提供。CLI 的真实子进程往返测试见 `tests/cli-host.test.ts`；它启动独立本机主机与合成 ACP，使用真实 HTTP 和私有客户端数据库验证创建、发送、等待、停止、整理、重启与原结果查询。CLI 状态不读取主机数据库，测试准备仅在主机启动前登记虚构项目和 Agent。构建后可用 `MOOR_TEST_CLI_BUNDLES=1 pnpm exec tsx --test tests/cli-host.test.ts` 对最终 `bridge.mjs`/`cli.mjs` 再跑同一流程。使用说明见[会话 CLI](cli.md)。
 
+最终 macOS 包可用同一 CLI 往返用例验收：
+
+```sh
+MOOR_TEST_PACKAGED_APP=/absolute/release/macos-arm64/Moor.app \
+  pnpm exec tsx --test tests/cli-host.test.ts
+```
+
+这个模式使用包内 Electron Node、`runtime/bridge.mjs` 和 `runtime/cli.mjs`，将独立合成 ACP 复制到临时目录，并从源码之外的工作目录启动全部执行进程。用例验证登录、空会话、发送/等待、停止、整理、原编号查询及主机重启；测试准备本身仍由仓库 Node 执行。它不调用真实模型，也不证明真实 Agent 原生登录或目标设备已经验收。
+
 只改文档时可以先定向格式化，再检查链接、术语与图示。避免运行全仓库 `format` 时顺手改动其他人的代码。
 
 ```sh
@@ -82,7 +91,7 @@ GitHub 测试使用注入的 HTTP 响应、临时项目和虚构 token，不读�
 
 GitHub 配置入口只属于本机。远端读取接受类型化的项目与会话请求，不接受 token、任意服务地址、原始 HTTP 路径或 shell。provider 正文只存在于当前读取响应和页面内存，显式加入草稿才按普通会话规则持久化。撤权后确认旧关联操作只返回脱敏回执，不借去重返回旧上下文；外部写操作应在 M4.4 单独设计授权与重试语义。当前范围见[GitHub 文档](github.md)。
 
-网页预览的默认测试不启动图形应用，4 项原生专项明确跳过。有可用图形会话的开发机可执行 `MOOR_TEST_ELECTRON_PREVIEW=1 node --import tsx --test tests/preview-renderer.test.ts tests/desktop-entry.test.ts`；也可设置 `MOOR_TEST_PREVIEW_WORKER` 为最终构建的绝对 worker 路径。专项只启动锁定 Electron 和回环合成 HTTP/WS/TCP/UDP 服务，用事件信号检查输入画面、视口、节点变化与网络隔离，不访问真实网页、凭据或 Agent。包入口测试在 macOS 临时克隆的 Electron.app 中加载合成主模块与 worker，验证固定入口选择，不读取 Moor 用户数据。宿主环境若不允许 Electron 自身沙箱启动，应报告该环境不可用，不能关闭 Chromium 沙箱来使测试通过。实现入口及测试文件见[项目网页预览](preview.md)。
+网页预览的默认测试不启动图形应用，4 项原生专项明确跳过。有可用图形会话的开发机可执行 `MOOR_TEST_ELECTRON_PREVIEW=1 node --import tsx --test tests/preview-renderer.test.ts tests/desktop-entry.test.ts`；也可设置 `MOOR_TEST_PREVIEW_WORKER` 为最终构建的绝对 worker 路径。设置 `MOOR_TEST_PACKAGED_APP=/absolute/release/macos-arm64/Moor.app` 时，三项原生渲染器用例统一使用包内 Electron 与 worker；这与仅替换 worker、仍使用开发 Electron 的检查不同。专项只启动锁定 Electron 和回环合成 HTTP/WS/TCP/UDP 服务，用事件信号检查输入画面、视口、节点变化与网络隔离，不访问真实网页、凭据或 Agent。包入口测试在 macOS 临时克隆的 Electron.app 中加载合成主模块与 worker，验证固定入口选择，不读取 Moor 用户数据。宿主环境若不允许 Electron 自身沙箱启动，应报告该环境不可用，不能关闭 Chromium 沙箱来使测试通过。实现入口及测试文件见[项目网页预览](preview.md)。
 
 ## 发布与真实设备验证
 
@@ -104,7 +113,7 @@ macOS 包需在目标架构的 Mac 上构建；中转包应只包含打包后的
 
 ### macOS 正式分发准备
 
-当前 [打包脚本](../scripts/package.mjs) 只执行 ad-hoc 签名并生成 ZIP，没有开发者证书选择、公证提交或票据装订流程。正式分发前需由发布操作者准备 Developer ID 身份和公证凭据，另行实现并审核嵌套可执行文件签名、运行权限配置、公证及验证步骤。证书、私钥和公证凭据不进入仓库、日志或程序包；准备文档不意味着已访问 Keychain 或完成签名。
+日常[打包脚本](../scripts/package.mjs) 继续生成 ad-hoc 预览 ZIP。独立的[正式分发工具](mac-release.md)已提供只读计划和显式执行：检查程序文件、复制到新目录、逐层 Developer ID 签名、公证、装订票据、验证 Gatekeeper 并生成最终归档。固定权限模板与失败停止、未知提交保留由合成命令测试覆盖；真实身份和公证凭据仍由发布操作者准备。证书、私钥和公证凭据不进入仓库、日志或程序包，工具实现不表示已完成真实签名。
 
 在干净的目标架构 Mac 上验证下载包的首次打开、Agent 启动、升级后原数据可读和退出行为，记录应用版本、系统/架构、Agent 与锁定适配器版本及未通过项。签名与公证、真机验收未完成时继续标记为开发预览版，不据合成本地测试宣称可正式分发。
 
