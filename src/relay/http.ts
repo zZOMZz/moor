@@ -162,6 +162,7 @@ import { GoogleAuth } from './google-auth';
 import type { GoogleOidcProvider } from './google-oidc';
 import { RelayTrustPublications, TRUST_PUBLICATION_FAILED } from './trust-publications';
 import { TRUST_PUBLICATION_LIMITS } from '../security/trust-publication';
+import { EncryptedBridgeRelay } from './encrypted-bridge';
 export function createApp(
   store: Store,
   options: {
@@ -225,6 +226,12 @@ export function createApp(
   const online = (id: string) =>
     bridges.get(id)?.ready === true && bridges.get(id)?.socket.readyState === WebSocket.OPEN;
   let closing = false;
+  const encryptedBridge = new EncryptedBridgeRelay({
+    store,
+    origin: () => origin,
+    current: () => !closing,
+    localOnly: options.localOnly,
+  });
   function notificationRoute(owner: string, deviceId: string, event: HostNotificationEvent) {
     assert(!closing && online(deviceId), 409, '通知主机不在线');
     const device = store.device(owner, deviceId);
@@ -668,6 +675,7 @@ export function createApp(
           store.db.exec('ROLLBACK TO moor_logout; RELEASE moor_logout');
           throw error;
         }
+        encryptedBridge.invalidateLogin(secret);
         for (const [ws, v] of viewers) if (v.secret === secret) ws.close(1000, 'logout');
         res.setHeader('Set-Cookie', 'personal=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
         return json(res, 200, { ok: true });
@@ -2769,6 +2777,7 @@ export function createApp(
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 48 * 1024 * 1024 });
   server.on('upgrade', (req, socket, head) => {
+    if (encryptedBridge.handleUpgrade(req, socket, head)) return;
     try {
       const path = new URL(req.url ?? '/', origin).pathname;
       if (path === '/bridge') {
@@ -3033,12 +3042,14 @@ export function createApp(
       if (next !== origin) {
         attentionOriginGeneration++;
         trustOriginGeneration++;
+        encryptedBridge.invalidateOrigin();
       }
       origin = next;
       googleAuth.setOrigin(origin);
     },
     close: async () => {
       closing = true;
+      encryptedBridge.close();
       trustPublications?.close();
       googleAuth.close();
       notifications.close();

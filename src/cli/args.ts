@@ -35,6 +35,25 @@ const commands: Record<string, readonly string[]> = {
   ],
   operation: ['list', 'inspect', 'retry', 'abandon'],
   config: ['show'],
+  secure: [
+    'hosts',
+    'catalog',
+    'list',
+    'create',
+    'read',
+    'send',
+    'mcp',
+    'stop',
+    'archive',
+    'restore',
+    'rename',
+    'pin',
+    'unpin',
+    'operations',
+    'inspect',
+    'retry',
+    'abandon',
+  ],
 };
 const booleans = new Set(['json', 'stdin', 'follow', 'wait', 'help']);
 const values = new Set([
@@ -53,6 +72,9 @@ const values = new Set([
   'turn',
   'mcp-server-ids',
   'output',
+  'endpoint',
+  'host',
+  'project',
 ]);
 export type CliArgs = {
   group: string;
@@ -87,7 +109,8 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     throw new CliError('usage', '请指定受支持的命令，例如 targets list；使用 --help 查看帮助。');
   if (
     positional &&
-    (!['operation', 'session'].includes(group) || !/^[A-Za-z0-9_:-]{1,160}$/.test(positional))
+    (!['operation', 'session', 'secure'].includes(group) ||
+      !/^[A-Za-z0-9_:-]{1,160}$/.test(positional))
   )
     throw new CliError('usage', '位置参数只接受会话或操作编号；正文请用 --stdin 或 --file。');
   if (flags.stdin && flags.file) throw new CliError('usage', '--stdin 与 --file 只能选一项。');
@@ -103,6 +126,39 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   if ((flags.follow || flags.wait) && group !== 'session')
     throw new CliError('usage', '--follow/--wait 仅用于会话读取、发送或停止后的等待。');
   const allowed = new Set(['json', 'state-dir']);
+  if (group === 'secure') {
+    const recovery = ['inspect', 'retry', 'abandon'].includes(command),
+      business = !['hosts', 'catalog', 'operations', 'inspect', 'retry', 'abandon'].includes(
+        command,
+      );
+    if (command !== 'operations') {
+      allowed.add('endpoint');
+      if (!flags.endpoint) throw new CliError('usage', '加密命令需要明确 --endpoint 私有文件。');
+    }
+    if (command === 'catalog' || business) {
+      allowed.add('host');
+      if (!flags.host) throw new CliError('usage', '请明确选择 --host 设备编号。');
+    }
+    if (business) for (const key of ['workspace', 'project', 'session']) allowed.add(key);
+    if (['create', 'send', 'rename'].includes(command))
+      for (const key of ['stdin', 'file']) allowed.add(key);
+    if (['create', 'send'].includes(command)) allowed.add('agent');
+    if (command === 'send')
+      for (const key of ['model', 'effort', 'mode', 'mcp-server-ids']) allowed.add(key);
+    if (command === 'stop') allowed.add('turn');
+    if (
+      Object.keys(flags).some((key) => !allowed.has(key)) ||
+      (business && (!flags.workspace || !flags.project))
+    )
+      throw new CliError('usage', '加密命令选项无效，业务命令需要明确 --workspace 和 --project。');
+    if (
+      (recovery && !positional) ||
+      (positional && ['hosts', 'catalog', 'list', 'create', 'operations'].includes(command)) ||
+      (positional && flags.session)
+    )
+      throw new CliError('usage', '请明确且只指定一次原操作或会话编号。');
+    return { group, command, positional, flags };
+  }
   const google = group === 'auth' && command.startsWith('google-');
   if (google) {
     if (command === 'google-start') {
@@ -168,6 +224,11 @@ export const cliHelp = `Moor CLI (cliVersion 1)
   session rename [ID] --stdin | --file PATH
   operation list | operation inspect|retry|abandon ID
   config show
+  secure hosts --endpoint PATH                   读取公开在线提示（须解密目录才确认主机）
+  secure catalog --endpoint PATH --host ID       读取已认证的加密运行目录
+  secure list|create|read|send|stop|mcp|rename|archive|restore|pin|unpin [ID]
+    --endpoint PATH --host ID --workspace ID --project ID
+  secure operations | secure inspect|retry|abandon ID --endpoint PATH
 通用：--json、--state-dir PATH、--connection PATH
 默认不会发送恢复的请求；重试与结束只作用于原编号。等待超时或 Ctrl-C 不停止 Agent。
 `;

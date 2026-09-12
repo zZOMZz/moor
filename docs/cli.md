@@ -80,7 +80,61 @@ node dist/cli.mjs auth export-trust --output /private/device/.moor-security/trus
 
 文件含 Moor 登录凭据，必须放在项目与程序包之外，不输出、手写或共享其中的 Cookie。服务器撤销该 CLI 登录或凭据过期会使导出连接失效；退出请求失败时不能保证已撤销。重新登录后需明确导出新文件。Google 登录允许访问对应账号的公开版本，不能代替完整根 pin 和配对指纹的独立核对。
 
-设备安全命令有 15 个动作：原有 12 个动作和新增 `read-publications` 保持本机操作，只有 `publish-trust`、`sync-trust` 请求固定的公开信任接口，不执行会话或 Agent。待发布队列最多 16 项；发布确认严格匹配原前缀，同步每次完整验证一页后以一次本机 CAS 安装。参数、容量限制与手动恢复见[公开信任版本流程](device-security.md#发布与同步公开信任版本)。**会话 CLI 仍使用明文桥接 v3，公开版本同步不代表已启用端到端加密。**
+设备安全命令有 15 个动作：原有 12 个动作和新增 `read-publications` 保持本机操作，只有 `publish-trust`、`sync-trust` 请求固定的公开信任接口，不执行会话或 Agent。待发布队列最多 16 项；发布确认严格匹配原前缀，同步每次完整验证一页后以一次本机 CAS 安装。参数、容量限制与手动恢复见[公开信任版本流程](device-security.md#发布与同步公开信任版本)。公开版本同步本身不启用加密；普通远程会话命令仍使用明文桥接 v3，以下 `secure` 命令才使用加密链路。
+
+## 显式加密连接
+
+先按[设备安全流程](device-security.md)准备已配对、属于同一账号与中转、已安装相同信任检查点的两个端点：执行电脑需要 `host` 角色，CLI 设备需要 `client` 角色。必须独立核对完整根 pin 和配对指纹。两端各自登录自己的个人账号会话；执行电脑用上节命令导出私有连接文件，不复制或手写 Cookie。所有设备文件与状态目录都放在项目、会话工作目录和程序包之外。
+
+在执行电脑明确启动加密主机，Agent 需事先在同一主机数据库中完成本机配置：
+
+```sh
+node dist/bridge.mjs \
+  --secure-endpoint /absolute/private/.moor-security/host.json \
+  --secure-connection /absolute/private/.moor-security/trust-connection.json \
+  --runtime-data /absolute/private/runtime.sqlite \
+  --project /absolute/test-project
+```
+
+两个 `--secure-*` 参数须同时提供，不能与 `--local`、`--desktop`、旧配对或配置命令混用。这一模式不读取旧的远程配对连接，不回落到 v3。主机断开后需手动重新启动；主机运行时独占设备与连接文件，修改或同步信任前先停主机，再明确执行设备安全命令，随后启动新连接。
+
+在已远程登录的 CLI 设备上，读取主机提示，再验证所选主机的加密目录：
+
+```sh
+node dist/cli.mjs secure hosts --endpoint /absolute/private/.moor-security/client.json --json
+node dist/cli.mjs secure catalog --endpoint /absolute/private/.moor-security/client.json \
+  --host HOST_DEVICE_ID --json
+```
+
+`hosts` 返回 `verified:false`，只是中转提供的在线提示；成功解密 `catalog` 后才确认对端持有已配对设备的密钥。目录包含实际运行工作区、项目和 Agent 的编号。当前 `secure` 使用运行工作区和本地项目，参数是 `--workspace` 与 `--project`；与普通 CLI 的产品工作区/副本选择分别处理，不继承 `targets use`。
+
+```sh
+node dist/cli.mjs secure create --endpoint /absolute/private/.moor-security/client.json \
+  --host HOST_DEVICE_ID --workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID \
+  --agent AGENT_CONFIG_ID --json
+node dist/cli.mjs secure send SESSION_ID --endpoint /absolute/private/.moor-security/client.json \
+  --host HOST_DEVICE_ID --workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID \
+  --stdin --json <<'PROMPT'
+检查当前项目，说明下一步待办。
+PROMPT
+node dist/cli.mjs secure read SESSION_ID --endpoint /absolute/private/.moor-security/client.json \
+  --host HOST_DEVICE_ID --workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID --json
+```
+
+同样的明确目标参数支持 `list`、`mcp`、`stop`、`archive`、`restore`、`rename`、`pin`、`unpin`；`list` 不传会话。`rename` 从 `--stdin` 或 `--file` 读取标题，`stop --turn TURN_ID` 核对当前活动回合。`send` 可提供 `--model`、`--effort`、`--mode` 与 `--mcp-server-ids`，已有会话仍固定原 Agent 版本。当前没有审批回应、问题回答、附件上传、`--wait`、`--follow` 或通知子命令；使用手动 `read` 查看结果，需要人工回应的回合仍可精确停止。
+
+发送前先把原请求保存到独立的私有加密操作表。丢失响应、超时或无法验证时退出码为 6，并返回原操作编号；不自动重发，也不把中转错误当成主机拒绝。手动恢复：
+
+```sh
+node dist/cli.mjs secure operations --json
+node dist/cli.mjs secure inspect OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
+node dist/cli.mjs secure retry OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
+node dist/cli.mjs secure abandon OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
+```
+
+`operations` 只读本机摘要，不含原正文；其余恢复命令从原记录选择主机与执行范围，不能另传目标。重试沿用原操作编号、正文和请求哈希，主机已接受时返回原结果。请求封存后保持 `ending`，在主机确认前不能重试执行；已接受操作不能借封存撤销。旧 `session retry` 无法读取加密操作，避免通过旧 HTTP 发送。这里的“加密操作表”指使用加密传输的私有操作记录，SQLite 正文本身没有磁盘加密。
+
+此入口已加密目录、命令和主机响应；默认桌面、Web/PWA、普通远程 CLI、watch 和通知尚未迁入。完整范围和剩余限制见[端到端加密进展](end-to-end-encryption.md)。
 
 ## 创建、发送与阅读
 

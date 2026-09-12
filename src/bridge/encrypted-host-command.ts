@@ -6,6 +6,12 @@ import {
   type EncryptedResource,
 } from '../security/e2ee-channel';
 import { taskAuthoritySchema } from '../task-protocol';
+import {
+  encryptedCatalogRequestSchema as catalogCommandSchema,
+  encryptedCatalogSchema as encryptedHostCatalogSchema,
+  type EncryptedCatalog as EncryptedHostCatalog,
+} from '../security/encrypted-bridge-protocol';
+export { encryptedHostCatalogSchema, type EncryptedHostCatalog };
 import { hostCommandSchema, HostCommandDispatcher, type HostCommand } from './host-command';
 
 export const ENCRYPTED_HOST_COMMAND_REJECTED = '加密命令参数或执行范围无效';
@@ -55,9 +61,18 @@ export class EncryptedHostCommands {
   private readonly channel: E2eeChannel;
   private readonly dispatcher: HostCommandDispatcher;
   private readonly admission: { active: number };
-  constructor(options: { channel: E2eeChannel; dispatcher: HostCommandDispatcher }) {
+  private readonly catalog?: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
+  private readonly runtimeScopesOnly: boolean;
+  constructor(options: {
+    channel: E2eeChannel;
+    dispatcher: HostCommandDispatcher;
+    catalog?: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
+    runtimeScopesOnly?: boolean;
+  }) {
     this.channel = options.channel;
     this.dispatcher = options.dispatcher;
+    this.catalog = options.catalog;
+    this.runtimeScopesOnly = options.runtimeScopesOnly ?? false;
     let admission = admissions.get(options.dispatcher);
     if (!admission) {
       admission = { active: 0 };
@@ -98,7 +113,22 @@ export class EncryptedHostCommands {
     };
     let command: HostCommand;
     try {
-      command = hostCommandSchema.parse(JSON.parse(decoder.decode(received.plaintext)));
+      const input: unknown = JSON.parse(decoder.decode(received.plaintext));
+      if (header.resource.kind === 'catalog') {
+        catalogCommandSchema.parse(input);
+        if (!this.catalog) throw new Error(ENCRYPTED_HOST_COMMAND_REJECTED);
+        channel.assertCurrent();
+        const result = encryptedHostCatalogSchema.parse(await this.catalog());
+        return respond(encoder.encode(JSON.stringify({ ok: true, result })));
+      }
+      // Logical workspace replicas need a separate Host-confirmed mapping. This
+      // transport currently authorizes only the exact runtime/project identity.
+      if (
+        this.runtimeScopesOnly &&
+        (header.resource.catalogWorkspaceId !== null || header.resource.replicaId !== null)
+      )
+        throw new Error(ENCRYPTED_HOST_COMMAND_REJECTED);
+      command = hostCommandSchema.parse(input);
       if (!matchesResource(command, header.resource))
         throw new Error(ENCRYPTED_HOST_COMMAND_REJECTED);
     } catch {
