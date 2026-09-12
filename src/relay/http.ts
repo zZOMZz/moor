@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { serveStatic } from './static';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { Store, type Device } from './accounts';
 import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
@@ -26,11 +27,19 @@ import {
   projectFileReadSchema,
   projectFileResultSchema,
 } from '../content-protocol';
+import {
+  ATTACHMENTS_FEATURE,
+  attachmentActionSchema,
+  attachmentReadSchema,
+  attachmentReceiptSchema,
+  attachmentContentSchema,
+} from '../attachment-protocol';
 export function createApp(
   store: Store,
   options: { origin: string; setupToken: string; publicDir?: string; localOnly?: boolean },
 ) {
   let origin = new URL(options.origin).origin;
+  let attentionOriginGeneration = 0;
   const attentionFeatures = [ATTENTION_FEATURE, ACTOR_FEATURE, FOLLOWUP_FEATURE];
   const actor = (accountId: string) => ({
     kind: options.localOnly ? ('local' as const) : ('relay' as const),
@@ -84,7 +93,8 @@ export function createApp(
     for (const [id, pending] of commands)
       if (
         pending.device === device &&
-        pending.method === 'file-content' &&
+        (['file-content', 'read-attachment'].includes(pending.method) ||
+          pending.method.startsWith('attention-')) &&
         (!socket || pending.socket === socket)
       ) {
         clearTimeout(pending.timer);
@@ -337,6 +347,45 @@ export function createApp(
             '项目副本离线或已从主机移除',
           );
           if (parts[5] === 'attention' || (parts[5] === 'sessions' && parts[7] === 'attention')) {
+            // Attention remains bound to the original login, socket and catalogue
+            // assignment across request-body and Host waits. Bearers do not waive CSRF.
+            if (req.method !== 'GET') assert(req.headers.origin === origin, 403, '请求来源不匹配');
+            const attentionSecret = cookie(req),
+              attentionGeneration = attentionOriginGeneration,
+              attentionSocket = bridges.get(host.device_id)?.socket;
+            const currentAttention = (method: string) => {
+              assert(
+                server.listening && attentionOriginGeneration === attentionGeneration,
+                409,
+                '待办请求所属服务已变化，请重新读取',
+              );
+              assert(store.owner(attentionSecret) === owner, 401, '待办请求所属登录已失效');
+              store.device(owner!, host.device_id);
+              const connected = bridges.get(host.device_id);
+              assert(
+                online(host.device_id) &&
+                  connected &&
+                  connected.socket === attentionSocket &&
+                  connected.attentionReady &&
+                  connected.workspaces.find((item) => item.id === host.runtime_id) === runtime &&
+                  runtime.features?.includes(ATTENTION_FEATURE) &&
+                  runtime.features?.includes(ACTOR_FEATURE) &&
+                  (method !== 'attention-continue' || runtime.features?.includes(FOLLOWUP_FEATURE)),
+                409,
+                '待办请求所属执行连接已变化，请重新读取',
+              );
+              const currentReplica = store.catalog.replica(owner!, workspaceId, replica.id);
+              assert(
+                currentReplica.project_id === replica.project_id &&
+                  currentReplica.local_id === replica.local_id &&
+                  currentReplica.host.id === host.id &&
+                  currentReplica.host.workspace_id === host.workspace_id &&
+                  currentReplica.host.runtime_id === host.runtime_id &&
+                  currentReplica.host.device_id === host.device_id,
+                409,
+                '待办请求所属项目副本已变化，请重新读取',
+              );
+            };
             assert(
               bridges.get(host.device_id)?.attentionReady &&
                 runtime.features?.includes(ATTENTION_FEATURE) &&
@@ -355,6 +404,19 @@ export function createApp(
               localProjectId: replica.local_id,
               ...(parts[5] === 'sessions' ? { sessionId: decodeURIComponent(parts[6]) } : {}),
             });
+            const respondAttention = async (method: string, params: unknown) => {
+              currentAttention(method);
+              const result = await request(
+                host.device_id,
+                method,
+                host.runtime_id,
+                params,
+                replica.local_id,
+                context,
+              );
+              currentAttention(method);
+              return json(res, 200, result);
+            };
             if (
               ((parts[5] === 'attention' && parts.length === 6) ||
                 (parts[5] === 'sessions' && parts.length === 8)) &&
@@ -365,17 +427,9 @@ export function createApp(
                 ...query,
                 ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
               });
-              return json(
-                res,
-                200,
-                await request(
-                  host.device_id,
-                  context.sessionId ? 'attention-items' : 'attention-list',
-                  host.runtime_id,
-                  input,
-                  replica.local_id,
-                  context,
-                ),
+              return await respondAttention(
+                context.sessionId ? 'attention-items' : 'attention-list',
+                input,
               );
             }
             assert(parts[5] === 'sessions' && parts[8], 404, '未找到待办操作');
@@ -420,18 +474,7 @@ export function createApp(
                   throw new AppError(404, '未找到待办操作');
               }
             }
-            return json(
-              res,
-              200,
-              await request(
-                host.device_id,
-                method,
-                host.runtime_id,
-                { itemId, input },
-                replica.local_id,
-                context,
-              ),
-            );
+            return await respondAttention(method, { itemId, input });
           }
           if (parts[5] === 'agent-options' && req.method === 'POST') {
             const input = z
@@ -557,6 +600,86 @@ export function createApp(
               502,
               '执行主机返回的文件内容与请求不匹配',
             );
+            return json(res, 200, result);
+          }
+          if (
+            req.method === 'POST' &&
+            ((parts[5] === 'attachment-actions' && parts.length === 6) ||
+              (parts[5] === 'attachments' && parts[6] === 'read' && parts.length === 7))
+          ) {
+            const action = parts[5] === 'attachment-actions';
+            const input = action
+              ? attachmentActionSchema.parse(await body(req, 12 * 1024 * 1024))
+              : attachmentReadSchema.parse(await body(req, 16 * 1024));
+            assert(
+              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
+              400,
+              '附件请求与项目副本不匹配',
+            );
+            assert(
+              runtime?.features?.includes(ATTACHMENTS_FEATURE),
+              409,
+              '请先升级执行电脑上的 Moor',
+            );
+            const requestSocket = bridges.get(host.device_id)?.socket;
+            const raw = await request(
+              host.device_id,
+              action ? 'attachment-action' : 'read-attachment',
+              host.runtime_id,
+              input,
+              replica.local_id,
+            );
+            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+            const current = store.catalog.replica(owner!, workspaceId, replica.id);
+            assert(
+              current.host.device_id === host.device_id &&
+                current.host.runtime_id === input.workspaceId &&
+                current.local_id === input.localProjectId,
+              409,
+              '附件请求的执行目标已变更',
+            );
+            const currentRuntime = bridges
+              .get(host.device_id)
+              ?.workspaces.find((w) => w.id === input.workspaceId);
+            assert(
+              online(host.device_id) &&
+                bridges.get(host.device_id)?.socket === requestSocket &&
+                currentRuntime?.features?.includes(ATTACHMENTS_FEATURE) &&
+                currentRuntime.projects.some((p) => p.id === input.localProjectId),
+              409,
+              '执行主机已不可达，请手动确认附件',
+            );
+            const parsed = action
+              ? attachmentReceiptSchema.safeParse(raw)
+              : attachmentContentSchema.safeParse(raw);
+            assert(parsed.success, 502, '执行主机返回的附件确认无效');
+            const result = parsed.data;
+            assert(
+              result.workspaceId === input.workspaceId &&
+                result.localProjectId === input.localProjectId &&
+                result.sessionId === input.sessionId,
+              502,
+              '附件响应与请求范围不匹配',
+            );
+            if ('action' in input) {
+              assert(
+                'operationId' in result && result.operationId === input.operationId,
+                502,
+                '附件响应的操作编号不匹配',
+              );
+              if (input.action === 'upload')
+                assert(
+                  isDeepStrictEqual(result.attachment, input.attachment),
+                  502,
+                  '附件确认与上传内容不匹配',
+                );
+              else assert('removed' in result && result.removed === true, 502, '附件移除尚未确认');
+            } else
+              assert(
+                result.attachment?.attachmentId === input.attachmentId,
+                502,
+                '附件响应与请求不匹配',
+              );
             return json(res, 200, result);
           }
           if (parts[5] === 'cancel' && req.method === 'POST') {
@@ -853,7 +976,9 @@ export function createApp(
     server,
     online,
     setOrigin: (value: string) => {
-      origin = new URL(value).origin;
+      const next = new URL(value).origin;
+      if (next !== origin) attentionOriginGeneration++;
+      origin = next;
     },
     close: async () => {
       clearInterval(heartbeat);

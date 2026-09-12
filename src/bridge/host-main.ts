@@ -28,6 +28,7 @@ import {
   type AttentionContext,
 } from '../attention';
 import { projectFileReadSchema } from '../content-protocol';
+import { attachmentActionSchema, attachmentReadSchema } from '../attachment-protocol';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -407,6 +408,14 @@ async function connect(target: Target) {
             const body = projectFileReadSchema.parse(m.params);
             assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
             result = await workspace.readProjectFile(body, m.localProjectId);
+          } else if (m.method === 'attachment-action') {
+            const body = attachmentActionSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.attachmentAction(body, m.localProjectId);
+          } else if (m.method === 'read-attachment') {
+            const body = attachmentReadSchema.parse(m.params);
+            assert(body.workspaceId === m.workspaceId, 400, '工作区不匹配');
+            result = await workspace.readAttachment(body, m.localProjectId);
           } else if (m.method === 'cancel')
             result = await workspace.cancel(m.params.sessionId, m.params.turnId, m.localProjectId);
           else throw new AppError(400, '不支持的操作');
@@ -453,7 +462,7 @@ async function connect(target: Target) {
               rejected:
                 (e instanceof AppError && e.rejected) ||
                 attentionRejected ||
-                (['mutate', 'session-action'].includes(m.method) &&
+                (['mutate', 'session-action', 'attachment-action'].includes(m.method) &&
                   typeof m.params?.operationId === 'string' &&
                   !journal.has(m.params.operationId)),
             },

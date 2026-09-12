@@ -1,4 +1,5 @@
 import type { RunCapabilities } from '../run-config';
+import type { PromptInputCapabilities } from '../attachment-protocol';
 export type AgentConfig = {
   id: string;
   name: string;
@@ -15,6 +16,7 @@ export type PermissionOutcome =
 export type AgentSession = {
   id: string;
   capabilities: RunCapabilities;
+  inputCapabilities?: PromptInputCapabilities;
   prompt(input: any): Promise<void>;
   cancel(): Promise<void>;
   close(): void | Promise<void>;
