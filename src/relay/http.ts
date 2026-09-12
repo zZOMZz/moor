@@ -4,7 +4,21 @@ import { serveStatic } from './static';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { isDeepStrictEqual } from 'node:util';
-import { Store, type Device } from './accounts';
+import { Store, hash as loginHash, type Device } from './accounts';
+import { createHash } from 'node:crypto';
+import { RelayNotifications } from './notifications';
+import type { WebPushTransport } from './web-push';
+import {
+  NOTIFICATIONS_FEATURE,
+  NOTIFICATION_LIMITS,
+  hostNotificationEventSchema,
+  notificationEnvelopeSchema,
+  notificationIdentity,
+  notificationPreferencesSchema,
+  pushSubscriptionRequestSchema,
+  type HostNotificationEvent,
+  type NotificationEnvelope,
+} from '../notification-protocol';
 import { AppError, assert, helloSchema, mutationSchema, sessionActionSchema } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
 import { workspaceInputSchema, projectInputSchema, replicaAssignmentSchema } from '../catalog';
@@ -45,7 +59,13 @@ import {
 } from '../search-protocol';
 export function createApp(
   store: Store,
-  options: { origin: string; setupToken: string; publicDir?: string; localOnly?: boolean },
+  options: {
+    origin: string;
+    setupToken: string;
+    publicDir?: string;
+    localOnly?: boolean;
+    pushTransport?: WebPushTransport;
+  },
 ) {
   let origin = new URL(options.origin).origin;
   const bridges = new Map<
@@ -81,6 +101,114 @@ export function createApp(
   const failures = new Map<string, { count: number; until: number }>();
   const online = (id: string) =>
     bridges.get(id)?.ready === true && bridges.get(id)?.socket.readyState === WebSocket.OPEN;
+  let closing = false;
+  function notificationRoute(owner: string, deviceId: string, event: HostNotificationEvent) {
+    assert(!closing && online(deviceId), 409, '通知主机不在线');
+    const device = store.device(owner, deviceId);
+    const workspace = bridges
+      .get(deviceId)
+      ?.workspaces.find((workspace) => workspace.id === event.workspaceId);
+    assert(
+      workspace &&
+        workspace.userId === event.userId &&
+        workspace.machineId === event.machineId &&
+        device.machine_id === event.machineId &&
+        workspace.features?.includes(NOTIFICATIONS_FEATURE) &&
+        workspace.projects.some((project) => project.id === event.localProjectId),
+      403,
+      '通知执行范围不匹配',
+    );
+    const spaces = store.catalog.list(owner, (id) =>
+      online(id) ? bridges.get(id)!.workspaces : [],
+    );
+    for (const space of spaces) {
+      const host = space.hosts.find(
+        (host) =>
+          host.deviceId === deviceId &&
+          host.runtimeWorkspaceId === event.workspaceId &&
+          host.machineId === event.machineId,
+      );
+      const replica =
+        host &&
+        space.replicas.find(
+          (replica) =>
+            replica.hostId === host.id &&
+            replica.localProjectId === event.localProjectId &&
+            replica.available,
+        );
+      if (replica) return { catalogWorkspaceId: space.id, replicaId: replica.id };
+    }
+    throw new AppError(403, '通知项目副本已不可用');
+  }
+  const notifications = new RelayNotifications(store.db, {
+    now: store.now,
+    transport: options.pushTransport,
+    authorize: (event: NotificationEnvelope) => {
+      try {
+        const route = notificationRoute(
+          event.owner,
+          event.deviceId,
+          hostNotificationEventSchema.parse(
+            Object.fromEntries(
+              Object.entries(event).filter(
+                ([key]) => !['owner', 'deviceId', 'catalogWorkspaceId', 'replicaId'].includes(key),
+              ),
+            ),
+          ),
+        );
+        return (
+          route.catalogWorkspaceId === event.catalogWorkspaceId &&
+          route.replicaId === event.replicaId
+        );
+      } catch {
+        return false;
+      }
+    },
+  });
+  async function deliverNotification(
+    device: Device,
+    socket: WebSocket,
+    event: HostNotificationEvent,
+  ) {
+    try {
+      assert(bridges.get(device.id)?.socket === socket, 409, '通知主机连接已变化');
+      assert(
+        event.eventId ===
+          'notification_' + createHash('sha256').update(notificationIdentity(event)).digest('hex'),
+        400,
+        '通知标识无效',
+      );
+      const envelope = notificationEnvelopeSchema.parse({
+        ...event,
+        owner: device.owner,
+        deviceId: device.id,
+        ...notificationRoute(device.owner, device.id, event),
+      });
+      assert(
+        Buffer.byteLength(JSON.stringify(envelope)) <= NOTIFICATION_LIMITS.payloadBytes,
+        413,
+        '通知标识超出大小限制',
+      );
+      // The route can remain identical after reconnect. Keep the originating
+      // connection in memory and recheck it after waiting for a provider slot.
+      await notifications.deliver(
+        envelope,
+        () => !closing && bridges.get(device.id)?.socket === socket && online(device.id),
+      );
+      if (!closing && bridges.get(device.id)?.socket === socket)
+        send(socket, { type: 'notification-ack', eventId: event.eventId, status: 'handled' });
+    } catch (error) {
+      if (!closing && bridges.get(device.id)?.socket === socket)
+        send(socket, {
+          type: 'notification-ack',
+          eventId: event.eventId,
+          status:
+            error instanceof AppError && [400, 401, 403, 404, 409, 413, 429].includes(error.status)
+              ? 'rejected'
+              : 'retry',
+        });
+    }
+  }
   const send = (ws: WebSocket, message: unknown) => {
     if (ws.readyState === WebSocket.OPEN) {
       if (ws.bufferedAmount > 1024 * 1024) ws.close(1013, 'slow client');
@@ -245,10 +373,52 @@ export function createApp(
       const owner = path.startsWith('/api/') ? store.owner(cookie(req)) : null;
       if (path === '/api/logout' && req.method === 'POST') {
         const secret = cookie(req);
-        store.logout(secret);
+        store.db.exec('SAVEPOINT moor_logout');
+        try {
+          notifications.revokeLogin(loginHash(secret));
+          store.logout(secret);
+          store.db.exec('RELEASE moor_logout');
+        } catch (error) {
+          store.db.exec('ROLLBACK TO moor_logout; RELEASE moor_logout');
+          throw error;
+        }
         for (const [ws, v] of viewers) if (v.secret === secret) ws.close(1000, 'logout');
         res.setHeader('Set-Cookie', 'personal=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
         return json(res, 200, { ok: true });
+      }
+      if (path === '/api/notifications' && req.method === 'GET')
+        return json(res, 200, notifications.state(owner!, loginHash(cookie(req))));
+      if (path === '/api/notifications/subscriptions' && req.method === 'POST') {
+        const input = pushSubscriptionRequestSchema.parse(await body(req, 8192));
+        assert(input.expectedOwner === owner, 409, '通知设置所属账号已变化');
+        return json(res, 200, notifications.subscribe(owner!, loginHash(cookie(req)), input));
+      }
+      const subscriptionPath =
+        /^\/api\/notifications\/subscriptions\/([A-Za-z0-9_:-]+)\/(preferences|remove)$/.exec(path);
+      if (subscriptionPath && req.method === 'POST') {
+        const input = z
+          .object({
+            notificationVersion: z.literal(1),
+            expectedOwner: z.string(),
+            ...(subscriptionPath[2] === 'preferences'
+              ? { preferences: notificationPreferencesSchema }
+              : {}),
+          })
+          .strict()
+          .parse(await body(req, 4096));
+        assert(input.expectedOwner === owner, 409, '通知设置所属账号已变化');
+        return json(
+          res,
+          200,
+          subscriptionPath[2] === 'remove'
+            ? notifications.remove(owner!, loginHash(cookie(req)), subscriptionPath[1])
+            : notifications.update(
+                owner!,
+                loginHash(cookie(req)),
+                subscriptionPath[1],
+                input.preferences,
+              ),
+        );
       }
       if (path === '/api/pair' && req.method === 'POST') {
         const input = z.object({ workspaceId: z.string().optional() }).parse(await body(req));
@@ -891,6 +1061,9 @@ export function createApp(
                   scope: 'doc',
                   docId: message.sessionId,
                 });
+              } else if (message.type === 'notification') {
+                const event = hostNotificationEventSchema.parse(message.event);
+                void deliverNotification(current, ws, event);
               } else if (message.type === 'response') {
                 const c = commands.get(message.requestId);
                 if (c?.device === d.id && c.socket === ws) {
@@ -1026,6 +1199,8 @@ export function createApp(
       origin = new URL(value).origin;
     },
     close: async () => {
+      closing = true;
+      notifications.close();
       clearInterval(heartbeat);
       for (const c of commands.values()) {
         clearTimeout(c.timer);

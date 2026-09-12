@@ -4,6 +4,9 @@ services:
     restart: unless-stopped
     environment:
       MOOR_ORIGIN: https://${MOOR_DOMAIN}
+      MOOR_WEB_PUSH_PUBLIC_KEY: ${MOOR_WEB_PUSH_PUBLIC_KEY:-}
+      MOOR_WEB_PUSH_PRIVATE_KEY: ${MOOR_WEB_PUSH_PRIVATE_KEY:-}
+      MOOR_WEB_PUSH_SUBJECT: ${MOOR_WEB_PUSH_SUBJECT:-}
     volumes:
       - relay-data:/data
     expose:

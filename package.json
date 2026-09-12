@@ -28,6 +28,7 @@
     "lucide-react": "1.44.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "web-push": "3.6.7",
     "ws": "8.18.3",
     "zod": "3.25.76",
     "@agentclientprotocol/sdk": "1.4.0",

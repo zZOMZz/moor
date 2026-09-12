@@ -1,3 +1,15 @@
+import { NotificationController } from './notifications';
+import {
+  notificationBrowser,
+  browserNotificationReason,
+  clearLocalNotifications,
+  reconcileNotificationAccount,
+} from './notification-browser';
+import { showNotificationPanel } from './notification-ui';
+import {
+  parseNotificationNavigation,
+  resolveNotificationNavigation,
+} from './notification-navigation';
 import { QUESTIONS_FEATURE, STEER_FEATURE, type QuestionAnswer } from '../interaction-protocol';
 import {
   InteractionController,
@@ -91,6 +103,146 @@ import {
   type Selection,
   type SessionSummary,
 } from './navigation';
+type MoorDesktop = {
+  version: 1;
+  saveAttachment(value: {
+    scope: AttachmentScope;
+    reference: AttachmentReference;
+    data: string;
+  }): Promise<{ status: 'saved' | 'cancelled' }>;
+  cancelAttachmentSave(): Promise<void>;
+};
+function desktopContent() {
+  const bridge = (window as unknown as { moorDesktop?: MoorDesktop }).moorDesktop;
+  return bridge?.version === 1 ? bridge : undefined;
+}
+function cancelAttachmentSave() {
+  void desktopContent()
+    ?.cancelAttachmentSave()
+    .catch(() => {});
+}
+let notificationAccountGeneration = 0;
+let notificationController: NotificationController | undefined;
+let notificationPanelOpen = false;
+function renderNotifications() {
+  if (!notificationPanelOpen) return;
+  const controller = notificationController;
+  showNotificationPanel({
+    controller,
+    reason: localOnly
+      ? '桌面原生通知请在 Moor 桌面设置中开启；默认关闭。'
+      : !authenticated
+        ? '当前离线，开启或修改服务器订阅需要连接。'
+        : browserNotificationReason(),
+    onClose: () => {
+      notificationPanelOpen = false;
+      showNotificationPanel();
+    },
+    onRefresh: () => {
+      if (controller) run(() => controller.refresh());
+    },
+    // Do not defer this callback: permission must be requested in this click.
+    onEnable: (preferences) => {
+      if (controller) {
+        try {
+          void controller.enable(preferences).catch(error);
+        } catch (cause) {
+          error(cause);
+        }
+      }
+    },
+    onPreferences: (preferences) => {
+      if (controller) run(() => controller.savePreferences(preferences));
+    },
+    onDisable: (record) => {
+      if (controller) run(() => controller.disable(record));
+    },
+  });
+}
+function openNotifications() {
+  closeNavigation();
+  notificationPanelOpen = true;
+  if (!localOnly && (!notificationController || notificationController.owner !== owner)) {
+    const expectedOwner = owner,
+      generation = bootGeneration,
+      notificationGeneration = notificationAccountGeneration;
+    notificationController = new NotificationController(owner, {
+      browser: notificationBrowser,
+      request: api,
+      current: () =>
+        owner === expectedOwner &&
+        generation === bootGeneration &&
+        notificationGeneration === notificationAccountGeneration,
+      changed: renderNotifications,
+    });
+  }
+  renderNotifications();
+  if (notificationController) run(() => notificationController!.refresh());
+}
+function takeNotificationQuery() {
+  const url = new URL(location.href),
+    raw = url.searchParams.get('notification');
+  if (raw === null) return;
+  url.searchParams.delete('notification');
+  history.replaceState(history.state, '', url.pathname + url.search + url.hash);
+  return raw;
+}
+async function openNotificationQuery() {
+  const raw = takeNotificationQuery();
+  if (raw === undefined) return;
+  const expectedOwner = owner,
+    generation = bootGeneration,
+    selection = sessionGeneration;
+  const current = () => owner === expectedOwner && generation === bootGeneration;
+  try {
+    if (!authenticated)
+      throw new Error('当前离线，只能阅读本机缓存；连接后请从会话列表查看通知对应状态。');
+    const identity = await api('/api/me');
+    if (!current() || selection !== sessionGeneration) return;
+    if (identity.owner !== expectedOwner) throw new Error('登录账号已改变，通知没有打开任何会话。');
+    const event = parseNotificationNavigation(
+      raw,
+      expectedOwner,
+      identity.localOnly === true,
+      Date.now(),
+    );
+    await loadDevices();
+    if (!current() || selection !== sessionGeneration) return;
+    const target = resolveNotificationNavigation(event, devices, catalog);
+    // The route carried by a push is not authority. Use only the freshly read
+    // catalog mapping of the immutable host/user/project execution identity.
+    await selectWorkspace(target.space.id, {
+      deviceId: target.host.deviceId,
+      workspaceId: target.host.runtimeWorkspaceId,
+      sessionId: event.sessionId,
+      projectId: target.replica.projectId,
+      replicaId: target.replica.id,
+      search: '',
+    });
+    if (
+      !current() ||
+      sessionId !== event.sessionId ||
+      workspace?.id !== event.workspaceId ||
+      replica?.localProjectId !== event.localProjectId ||
+      selected?.id !== target.host.deviceId
+    )
+      return;
+    const article = [...document.querySelectorAll<HTMLElement>('#history [data-search-turn]')].find(
+      (item) => item.dataset.searchTurn === event.turnId,
+    );
+    if (article) {
+      article.classList.add('search-located');
+      article.tabIndex = -1;
+      article.focus({ preventScroll: true });
+      article.scrollIntoView?.({ block: 'center' });
+    }
+    if (!selected.online)
+      error(new ApiError('执行电脑离线，当前显示本机缓存；通知内容尚未重新确认。', 0));
+    else if (!article) error(new Error('已打开对应会话；此回合尚未读到，请稍后重新读取。'));
+  } catch (cause) {
+    if (current()) error(cause);
+  }
+}
 let search = '',
   projectFilter = '',
   restoredSelection = false,
@@ -648,12 +800,39 @@ function previewAttachment(
   data: string,
   source: 'host' | 'cache' | 'draft',
 ) {
+  const generation = sessionGeneration,
+    scope = currentAttachments()?.scope;
+  cancelAttachmentSave();
   showAttachmentPreview({
     reference,
     data,
     source,
-    onClose: () => showAttachmentPreview(undefined),
+    onClose: () => {
+      cancelAttachmentSave();
+      showAttachmentPreview(undefined);
+    },
     onDownload: () => {
+      if (
+        generation !== sessionGeneration ||
+        !scope ||
+        JSON.stringify(scope) !== JSON.stringify(currentAttachments()?.scope)
+      )
+        return;
+      const desktop = desktopContent();
+      if (desktop) {
+        run(async () => {
+          try {
+            await desktop.saveAttachment({ scope, reference, data });
+          } catch (cause) {
+            if (
+              generation === sessionGeneration &&
+              JSON.stringify(scope) === JSON.stringify(currentAttachments()?.scope)
+            )
+              throw cause;
+          }
+        });
+        return;
+      }
       const bytes = attachmentBytes(data);
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
       const link = document.createElement('a');
@@ -1180,6 +1359,10 @@ async function api(path: string, body?: unknown) {
   return request(path, body);
 }
 function resetWorkspace() {
+  cancelAttachmentSave();
+  notificationController = undefined;
+  notificationPanelOpen = false;
+  showNotificationPanel();
   closeProjectContent();
   resetInteractions();
   sessionPersistenceError = '';
@@ -1246,6 +1429,8 @@ export async function boot(
   if (generation !== bootGeneration) return;
   if (source.kind === 'identity' && source.identity && !source.identity.owner) {
     void cache.write('last-owner', undefined).catch(() => {});
+    void reconcileNotificationAccount().catch(() => {});
+    takeNotificationQuery();
     showLogin(source.identity.needsSetup);
     return;
   }
@@ -1270,6 +1455,8 @@ export async function boot(
     if (!me.owner) {
       bootGeneration++;
       void cache.write('last-owner', undefined).catch(() => {});
+      void reconcileNotificationAccount().catch(() => {});
+      takeNotificationQuery();
       showLogin(me.needsSetup);
     } else await boot(Promise.resolve(me), Promise.resolve(undefined));
     return;
@@ -1278,13 +1465,17 @@ export async function boot(
   if (generation !== bootGeneration) return;
   if (!me) {
     error(new ApiError('当前离线，可阅读本机缓存的历史', 0));
+    await openNotificationQuery();
     return;
   }
   authenticated = true;
   localOnly = me.localOnly === true;
+  if (!localOnly) await reconcileNotificationAccount(owner).catch(error);
+  if (generation !== bootGeneration) return;
   void cache.write('last-owner', owner).catch(error);
   renderNavigation();
-  connect();
+  await openNotificationQuery();
+  if (generation === bootGeneration) connect();
 }
 function showLogin(setup: boolean) {
   showAuth({
@@ -1318,7 +1509,17 @@ function pairComputer() {
   });
 }
 function logout() {
+  notificationAccountGeneration++;
+  notificationController = undefined;
+  notificationPanelOpen = false;
+  showNotificationPanel();
   run(async () => {
+    // Revoke the local worker binding even when server removal is uncertain.
+    try {
+      await clearLocalNotifications();
+    } catch (cause) {
+      error(cause);
+    }
     await api('/api/logout', {});
     bootGeneration++;
     resetWorkspace();
@@ -1442,6 +1643,8 @@ async function loadDevices() {
         (h) => h.deviceId === selected!.id && h.runtimeWorkspaceId === workspace?.id,
       )
     ) {
+      cancelAttachmentSave();
+      showAttachmentPreview(undefined);
       selected = undefined;
       workspace = undefined;
       replica = undefined;
@@ -1657,6 +1860,7 @@ function showWorkspaceManager() {
   if (!dialog.open) dialog.showModal();
 }
 async function selectWorkspace(id: string, saved?: Partial<Selection>) {
+  cancelAttachmentSave();
   const target = catalog.find((w) => w.id === id);
   if (!target) return;
   activeWorkspace = target;
@@ -1731,6 +1935,7 @@ async function restoreSelection() {
   else restoredSelection = false;
 }
 async function selectDevice(id: string, explicit?: Partial<Selection>) {
+  cancelAttachmentSave();
   closeProjectContent();
   resetInteractions();
   sessionPersistenceError = '';
@@ -2012,6 +2217,7 @@ function renderNavigation() {
     onManage: showWorkspaceManager,
     onPair: pairComputer,
     onLogout: logout,
+    onNotifications: openNotifications,
   });
 }
 
@@ -2066,6 +2272,8 @@ function renderSessions() {
 }
 
 async function openSession(id: string, replicaId?: string, keepNavigation = false) {
+  cancelAttachmentSave();
+  showAttachmentPreview(undefined);
   closeProjectContent();
   resetInteractions();
   sessionPersistenceError = '';

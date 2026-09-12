@@ -9,6 +9,8 @@ import { ProjectHistoryStore } from './project-history';
 import { projectDiffReferenceSchema } from '../project-content-protocol';
 import { SessionSearchIndex, type SearchScope } from './session-search';
 import { expireSessionInteractions } from '../bridge/session-interactions';
+import { HostNotifications } from './host-notifications';
+import { notificationScopeSchema } from '../notification-protocol';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -29,10 +31,11 @@ export class RuntimeStore {
   journal: Journal;
   projectHistory: ProjectHistoryStore;
   sessionSearch: SessionSearchIndex;
+  notifications: HostNotifications;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
-  constructor(file: string) {
+  constructor(file: string, options: { now?: () => number } = {}) {
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.journal = new Journal(file);
     this.projectHistory = new ProjectHistoryStore(this.journal.db);
@@ -67,6 +70,7 @@ export class RuntimeStore {
       PRAGMA user_version=1;
     `);
     this.sessionSearch = new SessionSearchIndex(this.journal.db);
+    this.notifications = new HostNotifications(this.journal.db, options);
     const identity = this.load('identity');
     this.workspace = identity
       ? JSON.parse(Buffer.from(identity).toString())
@@ -81,6 +85,7 @@ export class RuntimeStore {
     this.meta = this.loadFlock('meta');
     this.machine = this.loadFlock('machine');
     this.save('identity', Buffer.from(JSON.stringify(this.workspace)));
+    this.notifications.resolveAllApprovals();
     // A restart settles interrupted turns, but never starts a queued prompt.
     for (const row of this.journal.db.prepare('SELECT id FROM session').all()) {
       const id = String(row.id),
@@ -98,29 +103,49 @@ export class RuntimeStore {
         localProjectId: meta?.localProjectId ?? '',
         sessionId: id,
       };
-      view.setState((state) => {
-        for (const turn of state.history) {
-          if (turn.role === 'assistant')
-            interactionsChanged = expireSessionInteractions(turn) || interactionsChanged;
-          if (turn.role === 'assistant' && !turn.finished) {
-            turn.finished = true;
-            turn.status = 'failed';
-            if (projectDiffReferenceSchema.safeParse(turn.fileDiff).success) {
-              const reference = this.projectHistory.interrupt(scope, turn.id);
-              if (reference) turn.fileDiff = reference;
+      const registered = this.machine.get(['localProject', scope.localProjectId]) as
+        | { id?: string }
+        | undefined;
+      const canNotify =
+        registered?.id === scope.localProjectId &&
+        this.meta.get(['m', 'session-' + id, 'id']) === id &&
+        this.meta.get(['m', 'session-' + id, 'userId']) === scope.userId &&
+        this.meta.get(['m', 'session-' + id, 'machineId']) === scope.machineId &&
+        this.attachmentScopeMatches(scope);
+      try {
+        this.transaction(() => {
+          view.setState((state) => {
+            for (const turn of state.history) {
+              if (turn.role === 'assistant')
+                interactionsChanged = expireSessionInteractions(turn) || interactionsChanged;
+              if (turn.role === 'assistant' && !turn.finished) {
+                turn.finished = true;
+                turn.status = 'failed';
+                if (projectDiffReferenceSchema.safeParse(turn.fileDiff).success) {
+                  const reference = this.projectHistory.interrupt(scope, turn.id);
+                  if (reference) turn.fileDiff = reference;
+                }
+                (turn.items ??= []).push({
+                  type: 'system_notice',
+                  name: 'chat_failed',
+                  message: '执行主机已重启；回合已中断，请手动发送新的指令。',
+                });
+                interrupted = true;
+                const notificationScope = notificationScopeSchema.safeParse({
+                  ...scope,
+                  turnId: turn.id,
+                });
+                if (canNotify && notificationScope.success)
+                  this.notifications.record(notificationScope.data, 'failed');
+              }
             }
-            (turn.items ??= []).push({
-              type: 'system_notice',
-              name: 'chat_failed',
-              message: '执行主机已重启；回合已中断，请手动发送新的指令。',
-            });
-            interrupted = true;
-          }
-        }
-      });
-      view.dispose();
-      if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-      if (interrupted || interactionsChanged) this.persist(id, doc);
+          });
+          if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+          if (interrupted || interactionsChanged) this.persist(id, doc);
+        });
+      } finally {
+        view.dispose();
+      }
     }
   }
   load(key: string) {

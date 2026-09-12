@@ -2693,3 +2693,75 @@ dialog pre {
     display: none;
   }
 }
+
+.notification-panel {
+  width: min(560px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.notification-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.notification-heading button {
+  padding: 8px;
+}
+.notification-panel p {
+  margin: 12px 0;
+  line-height: 1.6;
+}
+.notification-panel fieldset {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  border: 0;
+  padding: 0;
+}
+.notification-panel legend {
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+.notification-panel label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.notification-panel input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--foreground);
+}
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.notification-actions button,
+.notification-records button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.notification-records {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+.notification-records > div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+}
+.notification-footnote {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}

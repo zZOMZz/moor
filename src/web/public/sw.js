@@ -1,3 +1,4 @@
+importScripts('/notification-worker.js');
 const CACHE = 'personal-shell-__BUILD__';
 const ASSETS = [
   /* __ASSETS__ */

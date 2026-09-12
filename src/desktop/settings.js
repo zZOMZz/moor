@@ -1,5 +1,8 @@
 const $ = (id) => document.getElementById(id);
 let projects = [];
+let notificationsEnabled = false,
+  notificationsSupported = false,
+  notificationsBusy = false;
 const status = (value) => ($('status').textContent = value);
 function render() {
   const list = $('projects');
@@ -65,6 +68,7 @@ $('local').onclick = () => window.personal.open('local');
 $('remote').onclick = () => window.personal.open('remote');
 
 function renderHealth(value) {
+  if (value.notifications && !notificationsBusy) renderNotifications(value.notifications);
   const cards = $('health-cards');
   const labels = { host: '执行组件', local: '本机工作区', relay: '中转服务' };
   const signature = JSON.stringify(value);
@@ -109,3 +113,64 @@ void refreshHealth();
 const healthTimer = setInterval(refreshHealth, 1500);
 window.addEventListener('focus', refreshHealth);
 window.addEventListener('beforeunload', () => clearInterval(healthTimer));
+
+function renderNotifications(value) {
+  notificationsEnabled = value.enabled;
+  notificationsSupported = value.supported;
+  for (const kind of ['completed', 'failed', 'approvals'])
+    $('notify-' + kind).checked = value[kind];
+  $('notifications-enable').hidden = value.enabled;
+  $('notifications-disable').hidden = !value.enabled;
+  $('notifications-test').disabled = !value.enabled || notificationsBusy || !value.supported;
+  $('notifications-status').textContent = value.supported
+    ? value.message
+    : '当前系统不支持原生通知。';
+}
+async function changeNotifications(enabled, test = false) {
+  if (notificationsBusy) return;
+  notificationsBusy = true;
+  for (const id of [
+    'notifications-enable',
+    'notifications-disable',
+    'notifications-test',
+    'notification-kinds',
+  ])
+    $(id).disabled = true;
+  try {
+    const preferences = { enabled };
+    for (const kind of ['completed', 'failed', 'approvals'])
+      preferences[kind] = $('notify-' + kind).checked;
+    let state = await window.personal.notificationSettings(preferences);
+    if (test && state.supported) state = await window.personal.notificationTest();
+    renderNotifications(state);
+  } catch (error) {
+    $('notifications-status').textContent = error.message;
+  } finally {
+    notificationsBusy = false;
+    for (const id of [
+      'notifications-enable',
+      'notifications-disable',
+      'notifications-test',
+      'notification-kinds',
+    ])
+      $(id).disabled = false;
+    $('notifications-test').disabled = !notificationsEnabled || !notificationsSupported;
+  }
+}
+$('notifications-enable').onclick = () => changeNotifications(true, true);
+$('notifications-disable').onclick = () => changeNotifications(false);
+for (const kind of ['completed', 'failed', 'approvals'])
+  $('notify-' + kind).onchange = () => changeNotifications(notificationsEnabled);
+$('notifications-test').onclick = async () => {
+  if (notificationsBusy) return;
+  notificationsBusy = true;
+  $('notifications-test').disabled = true;
+  try {
+    renderNotifications(await window.personal.notificationTest());
+  } catch (error) {
+    $('notifications-status').textContent = error.message;
+  } finally {
+    notificationsBusy = false;
+    $('notifications-test').disabled = !notificationsEnabled || !notificationsSupported;
+  }
+};

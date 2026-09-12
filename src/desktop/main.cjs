@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, session, Notification } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -6,6 +6,13 @@ const { spawn } = require('node:child_process');
 const { ProcessRecovery } = require('./recovery.cjs');
 const { loadPage, clearLocalShellCache } = require('./page-loader.cjs');
 const { pathToFileURL } = require('node:url');
+const {
+  DesktopNotifications,
+  notificationSettings,
+  validateSettings,
+  notificationUrl,
+} = require('./notifications.cjs');
+const { createAttachmentSaver } = require('./attachment-save.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -20,11 +27,13 @@ const data = app.getPath('userData');
 fs.mkdirSync(data, { recursive: true, mode: 0o700 });
 const settingsFile = path.join(data, 'settings.json'),
   bridgeFile = path.join(data, 'bridge-v3.json'),
-  runtimeData = path.join(data, 'runtime-v1.sqlite');
+  runtimeData = path.join(data, 'runtime-v1.sqlite'),
+  notificationsFile = path.join(data, 'notifications-v1.json');
 let settings = { server: '', name: os.hostname(), projects: [], agents: ['codex'] };
 try {
   settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) };
 } catch {}
+settings.notifications = notificationSettings(settings.notifications);
 let settingsWindow,
   localWindow,
   remoteWindow,
@@ -37,14 +46,53 @@ let settingsWindow,
   recovering = false,
   restart;
 let requestedView = 'local';
+let localReadyGeneration = 0,
+  localReadyChain = Promise.resolve();
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
   ELECTRON_RUN_AS_NODE: '1',
   MOOR_RUNTIME_DATA: runtimeData,
 };
-const write = (file, value) =>
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+const write = (file, value) => {
+  const temporary = file + '.tmp-' + require('node:crypto').randomUUID();
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify(value, null, 2) + '\n');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporary, file);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try {
+      fs.unlinkSync(temporary);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+};
+const contentWindows = new Map();
+const attachmentSaver = createAttachmentSaver({
+  registry: contentWindows,
+  showSaveDialog: (window, options) => dialog.showSaveDialog(window, options),
+  downloads: () => app.getPath('downloads'),
+});
+const nativeNotifications = new DesktopNotifications({
+  Notification,
+  load: () => {
+    try {
+      return JSON.parse(fs.readFileSync(notificationsFile, 'utf8'));
+    } catch (error) {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  },
+  save: (value) => write(notificationsFile, value),
+  getSettings: () => settings.notifications,
+  onClick: (event) => showLocal(event),
+});
 function endpoint(value) {
   if (!value) return '';
   const u = new URL(value);
@@ -64,18 +112,39 @@ function lockedWindow(origin, partition) {
     minWidth: 720,
     minHeight: 550,
     title: 'Moor',
-    webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      partition,
+      preload: path.join(__dirname, 'web-preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  contentWindows.set(window.webContents, { window, origin });
+  window.webContents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
+    if (mainFrame) attachmentSaver.invalidate(window.webContents);
+  });
+  window.on('closed', () => {
+    attachmentSaver.invalidate(window.webContents);
+    contentWindows.delete(window.webContents);
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== origin) event.preventDefault();
+    if (new URL(url).origin !== contentWindows.get(window.webContents)?.origin)
+      event.preventDefault();
   });
   window.webContents.on('will-redirect', (event, url) => {
-    if (new URL(url).origin !== origin) event.preventDefault();
+    if (new URL(url).origin !== contentWindows.get(window.webContents)?.origin)
+      event.preventDefault();
   });
   return window;
 }
 function openPage(window, origin) {
+  const registered = contentWindows.get(window.webContents);
+  if (registered && registered.origin !== new URL(origin).origin) {
+    attachmentSaver.invalidate(window.webContents);
+    contentWindows.set(window.webContents, { window, origin: new URL(origin).origin });
+  }
   loadPage(window, origin, () => {
     void dialog
       .showMessageBox(window, {
@@ -94,7 +163,7 @@ function openPage(window, origin) {
       });
   });
 }
-function showLocal() {
+function showLocal(event) {
   requestedView = 'local';
   if (!localOrigin) {
     showSettings();
@@ -102,13 +171,15 @@ function showLocal() {
   }
   if (localWindow && !localWindow.isDestroyed()) {
     localWindow.show();
+    localWindow.focus();
+    if (event) openPage(localWindow, notificationUrl(localOrigin, event));
     return;
   }
   localWindow = lockedWindow(localOrigin, 'persist:personal-local');
   localWindow.on('closed', () => {
     localWindow = null;
   });
-  openPage(localWindow, localOrigin);
+  openPage(localWindow, event ? notificationUrl(localOrigin, event) : localOrigin);
 }
 function showRemote() {
   requestedView = 'remote';
@@ -181,6 +252,7 @@ function health() {
       message: remoteLabels[bridgeHealth.relay] ?? remoteLabels.unpaired,
     },
     recovering,
+    notifications: nativeNotifications.state(),
   };
 }
 function startBridge() {
@@ -212,6 +284,25 @@ function startBridge() {
   child.stderr.on('data', () => {}); // Do not surface raw process logs or local secrets in settings.
   child.on('message', async (message) => {
     if (bridge !== child) return;
+    if (message?.type === 'notification') {
+      let status = 'failed';
+      try {
+        status = await nativeNotifications.receive(message.event);
+      } catch {}
+      if (
+        bridge === child &&
+        child.connected &&
+        /^notification_[a-f0-9]{64}$/.test(message.event?.eventId ?? '')
+      ) {
+        try {
+          child.send(
+            { type: 'notification-ack', eventId: message.event.eventId, status },
+            () => {},
+          );
+        } catch {}
+      }
+      return;
+    }
     if (message?.type === 'health') {
       if (
         ['ready', 'unavailable'].includes(message.local) &&
@@ -235,28 +326,39 @@ function startBridge() {
     if (message?.type !== 'local-ready') return;
     if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(message.origin) || typeof message.secret !== 'string')
       return;
-    localOrigin = message.origin;
-    // The application ships its own local UI. Clear only replaceable shell
-    // caches, never cookies/IndexedDB where login, drafts and pending requests live.
-    try {
-      await clearLocalShellCache(session.fromPartition('persist:personal-local'), localOrigin);
-    } catch {
-      bridgeStatus = '本机界面缓存更新失败，请重新打开 Moor。';
-      showSettings();
-      return;
-    }
-    await session.fromPartition('persist:personal-local').cookies.set({
-      url: localOrigin,
-      name: 'personal',
-      value: message.secret,
-      httpOnly: true,
-      sameSite: 'strict',
-      path: '/',
+    const origin = message.origin,
+      generation = ++localReadyGeneration,
+      current = () => !quitting && bridge === child && generation === localReadyGeneration;
+    // An in-progress cookie write cannot be cancelled. Serialize initialization
+    // across child generations so a replacement always writes its own login last.
+    const preparing = localReadyChain.then(async () => {
+      if (!current()) return;
+      try {
+        // Clear only replaceable shell caches, never cookies/IndexedDB where
+        // login, drafts and pending requests live. Keep this origin immutable.
+        await clearLocalShellCache(session.fromPartition('persist:personal-local'), origin);
+        if (!current()) return;
+        await session.fromPartition('persist:personal-local').cookies.set({
+          url: origin,
+          name: 'personal',
+          value: message.secret,
+          httpOnly: true,
+          sameSite: 'strict',
+          path: '/',
+        });
+        if (!current()) return;
+        localOrigin = origin;
+        bridgeStatus = '本机界面已启动，等待执行组件';
+        if (localWindow && !localWindow.isDestroyed()) openPage(localWindow, origin);
+        else if (requestedView === 'local') showLocal();
+      } catch {
+        if (!current()) return;
+        bridgeStatus = '本机界面初始化失败，请重新打开 Moor。';
+        showSettings();
+      }
     });
-    if (bridge !== child) return;
-    bridgeStatus = '本机界面已启动，等待执行组件';
-    if (localWindow && !localWindow.isDestroyed()) openPage(localWindow, localOrigin);
-    else if (requestedView === 'local') showLocal();
+    localReadyChain = preparing.catch(() => {});
+    await preparing;
   });
   child.on('error', (e) => {
     bridgeStatus = '连接组件启动失败，请重新连接。';
@@ -372,7 +474,13 @@ ipcMain.handle('personal:save', async (event, value) => {
     write(bridgeFile, { server, ...result });
   }
   const changed = settings.server !== server;
-  settings = { server, name, projects: [...new Set(value.projects)], agents: [...new Set(agents)] };
+  settings = {
+    server,
+    name,
+    projects: [...new Set(value.projects)],
+    agents: [...new Set(agents)],
+    notifications: settings.notifications,
+  };
   write(settingsFile, settings);
   if (changed && remoteWindow) {
     remoteWindow.close();
@@ -381,13 +489,28 @@ ipcMain.handle('personal:save', async (event, value) => {
   await restartBridge();
   return { ok: true, paired: Boolean(code) };
 });
+ipcMain.handle('personal:notification-settings', (event, value) => {
+  trusted(event);
+  const preferences = validateSettings(value);
+  write(settingsFile, { ...settings, notifications: preferences });
+  settings = { ...settings, notifications: preferences };
+  nativeNotifications.updateSettings();
+  return nativeNotifications.state();
+});
+ipcMain.handle('personal:notification-test', async (event) => {
+  trusted(event);
+  await nativeNotifications.test();
+  return nativeNotifications.state();
+});
+ipcMain.handle('moor:save-attachment', (event, value) => attachmentSaver.save(event, value));
+ipcMain.handle('moor:cancel-attachment-save', (event) => attachmentSaver.cancel(event));
 ipcMain.handle('personal:open', async (event, mode) => {
   trusted(event);
   mode === 'remote' ? showRemote() : showLocal();
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', showLocal);
+  app.on('second-instance', () => showLocal());
   app.whenReady().then(() => {
     for (const partition of ['persist:personal-local', 'persist:personal-remote']) {
       const s = session.fromPartition(partition);
@@ -400,7 +523,7 @@ else {
         {
           label: 'Moor',
           submenu: [
-            { label: '本机工作区', click: showLocal },
+            { label: '本机工作区', click: () => showLocal() },
             { label: '我的所有电脑', click: showRemote },
             { label: '连接设置…', accelerator: 'CmdOrCtrl+,', click: showSettings },
             { type: 'separator' },
@@ -425,12 +548,13 @@ else {
     hostRecovery.start();
     showLocal();
   });
-  app.on('activate', showLocal);
+  app.on('activate', () => showLocal());
   // Closing a window leaves the execution host alive; explicit Quit stops this app's processes.
   app.on('window-all-closed', () => {});
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => app.quit());
   app.on('before-quit', () => {
     quitting = true;
+    nativeNotifications.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

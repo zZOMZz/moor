@@ -71,6 +71,21 @@ docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay 
 
 仅用于开发时可使用 Caddy 的 `tls internal`，但各访问端仍需信任其 CA；容器里的证书不会自动成为 iPhone 或 Mac 信任的证书。不要通过关闭证书校验来完成设备验收。
 
+## 配置 Web Push
+
+Web Push 默认未配置；桌面本机通知不依赖此配置。需要远端浏览器或 PWA 通知时，在私有配置目录生成一次 VAPID 密钥，使用真实的操作者联系地址替换示例：
+
+```sh
+node scripts/create-web-push-keys.mjs --output .data/web-push.env --subject mailto:operator@example.com
+docker compose -p moor --env-file deploy/.env --env-file .data/web-push.env -f deploy/compose.yaml up -d --build
+```
+
+命令创建仅当前用户可读的文件，不在终端输出密钥，并拒绝覆盖已有文件或符号链接。文件含 `MOOR_WEB_PUSH_PUBLIC_KEY`、`MOOR_WEB_PUSH_PRIVATE_KEY` 和 `MOOR_WEB_PUSH_SUBJECT`，由 Compose 作为环境配置读取。保持此文件私有，不提交、不复制进程序包或 Docker 构建上下文；部署到其他服务器时用操作者自己的私有配置传递方式保存相同变量。已有 VPS 的更新脚本不会上传或修改此配置，须先在服务器设置环境变量，再使用原有更新流程。
+
+启用后，后续 Compose 操作继续包含这两个 `--env-file` 参数；已有部署还需保留实际使用的项目名和镜像覆盖文件。未设置或密钥无效时，通知设置显示未配置原因，其余服务仍可使用。服务只接受确切的 `fcm.googleapis.com`、`updates.push.services.mozilla.com`、`web.push.apple.com` HTTPS 端点；其他供应商或 Apple 子域当前不支持。
+
+密钥应随服务私有配置独立备份，不能在每次构建或重启时重建。更换密钥或域名后，需要用户关闭旧订阅并手动重新开启。SQLite 数据备份包含私有订阅材料，应与登录、设备凭据同样保护。供应商接受推送不等于设备显示，启用后仍须完成真实已安装 PWA 的前后台验收，见[任务通知](../docs/notifications.md)。
+
 ## 停机备份
 
 先停止服务，确保 SQLite 写入已经完成。备份整个 `/data`，保留数据库、可能存在的 WAL 文件和初始化口令。备份包含登录及设备凭据记录，放在源码目录之外。

@@ -86,6 +86,11 @@ import {
   sessionEventStateSchema,
   type SessionEvent,
 } from '../runtime/session-events';
+import {
+  NOTIFICATIONS_FEATURE,
+  NOTIFICATION_LIMITS,
+  type HostNotificationEvent,
+} from '../notification-protocol';
 
 type Active = {
   turnId: string;
@@ -158,6 +163,7 @@ export class HostWorkspace {
       SESSION_SEARCH_FEATURE,
       QUESTIONS_FEATURE,
       STEER_FEATURE,
+      NOTIFICATIONS_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -388,6 +394,64 @@ export class HostWorkspace {
   }
   searchSessions(input: SessionSearchRequest, localProjectId?: string) {
     return searchHostSessions(this, input, localProjectId);
+  }
+  isNotificationCurrent(event: HostNotificationEvent) {
+    if (event.expiresAt <= this.store.notifications.now()) return false;
+    try {
+      const stored = this.store.notifications.get(event.eventId, true);
+      if (!stored || !isDeepStrictEqual(stored, event)) return false;
+      const lease = this.projectLease({
+        workspaceId: event.workspaceId,
+        localProjectId: event.localProjectId,
+        sessionId: event.sessionId,
+      });
+      if (
+        lease.userId !== event.userId ||
+        lease.machineId !== event.machineId ||
+        metas(this.meta)['session-' + event.sessionId]?.id !== event.sessionId
+      )
+        return false;
+      if (event.kind !== 'approval-required') return !!this.store.searchSource(event.sessionId);
+      const run = this.active.get(event.sessionId);
+      if (
+        !run ||
+        run.turnId !== event.turnId ||
+        run.stopped ||
+        !run.permissions.has(event.requestId!)
+      )
+        return false;
+      return this.boundRun(event.sessionId, run, this.runBinding(event.sessionId, run));
+    } catch {
+      return false;
+    }
+  }
+  pendingNotifications(channel: string, limit = 100): HostNotificationEvent[] {
+    this.ensureConnected();
+    assert(
+      Number.isInteger(limit) && limit > 0 && limit <= NOTIFICATION_LIMITS.events,
+      400,
+      '通知数量限制无效',
+    );
+    const result: HostNotificationEvent[] = [];
+    for (const event of this.store.notifications.pending(channel, NOTIFICATION_LIMITS.events)) {
+      if (!this.isNotificationCurrent(event)) this.store.notifications.discard(event.eventId);
+      else if (result.length < limit) result.push(event);
+    }
+    return result;
+  }
+  acknowledgeNotification(channel: string, eventId: string, status: 'submitted' | 'suppressed') {
+    const event = this.store.notifications.get(eventId);
+    if (!event) return;
+    if (this.isNotificationCurrent(event))
+      this.store.notifications.acknowledge(channel, eventId, status);
+    else this.store.notifications.discard(eventId);
+  }
+  retryNotification(channel: string, eventId: string, delayMs = 2000) {
+    const event = this.store.notifications.get(eventId);
+    if (!event) return;
+    if (this.isNotificationCurrent(event))
+      this.store.notifications.retry(channel, eventId, delayMs);
+    else this.store.notifications.discard(eventId);
   }
   answerQuestion(input: QuestionAnswer, localProjectId?: string) {
     return this.interactions.answerQuestion(input, localProjectId);
@@ -868,6 +932,11 @@ export class HostWorkspace {
             view.dispose();
           }
           this.store.persist(m.sessionId, validated.doc);
+          if (m.kind === 'permission')
+            this.store.notifications.resolveApprovals(
+              { ...attachmentScope, turnId: active!.turnId },
+              m.requestId,
+            );
           return journal.accept(m);
         });
       } catch (error) {
@@ -994,18 +1063,28 @@ export class HostWorkspace {
             : Promise.resolve(cancelledQuestionAnswer(request));
         },
         permission: (value) => {
-          if (run.stopped || this.closed)
+          if (!this.boundRun(id, run, this.runBinding(id, run)))
             return Promise.resolve({ outcome: { outcome: 'cancelled' } });
           const requestId = randomUUID();
           return new Promise((resolve) => {
             run.permissions.set(requestId, { options: value.options, resolve });
-            this.edit(id, run, (turn) => {
-              let item = turn.items.find(
-                (i: any) => i.type === 'tool_call' && i.toolCallId === value.toolCall.toolCallId,
-              );
-              if (!item) turn.items.push((item = { ...value.toolCall, type: 'tool_call' }));
-              item.permissionRequest = { requestId, options: value.options };
-            });
+            try {
+              this.edit(id, run, (turn) => {
+                let item = turn.items.find(
+                  (i: any) => i.type === 'tool_call' && i.toolCallId === value.toolCall.toolCallId,
+                );
+                if (!item) turn.items.push((item = { ...value.toolCall, type: 'tool_call' }));
+                item.permissionRequest = { requestId, options: value.options };
+                this.store.notifications.record(
+                  { ...run.projectScope, turnId: run.turnId },
+                  'approval-required',
+                  requestId,
+                );
+              });
+            } catch (error) {
+              run.permissions.delete(requestId);
+              throw error;
+            }
           });
         },
       });
@@ -1130,6 +1209,10 @@ export class HostWorkspace {
         expireSessionInteractions(turn, 'stopped');
         if (reference) turn.fileDiff = typeof reference === 'function' ? reference() : reference;
         if (message) turn.items.push({ type: 'system_notice', name: 'chat_failed', message });
+        const scope = { ...run.projectScope, turnId: run.turnId };
+        this.store.notifications.resolveApprovals(scope);
+        if (status === 'handled' || status === 'failed')
+          this.store.notifications.record(scope, status === 'handled' ? 'completed' : 'failed');
       },
       true,
     );
