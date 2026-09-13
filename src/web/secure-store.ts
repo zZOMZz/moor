@@ -52,7 +52,7 @@ const runtimeKey = (target: SecureCliTarget) => {
   return canonical(runtime);
 };
 export async function secureBrowserRequestVersion(
-  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'userTurnId'>,
+  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'previewReview' | 'userTurnId'>,
 ) {
   const source = secureOperationDigestSource(value);
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));

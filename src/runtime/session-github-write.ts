@@ -163,6 +163,7 @@ export class SessionGithubWriteManager {
     localProjectId?: string,
     needsWrite = false,
     hooks: { beforeDispatch?: () => void; onResult?: (v: GithubWriteOutcome) => void } = {},
+    checkpoint?: () => void,
   ) {
     const { scope, lease } = this.lease(request, localProjectId),
       config = this.options.config?.getProject(scope.localProjectId);
@@ -177,6 +178,7 @@ export class SessionGithubWriteManager {
     const revision = this.bindingRevision(scope),
       signal = this.options.signal?.() ?? AbortSignal.timeout(25000);
     const current = () => {
+      checkpoint?.();
       this.currentLease(request, lease, localProjectId);
       assert(!signal.aborted, 504, 'GitHub 操作已超时，请手动核查原请求');
       assert(this.options.config?.isCurrent(config), 409, 'GitHub 本机配置或授权已变化');
@@ -362,7 +364,12 @@ export class SessionGithubWriteManager {
       .run('github-write-' + receipt.phase, JSON.stringify(receipt), request.operationId);
     return receipt;
   }
-  async read(input: GithubWriteRead, localProjectId?: string): Promise<GithubWriteReadResult> {
+  async read(
+    input: GithubWriteRead,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GithubWriteReadResult> {
+    checkpoint?.();
     const request = githubWriteReadSchema.parse(input),
       { scope, lease } = this.lease(request, localProjectId);
     const base = { ...this.envelope(scope), confirmed: true as const, readAt: this.at() };
@@ -373,13 +380,14 @@ export class SessionGithubWriteManager {
         localProjectId: scope.localProjectId,
         sessionId: scope.sessionId,
       });
+      checkpoint?.();
       this.currentLease(request, lease, localProjectId);
       let repository,
         configVersion,
         reason,
         writesEnabled = false;
       try {
-        const c = this.remote(request, localProjectId);
+        const c = this.remote(request, localProjectId, false, {}, checkpoint);
         repository = await c.client.getRepository(c.repo);
         c.current();
         configVersion = c.config.version;
@@ -387,6 +395,7 @@ export class SessionGithubWriteManager {
       } catch (error) {
         reason = error instanceof AppError ? error.message : 'GitHub 授权当前不可读取';
       }
+      checkpoint?.();
       this.currentLease(request, lease, localProjectId);
       let canCommit =
         this.idle(scope.sessionId) &&
@@ -416,6 +425,7 @@ export class SessionGithubWriteManager {
       this.assertExecutionAvailable(execution);
       assert(this.idle(scope.sessionId), 409, '请先停止活动回合');
       const current = () => {
+        checkpoint?.();
         this.currentLease(request, lease, localProjectId);
         assert(
           isDeepStrictEqual(this.host.executionLease(scope, localProjectId, true), execution),
@@ -438,7 +448,7 @@ export class SessionGithubWriteManager {
         execution: this.host.store.executions.info(scope),
       });
     }
-    const c = this.remote(request, localProjectId);
+    const c = this.remote(request, localProjectId, false, {}, checkpoint);
     assert(c.config.version === request.configVersion, 409, 'GitHub 配置版本已变化，请重新读取');
     const repository = await c.client.getRepository(c.repo);
     c.current();
@@ -643,9 +653,14 @@ export class SessionGithubWriteManager {
         });
     }
   }
-  async action(input: GithubWriteAction, localProjectId?: string): Promise<GithubWriteReceipt> {
+  async action(
+    input: GithubWriteAction,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GithubWriteReceipt> {
     const request = githubWriteActionSchema.parse(input);
     return this.host.serial(request.sessionId, async () => {
+      checkpoint?.();
       const { scope, lease } = this.lease(request, localProjectId),
         existing = this.lookup(scope, request);
       if (existing) return this.prior(request, existing);
@@ -660,6 +675,7 @@ export class SessionGithubWriteManager {
       try {
         let c: ReturnType<SessionGithubWriteManager['remote']> | undefined;
         const current = () => {
+          checkpoint?.();
           this.currentLease(request, lease, localProjectId);
           if (plan.execution)
             assert(
@@ -695,7 +711,7 @@ export class SessionGithubWriteManager {
           );
         };
         if (request.action !== 'commit') {
-          c = this.remote(request, localProjectId, true, { beforeDispatch, onResult });
+          c = this.remote(request, localProjectId, true, { beforeDispatch, onResult }, checkpoint);
           assert(
             c.config.version === request.configVersion &&
               c.revision === request.expectedBindingRevision,
@@ -876,9 +892,14 @@ export class SessionGithubWriteManager {
       record.bodyVersion === hash(githubOperationBody(request.body, plan.marker!))
     );
   }
-  async inspect(input: GithubWriteInspect, localProjectId?: string): Promise<GithubWriteReceipt> {
+  async inspect(
+    input: GithubWriteInspect,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GithubWriteReceipt> {
     const { request, page } = githubWriteInspectSchema.parse(input);
     return this.host.serial(request.sessionId, async () => {
+      checkpoint?.();
       const { scope } = this.lease(request, localProjectId),
         record = this.lookup(scope, request);
       if (!record)
@@ -899,6 +920,7 @@ export class SessionGithubWriteManager {
       try {
         if (plan.commit) {
           const current = () => {
+            checkpoint?.();
             this.lease(request, localProjectId);
             assert(
               isDeepStrictEqual(
@@ -920,7 +942,7 @@ export class SessionGithubWriteManager {
               this.receipt(request, 'accepted', '已核实原提交与暂存区', { sha: state.oid }),
             );
         } else {
-          const c = this.remote(request, localProjectId);
+          const c = this.remote(request, localProjectId, false, {}, checkpoint);
           assert(isDeepStrictEqual(c.repo, plan.remote), 409, '原仓库已不在此项目的授权范围');
           await c.client.getRepository(c.repo);
           c.current();
@@ -1012,9 +1034,11 @@ export class SessionGithubWriteManager {
   async abandon(
     input: { request: GithubWriteAction },
     localProjectId?: string,
+    checkpoint?: () => void,
   ): Promise<GithubWriteReceipt> {
     const { request } = githubWriteAbandonSchema.parse(input);
     return this.host.serial(request.sessionId, async () => {
+      checkpoint?.();
       const { scope } = this.lease(request, localProjectId);
       let record = this.lookup(scope, request);
       if (record) {
@@ -1039,6 +1063,7 @@ export class SessionGithubWriteManager {
         assert(this.idle(scope.sessionId), 409, '请先停止活动回合并确认结果');
         this.idleRoot(plan.commit.candidate.repository.rootPath);
         const current = () => {
+          checkpoint?.();
           this.lease(request, localProjectId);
           assert(
             isDeepStrictEqual(

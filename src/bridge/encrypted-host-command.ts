@@ -205,7 +205,10 @@ export class EncryptedHostCommands {
           lease = products.acquire(request.target, command, header.resource);
           current();
           products.bindOperation(request.target, command);
-          if (command.method === 'mutate' && command.params.kind === 'turn')
+          if (
+            (command.method === 'mutate' && command.params.kind === 'turn') ||
+            (command.method === 'preview-action' && command.params.action === 'open')
+          )
             executionCurrent = products.executionCurrent(request.target, command);
         } catch (error) {
           return await failure(

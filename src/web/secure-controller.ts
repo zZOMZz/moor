@@ -54,6 +54,48 @@ import { SKILLS_FEATURE } from '../skills-protocol';
 import { MCP_FEATURE, type McpReadResult, type McpServerView } from '../mcp-protocol';
 import { SecureMcp, type SecureMcpDraft, type SecureMcpRead } from './secure-mcp';
 import { SECURE_TURN_AUTHORITY_FEATURE } from '../task-protocol';
+import { GITHUB_FEATURE, SECURE_GITHUB_AUTHORITY_FEATURE } from '../github-protocol';
+import { GITHUB_WRITE_FEATURE } from '../github-write-protocol';
+import { PREVIEW_FEATURE, SECURE_PREVIEW_AUTHORITY_FEATURE } from '../preview-protocol';
+import { SecureScopedStorage, sameSecureRuntime } from './secure-scoped-storage';
+import { ApiError } from './api';
+import { SecurePreviewAnnotations } from './secure-preview';
+import { previewAnnotationSchema, type PreviewAnnotation } from './project-preview';
+import { readSecureGithubExecutionBlock } from './secure-github';
+import { attachmentBytes } from './attachments';
+
+export type SecureExtensionMethod =
+  | 'github-read'
+  | 'github-action'
+  | 'github-abandon'
+  | 'github-write-read'
+  | 'github-write-action'
+  | 'github-write-inspect'
+  | 'github-write-abandon'
+  | 'preview-read'
+  | 'preview-action'
+  | 'preview-inspect'
+  | 'preview-close';
+const extensionMethods = new Set<SecureExtensionMethod>([
+  'github-read',
+  'github-action',
+  'github-abandon',
+  'github-write-read',
+  'github-write-action',
+  'github-write-inspect',
+  'github-write-abandon',
+  'preview-read',
+  'preview-action',
+  'preview-inspect',
+  'preview-close',
+]);
+const extensionRecovery = new Set<SecureExtensionMethod>([
+  'github-abandon',
+  'github-write-inspect',
+  'github-write-abandon',
+  'preview-inspect',
+  'preview-close',
+]);
 
 export type SecureContentReadMethod =
   | 'read-project-tree'
@@ -72,6 +114,7 @@ export type SecureSendReview = {
   target: SecureCliTarget;
   attachments: SecureAttachmentDraft[];
   mcpDraft?: SecureMcpDraft | null;
+  previewAnnotations?: PreviewAnnotation[];
 };
 const contentReadMethods: ReadonlySet<string> = new Set<SecureContentReadMethod>([
   'read-project-tree',
@@ -95,6 +138,8 @@ export type SecureWorkspaceState = {
   draft: string;
   attachmentDraft: SecureAttachmentDraft[];
   mcpDraft: SecureMcpDraft | null;
+  previewAnnotations: PreviewAnnotation[];
+  extensionBlock: string | null;
   permissionReviews: SecurePermissionReview[];
   notice: string | null;
   busy: boolean;
@@ -115,6 +160,8 @@ const empty = (): SecureWorkspaceState => ({
   draft: '',
   attachmentDraft: [],
   mcpDraft: null,
+  previewAnnotations: [],
+  extensionBlock: null,
   permissionReviews: [],
   notice: null,
   busy: false,
@@ -154,6 +201,8 @@ export class SecureWorkspaceController {
   #store: SecureStore;
   #attachments: SecureAttachments;
   #mcp: SecureMcp;
+  readonly extensionStorage: SecureScopedStorage;
+  readonly previewAnnotations: SecurePreviewAnnotations;
   #uuid: () => string;
   #now: () => string;
   constructor(options: {
@@ -168,6 +217,8 @@ export class SecureWorkspaceController {
     this.#store = options.store ?? new SecureStore();
     this.#attachments = new SecureAttachments(this.#store);
     this.#mcp = new SecureMcp(this.#store);
+    this.extensionStorage = new SecureScopedStorage(this.#store);
+    this.previewAnnotations = new SecurePreviewAnnotations(this.#store, this.extensionStorage);
     this.#uuid = options.uuid ?? (() => crypto.randomUUID());
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -236,6 +287,179 @@ export class SecureWorkspaceController {
     const raw = await this.#execute(lease, target, command);
     return validateHostResponse(raw, { command, workspace, current });
   }
+  /** Finite extension methods, with original mapped scope retained during manual recovery. */
+  async scopedRequest(
+    inputTarget: SecureCliTarget,
+    method: SecureExtensionMethod,
+    params: unknown,
+    reviewedCurrent: () => void,
+  ): Promise<unknown> {
+    const target = secureTargetSchema.parse(structuredClone(inputTarget));
+    if (!extensionMethods.has(method)) throw Error('不支持的加密扩展操作。');
+    const lease = this.#lease();
+    const current = () => {
+      this.#current(lease.generation);
+      reviewedCurrent();
+      const context = this.contentContext;
+      if (
+        !context.online ||
+        !context.target ||
+        !(
+          same(target, context.target) ||
+          (extensionRecovery.has(method) && sameSecureRuntime(target, context.target))
+        )
+      )
+        throw Error('扩展所属会话或连接已改变，请重新核对原操作。');
+    };
+    current();
+    const command = this.#command(target, method, structuredClone(params));
+    const request = command.params as Record<string, unknown>;
+    const scoped = 'request' in request ? (request.request as Record<string, unknown>) : request;
+    if (
+      scoped.workspaceId !== target.workspaceId ||
+      scoped.localProjectId !== target.localProjectId ||
+      scoped.sessionId !== target.sessionId
+    )
+      throw Error('扩展请求与原执行范围不匹配。');
+    const workspace = this.#state.catalog?.workspaces.find(
+      (entry) => entry.id === target.workspaceId,
+    );
+    if (
+      !workspace ||
+      workspace.userId !== target.userId ||
+      workspace.machineId !== target.machineId
+    )
+      throw Error('执行主机目录尚未确认。');
+    const feature = method.startsWith('preview-')
+      ? PREVIEW_FEATURE
+      : method.startsWith('github-write-')
+        ? GITHUB_WRITE_FEATURE
+        : GITHUB_FEATURE;
+    const authorityFeature = method.startsWith('preview-')
+      ? SECURE_PREVIEW_AUTHORITY_FEATURE
+      : SECURE_GITHUB_AUTHORITY_FEATURE;
+    if (!workspace.features?.includes(feature) || !workspace.features.includes(authorityFeature))
+      throw Error('此主机尚未提供完整的加密扩展授权，请升级主机后重新连接。');
+    try {
+      const raw = await this.#execute(lease, target, command);
+      current();
+      return await validateHostResponse(raw, { command, workspace, current });
+    } catch (error) {
+      current();
+      if (error instanceof RequestFailure)
+        throw new ApiError(error.message, error.rejected ? 409 : 0, error.rejected);
+      throw error;
+    }
+  }
+  async beforeExtensionWrite(inputTarget: SecureCliTarget, reviewedCurrent: () => void) {
+    const target = secureTargetSchema.parse(inputTarget),
+      generation = this.#generation;
+    const current = () => {
+      this.#current(generation);
+      reviewedCurrent();
+      const context = this.contentContext;
+      if (!context.online || !same(context.target, target)) throw Error('写入的执行范围已改变。');
+    };
+    current();
+    const workspace = this.#state.catalog?.workspaces.find(
+      (entry) => entry.id === target.workspaceId,
+    );
+    if (
+      !workspace ||
+      workspace.userId !== target.userId ||
+      workspace.machineId !== target.machineId ||
+      !workspace.features?.includes(GITHUB_FEATURE) ||
+      !workspace.features.includes(SECURE_GITHUB_AUTHORITY_FEATURE)
+    )
+      throw Error('此主机尚未提供完整的加密扩展授权，请升级主机后重新连接。');
+    const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
+    if (block) throw Error(block);
+    const operations = await this.#store.list(target);
+    current();
+    if (
+      operations.some(
+        (operation) =>
+          sameSecureRuntime(operation.target, target) &&
+          ['pending', 'ending'].includes(operation.state),
+      )
+    )
+      throw Error('请先核查原会话操作，再执行新的 GitHub 写入。');
+  }
+  async refreshExtensionRecords(inputTarget: SecureCliTarget, reviewed: () => void) {
+    const target = secureTargetSchema.parse(inputTarget),
+      generation = this.#generation;
+    const current = () => {
+      this.#current(generation);
+      reviewed();
+      if (!same(target, this.contentContext.target)) throw Error('扩展记录的显示目标已改变。');
+    };
+    current();
+    const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
+    current();
+    this.#state.extensionBlock = block;
+    this.#emit();
+  }
+  updatePreviewAnnotations(
+    inputTarget: SecureCliTarget,
+    items: readonly PreviewAnnotation[],
+    reviewed: () => void,
+  ) {
+    const target = secureTargetSchema.parse(inputTarget);
+    reviewed();
+    this.#current(this.#generation);
+    if (!same(target, this.contentContext.target)) throw Error('标注显示目标已改变。');
+    this.#state.previewAnnotations = items.map((item) => previewAnnotationSchema.parse(item));
+    this.#emit();
+  }
+  async addPreviewImage(
+    inputTarget: SecureCliTarget,
+    annotation: PreviewAnnotation,
+    reviewed: () => void,
+  ) {
+    const target = secureTargetSchema.parse(inputTarget),
+      shown = previewAnnotationSchema.parse(structuredClone(annotation));
+    return this.#run(async (current) => {
+      const checked = () => {
+        current();
+        reviewed();
+        if (!same(target, this.contentContext.target)) throw Error('标注截图所属会话已改变。');
+      };
+      checked();
+      const items = await this.previewAnnotations.read(target, checked);
+      if (!items.some((item) => same(item, shown)) || !shown.snapshot.image)
+        throw Error('标注截图已改变，请重新审阅。');
+      const draft = await this.#attachments.read(target, checked);
+      const file = new File(
+        [new Uint8Array(attachmentBytes(shown.snapshot.image.data))],
+        `网页标注-${shown.id}.png`,
+        { type: 'image/png' },
+      );
+      this.#state.attachmentDraft = await this.#attachments.addFiles(
+        target,
+        draft,
+        [file],
+        checked,
+      );
+      checked();
+      this.#state.notice = '已将审阅的截图加入本机附件草稿，请检查后手动发送。';
+    });
+  }
+  async removePreviewSelection(inputTarget: SecureCliTarget, annotation: PreviewAnnotation) {
+    const target = secureTargetSchema.parse(inputTarget),
+      shown = previewAnnotationSchema.parse(structuredClone(annotation));
+    return this.#run(async (current) => {
+      const checked = () => {
+        current();
+        if (!same(target, this.contentContext.target)) throw Error('标注所属会话已改变。');
+      };
+      const items = await this.previewAnnotations.read(target, checked);
+      if (!items.some((item) => same(item, shown))) throw Error('已审阅的标注已改变，请重新读取。');
+      await this.previewAnnotations.change(target, items, checked, (store) =>
+        store.select(shown.id, false),
+      );
+      this.#state.previewAnnotations = await this.previewAnnotations.read(target, checked);
+    });
+  }
   subscribe(listener: (state: SecureWorkspaceState) => void) {
     this.#listeners.add(listener);
     listener(this.state);
@@ -273,6 +497,8 @@ export class SecureWorkspaceController {
       draft: '',
       attachmentDraft: [],
       mcpDraft: null,
+      previewAnnotations: [],
+      extensionBlock: null,
       permissionReviews: [],
     });
   }
@@ -335,11 +561,15 @@ export class SecureWorkspaceController {
       const target = this.#draftTarget;
       const attachments = await this.#attachments.read(target, current);
       const mcpDraft = await this.#mcp.read(target, current);
+      const annotations = await this.previewAnnotations.read(target, current);
+      const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
       current();
       if (!same(target, this.contentContext.target))
         throw Error('附件草稿目标已改变，请重新读取。');
       this.#state.attachmentDraft = attachments;
       this.#state.mcpDraft = mcpDraft;
+      this.#state.previewAnnotations = annotations;
+      this.#state.extensionBlock = block;
     }
   }
   #lease(): Lease {
@@ -495,6 +725,8 @@ export class SecureWorkspaceController {
       draft: '',
       attachmentDraft: [],
       mcpDraft: null,
+      previewAnnotations: [],
+      extensionBlock: null,
       permissionReviews: [],
     });
     return this.refreshSessions();
@@ -527,6 +759,8 @@ export class SecureWorkspaceController {
     this.#state.draft = '';
     this.#state.attachmentDraft = [];
     this.#state.mcpDraft = null;
+    this.#state.previewAnnotations = [];
+    this.#state.extensionBlock = null;
     return this.#run(async (current) => {
       const lease = this.#lease(),
         target = this.#target(sessionId);
@@ -537,6 +771,8 @@ export class SecureWorkspaceController {
       const draft = await this.#store.readDraft(target);
       const attachments = await this.#attachments.read(target, current);
       const mcpDraft = await this.#mcp.read(target, current);
+      const annotations = await this.previewAnnotations.read(target, current);
+      const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
       current();
       this.#state.session = read;
       const reviews = sessionPermissionReviews(read, scope(target));
@@ -549,6 +785,8 @@ export class SecureWorkspaceController {
       this.#state.draft = draft;
       this.#state.attachmentDraft = attachments;
       this.#state.mcpDraft = mcpDraft;
+      this.#state.previewAnnotations = annotations;
+      this.#state.extensionBlock = block;
     });
   }
   async refreshSession() {
@@ -762,7 +1000,12 @@ export class SecureWorkspaceController {
     if (this.#mutation) throw Error('已有原操作正在处理，请等待或手动核查。');
     this.#mutation = true;
     try {
-      await this.#run(task);
+      await this.#run(async (current) => {
+        const target = this.contentContext.target;
+        if (target)
+          await this.extensionStorage.exclusive(target, 'execution', current, () => task(current));
+        else await task(current);
+      });
     } finally {
       this.#mutation = false;
     }
@@ -879,12 +1122,23 @@ export class SecureWorkspaceController {
       const target = this.#target(prior.meta.id);
       const shownAttachments = shown?.attachments ?? [];
       const shownMcp = shown?.mcpDraft ?? { target };
+      const shownAnnotations = shown?.previewAnnotations ?? [];
       if (
         (shown && !same(target, secureTargetSchema.parse(shown.target))) ||
         !same(shownAttachments, this.#state.attachmentDraft) ||
-        !same(shownMcp, this.#state.mcpDraft ?? { target })
+        !same(shownMcp, this.#state.mcpDraft ?? { target }) ||
+        !same(
+          shownAnnotations,
+          this.#state.previewAnnotations.filter((item) => item.selectionId),
+        )
       )
-        throw Error('发送目标或已审阅的附件、MCP 选择已改变，请重新核对后发送。');
+        throw Error('发送目标或已审阅的附件、MCP、标注选择已改变，请重新核对后发送。');
+      const extensionBlock = await readSecureGithubExecutionBlock(
+        this.extensionStorage,
+        target,
+        current,
+      );
+      if (extensionBlock) throw Error(extensionBlock);
       if (shownMcp.review?.servers.length) this.#requireMcp(target.workspaceId);
       const read = readClientSession(
         await this.#execute(
@@ -901,6 +1155,13 @@ export class SecureWorkspaceController {
       if (!same(shownAttachments, currentAttachments))
         throw Error('附件草稿已在另一页面改变，请重新读取并核对后发送。');
       await this.#mcp.validateBeforeSend(target, shownMcp, current, this.#mcpRequest);
+      const composedPrompt = await this.previewAnnotations.withReview(
+        target,
+        shownAnnotations,
+        prompt,
+        current,
+        async (value) => value.prompt,
+      );
       if (shownAttachments.some((item) => item.status === 'pending'))
         throw Error('请先用原操作重试确认附件结果，再手动发送。');
       if (shownAttachments.length) this.#requireAttachments(target.workspaceId);
@@ -910,7 +1171,7 @@ export class SecureWorkspaceController {
         scope: scope(target),
         read,
         agent: read.agent,
-        prompt,
+        prompt: composedPrompt,
         attachments: references,
         operationId: this.#uuid(),
         turnId: this.#uuid(),
@@ -945,12 +1206,27 @@ export class SecureWorkspaceController {
         )
       )
         throw Error('已审阅的附件状态已改变，请重新核对后发送。');
-      const operation = await this.#mcp.stageTurn(
+      const operation = await this.previewAnnotations.withReview(
         target,
-        shownMcp,
-        turnInput,
+        shownAnnotations,
+        prompt,
         current,
-        this.#mcpRequest,
+        async (value) => {
+          const blocked = await readSecureGithubExecutionBlock(
+            this.extensionStorage,
+            target,
+            current,
+          );
+          if (blocked) throw Error(blocked);
+          return this.#mcp.stageTurn(
+            target,
+            shownMcp,
+            { ...turnInput, prompt: value.prompt },
+            current,
+            this.#mcpRequest,
+            value.previewReview,
+          );
+        },
       );
       current();
       if (operation.state !== 'pending') throw Error('原操作编号已完成，不会再次发送。');

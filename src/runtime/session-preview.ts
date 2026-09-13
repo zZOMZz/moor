@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { AppError, assert } from '../protocol';
+import type { TaskAuthorityLease } from '../task-protocol';
 import type { ContentScope } from '../content-protocol';
 import {
   PREVIEW_LIMITS,
@@ -42,6 +43,7 @@ type Instance = {
   request: PreviewOpen;
   lease: ExecutionLease;
   service: Service;
+  authority?: TaskAuthorityLease;
   expiresAt: number;
   cancelTimer: () => void;
   frame?: PreviewFrame;
@@ -179,6 +181,7 @@ export class SessionPreviewManager {
       '预览连接已关闭或到期，请手动连接',
     );
     try {
+      instance.authority?.current();
       this.host.ensureConnected();
       const lease = this.host.executionLease(instance.request, undefined, true);
       assert(isDeepStrictEqual(lease, instance.lease), 409, '预览会话执行目录已变化');
@@ -207,11 +210,25 @@ export class SessionPreviewManager {
   invalidate() {
     for (const instance of this.instances.values()) void this.destroy(instance);
   }
+  /** Revoke only instances whose original channel, product mapping or runtime is no longer current. */
+  invalidateUnavailable() {
+    for (const instance of this.instances.values()) {
+      try {
+        this.current(instance);
+      } catch {
+        void this.destroy(instance);
+      }
+    }
+  }
   async closeAll() {
     this.invalidate();
     await this.driver.closeAll();
   }
-  private instance(input: ContentScope & { clientId: string; previewId: string }) {
+  private instance(
+    input: ContentScope & { clientId: string; previewId: string },
+    authority?: TaskAuthorityLease,
+  ) {
+    authority?.current();
     const instance = this.instances.get(input.previewId);
     assert(
       instance &&
@@ -219,6 +236,16 @@ export class SessionPreviewManager {
         isDeepStrictEqual(envelope(instance.request), envelope(input)),
       409,
       '此预览连接已关闭或不属于当前会话',
+    );
+    const identity = (lease?: TaskAuthorityLease) => {
+      if (!lease) return undefined;
+      const { current: _current, ...value } = lease;
+      return value;
+    };
+    assert(
+      isDeepStrictEqual(identity(instance.authority), identity(authority)),
+      409,
+      '预览实例不属于原授权连接；请查询或关闭原连接请求',
     );
     this.current(instance);
     return instance;
@@ -258,13 +285,19 @@ export class SessionPreviewManager {
       instance.queued--;
     }
   }
-  async read(input: PreviewRead, project?: string): Promise<PreviewReadResult> {
+  async read(
+    input: PreviewRead,
+    project?: string,
+    authority?: TaskAuthorityLease,
+  ): Promise<PreviewReadResult> {
+    authority?.current();
     const request = previewReadSchema.parse(input),
       scope = this.scope(request, project);
     const base = { ...envelope(scope), confirmed: true as const, view: request.view };
     if (request.view === 'options') {
       const lease = this.host.executionLease(request, project, true);
       const available = await this.driver.available();
+      authority?.current();
       assert(
         isDeepStrictEqual(this.host.executionLease(request, project, true), lease),
         409,
@@ -285,7 +318,7 @@ export class SessionPreviewManager {
         previewId: request.previewId,
         status: 'closed',
       });
-    const instance = this.instance(request);
+    const instance = this.instance(request, authority);
     const result = await this.serial(instance, async () => {
       const check = { assertCurrent: () => this.current(instance) };
       if (request.view === 'status')
@@ -321,7 +354,12 @@ export class SessionPreviewManager {
       previewId: instance.id,
     });
   }
-  async action(input: PreviewAction, project?: string): Promise<PreviewReceipt> {
+  async action(
+    input: PreviewAction,
+    project?: string,
+    authority?: TaskAuthorityLease,
+  ): Promise<PreviewReceipt> {
+    authority?.current();
     const request = previewActionSchema.parse(input),
       scope = this.scope(request, project);
     const previous = this.lookup(scope, request);
@@ -346,13 +384,14 @@ export class SessionPreviewManager {
           request,
           lease,
           service,
+          authority,
           expiresAt: this.now() + PREVIEW_LIMITS.idleMs,
           cancelTimer() {},
           queue: Promise.resolve(),
           queued: 0,
         };
         this.instances.set(previewId, instance);
-      } else instance = this.instance(request);
+      } else instance = this.instance(request, authority);
       const active = instance;
       const frame = await this.serial(active, async () => {
         const check = {
@@ -412,7 +451,12 @@ export class SessionPreviewManager {
       );
     }
   }
-  async inspect(input: { request: PreviewAction }, project?: string) {
+  async inspect(
+    input: { request: PreviewAction },
+    project?: string,
+    authority?: TaskAuthorityLease,
+  ) {
+    authority?.current();
     const { request } = previewInspectSchema.parse(input),
       scope = this.scope(request, project);
     const record = this.lookup(scope, request);
@@ -420,7 +464,8 @@ export class SessionPreviewManager {
       ? this.prior(request, record)
       : this.receipt(request, 'unknown', '主机尚未登记此操作；不会代为执行。连接操作可手动关闭');
   }
-  async close(input: { request: PreviewOpen }, project?: string) {
+  async close(input: { request: PreviewOpen }, project?: string, authority?: TaskAuthorityLease) {
+    authority?.current();
     const { request } = previewCloseSchema.parse(input),
       scope = this.scope(request, project);
     let record = this.lookup(scope, request);
@@ -451,6 +496,7 @@ export class SessionPreviewManager {
       await this.driver.close(previewId).catch(() => {});
     }
     this.scope(request, project);
+    authority?.current();
     return result;
   }
 }

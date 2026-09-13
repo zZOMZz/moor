@@ -4,6 +4,7 @@ import { contentScopeSchema, contentVersionSchema, isCanonicalBase64 } from './c
 import { sessionExecutionSchema } from './git-protocol';
 
 export const PREVIEW_FEATURE = 'project-preview-v1';
+export const SECURE_PREVIEW_AUTHORITY_FEATURE = 'secure-preview-authority-v1';
 export const PREVIEW_LIMITS = {
   imageBytes: 4 * 1024 * 1024,
   width: 1920,

@@ -24,6 +24,8 @@ import {
 } from '../../src/security/encrypted-bridge-protocol';
 import type { EncryptedRecord } from '../../src/security/e2ee-channel';
 import { syntheticCapabilities } from './agent-capabilities';
+import { createSecureIntegrationServices } from './secure-integration-services';
+import { githubWriteReceiptSchema } from '../../src/github-write-protocol';
 
 function sequenceSignal() {
   const reached = new Set<number>();
@@ -55,7 +57,11 @@ function sequenceSignal() {
 /** Native GUI fixture: production Relay, Host, encrypted transport and private device files. */
 export async function createSecureDesktopHost(
   root: string,
-  options: { richContent?: boolean; extensions?: boolean } = {},
+  options: {
+    richContent?: boolean;
+    extensions?: boolean;
+    integrations?: { electronPath: string; workerPath: string };
+  } = {},
 ) {
   const privateRoot = join(root, 'private'),
     project = join(root, 'SYNTHETIC_PRIVATE_PROJECT'),
@@ -81,6 +87,7 @@ export async function createSecureDesktopHost(
     hostManager: DeviceManager | undefined,
     clientManager: DeviceManager | undefined,
     connection: PrivateEndpointFile | undefined,
+    integrations: Awaited<ReturnType<typeof createSecureIntegrationServices>> | undefined,
     closed = false,
     fixtureError: Error | undefined;
   const permissionSignal = sequenceSignal(),
@@ -93,7 +100,7 @@ export async function createSecureDesktopHost(
     mcpCurrent = new Map<number, () => void>();
   let prompts = 0,
     droppedReplies = 0,
-    armed: 'permission' | 'attachment' | 'turn' | undefined;
+    armed: 'permission' | 'attachment' | 'turn' | 'github-write' | undefined;
   type Pending = { socket: WebSocket; record: EncryptedRecord };
   const pending = new Map<string, Pending>();
   let drop: (Pending & { accepted: boolean }) | undefined;
@@ -213,6 +220,7 @@ export async function createSecureDesktopHost(
     connection?.close();
     hostManager?.close();
     clientManager?.close();
+    await integrations?.close();
     const done = [...(host?.active.values() ?? [])].map((run) => run.done);
     host?.close();
     await Promise.allSettled(done);
@@ -308,6 +316,12 @@ export async function createSecureDesktopHost(
       agentType: 'synthetic',
       customAcp: { command: '/synthetic/never-run', args: [] },
     });
+    if (options.integrations)
+      integrations = await createSecureIntegrationServices(
+        project,
+        projectId,
+        options.integrations,
+      );
     host = new HostWorkspace(
       runtime,
       {
@@ -318,9 +332,10 @@ export async function createSecureDesktopHost(
           const session: AgentSession = {
             id: nativeId ?? 'synthetic-desktop-native',
             capabilities: syntheticCapabilities,
-            inputCapabilities: options.richContent
-              ? { image: true, audio: true, embeddedContext: true }
-              : undefined,
+            inputCapabilities:
+              options.richContent || options.integrations
+                ? { image: true, audio: true, embeddedContext: true }
+                : undefined,
             async prompt(input) {
               try {
                 const sequence = ++prompts;
@@ -339,7 +354,7 @@ export async function createSecureDesktopHost(
                     completedSignal.mark(sequence);
                   })
                   .catch(fail);
-                if (options.extensions) {
+                if (options.extensions || options.integrations) {
                   if (openOptions?.mcp) {
                     mcpCurrent.set(sequence, openOptions.mcp.assertCurrent);
                     mcpOpened.mark(sequence);
@@ -414,6 +429,12 @@ export async function createSecureDesktopHost(
       },
       () => {},
       () => {},
+      undefined,
+      undefined,
+      undefined,
+      integrations?.github,
+      integrations?.githubWrite,
+      integrations?.preview,
     );
     const workspace = host;
     if (options.extensions) {
@@ -451,7 +472,8 @@ export async function createSecureDesktopHost(
           command.method === 'mutate' &&
           command.params.kind === 'permission') ||
         (armed === 'attachment' && command.method === 'attachment-action') ||
-        (armed === 'turn' && command.method === 'mutate' && command.params.kind === 'turn')
+        (armed === 'turn' && command.method === 'mutate' && command.params.kind === 'turn') ||
+        (armed === 'github-write' && command.method === 'github-write-action')
       ) {
         try {
           current();
@@ -474,6 +496,13 @@ export async function createSecureDesktopHost(
       try {
         const result = await execute(raw, context);
         if (selected) {
+          if (command.method === 'github-write-action') {
+            const receipt = githubWriteReceiptSchema.parse(result);
+            assert.equal(receipt.phase, 'accepted');
+            assert.equal(receipt.operationId, command.params.operationId);
+            selected.accepted = true;
+            return result;
+          }
           const receipt =
             command.method === 'attachment-action'
               ? attachmentReceiptSchema.parse(result)
@@ -521,6 +550,7 @@ export async function createSecureDesktopHost(
       products,
       catalog: () => ({ ...runtimeCatalog(), catalogVersion: 2, products: products.read() }),
       invalidated: () => {
+        workspace.previewManager.invalidateUnavailable();
         workspace.taskManager.invalidateUnavailable();
         workspace.invalidateMcp();
       },
@@ -557,6 +587,7 @@ export async function createSecureDesktopHost(
       outcomes,
       inputs,
       mcpDescriptors,
+      integrations,
       waitMcpOpened: (sequence: number) => mcpOpened.wait(sequence),
       assertMcpCurrent(sequence: number) {
         const check = mcpCurrent.get(sequence);
@@ -586,6 +617,11 @@ export async function createSecureDesktopHost(
         current();
         assert(!armed && !drop, 'Synthetic turn reply fault is already armed');
         armed = 'turn';
+      },
+      dropNextGithubWriteReply() {
+        current();
+        assert(!armed && !drop, 'Synthetic GitHub reply fault is already armed');
+        armed = 'github-write';
       },
       assertOpaque() {
         current();

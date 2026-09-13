@@ -20,6 +20,12 @@ import { MCP_FEATURE } from '../mcp-protocol';
 import { SECURE_TURN_AUTHORITY_FEATURE } from '../task-protocol';
 import { SecureSkillsUI, type SecureSkillsUiHandle } from './secure-skills-ui';
 import { SecureMcpUI, SecureMcpDraftCard, type SecureMcpUiHandle } from './secure-mcp-ui';
+import { SecureGithubUI, type SecureGithubUiHandle } from './secure-github-ui';
+import {
+  SecurePreviewUI,
+  SecurePreviewDraftCards,
+  type SecurePreviewUiHandle,
+} from './secure-preview-ui';
 import type { AttachmentReference } from '../content-protocol';
 import type { SecureCliTarget } from '../cli/secure-operation';
 import type { SecureAttachmentDraft } from './secure-attachments';
@@ -71,6 +77,14 @@ export type SecureUiController = Pick<
   | 'appendInstruction'
   | 'readMcpCatalog'
   | 'applyMcp'
+  | 'extensionStorage'
+  | 'previewAnnotations'
+  | 'scopedRequest'
+  | 'beforeExtensionWrite'
+  | 'refreshExtensionRecords'
+  | 'updatePreviewAnnotations'
+  | 'addPreviewImage'
+  | 'removePreviewSelection'
   | 'close'
   | 'invalidate'
 >;
@@ -678,6 +692,8 @@ function Composer({
   onPreview,
   onSkills,
   onMcp,
+  onGithub,
+  onProjectPreview,
 }: {
   state: SecureWorkspaceState;
   controller: SecureUiController;
@@ -686,6 +702,8 @@ function Composer({
   onPreview(item: SecureAttachmentDraft): void;
   onSkills(target: SecureCliTarget): Promise<void>;
   onMcp(target: SecureCliTarget): Promise<void>;
+  onGithub(target: SecureCliTarget): Promise<void>;
+  onProjectPreview(target: SecureCliTarget): Promise<void>;
 }) {
   const [text, setText] = useState(state.draft);
   const session = state.session!;
@@ -757,13 +775,20 @@ function Composer({
     session.persisted === false ||
     !!session.persistenceError ||
     blocked ||
+    !!state.extensionBlock ||
     attachmentUnsupported ||
     (!!state.mcpDraft?.review?.servers.length &&
       (!workspace?.features?.includes(MCP_FEATURE) ||
         !workspace.features.includes(SECURE_TURN_AUTHORITY_FEATURE)));
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (unavailable || (!text.trim() && state.attachmentDraft.length === 0)) return;
+    if (
+      unavailable ||
+      (!text.trim() &&
+        state.attachmentDraft.length === 0 &&
+        !state.previewAnnotations.some((item) => item.selectionId))
+    )
+      return;
     if (
       !shownTarget ||
       productCanonicalJson(shownTarget) !== productCanonicalJson(controller.contentContext.target)
@@ -773,6 +798,9 @@ function Composer({
       target: structuredClone(shownTarget),
       attachments: structuredClone(state.attachmentDraft),
       mcpDraft: structuredClone(state.mcpDraft),
+      previewAnnotations: structuredClone(
+        state.previewAnnotations.filter((item) => item.selectionId),
+      ),
     };
     run(async () => {
       await controller.saveDraft(text);
@@ -832,7 +860,38 @@ function Composer({
         >
           额外 MCP
         </button>
+        <button
+          type="button"
+          disabled={!shownTarget || state.busy}
+          onClick={() => {
+            if (!shownTarget) return;
+            const target = structuredClone(shownTarget);
+            run(async () => {
+              await controller.saveDraft(text);
+              await onGithub(target);
+            });
+          }}
+        >
+          GitHub
+        </button>
+        <button
+          type="button"
+          disabled={!shownTarget || state.busy}
+          onClick={() => shownTarget && run(() => onProjectPreview(structuredClone(shownTarget)))}
+        >
+          网页预览
+        </button>
       </div>
+      {state.extensionBlock && <p className="secure-warning">{state.extensionBlock}</p>}
+      <SecurePreviewDraftCards
+        items={state.previewAnnotations}
+        disabled={!shownTarget || state.busy}
+        onOpen={() => shownTarget && run(() => onProjectPreview(structuredClone(shownTarget)))}
+        onRemove={(item) =>
+          shownTarget &&
+          run(() => controller.removePreviewSelection(structuredClone(shownTarget), item))
+        }
+      />
       {state.mcpDraft && (
         <SecureMcpDraftCard
           draft={state.mcpDraft}
@@ -897,7 +956,12 @@ function Composer({
           <button
             className="secure-primary"
             type="submit"
-            disabled={unavailable || (!text.trim() && state.attachmentDraft.length === 0)}
+            disabled={
+              unavailable ||
+              (!text.trim() &&
+                state.attachmentDraft.length === 0 &&
+                !state.previewAnnotations.some((item) => item.selectionId))
+            }
           >
             发送
           </button>
@@ -930,6 +994,8 @@ export function SecureApp({
   const contentUi = useRef<SecureContentUiHandle>(null);
   const skillsUi = useRef<SecureSkillsUiHandle>(null);
   const mcpUi = useRef<SecureMcpUiHandle>(null);
+  const githubUi = useRef<SecureGithubUiHandle>(null);
+  const previewUi = useRef<SecurePreviewUiHandle>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [localBusy, setLocalBusy] = useState(false);
@@ -1359,6 +1425,10 @@ export function SecureApp({
                   onDirty={setDirty}
                   onSkills={(target) => skillsUi.current?.open(target) ?? Promise.resolve()}
                   onMcp={(target) => mcpUi.current?.open(target) ?? Promise.resolve()}
+                  onGithub={(target) => githubUi.current?.open(target) ?? Promise.resolve()}
+                  onProjectPreview={(target) =>
+                    previewUi.current?.open(target) ?? Promise.resolve()
+                  }
                   onPreview={(item) =>
                     run(async () => {
                       contentUi.current?.openDraft(item);
@@ -1527,6 +1597,25 @@ export function SecureApp({
               apply={(target, expected, servers, catalog, current) =>
                 controller.applyMcp(target, expected, servers, catalog, current)
               }
+            />
+            <SecureGithubUI
+              ref={githubUi}
+              context={() => controller.contentContext}
+              storage={controller.extensionStorage}
+              request={(...args) => controller.scopedRequest(...args)}
+              appendInstruction={(...args) => controller.appendInstruction(...args)}
+              beforeWrite={(...args) => controller.beforeExtensionWrite(...args)}
+              changed={(...args) => controller.refreshExtensionRecords(...args)}
+            />
+            <SecurePreviewUI
+              ref={previewUi}
+              context={() => controller.contentContext}
+              storage={controller.extensionStorage}
+              annotations={controller.previewAnnotations}
+              busy={state.busy}
+              request={(...args) => controller.scopedRequest(...args)}
+              addImage={(...args) => controller.addPreviewImage(...args)}
+              changedAnnotations={(...args) => controller.updatePreviewAnnotations(...args)}
             />
           </main>
         </div>

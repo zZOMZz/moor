@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { id, mutationSchema } from '../protocol';
-import { attachmentReceiptSchema } from '../attachment-protocol';
+import { attachmentReceiptSchema, MAX_SESSION_ATTACHMENT_BYTES } from '../attachment-protocol';
+import { PREVIEW_ANNOTATION_LIMIT, previewAnnotationSchema } from '../web/project-preview';
 import { MCP_LIMITS, mcpServerIdsSchema, mcpServerViewSchema } from '../mcp-protocol';
 import {
   encryptedProductTargetSchema,
@@ -39,6 +40,21 @@ export const secureMcpReviewSchema = z
       context.addIssue({ code: 'custom', message: 'Invalid immutable MCP review' });
   });
 export type SecureMcpReview = z.infer<typeof secureMcpReviewSchema>;
+export const securePreviewReviewSchema = z
+  .object({ annotations: z.array(previewAnnotationSchema).min(1).max(PREVIEW_ANNOTATION_LIMIT) })
+  .strict()
+  .superRefine((review, context) => {
+    if (
+      review.annotations.some((item) => !item.selectionId) ||
+      new Set(review.annotations.map((item) => item.id)).size !== review.annotations.length ||
+      review.annotations.reduce(
+        (bytes, item) => bytes + (item.snapshot.image?.content.byteLength ?? 0),
+        0,
+      ) > MAX_SESSION_ATTACHMENT_BYTES
+    )
+      context.addIssue({ code: 'custom', message: 'Invalid immutable preview annotation review' });
+  });
+export type SecurePreviewReview = z.infer<typeof securePreviewReviewSchema>;
 export const secureOperationSchema = z
   .object({
     operationId: id,
@@ -58,6 +74,7 @@ export const secureOperationSchema = z
     createdAt: z.string().datetime(),
     receipt: z.unknown().optional(),
     mcpReview: secureMcpReviewSchema.optional(),
+    previewReview: securePreviewReviewSchema.optional(),
     userTurnId: id.optional(),
   })
   .strict()
@@ -66,8 +83,12 @@ export const secureOperationSchema = z
       const raw = JSON.parse(operation.body),
         command = hostCommandSchema.parse(raw),
         target = operation.target;
-      if ((operation.mcpReview || operation.userTurnId !== undefined) && operation.kind !== 'turn')
+      if (
+        (operation.mcpReview || operation.previewReview || operation.userTurnId !== undefined) &&
+        operation.kind !== 'turn'
+      )
         throw Error();
+      if (operation.previewReview && !operation.userTurnId) throw Error();
       const expected =
         operation.kind === 'turn' || operation.kind === 'permission'
           ? 'mutate'
@@ -151,9 +172,18 @@ export const secureOperationSchema = z
 export type SecureCliOperation = z.infer<typeof secureOperationSchema>;
 /** Keep historical digests byte-compatible while binding new, explicitly reviewed MCP metadata. */
 export function secureOperationDigestSource(
-  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'userTurnId'>,
+  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'previewReview' | 'userTurnId'>,
 ) {
   const target = secureTargetSchema.parse(value.target);
+  if (value.previewReview !== undefined)
+    return JSON.stringify([
+      'reviewed-preview-turn-command-v1',
+      target,
+      value.body,
+      value.mcpReview === undefined ? null : secureMcpReviewSchema.parse(value.mcpReview),
+      id.parse(value.userTurnId),
+      securePreviewReviewSchema.parse(value.previewReview),
+    ]);
   if (value.userTurnId !== undefined)
     return JSON.stringify([
       'bound-user-turn-command-v1',

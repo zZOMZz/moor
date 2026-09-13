@@ -6,6 +6,7 @@ import {
   type SecureCliTarget,
   type SecureMcpReview,
   type SecureCliOperation,
+  type SecurePreviewReview,
 } from '../cli/secure-operation';
 import {
   MCP_LIMITS,
@@ -220,10 +221,12 @@ export class SecureMcp {
     buildInput: SecureMcpTurnInput,
     current: () => void,
     request?: SecureMcpRead,
+    previewReview?: SecurePreviewReview,
   ): Promise<SecureCliOperation> {
     const target = targetSnapshot(input),
       expected = expectedSnapshot(shown, target),
-      build = structuredClone(buildInput);
+      build = structuredClone(buildInput),
+      annotationReview = previewReview ? structuredClone(previewReview) : undefined;
     for (const field of [
       'workspaceId',
       'localProjectId',
@@ -252,6 +255,7 @@ export class SecureMcp {
             params: mutation,
           }),
           ...(expected.review ? { mcpReview: expected.review } : {}),
+          ...(annotationReview ? { previewReview: annotationReview } : {}),
         },
         build.now,
         current,

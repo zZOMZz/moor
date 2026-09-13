@@ -1,4 +1,7 @@
 import test from 'node:test';
+import { mappedHost } from './support/mapped-host';
+import { encryptedCommandHost } from './support/encrypted-command-host';
+import type { HostCommand } from '../src/bridge/host-command';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -731,4 +734,160 @@ test('patch line projection rejects unavailable, truncated and incomplete hunk c
     { ...base, patch: '@@ -1,2 +1,2 @@\n-only one' },
   ])
     assert.deepEqual(githubPatchLines(value), []);
+});
+
+test('a retired encrypted invocation cannot publish after an asynchronous GitHub preflight', async (t) => {
+  const f = fixture(t),
+    request = await f.action(),
+    entered = deferred(),
+    release = deferred();
+  let active = true;
+  f.state.before = async (url) => {
+    if (url.pathname === '/user') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const pending = f.host.githubWriteAction(request, 'project', () => {
+    assert.ok(active, 'Original channel was retired');
+  });
+  await entered.promise;
+  active = false;
+  release.resolve();
+  await assert.rejects(pending);
+  assert.equal(f.state.calls.filter((call) => call.method !== 'GET').length, 0);
+});
+
+test('actual encrypted GitHub invocation retirement prevents publishing while another channel can inspect and seal its original request', async (t) => {
+  const f = fixture(t),
+    request = await f.action(),
+    encrypted = await encryptedCommandHost(t, () => f.host),
+    first = await encrypted.connect(),
+    second = await encrypted.connect(),
+    entered = deferred(),
+    release = deferred();
+  f.state.before = async (url) => {
+    if (url.pathname === '/user') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const pending = first.execute(
+    {
+      method: 'github-write-action',
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      params: request,
+    },
+    request.sessionId,
+  );
+  await entered.promise;
+  first.retire();
+  release.resolve();
+  await assert.rejects(pending);
+  assert.equal(f.state.calls.filter((call) => call.method !== 'GET').length, 0);
+  assert.equal(f.store.journal.has(request.operationId), false);
+  const inspect = () =>
+    second.execute(
+      {
+        method: 'github-write-inspect',
+        workspaceId: request.workspaceId,
+        localProjectId: request.localProjectId,
+        params: { request, page: 1 },
+      },
+      request.sessionId,
+    );
+  const before = [...f.state.calls];
+  assert.equal((await inspect()).result.phase, 'unknown');
+  const sealed = await second.execute(
+    {
+      method: 'github-write-abandon',
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      params: { request },
+    },
+    request.sessionId,
+  );
+  assert.equal(sealed.result.phase, 'abandoned');
+  assert.deepEqual(await inspect(), sealed);
+  assert.deepEqual(f.state.calls, before);
+});
+
+test('never-arrived GitHub writes can inspect and seal a Host-proven old mapping after cold restart without external requests', async (t) => {
+  const f = fixture(t),
+    request = await f.action(),
+    mapped = mappedHost(() => f.host),
+    originalTarget = mapped.target();
+  const command = (
+    method: 'github-write-action' | 'github-write-inspect' | 'github-write-abandon',
+  ): HostCommand =>
+    ({
+      method,
+      workspaceId: 'workspace',
+      localProjectId: 'project',
+      params:
+        method === 'github-write-action'
+          ? request
+          : { request, ...(method === 'github-write-inspect' ? { page: 1 } : {}) },
+    }) as HostCommand;
+  const before = [...f.state.calls];
+  mapped.move();
+  f.restart();
+  mapped.reopen();
+  const inspected = (await mapped.execute(originalTarget, command('github-write-inspect'))) as any;
+  assert.equal(inspected.phase, 'unknown');
+  assert.equal(f.store.journal.has(request.operationId), false);
+  assert.equal(
+    f.store.journal.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!
+      .count,
+    0,
+  );
+  const sealed = (await mapped.execute(originalTarget, command('github-write-abandon'))) as any;
+  assert.equal(sealed.phase, 'abandoned');
+  f.restart();
+  mapped.reopen();
+  assert.deepEqual(await mapped.execute(originalTarget, command('github-write-inspect')), sealed);
+  for (const target of [originalTarget, mapped.target()])
+    await assert.rejects(mapped.execute(target, command('github-write-action')));
+  assert.equal((await f.host.githubWriteAction(request)).phase, 'abandoned');
+  assert.deepEqual(f.state.calls, before);
+});
+
+test('old GitHub recovery cannot invent mapping evidence, change original bytes, or bypass a newer conflicting claim', async (t) => {
+  for (const invalid of ['missing', 'generation', 'claim', 'body'] as const) {
+    const f = fixture(t),
+      request = await f.action(),
+      mapped = mappedHost(() => f.host),
+      target = mapped.target();
+    mapped.move();
+    const action = {
+      method: 'github-write-action' as const,
+      workspaceId: 'workspace',
+      localProjectId: 'project',
+      params: request,
+    };
+    if (invalid === 'missing')
+      f.store.journal.db.prepare('DELETE FROM encrypted_product_mapping').run();
+    else if (invalid === 'generation') {
+      f.host.workspace.projects[0]!.rootPath += '-changed';
+      mapped.products.synchronize();
+    } else if (invalid === 'claim') mapped.products.bindOperation(mapped.target(), action);
+    else
+      mapped.products.bindOperation(target, {
+        method: 'github-write-abandon',
+        workspaceId: 'workspace',
+        localProjectId: 'project',
+        params: { request },
+      });
+    const changed = invalid === 'body' ? { ...request, body: 'Changed original content' } : request;
+    await assert.rejects(
+      mapped.execute(target, {
+        method: 'github-write-inspect',
+        workspaceId: 'workspace',
+        localProjectId: 'project',
+        params: { request: changed, page: 1 },
+      }),
+    );
+    assert.equal(f.state.calls.filter((call) => call.method !== 'GET').length, 0);
+  }
 });

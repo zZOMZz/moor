@@ -1283,6 +1283,7 @@ if (secureEndpoint) {
     products.synchronize();
     const invalidateAuthorizations = () => {
       for (const host of workspaces.values()) {
+        host.previewManager.invalidateUnavailable();
         host.taskManager.invalidateUnavailable();
         host.invalidateMcp();
       }

@@ -101,12 +101,13 @@ export class SessionGithubManager {
     assert(value, 409, '请在执行电脑的本机设置中登记并验证此项目的 GitHub 仓库');
     return value;
   }
-  private context(input: ContentScope, localProjectId?: string) {
+  private context(input: ContentScope, localProjectId?: string, checkpoint?: () => void) {
     const lease = this.lease(input, localProjectId),
       scope = this.scope(lease),
       config = this.config(scope),
       signal = this.options.signal?.() ?? AbortSignal.timeout(25_000);
     const current = () => {
+      checkpoint?.();
       assert(!signal.aborted, 504, 'GitHub 本次读取已超时或取消，请手动重试');
       assert(
         isDeepStrictEqual(this.lease(input, localProjectId), lease),
@@ -162,7 +163,12 @@ export class SessionGithubManager {
       'PR 的提交已变化，请重新读取后查看 CI',
     );
   }
-  async read(input: GithubRead, localProjectId?: string): Promise<GithubReadResult> {
+  async read(
+    input: GithubRead,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GithubReadResult> {
+    checkpoint?.();
     const request = githubReadSchema.parse(input),
       lease = this.lease(request, localProjectId),
       scope = this.scope(lease);
@@ -187,7 +193,7 @@ export class SessionGithubManager {
           readAt: this.readAt(),
         });
     }
-    const c = this.context(request, localProjectId);
+    const c = this.context(request, localProjectId, checkpoint);
     if (request.view !== 'overview')
       assert(
         request.repositoryId === c.config.repositoryId &&
@@ -321,10 +327,15 @@ export class SessionGithubManager {
     );
     return githubReadResultSchema.parse(result);
   }
-  async action(input: GithubAction, localProjectId?: string): Promise<GithubReceipt> {
+  async action(
+    input: GithubAction,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GithubReceipt> {
     const request = githubActionSchema.parse(input);
     try {
       return await this.host.serial(request.sessionId, async () => {
+        checkpoint?.();
         const scope = this.scope(this.lease(request, localProjectId)),
           store = this.host.store;
         const prior = this.prior(scope, request);
@@ -338,7 +349,7 @@ export class SessionGithubManager {
         let repository: GithubRepository | undefined,
           c: ReturnType<SessionGithubManager['context']> | undefined;
         if (request.action === 'bind') {
-          c = this.context(request, localProjectId);
+          c = this.context(request, localProjectId, checkpoint);
           assert(request.repositoryId === c.config.repositoryId, 409, 'GitHub 仓库登记已变化');
           repository = await c.client.getRepository(c.repo);
           c.current();
@@ -409,6 +420,7 @@ export class SessionGithubManager {
           '请先确认此会话的 Fork 操作',
         );
         return store.transaction(() => {
+          checkpoint?.();
           assert(
             store.github.get(scope).revision === current.revision,
             409,
@@ -446,10 +458,15 @@ export class SessionGithubManager {
       binding: { revision: receipt.binding.revision },
     });
   }
-  async abandon(input: GithubAction, localProjectId?: string): Promise<GithubReceipt> {
+  async abandon(
+    input: GithubAction,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GithubReceipt> {
     const request = githubActionSchema.parse(input);
     try {
       return await this.host.serial(request.sessionId, async () => {
+        checkpoint?.();
         const scope = this.scope(this.lease(request, localProjectId)),
           store = this.host.store;
         const prior = this.prior(scope, request);
@@ -467,6 +484,7 @@ export class SessionGithubManager {
           binding: { revision: request.expectedRevision },
         });
         return store.transaction(() => {
+          checkpoint?.();
           this.lease(request, localProjectId);
           const existing = this.prior(scope, request);
           if (existing) return existing;

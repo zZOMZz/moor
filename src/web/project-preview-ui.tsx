@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
 import { Monitor, X } from 'lucide-react';
 import { paint } from './ui';
@@ -12,6 +12,7 @@ import {
 } from './project-preview';
 
 export type ProjectPreviewPanelProps = {
+  children?: ReactNode;
   controller?: ProjectPreviewController;
   annotations?: PreviewAnnotationStore;
   reason?: string;
@@ -455,6 +456,7 @@ export function ProjectPreviewPanel(p: ProjectPreviewPanelProps) {
               />
             ))}
           </section>
+          {p.children}
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

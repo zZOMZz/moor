@@ -272,45 +272,45 @@ export class HostCommandDispatcher {
     } else if (command.method === 'preview-read') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.readPreview(input, command.localProjectId);
+      result = await workspace.readPreview(input, command.localProjectId, context.authority);
     } else if (command.method === 'preview-action') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.previewAction(input, command.localProjectId);
+      result = await workspace.previewAction(input, command.localProjectId, context.authority);
     } else if (command.method === 'preview-inspect') {
       const input = command.params;
       assert(input.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.inspectPreview(input, command.localProjectId);
+      result = await workspace.inspectPreview(input, command.localProjectId, context.authority);
     } else if (command.method === 'preview-close') {
       const input = command.params;
       assert(input.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.closePreview(input, command.localProjectId);
+      result = await workspace.closePreview(input, command.localProjectId, context.authority);
     } else if (command.method === 'github-write-read') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.readGithubWrite(input, command.localProjectId);
+      result = await workspace.readGithubWrite(input, command.localProjectId, context.current);
     } else if (command.method === 'github-write-action') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.githubWriteAction(input, command.localProjectId);
+      result = await workspace.githubWriteAction(input, command.localProjectId, context.current);
     } else if (command.method === 'github-write-inspect') {
       const input = command.params;
       assert(input.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.inspectGithubWrite(input, command.localProjectId);
+      result = await workspace.inspectGithubWrite(input, command.localProjectId, context.current);
     } else if (command.method === 'github-write-abandon') {
       const input = command.params;
       assert(input.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.abandonGithubWrite(input, command.localProjectId);
+      result = await workspace.abandonGithubWrite(input, command.localProjectId, context.current);
     } else if (command.method === 'github-read') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.readGithub(input, command.localProjectId);
+      result = await workspace.readGithub(input, command.localProjectId, context.current);
     } else if (command.method === 'github-action' || command.method === 'github-abandon') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
       result = await (command.method === 'github-abandon'
-        ? workspace.abandonGithub(input, command.localProjectId)
-        : workspace.githubAction(input, command.localProjectId));
+        ? workspace.abandonGithub(input, command.localProjectId, context.current)
+        : workspace.githubAction(input, command.localProjectId, context.current));
     } else if (command.method === 'mutate') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');

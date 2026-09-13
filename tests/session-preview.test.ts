@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { mappedHost } from './support/mapped-host';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -375,4 +376,75 @@ test('a failed close journal update still tears down the renderer and never clai
   assert.ok(f.state.closed.includes(opened.previewId!));
   assert.equal((await f.host.previewAction(request)).closed, true);
   assert.deepEqual(f.state.calls, ['open']);
+});
+
+test('an authenticated preview cannot be read by another channel holding the same renderer IDs', async (t) => {
+  const f = fixture(t);
+  const authority = (channel: string) => ({
+    serverOrigin: 'https://relay.synthetic.invalid',
+    ownerId: 'owner',
+    deviceId: channel,
+    current() {},
+  });
+  const first = authority('first'),
+    second = authority('second');
+  const opened = await (f.host.previewAction as any)(f.open(), 'project', first);
+  assert.equal(opened.phase, 'accepted');
+  await assert.rejects(
+    (f.host.readPreview as any)(
+      { ...f.scope, clientId: 'client', previewId: opened.previewId!, view: 'frame' },
+      'project',
+      second,
+    ),
+  );
+});
+
+test('never-arrived preview opens seal after Host mapping move and cold restart without creating a renderer', async (t) => {
+  const f = fixture(t),
+    request = f.open(),
+    mapped = mappedHost(() => f.host),
+    target = mapped.target();
+  mapped.move();
+  f.restart();
+  mapped.reopen();
+  const scope = { workspaceId: f.scope.workspaceId, localProjectId: 'project' };
+  assert.equal(
+    (
+      (await mapped.execute(target, {
+        ...scope,
+        method: 'preview-inspect',
+        params: { request },
+      })) as any
+    ).phase,
+    'unknown',
+  );
+  assert.equal(f.store.journal.has(request.operationId), false);
+  assert.equal(
+    (
+      (await mapped.execute(target, {
+        ...scope,
+        method: 'preview-close',
+        params: { request },
+      })) as any
+    ).phase,
+    'closed',
+  );
+  f.restart();
+  mapped.reopen();
+  assert.equal(
+    (
+      (await mapped.execute(target, {
+        ...scope,
+        method: 'preview-inspect',
+        params: { request },
+      })) as any
+    ).phase,
+    'closed',
+  );
+  for (const selected of [target, mapped.target()])
+    await assert.rejects(
+      mapped.execute(selected, { ...scope, method: 'preview-action', params: request }),
+    );
+  assert.equal((await f.host.previewAction(request)).phase, 'closed');
+  assert.deepEqual(f.state.calls, []);
 });

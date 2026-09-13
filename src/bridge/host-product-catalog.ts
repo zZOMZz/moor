@@ -603,7 +603,16 @@ export class HostProductCatalog {
     // A session frame may never have reached this Host. Only immutable evidence written
     // when the Host published that exact mapping can authorize inspecting or sealing it.
     // This grants no execution and cannot replace an existing operation claim.
-    requireTrue(command.method === 'session-operations');
+    requireTrue(
+      [
+        'session-operations',
+        'github-write-inspect',
+        'github-write-abandon',
+        'github-abandon',
+        'preview-inspect',
+        'preview-close',
+      ].includes(command.method),
+    );
     const historical = this.db
       .prepare(
         'SELECT fingerprint,value FROM encrypted_product_mapping WHERE authority=? AND target=?',
@@ -656,11 +665,14 @@ export class HostProductCatalog {
       },
     };
   }
-  /** A turn's authority outlives one response, but never its exact active execution mapping. */
+  /** A turn or preview outlives one response, but never its exact active execution mapping. */
   executionCurrent(rawTarget: EncryptedProductTarget, rawCommand: HostCommand): () => void {
     const target = encryptedProductTargetSchema.parse(rawTarget),
       command = hostCommandSchema.parse(rawCommand);
-    requireTrue(command.method === 'mutate' && command.params.kind === 'turn');
+    requireTrue(
+      (command.method === 'mutate' && command.params.kind === 'turn') ||
+        (command.method === 'preview-action' && command.params.action === 'open'),
+    );
     requireTrue(this.currentTarget(target, command));
     const runtime = this.runtimeEvidence(command);
     const current = () => {

@@ -61,7 +61,7 @@ export function requestVersion(body: string) {
   return 'sha256:' + createHash('sha256').update(body).digest('hex');
 }
 function secureRequestVersion(
-  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'userTurnId'>,
+  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'previewReview' | 'userTurnId'>,
 ) {
   return requestVersion(secureOperationDigestSource(value));
 }

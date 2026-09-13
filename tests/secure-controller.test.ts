@@ -1,5 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +18,17 @@ import type { AgentCallbacks } from '../src/runtime/agent';
 import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 import { SecureAttachments } from '../src/web/secure-attachments';
 import { SecureMcp } from '../src/web/secure-mcp';
+import { SecureGithubController } from '../src/web/secure-github';
+import { secureGitTarget } from '../src/web/secure-scoped-storage';
+import { githubKey } from '../src/web/github';
+import { githubWriteKey } from '../src/web/github-write';
+import {
+  githubActionSchema,
+  GITHUB_FEATURE,
+  SECURE_GITHUB_AUTHORITY_FEATURE,
+} from '../src/github-protocol';
+import { githubWriteActionSchema } from '../src/github-write-protocol';
+import type { SecureCliTarget } from '../src/cli/secure-operation';
 import { MCP_FEATURE } from '../src/mcp-protocol';
 import { SECURE_TURN_AUTHORITY_FEATURE } from '../src/task-protocol';
 import { syntheticCapabilities } from './support/agent-capabilities';
@@ -178,6 +190,7 @@ async function fixture(t: TestContext, uuid?: () => string) {
     wrongAuthority?: boolean;
     omitPermissionFeature?: boolean;
     omitSecureTurnAuthorityFeature?: boolean;
+    omitExtensionFeature?: string;
     losePermissionBefore?: boolean;
     transformRead?: (value: unknown) => unknown;
   } = {};
@@ -217,6 +230,7 @@ async function fixture(t: TestContext, uuid?: () => string) {
               features: host.workspace.features?.filter(
                 (feature) =>
                   !(fault.omitPermissionFeature && feature === PERMISSION_REVIEW_FEATURE) &&
+                  feature !== fault.omitExtensionFeature &&
                   !(
                     fault.omitSecureTurnAuthorityFeature &&
                     feature === SECURE_TURN_AUTHORITY_FEATURE
@@ -1303,5 +1317,490 @@ test('actual root append CAS is cancelled when the Skills panel closes', async (
   release.resolve();
   await rejection;
   assert.equal(await f.store.readDraft(target), 'Preserve local draft');
+  assert.equal(f.prompts(), 0);
+});
+
+import { previewFrame, previewVersion } from './support/preview-fixture';
+import { type PreviewAnnotationSnapshot } from '../src/web/project-preview';
+
+function syntheticAnnotation(): PreviewAnnotationSnapshot {
+  const frame = previewFrame();
+  return {
+    serviceId: 'service',
+    serviceLabel: 'SYNTHETIC_PRIVATE_SERVICE',
+    serviceVersion: previewVersion,
+    pagePath: '/',
+    frameId: frame.frameId,
+    documentId: frame.documentId,
+    capturedAt: frame.capturedAt,
+    viewport: frame.viewport,
+    element: {
+      elementId: 'element',
+      tagName: 'button',
+      role: 'button',
+      name: 'Synthetic',
+      text: 'Synthetic text',
+      bounds: { x: 0, y: 0, width: 20, height: 20 },
+    },
+    note: 'SYNTHETIC_PRIVATE_ANNOTATION',
+    image: {
+      content: {
+        version: frame.image.version,
+        byteLength: frame.image.byteLength,
+        mediaType: 'image/png',
+      },
+      data: frame.image.data,
+    },
+  };
+}
+test('finite extension requests verify full scope and upgraded Host features before IPC', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!;
+  const read = {
+    githubVersion: 1,
+    workspaceId: target.workspaceId,
+    localProjectId: target.localProjectId,
+    sessionId: target.sessionId,
+    view: 'overview',
+  };
+  const raw = await f.controller.scopedRequest(target, 'github-read', read, () => {});
+  assert.equal((raw as any).view, 'overview');
+  const count = f.requests.length;
+  await assert.rejects(f.controller.scopedRequest(target, 'mutate' as any, read, () => {}));
+  await assert.rejects(
+    f.controller.scopedRequest(target, 'github-read', { ...read, sessionId: 'other' }, () => {}),
+  );
+  await assert.rejects(
+    f.controller.scopedRequest(
+      { ...target, product: { ...target.product!, revision: 2 } },
+      'github-read',
+      read,
+      () => {},
+    ),
+  );
+  await assert.rejects(
+    f.controller.scopedRequest(target, 'github-read', read, () => {
+      throw Error('closed');
+    }),
+    /closed/,
+  );
+  assert.equal(f.requests.length, count);
+  f.fault.omitExtensionFeature = 'secure-github-authority-v1';
+  await f.controller.selectHost('host');
+  await f.controller.selectReplica('replica');
+  await f.controller.openSession(target.sessionId);
+  const before = f.requests.length;
+  await assert.rejects(
+    f.controller.scopedRequest(target, 'github-read', read, () => {}),
+    /完整的加密扩展授权/,
+  );
+  assert.equal(f.requests.length, before);
+});
+
+test('closing an extension panel while the Host reads suppresses its response', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    entered = signal(),
+    release = signal();
+  f.fault.before = async (request) => {
+    if (request.action === 'execute' && request.command.method === 'github-read') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  let active = true;
+  const reading = f.controller.scopedRequest(
+    target,
+    'github-read',
+    {
+      githubVersion: 1,
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      sessionId: target.sessionId,
+      view: 'overview',
+    },
+    () => {
+      if (!active) throw Error('panel closed');
+    },
+  );
+  const rejected = assert.rejects(reading, /panel closed/);
+  await entered.promise;
+  active = false;
+  release.resolve();
+  await rejected;
+  assert.equal(f.prompts(), 0);
+});
+
+test('root freezes annotation composition and lost turn receipt consumes only the confirmed original selection', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    annotations = f.controller.previewAnnotations;
+  const saved = await annotations.change(
+    target,
+    [],
+    () => {},
+    (store) => store.save(syntheticAnnotation()),
+  );
+  await annotations.change(
+    target,
+    saved.store.items,
+    () => {},
+    (store) => store.select(saved.value.id, true),
+  );
+  const shown = await annotations.read(target, () => {});
+  f.controller.updatePreviewAnnotations(target, shown, () => {});
+  f.fault.loseMutation = true;
+  await f.controller.saveDraft('Original text');
+  await f.controller.send('Original text', {
+    target,
+    attachments: [],
+    mcpDraft: f.controller.state.mcpDraft,
+    previewAnnotations: shown,
+  });
+  await f.started.promise;
+  const original = f.controller.state.operations.find((operation) => operation.kind === 'turn')!;
+  assert.equal(original.state, 'pending');
+  assert.deepEqual(original.previewReview?.annotations, shown);
+  assert.equal(f.controller.state.previewAnnotations.filter((item) => item.selectionId).length, 1);
+  const count = f.requests.length;
+  await assert.rejects(
+    f.controller.beforeExtensionWrite(target, () => {}),
+    /原会话操作/,
+  );
+  assert.equal(f.requests.length, count);
+  f.fault.loseMutation = false;
+  await f.controller.recover(original.operationId, 'inspect');
+  assert.equal(f.controller.state.previewAnnotations.filter((item) => item.selectionId).length, 0);
+  assert.equal(f.prompts(), 1);
+  await f.controller.refreshSession();
+  const user = f.controller.state.session!.history.find((turn) => turn.role === 'user')!;
+  assert.match(JSON.stringify(user), /Original text/);
+  assert.match(JSON.stringify(user), /SYNTHETIC_PRIVATE_ANNOTATION/);
+  assert(
+    !f.requests.some(
+      (request) => request.action === 'execute' && request.command.method === 'attachment-action',
+    ),
+    'saved annotation image is not automatically uploaded',
+  );
+});
+
+test('another page changing annotation selection blocks the old send before attachments or turn staging', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    annotations = f.controller.previewAnnotations;
+  const saved = await annotations.change(
+    target,
+    [],
+    () => {},
+    (store) => store.save(syntheticAnnotation()),
+  );
+  await annotations.change(
+    target,
+    saved.store.items,
+    () => {},
+    (store) => store.select(saved.value.id, true),
+  );
+  const shown = await annotations.read(target, () => {});
+  f.controller.updatePreviewAnnotations(target, shown, () => {});
+  await annotations.change(
+    target,
+    shown,
+    () => {},
+    (store) => store.select(saved.value.id, false),
+  );
+  const before = f.controller.state.operations.length;
+  await assert.rejects(
+    f.controller.send('Reviewed', {
+      target,
+      attachments: [],
+      mcpDraft: f.controller.state.mcpDraft,
+      previewAnnotations: shown,
+    }),
+    /标注选择已改变/,
+  );
+  assert.equal(f.controller.state.operations.length, before);
+  assert.equal(f.prompts(), 0);
+  assert(
+    !f.requests.some(
+      (request) =>
+        request.action === 'execute' &&
+        (request.command.method === 'attachment-action' || request.command.method === 'mutate'),
+    ),
+  );
+});
+
+function rootGithub(f: Awaited<ReturnType<typeof fixture>>) {
+  return new SecureGithubController({
+    context: () => f.controller.contentContext,
+    storage: f.controller.extensionStorage,
+    request: (...args) => f.controller.scopedRequest(...args),
+    appendInstruction: (...args) => f.controller.appendInstruction(...args),
+    beforeWrite: (...args) => f.controller.beforeExtensionWrite(...args),
+    changed: (...args) => f.controller.refreshExtensionRecords(...args),
+  });
+}
+function prepareSyntheticGit(project: string) {
+  const git = (...args: string[]) =>
+    execFileSync('git', args, {
+      cwd: project,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_AUTHOR_NAME: 'Synthetic',
+        GIT_AUTHOR_EMAIL: 'synthetic@example.invalid',
+        GIT_COMMITTER_NAME: 'Synthetic',
+        GIT_COMMITTER_EMAIL: 'synthetic@example.invalid',
+      },
+    }).trim();
+  git('init', '-q', '-b', 'main');
+  writeFileSync(join(project, 'synthetic.txt'), 'Synthetic before\n');
+  git('add', 'synthetic.txt');
+  git('commit', '-qm', 'Initial synthetic fixture');
+  writeFileSync(join(project, 'synthetic.txt'), 'Synthetic reviewed after\n');
+  return git;
+}
+async function originalGithubPending(
+  f: Awaited<ReturnType<typeof fixture>>,
+  target: SecureCliTarget,
+  kind: 'binding' | 'commit' | 'push',
+) {
+  const gitTarget = secureGitTarget(target),
+    hash = 'sha256:' + 'a'.repeat(64),
+    oid = 'b'.repeat(40);
+  const scope = {
+    workspaceId: target.workspaceId,
+    localProjectId: target.localProjectId,
+    sessionId: target.sessionId,
+  };
+  const request =
+    kind === 'binding'
+      ? githubActionSchema.parse({
+          ...scope,
+          githubVersion: 1,
+          operationId: 'original-binding',
+          action: 'unbind',
+          expectedRevision: 0,
+        })
+      : githubWriteActionSchema.parse({
+          ...scope,
+          githubWriteVersion: 1,
+          operationId: `original-${kind}`,
+          action: kind,
+          confirmed: true,
+          ...(kind === 'commit'
+            ? {
+                paths: ['synthetic.txt'],
+                candidateVersion: hash,
+                indexVersion: hash,
+                branch: 'main',
+                parentOid: oid,
+                executionRevision: 0,
+                message: 'Original reviewed commit',
+                author: { name: 'Synthetic', email: 'synthetic@example.invalid' },
+              }
+            : {
+                repositoryId: 42,
+                configVersion: hash,
+                expectedBindingRevision: 0,
+                branch: 'main',
+                headOid: oid,
+                expectedRemoteOid: null,
+                executionRevision: 0,
+              }),
+        });
+  const row =
+    kind === 'binding'
+      ? {
+          version: 1,
+          cacheRevision: 1,
+          target: gitTarget,
+          revision: 0,
+          pending: { target: gitTarget, request },
+        }
+      : {
+          version: 1,
+          cacheRevision: 1,
+          target: gitTarget,
+          drafts: {},
+          pending: { target: gitTarget, request, draftId: `original-${kind}-draft` },
+        };
+  const saved = await f.controller.extensionStorage
+    .forTarget(target, () => {})
+    .compareWrite(
+      kind === 'binding' ? githubKey(gitTarget) : githubWriteKey(gitTarget),
+      0,
+      row,
+      () => true,
+    );
+  assert.equal(saved, true);
+  return request;
+}
+
+for (const feature of [GITHUB_FEATURE, SECURE_GITHUB_AUTHORITY_FEATURE])
+  test(`root GitHub preflight missing ${feature} cannot stage or dispatch a new binding`, async (t) => {
+    const f = await fixture(t);
+    f.fault.omitExtensionFeature = feature;
+    await f.ready();
+    await f.create();
+    const target = f.controller.contentContext.target!,
+      github = rootGithub(f);
+    t.after(() => github.close());
+    // Local restoration does not require a remote read, exercising the pre-stage gate itself.
+    await github.open(target, 'recovery');
+    const count = f.requests.length,
+      saved = structuredClone([...f.memory.values]);
+    await assert.rejects(github.unbind(github.state!.review), /完整的加密扩展授权/);
+    assert.equal(f.requests.length, count, 'unsupported capabilities never reach main IPC');
+    assert.deepEqual([...f.memory.values], saved, 'no pending operation is manufactured locally');
+    assert.equal(github.state!.read.pending, undefined);
+    assert.equal(f.controller.state.extensionBlock, null);
+    assert.equal(f.prompts(), 0);
+  });
+
+for (const kind of ['binding', 'commit', 'push'] as const)
+  test(`root blocks send and current GitHub confirmation for old-mapping pending ${kind}, while exact original recovery remains available`, async (t) => {
+    const f = await fixture(t);
+    prepareSyntheticGit(f.project);
+    await f.ready();
+    await f.create();
+    const originalTarget = f.controller.contentContext.target!;
+    f.products.revision = 2;
+    f.products.replicas[0].revision = 2;
+    await f.controller.selectHost('host');
+    await f.controller.selectReplica('replica');
+    await f.controller.openSession(originalTarget.sessionId);
+    const currentTarget = f.controller.contentContext.target!,
+      github = rootGithub(f);
+    t.after(() => github.close());
+    assert.equal(currentTarget.product!.revision, 2);
+    assert.notDeepEqual(currentTarget, originalTarget);
+    await github.open(currentTarget, 'write');
+    const id = await github.createDraft(github.state!.review, 'commit', {
+      paths: ['synthetic.txt'],
+      message: 'Current reviewed commit',
+      authorName: 'Synthetic',
+      authorEmail: 'synthetic@example.invalid',
+    });
+    await github.prepare(github.state!.review, id);
+    const shown = github.state!.review;
+    // A second page adds a pending request under the original product mapping after this review.
+    const original = await originalGithubPending(f, originalTarget, kind);
+    await f.controller.refreshExtensionRecords(currentTarget, () => {});
+    assert.match(f.controller.state.extensionBlock!, /待确认/);
+    const before = f.requests.length,
+      saved = structuredClone([...f.memory.values]);
+    await assert.rejects(github.confirm(shown), /待确认/);
+    await assert.rejects(f.controller.send('Must remain unsent'), /待确认/);
+    assert.equal(f.requests.length, before, 'neither pending path reaches IPC');
+    assert.deepEqual(
+      [...f.memory.values],
+      saved,
+      'neither a new GitHub operation nor a turn was staged',
+    );
+    assert.equal(github.state!.write.pending, undefined);
+    assert.equal(f.prompts(), 0);
+    github.close();
+    await github.open(currentTarget, 'recovery');
+    const recovered = github.state!.recoveries.find((entry) => entry.pending || entry.binding)!;
+    assert.deepEqual(recovered.target, originalTarget);
+    if (kind !== 'binding') {
+      await github.recover(github.state!.review, recovered.id, 'inspect', 2);
+      const inspected = f.requests.at(-1)!;
+      assert.equal(inspected.action, 'execute');
+      if (inspected.action !== 'execute') throw Error('Expected exact original inspection');
+      assert.deepEqual(inspected.target, originalTarget.product);
+      assert.equal(inspected.command.workspaceId, originalTarget.workspaceId);
+      assert.equal(inspected.command.localProjectId, originalTarget.localProjectId);
+      assert.equal(inspected.command.method, 'github-write-inspect');
+      assert.deepEqual(inspected.command.params, { request: original, page: 2 });
+      assert.ok(
+        github.state!.recoveries[0].pending,
+        'unknown inspection does not release the operation',
+      );
+      assert.match(f.controller.state.extensionBlock!, /待确认/);
+    } else {
+      const count = f.requests.length;
+      await assert.rejects(
+        github.recover(github.state!.review, recovered.id, 'inspect'),
+        /只能封存/,
+      );
+      assert.equal(
+        f.requests.length,
+        count,
+        'binding inspection must never fall back to first execution',
+      );
+    }
+    await github.recover(github.state!.review, recovered.id, 'abandon');
+    const sealed = f.requests.at(-1)!;
+    assert.equal(sealed.action, 'execute');
+    if (sealed.action !== 'execute') throw Error('Expected exact original sealing');
+    assert.deepEqual(sealed.target, originalTarget.product);
+    assert.equal(sealed.command.workspaceId, originalTarget.workspaceId);
+    assert.equal(sealed.command.localProjectId, originalTarget.localProjectId);
+    assert.equal(
+      sealed.command.method,
+      kind === 'binding' ? 'github-abandon' : 'github-write-abandon',
+    );
+    assert.deepEqual(sealed.command.params, kind === 'binding' ? original : { request: original });
+    assert.equal(f.controller.state.extensionBlock, null);
+    const noReplay = f.requests
+      .slice(before)
+      .filter(
+        (entry) =>
+          entry.action === 'execute' &&
+          (entry.command.method === 'github-action' ||
+            entry.command.method === 'github-write-action' ||
+            entry.command.method === 'mutate'),
+      );
+    assert.deepEqual(noReplay, []);
+    await f.controller.beforeExtensionWrite(currentTarget, () => {});
+    assert.equal(f.prompts(), 0);
+  });
+
+test('root preflight permits an ordinary reviewed commit and its own newly staged pending record does not block confirmation', async (t) => {
+  const f = await fixture(t),
+    git = prepareSyntheticGit(f.project);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    github = rootGithub(f);
+  t.after(() => github.close());
+  await github.open(target, 'write');
+  const before = git('rev-parse', 'HEAD');
+  const id = await github.createDraft(github.state!.review, 'commit', {
+    paths: ['synthetic.txt'],
+    message: 'Confirmed synthetic commit',
+    authorName: 'Synthetic',
+    authorEmail: 'synthetic@example.invalid',
+  });
+  await github.prepare(github.state!.review, id);
+  const reviewed = structuredClone(github.state!.write.review!.request);
+  assert.equal(f.controller.state.extensionBlock, null);
+  await github.confirm(github.state!.review);
+  assert.equal(github.state!.write.pending, undefined);
+  assert.equal(github.state!.write.receipt!.phase, 'accepted');
+  assert.equal(f.controller.state.extensionBlock, null);
+  assert.notEqual(git('rev-parse', 'HEAD'), before);
+  assert.equal(git('log', '-1', '--format=%s'), 'Confirmed synthetic commit');
+  const actions = f.requests.filter(
+    (entry) => entry.action === 'execute' && entry.command.method === 'github-write-action',
+  );
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0].action, 'execute');
+  if (actions[0].action !== 'execute') throw Error('Expected reviewed commit');
+  assert.deepEqual(actions[0].target, target.product);
+  assert.equal(actions[0].command.workspaceId, target.workspaceId);
+  assert.equal(actions[0].command.localProjectId, target.localProjectId);
+  assert.deepEqual(actions[0].command.params, reviewed);
   assert.equal(f.prompts(), 0);
 });

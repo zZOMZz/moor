@@ -29,6 +29,10 @@ export type GithubWritePanelProps = {
   onCancelReview(): void;
   onInspect(page: number): void;
   onAbandon(): void;
+  onRead?(): void;
+  onRecovery?(): void;
+  canReviewDraft?: boolean;
+  navigationDisabled?: boolean;
 };
 const labels: Record<GithubWriteDraft['kind'], string> = {
   'issue-comment': '发布会话评论',
@@ -71,12 +75,14 @@ function Pager({
 function DraftEditor({
   draft,
   disabled,
+  reviewDisabled,
   onDraft,
   onReview,
   onRemove,
 }: {
   draft: GithubWriteDraft;
   disabled: boolean;
+  reviewDisabled?: boolean;
   onDraft(d: GithubWriteDraft): void;
   onReview(): void;
   onRemove(): void;
@@ -202,7 +208,7 @@ function DraftEditor({
           推送分支 {String(values.branch)}；提交 {String(values.headOid)}。
         </p>
       )}
-      <button disabled={disabled} onClick={onReview}>
+      <button disabled={disabled || reviewDisabled} onClick={onReview}>
         审查本次操作
       </button>
       <button disabled={disabled} onClick={onRemove}>
@@ -356,6 +362,16 @@ export function GithubWritePanel(p: GithubWritePanelProps) {
             每次写入先保存草稿、审查具体目标，再由你明确确认。读取、同步和重新连接不会发布内容或运行
             Agent。
           </Dialog.Description>
+          {p.onRead && (
+            <button disabled={p.navigationDisabled || !c?.loaded || c.busy} onClick={p.onRead}>
+              返回仓库与会话上下文
+            </button>
+          )}
+          {p.onRecovery && (
+            <button disabled={p.navigationDisabled || !c?.loaded || c.busy} onClick={p.onRecovery}>
+              查看原项目映射记录
+            </button>
+          )}
           {p.location && <p>执行电脑：{p.location}</p>}
           {p.reason && <p role="status">{p.reason}</p>}
           {c?.loadError && <p role="alert">{c.loadError}</p>}
@@ -874,6 +890,7 @@ export function GithubWritePanel(p: GithubWritePanelProps) {
                   key={draftId}
                   draft={c.drafts[draftId]}
                   disabled={!!c.pending || c.busy || !!c.loadError}
+                  reviewDisabled={p.canReviewDraft === false}
                   onDraft={p.onDraft}
                   onReview={() => p.onPrepare(draftId)}
                   onRemove={() => p.onRemove(draftId)}

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { mappedHost } from './support/mapped-host';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -874,5 +875,59 @@ test('GitHub Host failed cancellation rolls back scope reservation and leaves th
   f.store.journal.db.exec('DROP TRIGGER fail_github_abandon');
   assert.equal((await f.host.abandonGithub(request)).abandoned, true);
   assert.equal((await f.host.githubAction(request)).abandoned, true);
+  assert.equal(f.requests.length, 0);
+});
+
+test('an encrypted bind cannot persist after its original channel retires during a branch read', async (t) => {
+  const f = fixture(t),
+    request = f.bind(),
+    entered = signal(),
+    release = signal();
+  let active = true;
+  f.beforeRequest = async (url) => {
+    if (url.pathname.endsWith('/branches/main')) {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const pending = f.host.githubAction(request, 'project', () => {
+    assert.ok(active);
+  });
+  await entered.promise;
+  active = false;
+  release.resolve();
+  await assert.rejects(pending);
+  assert.equal(f.store.github.get(f.fullScope()).revision, 0);
+  assert.equal(f.store.journal.has(request.operationId), false);
+});
+
+test('never-arrived GitHub binds seal the original Host mapping after restart and cannot bind late on any mapping', async (t) => {
+  const f = fixture(t),
+    request = f.bind(),
+    mapped = mappedHost(() => f.host),
+    target = mapped.target();
+  mapped.move();
+  f.restart();
+  mapped.reopen();
+  const receipt = (await mapped.execute(target, {
+    method: 'github-abandon',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: request,
+  })) as any;
+  assert.equal(receipt.abandoned, true);
+  f.restart();
+  mapped.reopen();
+  for (const selected of [target, mapped.target()])
+    await assert.rejects(
+      mapped.execute(selected, {
+        method: 'github-action',
+        workspaceId: 'workspace',
+        localProjectId: 'project',
+        params: request,
+      }),
+    );
+  assert.equal((await f.host.githubAction(request)).abandoned, true);
+  assert.equal(f.store.github.get(f.fullScope()).revision, 0);
   assert.equal(f.requests.length, 0);
 });

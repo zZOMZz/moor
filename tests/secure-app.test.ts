@@ -33,6 +33,8 @@ function seed(): SecureWorkspaceState {
     draft: '',
     attachmentDraft: [],
     mcpDraft: null,
+    previewAnnotations: [],
+    extensionBlock: null,
     permissionReviews: [],
     notice: null,
     busy: false,
@@ -311,6 +313,12 @@ function fake(initial = seed()) {
     'appendInstruction',
     'readMcpCatalog',
     'applyMcp',
+    'scopedRequest',
+    'beforeExtensionWrite',
+    'refreshExtensionRecords',
+    'updatePreviewAnnotations',
+    'addPreviewImage',
+    'removePreviewSelection',
   ] as const) {
     (controller as unknown as Record<string, unknown>)[name] = async (...args: unknown[]) => {
       calls.push({ name, args });
@@ -581,7 +589,12 @@ test('draft is saved before explicit send and unsaved edits prevent switching sc
         name: 'send',
         args: [
           '只使用合成数据',
-          { target: view.controller.contentContext.target, attachments: [], mcpDraft: null },
+          {
+            target: view.controller.contentContext.target,
+            attachments: [],
+            mcpDraft: null,
+            previewAnnotations: [],
+          },
         ],
       },
     ]);
@@ -1224,7 +1237,7 @@ test('attachment-only send freezes displayed scope and files before awaiting tex
     await view.act(async () => saved());
     assert.deepEqual(view.calls.at(-1), {
       name: 'send',
-      args: ['', { target, attachments: shown, mcpDraft: null }],
+      args: ['', { target, attachments: shown, mcpDraft: null, previewAnnotations: [] }],
     });
   } finally {
     saved();
@@ -1673,7 +1686,7 @@ test('Composer passes the rendered empty MCP review after another page updates s
     const sent = view.calls.find((call) => call.name === 'send')!;
     assert.deepEqual(sent.args, [
       'Reviewed text',
-      { target, attachments: [], mcpDraft: { target } },
+      { target, attachments: [], mcpDraft: { target }, previewAnnotations: [] },
     ]);
   } finally {
     release();

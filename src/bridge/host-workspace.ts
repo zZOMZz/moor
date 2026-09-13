@@ -156,6 +156,7 @@ import { SessionForkManager } from '../runtime/session-fork';
 import { SessionPreviewManager, type SessionPreviewOptions } from '../runtime/session-preview';
 import {
   PREVIEW_FEATURE,
+  SECURE_PREVIEW_AUTHORITY_FEATURE,
   type PreviewRead,
   type PreviewAction,
   type PreviewOpen,
@@ -171,7 +172,12 @@ import {
   type GithubWriteAction,
   type GithubWriteInspect,
 } from '../github-write-protocol';
-import { GITHUB_FEATURE, type GithubRead, type GithubAction } from '../github-protocol';
+import {
+  GITHUB_FEATURE,
+  SECURE_GITHUB_AUTHORITY_FEATURE,
+  type GithubRead,
+  type GithubAction,
+} from '../github-protocol';
 import { SESSION_FORK_FEATURE, type ForkOptionsRead, type SessionFork } from '../fork-protocol';
 
 type Active = {
@@ -301,8 +307,10 @@ export class HostWorkspace {
       GIT_WORKTREE_FEATURE,
       SESSION_FORK_FEATURE,
       GITHUB_FEATURE,
+      SECURE_GITHUB_AUTHORITY_FEATURE,
       GITHUB_WRITE_FEATURE,
       PREVIEW_FEATURE,
+      SECURE_PREVIEW_AUTHORITY_FEATURE,
       SKILLS_FEATURE,
       ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
@@ -327,6 +335,7 @@ export class HostWorkspace {
       .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
     this.taskManager.invalidateUnavailable();
     this.invalidateMcp();
+    this.previewManager.invalidateUnavailable();
     this.catalogue();
   }
   readMcp(input: McpRead, localProjectId?: string) {
@@ -694,8 +703,8 @@ export class HostWorkspace {
   readGitState(input: GitStateRead, localProjectId?: string) {
     return this.executionManager.read(input, localProjectId);
   }
-  readPreview(input: PreviewRead, localProjectId?: string) {
-    return this.previewManager.read(input, localProjectId);
+  readPreview(input: PreviewRead, localProjectId?: string, authority?: TaskAuthorityLease) {
+    return this.previewManager.read(input, localProjectId, authority);
   }
   readSkills(input: SkillsRead, localProjectId?: string) {
     return this.skillsManager.read(input, localProjectId);
@@ -708,53 +717,73 @@ export class HostWorkspace {
     if (input.action !== 'inspect') this.changed();
     return result;
   }
-  previewAction(input: PreviewAction, localProjectId?: string) {
-    return this.previewManager.action(input, localProjectId);
+  previewAction(input: PreviewAction, localProjectId?: string, authority?: TaskAuthorityLease) {
+    return this.previewManager.action(input, localProjectId, authority);
   }
-  inspectPreview(input: { request: PreviewAction }, localProjectId?: string) {
-    return this.previewManager.inspect(input, localProjectId);
+  inspectPreview(
+    input: { request: PreviewAction },
+    localProjectId?: string,
+    authority?: TaskAuthorityLease,
+  ) {
+    return this.previewManager.inspect(input, localProjectId, authority);
   }
-  closePreview(input: { request: PreviewOpen }, localProjectId?: string) {
-    return this.previewManager.close(input, localProjectId);
+  closePreview(
+    input: { request: PreviewOpen },
+    localProjectId?: string,
+    authority?: TaskAuthorityLease,
+  ) {
+    return this.previewManager.close(input, localProjectId, authority);
   }
-  async readGithub(input: GithubRead, localProjectId?: string) {
+  async readGithub(input: GithubRead, localProjectId?: string, checkpoint?: () => void) {
     try {
-      return await this.githubManager.read(input, localProjectId);
+      return await this.githubManager.read(input, localProjectId, checkpoint);
     } catch (error) {
       if (error instanceof AppError) throw error;
       throw new AppError(502, 'GitHub 内容暂时不可读取，请重新检查执行电脑的授权');
     }
   }
-  async githubAction(input: GithubAction, localProjectId?: string) {
-    const result = await this.githubManager.action(input, localProjectId);
+  async githubAction(input: GithubAction, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.githubManager.action(input, localProjectId, checkpoint);
     this.changed(input.sessionId);
     return result;
   }
-  async abandonGithub(input: GithubAction, localProjectId?: string) {
-    const result = await this.githubManager.abandon(input, localProjectId);
+  async abandonGithub(input: GithubAction, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.githubManager.abandon(input, localProjectId, checkpoint);
     this.changed(input.sessionId);
     return result;
   }
-  async readGithubWrite(input: GithubWriteRead, localProjectId?: string) {
+  async readGithubWrite(input: GithubWriteRead, localProjectId?: string, checkpoint?: () => void) {
     try {
-      return await this.githubWriteManager.read(input, localProjectId);
+      return await this.githubWriteManager.read(input, localProjectId, checkpoint);
     } catch (error) {
       if (error instanceof AppError) throw error;
       throw new AppError(502, '写操作上下文暂时不可读取，请检查执行电脑');
     }
   }
-  async githubWriteAction(input: GithubWriteAction, localProjectId?: string) {
-    const result = await this.githubWriteManager.action(input, localProjectId);
+  async githubWriteAction(
+    input: GithubWriteAction,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    const result = await this.githubWriteManager.action(input, localProjectId, checkpoint);
     this.changed(input.sessionId);
     return result;
   }
-  async inspectGithubWrite(input: GithubWriteInspect, localProjectId?: string) {
-    const result = await this.githubWriteManager.inspect(input, localProjectId);
+  async inspectGithubWrite(
+    input: GithubWriteInspect,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    const result = await this.githubWriteManager.inspect(input, localProjectId, checkpoint);
     this.changed(input.request.sessionId);
     return result;
   }
-  async abandonGithubWrite(input: { request: GithubWriteAction }, localProjectId?: string) {
-    const result = await this.githubWriteManager.abandon(input, localProjectId);
+  async abandonGithubWrite(
+    input: { request: GithubWriteAction },
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    const result = await this.githubWriteManager.abandon(input, localProjectId, checkpoint);
     this.changed(input.request.sessionId);
     return result;
   }

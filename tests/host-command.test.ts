@@ -270,9 +270,14 @@ test('all 38 commands preserve the exact delegate, parsed payload, project and a
     deviceId: 'device',
     current() {},
   };
+  const checkpoint = () => {};
   for (const method of HOST_COMMAND_METHODS) {
     const { params, call } = cases[method];
-    assert.equal(await f.dispatcher.execute(envelope(method), { authority }), f.result, method);
+    assert.equal(
+      await f.dispatcher.execute(envelope(method), { authority, current: checkpoint }),
+      f.result,
+      method,
+    );
     const expected =
       method === 'sessions'
         ? [scope.localProjectId]
@@ -282,9 +287,11 @@ test('all 38 commands preserve the exact delegate, parsed payload, project and a
             ? ['session', 'YQ==', scope.localProjectId]
             : method === 'cancel'
               ? ['session', 'turn', scope.localProjectId]
-              : method === 'mutate'
+              : method === 'mutate' || method.startsWith('preview-')
                 ? [params, scope.localProjectId, authority]
-                : [params, scope.localProjectId];
+                : method.startsWith('github-')
+                  ? [params, scope.localProjectId, checkpoint]
+                  : [params, scope.localProjectId];
     assert.deepEqual(f.calls.pop(), { method: call, args: expected }, method);
   }
 });

@@ -65,6 +65,14 @@ module.exports = function runSecureNative(options, scenario) {
       ).createSecureDesktopHost(profile, {
         richContent: options.richContent === true,
         extensions: options.extensions === true,
+        integrations: options.integrations
+          ? {
+              electronPath: process.env.MOOR_TEST_DESKTOP_APP
+                ? path.resolve(desktop, '../../MacOS/Electron')
+                : process.execPath,
+              workerPath: path.join(runtime, 'preview-renderer.cjs'),
+            }
+          : undefined,
       });
       const registry = new Map(),
         requests = [],

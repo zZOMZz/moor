@@ -4,6 +4,7 @@ import { contentScopeSchema, contentVersionSchema } from './content-protocol';
 import { gitBranchSchema, gitOidSchema, sessionExecutionSchema } from './git-protocol';
 
 export const GITHUB_FEATURE = 'github-read-v1';
+export const SECURE_GITHUB_AUTHORITY_FEATURE = 'secure-github-authority-v1';
 export const GITHUB_LIMITS = { pageSize: 20, pages: 100, bodyChars: 16000, title: 500 } as const;
 export const githubOwnerSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/);
 export const githubRepoNameSchema = z

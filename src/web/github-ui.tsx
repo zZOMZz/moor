@@ -70,6 +70,9 @@ export type GithubPanelProps = {
   onAbandon(): void;
   onAdd(): void;
   onWrite?(): void;
+  onRecovery?(): void;
+  allowOfflineDrafts?: boolean;
+  navigationDisabled?: boolean;
 };
 export function GithubPanel(p: GithubPanelProps) {
   const [branch, setBranch] = useState(''),
@@ -105,8 +108,24 @@ export function GithubPanel(p: GithubPanelProps) {
             主机，不会推送代码、发表评论或发送指令。
           </Dialog.Description>
           {p.onWrite && (
-            <button disabled={busy} onClick={p.onWrite}>
+            <button
+              disabled={
+                p.navigationDisabled ||
+                (p.allowOfflineDrafts
+                  ? !controller?.loaded || controller.busy || !!controller.loadError || !!p.adding
+                  : busy)
+              }
+              onClick={p.onWrite}
+            >
               审查、评论与发布
+            </button>
+          )}
+          {p.onRecovery && (
+            <button
+              disabled={p.navigationDisabled || !controller?.loaded || controller.busy}
+              onClick={p.onRecovery}
+            >
+              查看原项目映射记录
             </button>
           )}
           {p.reason && <p role="status">{p.reason}</p>}
