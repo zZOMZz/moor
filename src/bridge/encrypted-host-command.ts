@@ -29,6 +29,15 @@ function object(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
+function unreviewedPermission(command: HostCommand): boolean {
+  const mutation =
+    command.method === 'mutate'
+      ? command.params
+      : command.method === 'session-operations' && command.params.request.kind === 'mutation'
+        ? command.params.request.value
+        : undefined;
+  return mutation?.kind === 'permission' && !mutation.permissionReview;
+}
 function matchesResource(command: HostCommand, resource: EncryptedResource): boolean {
   if (
     resource.kind === 'catalog' ||
@@ -179,6 +188,7 @@ export class EncryptedHostCommands {
       if (request.method === 'mapped-command') {
         if (
           !products ||
+          unreviewedPermission(request.command) ||
           !matchesResource(request.command, header.resource) ||
           header.resource.catalogWorkspaceId !== request.target.catalogWorkspaceId ||
           header.resource.replicaId !== request.target.replicaId
@@ -203,6 +213,7 @@ export class EncryptedHostCommands {
         command = hostCommandSchema.parse(request);
         // Missing a product authority is never permission to trust nonempty AAD.
         if (
+          unreviewedPermission(command) ||
           header.resource.catalogWorkspaceId !== null ||
           header.resource.replicaId !== null ||
           !matchesResource(command, header.resource) ||

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { id } from '../protocol';
+import { id, mutationSchema } from '../protocol';
 import {
   encryptedProductTargetSchema,
   encryptedProductAuthoritySchema,
@@ -31,7 +31,7 @@ export type SecureCliTarget = z.infer<typeof secureTargetSchema>;
 export const secureOperationSchema = z
   .object({
     operationId: id,
-    kind: z.enum(['turn', 'create', 'stop', 'session-action']),
+    kind: z.enum(['turn', 'permission', 'create', 'stop', 'session-action']),
     target: secureTargetSchema,
     body: z.string().max(48 * 1024 * 1024),
     requestVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -42,10 +42,11 @@ export const secureOperationSchema = z
   .strict()
   .superRefine((operation, context) => {
     try {
-      const command = hostCommandSchema.parse(JSON.parse(operation.body)),
+      const raw = JSON.parse(operation.body),
+        command = hostCommandSchema.parse(raw),
         target = operation.target;
       const expected =
-        operation.kind === 'turn'
+        operation.kind === 'turn' || operation.kind === 'permission'
           ? 'mutate'
           : operation.kind === 'session-action'
             ? 'session-action'
@@ -56,6 +57,15 @@ export const secureOperationSchema = z
         command.localProjectId !== target.localProjectId
       )
         throw Error();
+      if (command.method === 'mutate') {
+        if (command.params.kind !== operation.kind) throw Error();
+        if (operation.kind === 'permission') {
+          mutationSchema.strict().parse(raw.params);
+          if (!Object.hasOwn(raw.params, 'permissionReview')) throw Error();
+          id.parse(command.params.expectedTurnId);
+          id.parse(command.params.requestId);
+        }
+      }
       const params = command.params as {
         operationId?: string;
         sessionId?: string;
@@ -89,7 +99,7 @@ export function secureOriginal(operation: SecureCliOperation): SessionOriginalOp
   const command = hostCommandSchema.parse(JSON.parse(operation.body));
   return sessionOriginalOperationSchema.parse({
     kind:
-      operation.kind === 'turn'
+      operation.kind === 'turn' || operation.kind === 'permission'
         ? 'mutation'
         : operation.kind === 'session-action'
           ? 'metadata'

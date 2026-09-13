@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleStart } from './google-login';
-import { SecureWorkspaceController, type SecureWorkspaceState } from './secure-controller';
+import {
+  SecureWorkspaceController,
+  type SecureWorkspaceState,
+  type SecurePermissionReview,
+} from './secure-controller';
 import type {
   DesktopSecureRequest,
   DesktopSecureStatus,
 } from '../security/desktop-client-protocol';
 import type { RootPublicJwk } from '../security/e2ee-trust';
+import { productCanonicalJson } from '../security/encrypted-product-catalog';
+import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
 
 type Account = {
   origin: string;
@@ -33,6 +39,7 @@ export type SecureUiController = Pick<
   | 'refreshSession'
   | 'createSession'
   | 'send'
+  | 'respondPermission'
   | 'stop'
   | 'metadata'
   | 'recover'
@@ -54,7 +61,7 @@ const operationLabels = {
   pending: '结果待确认',
   ending: '正在确认放弃',
   accepted: '主机已接受',
-  abandoned: '主机已确认放弃',
+  abandoned: '主机已确认封存',
   rejected: '主机已拒绝',
 } as const;
 
@@ -283,7 +290,251 @@ function displayText(value: unknown): string {
     return '此项内容无法显示';
   }
 }
-function HistoryItem({ value, finished }: { value: unknown; finished: boolean }) {
+function sessionOperations(state: SecureWorkspaceState) {
+  const session = state.session;
+  const device = state.status?.device;
+  const replica = state.catalog?.products.replicas.find((entry) => entry.id === state.replicaId);
+  if (!session || !device || !('deviceId' in device)) return [];
+  return state.operations.filter(
+    (operation) =>
+      operation.target.origin === device.pin.serverOrigin &&
+      operation.target.owner === device.pin.accountId &&
+      operation.target.rootKeyId === device.pin.rootKeyId &&
+      operation.target.clientDeviceId === device.deviceId &&
+      operation.target.hostDeviceId === state.hostId &&
+      operation.target.workspaceId === replica?.runtimeWorkspaceId &&
+      operation.target.userId === session.meta.userId &&
+      operation.target.sessionId === session.meta.id &&
+      operation.target.machineId === session.meta.machineId &&
+      operation.target.localProjectId === session.meta.project.localProjectId,
+  );
+}
+function pendingForSession(state: SecureWorkspaceState): boolean {
+  return sessionOperations(state).some((operation) =>
+    ['pending', 'ending'].includes(operation.state),
+  );
+}
+function freezeReview(value: SecurePermissionReview): SecurePermissionReview {
+  const copy = structuredClone(value);
+  Object.freeze(copy.target.product);
+  Object.freeze(copy.target);
+  Object.freeze(copy.request.scope);
+  for (const option of copy.request.options) Object.freeze(option);
+  Object.freeze(copy.request.options);
+  Object.freeze(copy.request);
+  return Object.freeze(copy);
+}
+function publicOutcome(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const request = value as Record<string, unknown>;
+  if (!request.outcome) return null;
+  const outcome = request.outcome as Record<string, unknown>;
+  if (outcome.outcome === 'cancelled' && Object.keys(outcome).length === 1)
+    return '主机记录：已取消审批请求';
+  if (
+    outcome.outcome === 'selected' &&
+    typeof outcome.optionId === 'string' &&
+    Object.keys(outcome).length === 2 &&
+    Array.isArray(request.options)
+  ) {
+    const choices = request.options.filter(
+      (option) => option && typeof option === 'object' && option.optionId === outcome.optionId,
+    );
+    if (choices.length === 1 && typeof choices[0].name === 'string')
+      return `主机记录：已选择「${choices[0].name}」`;
+  }
+  return '主机审批结果无法核对，请刷新会话。';
+}
+const permissionOptionLabels = {
+  allow_once: '仅本次允许',
+  allow_always: '持续允许',
+  reject_once: '仅本次拒绝',
+  reject_always: '持续拒绝',
+} as const;
+function PermissionCard({
+  currentReview,
+  state,
+  busy,
+  finished,
+  request,
+  controller,
+  run,
+}: {
+  currentReview: SecurePermissionReview | null;
+  state: SecureWorkspaceState;
+  busy: boolean;
+  finished: boolean;
+  request: unknown;
+  controller: SecureUiController;
+  run: Run;
+}) {
+  const [review, setReview] = useState(() => (currentReview ? freezeReview(currentReview) : null));
+  const outcome = publicOutcome(request);
+  const changed =
+    !!review &&
+    (!currentReview || productCanonicalJson(review) !== productCanonicalJson(currentReview));
+  const session = state.session;
+  const replica = state.catalog?.products.replicas.find((entry) => entry.id === state.replicaId);
+  const supported = !!state.catalog?.workspaces
+    .find((entry) => entry.id === replica?.runtimeWorkspaceId)
+    ?.features?.includes(PERMISSION_REVIEW_FEATURE);
+  const blocked = pendingForSession(state);
+  const accepted =
+    !!review &&
+    sessionOperations(state).some((operation) => {
+      if (operation.kind !== 'permission' || operation.state !== 'accepted') return false;
+      try {
+        const command = JSON.parse(operation.body);
+        return (
+          command.method === 'mutate' &&
+          command.params?.kind === 'permission' &&
+          command.params.requestId === review.request.requestId &&
+          command.params.expectedTurnId === review.request.expectedUserTurnId
+        );
+      } catch {
+        return false;
+      }
+    });
+  const inactive =
+    accepted ||
+    finished ||
+    !!outcome ||
+    !session ||
+    session.meta.isArchived ||
+    session.persisted === false ||
+    !!session.persistenceError;
+  const unavailable =
+    !supported ||
+    busy ||
+    !state.status?.connection ||
+    inactive ||
+    blocked ||
+    changed ||
+    !review ||
+    !currentReview;
+  let details: string | null = null;
+  try {
+    if (review) details = JSON.stringify(JSON.parse(review.request.itemJson), null, 2);
+  } catch {
+    /* A damaged review never enables a decision. */
+  }
+  if (outcome)
+    return (
+      <p className="secure-permission-result" role="status">
+        {outcome}
+      </p>
+    );
+  if (finished) return <p className="secure-muted">此回合已结束，审批请求已失效。</p>;
+  if (!supported)
+    return (
+      <p className="secure-warning" role="status">
+        执行主机尚不支持精确审批校验，请升级主机后重新核对目录。
+      </p>
+    );
+  return (
+    <section className="secure-permission" aria-label="审批请求">
+      <h3>需要你的审批决定</h3>
+      {review && details ? (
+        <>
+          <p className="secure-muted">核对原操作与选项后，明确选择一次决定。</p>
+          <details open className="secure-permission-details">
+            <summary>原操作详情</summary>
+            <pre>{details}</pre>
+          </details>
+          <dl className="secure-facts">
+            <dt>活动回合</dt>
+            <dd>{review.request.assistantTurnId}</dd>
+            <dt>请求</dt>
+            <dd>{review.request.requestId}</dd>
+          </dl>
+          <div className="secure-permission-options">
+            {review.request.options.map((option) => (
+              <div className="secure-permission-option" key={option.optionId}>
+                <button
+                  type="button"
+                  aria-label={option.name + '（' + permissionOptionLabels[option.kind] + '）'}
+                  disabled={unavailable || !details}
+                  onClick={() =>
+                    run(() =>
+                      controller.respondPermission(review, {
+                        outcome: 'selected',
+                        optionId: option.optionId,
+                      }),
+                    )
+                  }
+                >
+                  {option.name}
+                </button>
+                <small>{permissionOptionLabels[option.kind]}</small>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            disabled={unavailable || !details}
+            onClick={() =>
+              run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
+            }
+          >
+            取消审批请求
+          </button>
+          <p className="secure-muted">
+            取消会向主机提交取消决定；封存待确认原操作不会取消主机正在等待的审批。
+          </p>
+        </>
+      ) : (
+        <p className="secure-warning">审批请求无法唯一核对，未提供决定按钮。请刷新会话。</p>
+      )}
+      {changed && (
+        <p className="secure-warning" role="status">
+          审批内容已改变，原决定按钮已停用。请重新核对当前请求。
+        </p>
+      )}
+      {(changed || !review) && currentReview && (
+        <button
+          type="button"
+          disabled={busy || !state.status?.connection || inactive || blocked}
+          onClick={() => setReview(freezeReview(currentReview))}
+        >
+          重新核对审批
+        </button>
+      )}
+      {accepted && (
+        <p className="secure-permission-result" role="status">
+          主机已接受此审批决定。请刷新会话读取结果。
+        </p>
+      )}
+      {blocked ? (
+        <p className="secure-warning" role="status">
+          此会话还有结果待确认的原操作。请先手动核查或封存；封存不会代替取消审批请求。
+        </p>
+      ) : !state.status?.connection ? (
+        <p className="secure-muted">执行主机连接未确认，暂时不能提交审批决定。</p>
+      ) : session?.persisted === false || session?.persistenceError ? (
+        <p className="secure-warning">执行电脑尚未确认会话已保存，暂时不能提交审批决定。</p>
+      ) : !currentReview && review ? (
+        <p className="secure-warning">此审批已失效或无法唯一核对，请刷新会话。</p>
+      ) : null}
+    </section>
+  );
+}
+function HistoryItem({
+  value,
+  finished,
+  turnId,
+  state,
+  busy,
+  controller,
+  run,
+}: {
+  value: unknown;
+  finished: boolean;
+  turnId: string;
+  state: SecureWorkspaceState;
+  busy: boolean;
+  controller: SecureUiController;
+  run: Run;
+}) {
   if (!value || typeof value !== 'object') return null;
   const item = value as Record<string, unknown>;
   if (item.type === 'text') return <p className="secure-message-text">{displayText(item.text)}</p>;
@@ -295,7 +546,32 @@ function HistoryItem({ value, finished }: { value: unknown; finished: boolean })
       </details>
     );
   if (item.type === 'tool_call') {
-    const permission = item.permissionRequest as { outcome?: unknown } | undefined;
+    const permission = item.permissionRequest;
+    const requestId =
+      permission && typeof permission === 'object'
+        ? (permission as Record<string, unknown>).requestId
+        : undefined;
+    const matches = state.permissionReviews.filter(
+      (review) =>
+        review.request.assistantTurnId === turnId && review.request.requestId === requestId,
+    );
+    const turns = state.session?.history ?? [];
+    const requestMatches = turns
+      .flatMap((turn) => turn.items ?? [])
+      .filter(
+        (entry) =>
+          entry &&
+          typeof entry === 'object' &&
+          (entry as any).permissionRequest?.requestId === requestId,
+      );
+    const currentReview =
+      matches.length === 1 &&
+      typeof requestId === 'string' &&
+      requestMatches.length === 1 &&
+      typeof item.toolCallId === 'string' &&
+      item.toolCallId.length > 0
+        ? matches[0]
+        : null;
     return (
       <div className="secure-tool">
         <details>
@@ -304,10 +580,16 @@ function HistoryItem({ value, finished }: { value: unknown; finished: boolean })
           </summary>
           <pre>{displayText(item.content ?? item.rawOutput ?? item.rawInput)}</pre>
         </details>
-        {permission && !permission.outcome && !finished && (
-          <p className="secure-warning" role="status">
-            此回合等待批准。请在执行电脑处理这次请求，然后刷新会话。
-          </p>
+        {permission !== undefined && (
+          <PermissionCard
+            currentReview={currentReview}
+            state={state}
+            busy={busy}
+            finished={finished}
+            request={permission}
+            controller={controller}
+            run={run}
+          />
         )}
       </div>
     );
@@ -359,26 +641,7 @@ function Composer({
   const running =
     session.meta.status?.type === 'working' ||
     session.history.some((turn) => turn.role === 'assistant' && !turn.finished);
-  const device = state.status?.device;
-  const selectedReplica = state.catalog?.products.replicas.find(
-    (entry) => entry.id === state.replicaId,
-  );
-  const blocked = state.operations.some(
-    (operation) =>
-      ['pending', 'ending'].includes(operation.state) &&
-      device &&
-      'deviceId' in device &&
-      operation.target.origin === device.pin.serverOrigin &&
-      operation.target.owner === device.pin.accountId &&
-      operation.target.rootKeyId === device.pin.rootKeyId &&
-      operation.target.clientDeviceId === device.deviceId &&
-      operation.target.hostDeviceId === state.hostId &&
-      operation.target.workspaceId === selectedReplica?.runtimeWorkspaceId &&
-      operation.target.userId === session.meta.userId &&
-      operation.target.sessionId === session.meta.id &&
-      operation.target.machineId === session.meta.machineId &&
-      operation.target.localProjectId === session.meta.project.localProjectId,
-  );
+  const blocked = pendingForSession(state);
   const unavailable =
     !state.status?.connection ||
     state.busy ||
@@ -834,7 +1097,16 @@ export function SecureApp({
                           {turn.role === 'assistant' && !turn.finished ? ' · 进行中' : ''}
                         </div>
                         {(turn.items ?? []).map((item: unknown, index: number) => (
-                          <HistoryItem key={index} value={item} finished={turn.finished} />
+                          <HistoryItem
+                            key={scopeKey + ':' + turn.id + ':' + index}
+                            value={item}
+                            finished={turn.finished}
+                            turnId={turn.id}
+                            state={state}
+                            busy={busy}
+                            controller={controller}
+                            run={run}
+                          />
                         ))}
                       </article>
                     ))
@@ -868,7 +1140,7 @@ export function SecureApp({
                 原操作记录{state.operations.length ? ` · ${state.operations.length}` : ''}
               </summary>
               <p className="secure-muted">
-                网络中断不会自动重发。核查、重试和放弃均使用记录中的原操作与原执行范围。
+                网络中断不会自动重发。核查、重试和封存均使用记录中的原操作与原执行范围。
               </p>
               <button disabled={busy} onClick={() => run(() => controller.refreshOperations())}>
                 刷新本机记录
@@ -876,15 +1148,22 @@ export function SecureApp({
               <ul>
                 {state.operations.map((operation) => (
                   <li key={operation.operationId}>
+                    {operation.kind === 'permission' && (
+                      <p className="secure-muted">
+                        审批决定的原操作。封存仅结束此记录的投递，不会取消主机等待的审批请求。
+                      </p>
+                    )}
                     <div className="secure-section-title">
                       <strong>
-                        {operation.kind === 'turn'
-                          ? '发送指令'
-                          : operation.kind === 'create'
-                            ? '创建会话'
-                            : operation.kind === 'stop'
-                              ? '停止回合'
-                              : '会话设置'}
+                        {operation.kind === 'permission'
+                          ? '审批决定'
+                          : operation.kind === 'turn'
+                            ? '发送指令'
+                            : operation.kind === 'create'
+                              ? '创建会话'
+                              : operation.kind === 'stop'
+                                ? '停止回合'
+                                : '会话设置'}
                       </strong>
                       <span>{operationLabels[operation.state]}</span>
                     </div>
@@ -930,7 +1209,7 @@ export function SecureApp({
                             run(() => controller.recover(operation.operationId, 'abandon'))
                           }
                         >
-                          放弃原操作
+                          封存原操作
                         </button>
                       </div>
                     )}

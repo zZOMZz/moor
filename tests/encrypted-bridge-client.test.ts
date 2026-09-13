@@ -33,6 +33,7 @@ import {
   type EncryptedCatalog,
 } from '../src/security/encrypted-bridge-protocol';
 import { hostCommandSchema } from '../src/bridge/host-command';
+import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 import {
   type EncryptedProductAction,
   type EncryptedProductReceipt,
@@ -1751,4 +1752,104 @@ test('historical recovery preserves explicit original targets for every original
   }
   assert.equal(f.socket.sent.length, sent);
   assert.equal(f.socket.readyState, 1);
+});
+
+test('permission execution and original recovery require the exact authenticated workspace feature and review binding before sending', async (t) => {
+  for (const version of [1, 2])
+    for (const supported of [false, true]) {
+      const f = await fixture(t);
+      const advertised: EncryptedCatalog =
+        version === 1 ? structuredClone(catalog) : await productCatalog();
+      advertised.workspaces[0]!.features = supported
+        ? ['session-control-v1', PERMISSION_REVIEW_FEATURE]
+        : ['session-control-v1'];
+      // Support in another workspace never grants the original workspace this capability.
+      advertised.workspaces.push({
+        ...structuredClone(advertised.workspaces[0]!),
+        id: 'another-runtime',
+        projects: [],
+        features: ['session-control-v1', PERMISSION_REVIEW_FEATURE],
+      });
+      await f.readCatalog(advertised);
+      for (const bound of [false, true])
+        for (const action of ['mutate', 'inspect', 'abandon', 'legacy-inspect', 'legacy-abandon']) {
+          const permission = {
+            ...mutation.params,
+            kind: 'permission',
+            expectedTurnId: 'synthetic-user-turn',
+            requestId: 'synthetic-permission-request',
+            ...(bound
+              ? {
+                  permissionReview: {
+                    version: 1,
+                    assistantTurnId: 'synthetic-assistant-turn',
+                    itemJson: '{"title":"SYNTHETIC_PRIVATE_REVIEW"}',
+                  },
+                }
+              : {}),
+          };
+          const operation = action.includes('abandon') ? 'abandon' : 'inspect';
+          const recoveryScope = {
+            ...scope,
+            controlVersion: 1,
+            userId: 'local-owner',
+            machineId: 'machine',
+          };
+          const command = hostCommandSchema.parse({
+            method: action === 'mutate' ? 'mutate' : 'session-operations',
+            workspaceId: scope.workspaceId,
+            localProjectId: scope.localProjectId,
+            params:
+              action === 'mutate'
+                ? permission
+                : {
+                    ...recoveryScope,
+                    action: operation,
+                    request: { kind: 'mutation', value: permission },
+                  },
+          });
+          const before = f.socket.sent.length,
+            original = JSON.stringify(command),
+            pending = action.startsWith('legacy-')
+              ? f.client.executeLegacyOperation('host', command)
+              : f.client.execute('host', command);
+          if (!supported || !bound) {
+            await assert.rejects(pending, unknown);
+            assert.equal(f.socket.sent.length, before);
+            assert.equal(JSON.stringify(command), original);
+            continue;
+          }
+          const request = await f.next();
+          assert.deepEqual(
+            request.body,
+            version === 1 || action.startsWith('legacy-')
+              ? command
+              : {
+                  method: 'mapped-command',
+                  target: encryptedCommandTarget(advertised, command),
+                  command,
+                },
+          );
+          const result =
+            action === 'mutate'
+              ? receipt
+              : {
+                  ...recoveryScope,
+                  confirmed: true,
+                  action: operation,
+                  operationId: 'original-operation',
+                  found: true,
+                  receipt: {
+                    ...recoveryScope,
+                    confirmed: true,
+                    operationId: 'original-operation',
+                    kind: 'mutation',
+                    status: operation === 'abandon' ? 'abandoned' : 'accepted',
+                  },
+                };
+          await f.answer(request, { ok: true, result });
+          assert.deepEqual(await pending, result);
+          assert.equal(JSON.stringify(command), original);
+        }
+    }
 });

@@ -5,6 +5,7 @@ import { Flock, LoroDoc, decode, metas, mirror } from '../model';
 import { promptAttachmentsSchema } from '../attachment-protocol';
 import { taskPlanSchema, SESSION_TASKS_FEATURE } from '../task-protocol';
 import { MCP_FEATURE, mcpServerIdsSchema } from '../mcp-protocol';
+import { permissionItemJson } from '../permission-review';
 const clone = (source: LoroDoc) => {
   const d = new LoroDoc();
   d.import(source.export({ mode: 'snapshot' }));
@@ -17,6 +18,7 @@ export function validateMutation(
   ws: RuntimeWorkspace,
   m: Mutation,
 ) {
+  assert(m.kind === 'permission' || !m.permissionReview, 400, '审批审阅信息不能用于发送新指令');
   const name = 'session-' + m.sessionId,
     flock = Flock.fromFile(originalFlock.exportFile());
   const beforeRows = metas(flock),
@@ -206,6 +208,18 @@ export function validateMutation(
           409,
           '审批请求已失效',
         );
+        if (m.permissionReview) {
+          let reviewed = false;
+          try {
+            reviewed =
+              m.permissionReview.version === 1 &&
+              oldState.history[i].id === m.permissionReview.assistantTurnId &&
+              permissionItemJson(item) === m.permissionReview.itemJson;
+          } catch {
+            /* Unreviewable current content cannot receive an older decision. */
+          }
+          assert(reviewed, 409, '审批请求内容已改变，请重新读取并审阅');
+        }
         const result = target?.permissionRequest?.outcome;
         assert(
           result &&

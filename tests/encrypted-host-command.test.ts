@@ -671,7 +671,7 @@ async function productFixture(t: TestContext, handle?: (call: Call) => unknown) 
     },
   };
 }
-function productRecovery(original = mutation, action: 'inspect' | 'abandon' = 'inspect') {
+function productRecovery(original: unknown = mutation, action: 'inspect' | 'abandon' = 'inspect') {
   return command('session-operations', {
     ...scope,
     userId: 'synthetic-user',
@@ -961,3 +961,77 @@ for (const invalidate of [false, true])
     assert.equal(f.products.action(next).status, 'accepted');
     assert.equal(f.calls.length, 1);
   });
+
+test('encrypted permission execution and recovery reject missing review bindings before dispatch or product registration', async (t) => {
+  const permission = {
+    ...mutation,
+    kind: 'permission',
+    expectedTurnId: 'synthetic-user-turn',
+    requestId: 'synthetic-permission-request',
+  };
+  const commands = [
+    command('mutate', permission),
+    productRecovery(permission, 'inspect'),
+    productRecovery(permission, 'abandon'),
+  ];
+  const legacy = await fixture(t);
+  for (const original of commands) {
+    const result = await legacy.read(await legacy.adapter.execute(await legacy.send(original)));
+    assert.deepEqual(result.value, invalid);
+    assert.equal(legacy.calls.length, 0);
+  }
+  const mapped = await productFixture(t);
+  let bindings = 0;
+  const bind = mapped.products.bindOperation.bind(mapped.products);
+  mapped.products.bindOperation = (...args) => {
+    bindings++;
+    return bind(...args);
+  };
+  for (const original of commands) {
+    const result = await mapped.read(await mapped.adapter.execute(await mapped.mapped(original)));
+    assert.deepEqual(result.value, invalid);
+    assert.equal(mapped.calls.length, 0);
+    assert.equal(bindings, 0);
+  }
+  for (const original of commands.slice(1)) {
+    const result = await mapped.read(await mapped.adapter.execute(await mapped.send(original)));
+    assert.deepEqual(result.value, invalid);
+    assert.equal(mapped.calls.length, 0);
+    assert.equal(bindings, 0);
+  }
+});
+
+test('encrypted permission review bindings survive direct and mapped execution and original recovery unchanged', async (t) => {
+  const permission = {
+    ...mutation,
+    kind: 'permission',
+    expectedTurnId: 'synthetic-user-turn',
+    requestId: 'synthetic-permission-request',
+    permissionReview: {
+      version: 1,
+      assistantTurnId: 'synthetic-assistant-turn',
+      itemJson: '{"title":"SYNTHETIC_PRIVATE_ORIGINAL_REVIEW"}',
+    },
+  };
+  const commands = [
+    command('mutate', permission),
+    productRecovery(permission, 'inspect'),
+    productRecovery(permission, 'abandon'),
+  ];
+  const direct = await fixture(t),
+    mapped = await productFixture(t);
+  for (const { f, send } of [
+    { f: direct, send: direct.send },
+    { f: mapped, send: mapped.mapped },
+  ]) {
+    for (const original of commands) {
+      const before = JSON.stringify(original),
+        request = await send(original),
+        result = await f.read(await f.adapter.execute(request));
+      assert.equal(result.value.ok, true);
+      assert.deepEqual(f.calls.at(-1)!.args[0], original.params);
+      assert.equal(JSON.stringify(original), before);
+      assert(!JSON.stringify(result.header).includes('SYNTHETIC_PRIVATE_ORIGINAL_REVIEW'));
+    }
+  }
+});

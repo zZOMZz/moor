@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import type { SecureAccountApi, SecureUiController } from '../src/web/secure-app';
 import type { SecureWorkspaceState } from '../src/web/secure-controller';
+import { sessionPermissionReviews } from '../src/session-client';
+import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 
 const pin = {
   serverOrigin: 'https://relay.synthetic.invalid',
@@ -25,6 +27,7 @@ function seed(): SecureWorkspaceState {
     session: null,
     operations: [],
     draft: '',
+    permissionReviews: [],
     notice: null,
     busy: false,
   };
@@ -69,6 +72,7 @@ function connected(): SecureWorkspaceState {
       {
         id: 'runtime',
         name: '合成运行目录',
+        features: [PERMISSION_REVIEW_FEATURE],
         userId: 'user',
         machineId: 'machine',
         projects: [{ id: 'local', name: '合成项目', rootPath: '/synthetic/project' }],
@@ -120,6 +124,104 @@ function connected(): SecureWorkspaceState {
   state.sessions = [state.session.meta];
   return state;
 }
+function permissionState(): SecureWorkspaceState {
+  const state = connected();
+  state.draft = '审批不应清除此草稿';
+  state.session!.meta.latestUserMsgId = 'user-turn';
+  state.session!.history = [
+    {
+      id: 'assistant-turn',
+      $cid: 'synthetic-assistant',
+      role: 'assistant',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      userId: undefined,
+      userTurnId: 'user-turn',
+      status: 'working',
+      read: undefined,
+      finished: false,
+      inputConfig: undefined,
+      fileDiff: undefined,
+      items: [
+        {
+          type: 'tool_call',
+          toolCallId: 'tool',
+          title: '修改合成文件',
+          kind: 'edit',
+          status: 'pending',
+          rawInput: {
+            path: '/synthetic/project/example.ts',
+            oldText: 'before',
+            newText: '<script>unsafe()</script>',
+          },
+          permissionRequest: {
+            requestId: 'request',
+            options: [
+              { optionId: 'allow', name: '允许一次', kind: 'allow_once' },
+              { optionId: 'reject', name: '拒绝一次', kind: 'reject_once' },
+            ],
+          },
+        },
+      ],
+    },
+  ];
+  updatePermissionReviews(state);
+  return state;
+}
+function updatePermissionReviews(state: SecureWorkspaceState) {
+  const target = {
+    origin: pin.serverOrigin,
+    owner: pin.accountId,
+    rootKeyId: pin.rootKeyId,
+    clientDeviceId: 'client',
+    hostDeviceId: 'host',
+    workspaceId: 'runtime',
+    localProjectId: 'local',
+    userId: 'user',
+    machineId: 'machine',
+    sessionId: 'session',
+    product: {
+      catalogWorkspaceId: 'workspace',
+      projectId: 'project',
+      replicaId: 'replica',
+      revision: 3,
+    },
+  };
+  state.permissionReviews = sessionPermissionReviews(state.session!, {
+    userId: 'user',
+    machineId: 'machine',
+    workspaceId: 'runtime',
+    localProjectId: 'local',
+    sessionId: 'session',
+  }).map((request) => ({ target, request }));
+}
+function permissionOperation(
+  state: SecureWorkspaceState,
+  lifecycle: 'pending' | 'ending' | 'accepted' | 'abandoned' = 'pending',
+) {
+  const review = state.permissionReviews[0];
+  return {
+    operationId: 'permission-original',
+    kind: 'permission' as const,
+    target: review.target,
+    body: JSON.stringify({
+      method: 'mutate',
+      workspaceId: review.target.workspaceId,
+      localProjectId: review.target.localProjectId,
+      params: {
+        kind: 'permission',
+        operationId: 'permission-original',
+        sessionId: review.target.sessionId,
+        workspaceId: review.target.workspaceId,
+        requestId: review.request.requestId,
+        expectedTurnId: review.request.expectedUserTurnId,
+        update: 'synthetic',
+      },
+    }),
+    requestVersion: 'sha256:' + 'a'.repeat(64),
+    state: lifecycle,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+}
 function fake(initial = seed()) {
   let state = initial;
   const calls: { name: string; args: unknown[] }[] = [];
@@ -158,6 +260,7 @@ function fake(initial = seed()) {
     'refreshSession',
     'createSession',
     'send',
+    'respondPermission',
     'stop',
     'metadata',
     'recover',
@@ -464,7 +567,7 @@ test('unconfirmed operations expose exact scope and only manually recover the or
     assert.equal(view.document.querySelector('.secure-operations')!.hasAttribute('open'), true);
     await view.click('核查原操作');
     await view.click('重试原操作');
-    await view.click('放弃原操作');
+    await view.click('封存原操作');
     assert.deepEqual(
       view.calls.slice(1),
       ['inspect', 'retry', 'abandon'].map((mode) => ({
@@ -524,7 +627,7 @@ test('conversation text stays text and pending approval never creates an unbound
   try {
     assert.equal(view.document.querySelector('.secure-history img'), null);
     assert.match(view.document.querySelector('.secure-history')!.textContent!, /<img src=x/);
-    assert.match(view.document.body.textContent!, /请在执行电脑处理这次请求/);
+    assert.match(view.document.body.textContent!, /审批请求无法唯一核对/);
     assert.equal(
       [...view.document.querySelectorAll('button')].some(
         (element) => element.textContent === '允许一次',
@@ -668,6 +771,286 @@ test('logout closes visible session before awaiting the server and unknown failu
     assert.equal(view.document.querySelector('.secure-operations'), null);
     assert.doesNotMatch(view.document.body.textContent!, /已退出|退出成功|合成会话/);
     assert.equal(view.button('重新读取').disabled, false);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('permission explicitly submits the complete displayed review and chosen original option safely', async () => {
+  const state = permissionState();
+  const view = await mount(state);
+  try {
+    assert.equal(state.permissionReviews.length, 1);
+    assert.deepEqual(view.calls, [{ name: 'refreshStatus', args: [] }]);
+    const panel = view.document.querySelector('.secure-permission')!;
+    assert.match(panel.textContent!, /\/synthetic\/project\/example.ts/);
+    assert.match(panel.textContent!, /<script>unsafe\(\)<\/script>/);
+    assert.equal(panel.querySelector('script'), null);
+    await view.click('允许一次');
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'respondPermission',
+      args: [state.permissionReviews[0], { outcome: 'selected', optionId: 'allow' }],
+    });
+    const supplied = view.calls.at(-1)!
+      .args[0] as SecureWorkspaceState['permissionReviews'][number];
+    assert.equal(Object.isFrozen(supplied), true);
+    assert.equal(Object.isFrozen(supplied.request.options[0]), true);
+    assert.equal(supplied.request.itemJson, state.permissionReviews[0].request.itemJson);
+    assert.equal(
+      view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!.value,
+      state.draft,
+    );
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('changed approval content disables the previously displayed choice until explicit rereview', async () => {
+  const state = permissionState();
+  const view = await mount(state);
+  try {
+    const oldChoice = view.button('允许一次');
+    const changed = structuredClone(state);
+    const item = changed.session!.history[0].items![0] as any;
+    item.rawInput.path = '/synthetic/project/changed.ts';
+    item.permissionRequest.options[0].name = '允许修改新版文件';
+    updatePermissionReviews(changed);
+    await view.act(async () => view.update(changed));
+    assert.equal(oldChoice.disabled, true);
+    assert.match(
+      view.document.querySelector('.secure-permission-details')!.textContent!,
+      /example.ts/,
+    );
+    assert.doesNotMatch(
+      view.document.querySelector('.secure-permission-details')!.textContent!,
+      /changed.ts/,
+    );
+    await view.act(async () => oldChoice.click());
+    assert.equal(
+      view.calls.some((call) => call.name === 'respondPermission'),
+      false,
+    );
+    assert.match(view.document.body.textContent!, /审批内容已改变/);
+    await view.click('重新核对审批');
+    assert.match(
+      view.document.querySelector('.secure-permission-details')!.textContent!,
+      /changed.ts/,
+    );
+    await view.click('允许修改新版文件');
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'respondPermission',
+      args: [changed.permissionReviews[0], { outcome: 'selected', optionId: 'allow' }],
+    });
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('cancel approval and sealing an original operation are separate explicit actions', async () => {
+  const state = permissionState();
+  const view = await mount(state);
+  try {
+    await view.click('取消审批请求');
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'respondPermission',
+      args: [state.permissionReviews[0], { outcome: 'cancelled' }],
+    });
+    const pending = { ...state, operations: [permissionOperation(state)] };
+    await view.act(async () => view.update(pending));
+    assert.equal(view.button('取消审批请求').disabled, true);
+    assert.match(view.document.querySelector('.secure-operations')!.textContent!, /审批决定/);
+    assert.match(
+      view.document.querySelector('.secure-operations')!.textContent!,
+      /不会取消主机等待的审批请求/,
+    );
+    await view.click('封存原操作');
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'recover',
+      args: ['permission-original', 'abandon'],
+    });
+    await view.act(async () =>
+      view.update({ ...state, operations: [permissionOperation(state, 'abandoned')] }),
+    );
+    assert.equal(view.button('取消审批请求').disabled, false);
+    assert.doesNotMatch(
+      view.document.querySelector('.secure-permission')!.textContent!,
+      /已取消审批请求/,
+    );
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('unknown permission delivery keeps its original record and draft and prevents a second decision', async () => {
+  const state = permissionState();
+  const view = await mount(state);
+  try {
+    view.controller.respondPermission = async (...args) => {
+      view.calls.push({ name: 'respondPermission', args });
+      view.update({
+        ...state,
+        operations: [permissionOperation(state)],
+        notice: '原操作结果待确认，请手动核查',
+      });
+    };
+    await view.click('拒绝一次');
+    assert.equal(view.button('允许一次').disabled, true);
+    assert.equal(view.button('取消审批请求').disabled, true);
+    assert.equal(
+      view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!.value,
+      state.draft,
+    );
+    assert.match(
+      view.document.querySelector('.secure-operations')!.textContent!,
+      /permission-original/,
+    );
+    assert.match(view.document.body.textContent!, /原操作结果待确认/);
+    await view.click('允许一次');
+    assert.equal(view.calls.filter((call) => call.name === 'respondPermission').length, 1);
+    await view.click('核查原操作');
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'recover',
+      args: ['permission-original', 'inspect'],
+    });
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('accepted permission receipt disables old choices while awaiting a manual outcome read', async () => {
+  const state = permissionState();
+  state.operations = [permissionOperation(state, 'accepted')];
+  const view = await mount(state);
+  try {
+    assert.equal(view.button('允许一次').disabled, true);
+    assert.equal(view.button('取消审批请求').disabled, true);
+    assert.match(view.document.body.textContent!, /主机已接受此审批决定/);
+    const read = structuredClone(state);
+    (read.session!.history[0].items![0] as any).permissionRequest.outcome = {
+      outcome: 'selected',
+      optionId: 'allow',
+    };
+    updatePermissionReviews(read);
+    await view.act(async () => view.update(read));
+    assert.match(view.document.body.textContent!, /主机记录：已选择「允许一次」/);
+    assert.equal(view.document.querySelector('.secure-permission-options'), null);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('permission decisions fail closed while offline, unpersisted, busy or no longer active', async () => {
+  for (const mode of ['offline', 'unpersisted', 'busy', 'finished'] as const) {
+    const state = permissionState();
+    if (mode === 'offline') state.status!.connection = null;
+    if (mode === 'unpersisted') state.session!.persisted = false;
+    if (mode === 'busy') state.busy = true;
+    if (mode === 'finished') state.session!.history[0].finished = true;
+    updatePermissionReviews(state);
+    const view = await mount(state);
+    try {
+      for (const choice of view.document.querySelectorAll<HTMLButtonElement>(
+        '.secure-permission button',
+      ))
+        assert.equal(choice.disabled, true, mode);
+      assert.equal(
+        view.calls.some((call) => call.name === 'respondPermission'),
+        false,
+      );
+    } finally {
+      await view.cleanup();
+    }
+  }
+});
+
+test('ambiguous request/assistant identity and malformed options never expose an actionable approval', async () => {
+  for (const mode of ['request', 'assistant', 'options', 'field'] as const) {
+    const state = permissionState();
+    const item = state.session!.history[0].items![0] as any;
+    if (mode === 'request') state.session!.history[0].items!.push(structuredClone(item));
+    if (mode === 'assistant')
+      state.session!.history.push({
+        ...structuredClone(state.session!.history[0]),
+        id: 'another-assistant',
+      });
+    if (mode === 'options')
+      item.permissionRequest.options.push(structuredClone(item.permissionRequest.options[0]));
+    if (mode === 'field') item.permissionRequest.options[0].kind = 'unknown';
+    updatePermissionReviews(state);
+    const view = await mount(state);
+    try {
+      assert.equal(view.document.querySelector('.secure-permission-options'), null, mode);
+      assert.match(view.document.body.textContent!, /审批请求无法唯一核对/);
+      assert.equal(
+        view.calls.some((call) => call.name === 'respondPermission'),
+        false,
+      );
+    } finally {
+      await view.cleanup();
+    }
+  }
+});
+
+test('one tool can show distinct permission requests and each click keeps its own request identity', async () => {
+  const state = permissionState();
+  const first = state.session!.history[0].items![0] as any;
+  const second = structuredClone(first);
+  second.permissionRequest.requestId = 'second-request';
+  second.rawInput.path = '/synthetic/project/second.ts';
+  state.session!.history[0].items!.push(second);
+  updatePermissionReviews(state);
+  assert.equal(state.permissionReviews.length, 2);
+  const view = await mount(state);
+  try {
+    const cards = view.document.querySelectorAll('.secure-permission');
+    assert.equal(cards.length, 2);
+    assert.match(cards[0].textContent!, /example.ts/);
+    assert.match(cards[1].textContent!, /second.ts/);
+    const choice = cards[1].querySelector<HTMLButtonElement>('.secure-permission-options button')!;
+    assert.equal(choice.disabled, false);
+    await view.act(async () => choice.click());
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'respondPermission',
+      args: [state.permissionReviews[1], { outcome: 'selected', optionId: 'allow' }],
+    });
+    assert.equal(view.calls.filter((call) => call.name === 'respondPermission').length, 1);
+    const firstCancel = [...cards[0].querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === '取消审批请求',
+    )!;
+    await view.act(async () => firstCancel.click());
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'respondPermission',
+      args: [state.permissionReviews[0], { outcome: 'cancelled' }],
+    });
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('hosts without exact permission capability remain readable and require upgrade before decisions', async () => {
+  const state = permissionState();
+  state.catalog!.workspaces[0].features = [];
+  // Even a prior review retained by a caller cannot bypass the current Host capability.
+  assert.equal(state.permissionReviews.length, 1);
+  const view = await mount(state);
+  try {
+    assert.ok(view.document.querySelector('.secure-history'));
+    assert.match(
+      view.document.body.textContent!,
+      /执行主机尚不支持精确审批校验，请升级主机后重新核对目录/,
+    );
+    assert.equal(view.document.querySelector('.secure-permission-options'), null);
+    assert.equal(
+      [...view.document.querySelectorAll('button')].some(
+        (button) => button.textContent === '取消审批请求',
+      ),
+      false,
+    );
+    assert.equal(
+      view.calls.some((call) => call.name === 'respondPermission'),
+      false,
+    );
+    assert.equal(view.button('刷新会话').disabled, false);
   } finally {
     await view.cleanup();
   }

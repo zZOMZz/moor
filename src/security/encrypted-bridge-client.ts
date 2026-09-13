@@ -1,5 +1,6 @@
 import { hostCommandSchema, type HostCommand } from '../bridge/host-command';
 import { validateHostResponse } from '../host-response';
+import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
 import { devicePublicKey } from './e2ee-crypto';
 import {
   E2eeChannel,
@@ -57,6 +58,19 @@ const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function fail(): never {
   throw new Error(ENCRYPTED_BRIDGE_FAILED);
+}
+function assertPermissionReview(command: HostCommand, features: string[] = []) {
+  const mutation =
+    command.method === 'mutate'
+      ? command.params
+      : command.method === 'session-operations' && command.params.request.kind === 'mutation'
+        ? command.params.request.value
+        : undefined;
+  if (
+    mutation?.kind === 'permission' &&
+    (!mutation.permissionReview || !features.includes(PERMISSION_REVIEW_FEATURE))
+  )
+    fail();
 }
 function snapshot<T>(value: T): T {
   if (value && typeof value === 'object') {
@@ -548,6 +562,7 @@ export class EncryptedBridgeClient {
     const workspace = catalog.workspaces.find((workspace) => workspace.id === command.workspaceId);
     if (!workspace || !workspace.projects.some((project) => project.id === command.localProjectId))
       fail();
+    assertPermissionReview(command, workspace.features);
     if (catalog.catalogVersion === 1) {
       if (inputTarget !== undefined) fail();
       return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);
@@ -578,6 +593,7 @@ export class EncryptedBridgeClient {
     const workspace = catalog.workspaces.find((workspace) => workspace.id === command.workspaceId);
     if (!workspace || !workspace.projects.some((project) => project.id === command.localProjectId))
       fail();
+    assertPermissionReview(command, workspace.features);
     return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);
   }
   async catalogAction(

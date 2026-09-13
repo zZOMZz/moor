@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { runCapabilitiesSchema } from './run-config';
+import { PERMISSION_REVIEW_MAX_BYTES } from './permission-review';
 
 export const PROTOCOL = 3;
 export const AGENT_VERSIONS_FEATURE = 'agent-versions-v1';
@@ -48,6 +49,20 @@ export const mutationSchema = z.object({
   kind: z.enum(['turn', 'permission']),
   expectedTurnId: z.string().nullable(),
   requestId: z.string().optional(),
+  permissionReview: z
+    .object({
+      version: z.literal(1),
+      assistantTurnId: id,
+      itemJson: z
+        .string()
+        .min(1)
+        .max(PERMISSION_REVIEW_MAX_BYTES)
+        .refine(
+          (value) => new TextEncoder().encode(value).byteLength <= PERMISSION_REVIEW_MAX_BYTES,
+        ),
+    })
+    .strict()
+    .optional(),
   update: z.string().max(44000000),
   metaBundle: z.unknown().optional(),
 });

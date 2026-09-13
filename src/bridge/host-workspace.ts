@@ -1,3 +1,4 @@
+import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
 import { randomUUID, createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
@@ -281,6 +282,7 @@ export class HostWorkspace {
   updateCatalogue() {
     this.workspace.features = [
       'session-actions',
+      PERMISSION_REVIEW_FEATURE,
       FILE_CONTENT_FEATURE,
       ATTACHMENTS_FEATURE,
       ATTENTION_FEATURE,

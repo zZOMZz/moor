@@ -21,7 +21,15 @@ import {
   type SecureCliOperation,
   type SecureCliTarget,
 } from '../cli/secure-operation';
-import { buildSessionTurn, readClientSession } from '../session-client';
+import {
+  buildSessionTurn,
+  readClientSession,
+  buildSessionPermission,
+  sessionPermissionReviews,
+  sessionPermissionOutcomeSchema,
+  type SessionPermissionReview,
+  type SessionPermissionOutcome,
+} from '../session-client';
 import {
   mutationReceiptSchema,
   sessionListSchema,
@@ -36,7 +44,9 @@ import {
 } from '../session-control-protocol';
 import { sessionActionSchema } from '../protocol';
 import { SecureStore, type SecureAuthority } from './secure-store';
+import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
 
+export type SecurePermissionReview = { target: SecureCliTarget; request: SessionPermissionReview };
 export type SecureWorkspaceState = {
   status: DesktopSecureStatus | null;
   hostId: string | null;
@@ -46,6 +56,7 @@ export type SecureWorkspaceState = {
   session: ReturnType<typeof readClientSession> | null;
   operations: SecureCliOperation[];
   draft: string;
+  permissionReviews: SecurePermissionReview[];
   notice: string | null;
   busy: boolean;
 };
@@ -63,6 +74,7 @@ const empty = (): SecureWorkspaceState => ({
   session: null,
   operations: [],
   draft: '',
+  permissionReviews: [],
   notice: null,
   busy: false,
 });
@@ -75,6 +87,7 @@ const scope = (target: SecureCliTarget) => ({
   sessionId: target.sessionId,
 });
 const same = (a: unknown, b: unknown) => productCanonicalJson(a) === productCanonicalJson(b);
+const PERMISSION_UNSUPPORTED = '此执行主机尚不支持精确审批内容核对，请升级执行主机后重新连接。';
 const UNKNOWN = '原操作结果待确认；记录已保存在本机。请手动核查，重连不会自动重发。';
 class RequestFailure extends Error {
   constructor(
@@ -151,6 +164,7 @@ export class SecureWorkspaceController {
       sessions: [],
       session: null,
       draft: '',
+      permissionReviews: [],
     });
   }
   async #run(task: (current: () => void) => Promise<void>, generation = this.#generation) {
@@ -252,6 +266,16 @@ export class SecureWorkspaceController {
       params,
     });
   }
+  #permissionSupported(workspaceId: string) {
+    return (
+      this.#state.catalog?.workspaces
+        .find((workspace) => workspace.id === workspaceId)
+        ?.features?.includes(PERMISSION_REVIEW_FEATURE) === true
+    );
+  }
+  #requirePermissionSupport(workspaceId: string) {
+    if (!this.#permissionSupported(workspaceId)) throw Error(PERMISSION_UNSUPPORTED);
+  }
   async #execute(lease: Lease, target: SecureCliTarget, command: HostCommand) {
     this.#current(lease.generation);
     const value = await this.#rpc({
@@ -345,7 +369,13 @@ export class SecureWorkspaceController {
   async selectReplica(replicaId: string) {
     this.#generation++;
     this.#draftTarget = null;
-    Object.assign(this.#state, { replicaId, sessions: [], session: null, draft: '' });
+    Object.assign(this.#state, {
+      replicaId,
+      sessions: [],
+      session: null,
+      draft: '',
+      permissionReviews: [],
+    });
     return this.refreshSessions();
   }
   async refreshSessions() {
@@ -372,6 +402,7 @@ export class SecureWorkspaceController {
     this.#generation++;
     this.#draftTarget = null;
     this.#state.session = null;
+    this.#state.permissionReviews = [];
     this.#state.draft = '';
     return this.#run(async (current) => {
       const lease = this.#lease(),
@@ -383,6 +414,12 @@ export class SecureWorkspaceController {
       const draft = await this.#store.readDraft(target);
       current();
       this.#state.session = read;
+      const reviews = sessionPermissionReviews(read, scope(target));
+      this.#state.permissionReviews = this.#permissionSupported(target.workspaceId)
+        ? reviews.map((request) => ({ target: structuredClone(target), request }))
+        : [];
+      if (reviews.length && !this.#permissionSupported(target.workspaceId))
+        this.#state.notice = PERMISSION_UNSUPPORTED;
       this.#draftTarget = structuredClone(target);
       this.#state.draft = draft;
     });
@@ -450,6 +487,8 @@ export class SecureWorkspaceController {
     return operation;
   }
   async #deliver(lease: Lease, operation: SecureCliOperation, first: boolean, current: () => void) {
+    if (operation.kind === 'permission')
+      this.#requirePermissionSupport(operation.target.workspaceId);
     try {
       const raw = await this.#store.dispatch(operation, current, (original) =>
         this.#execute(lease, original.target, hostCommandSchema.parse(JSON.parse(original.body))),
@@ -558,6 +597,46 @@ export class SecureWorkspaceController {
       }
     });
   }
+  async respondPermission(review: SecurePermissionReview, selected: SessionPermissionOutcome) {
+    // Freeze the render-time material synchronously, before a read or lock can yield.
+    const shown = structuredClone(review),
+      outcome = sessionPermissionOutcomeSchema.parse(selected);
+    return this.#write(async (current) => {
+      const lease = this.#lease(),
+        read = this.#state.session;
+      if (!read) throw Error('请先读取并审阅本次审批。');
+      const target = this.#target(read.meta.id);
+      this.#requirePermissionSupport(target.workspaceId);
+      if (
+        !same(target, secureTargetSchema.parse(shown.target)) ||
+        !this.#state.permissionReviews.some((entry) => same(entry, shown))
+      )
+        throw Error('审批回合、请求或操作内容已改变，请重新读取并审阅。');
+      const fresh = await this.#execute(
+        lease,
+        target,
+        this.#command(target, 'session', { sessionId: target.sessionId }),
+      );
+      current();
+      // Current renderer state can also advance while the read is in flight.
+      if (!this.#state.permissionReviews.some((entry) => same(entry, shown)))
+        throw Error('审批内容已改变，请重新审阅。');
+      const mutation = buildSessionPermission({
+        scope: scope(target),
+        read: fresh,
+        review: shown.request,
+        outcome,
+        operationId: this.#uuid(),
+      });
+      const operation = await this.#stage(
+        target,
+        'permission',
+        this.#command(target, 'mutate', mutation),
+        current,
+      );
+      await this.#deliver(lease, operation, true, current);
+    });
+  }
   async stop() {
     return this.#write(async (current) => {
       const lease = this.#lease(),
@@ -635,6 +714,8 @@ export class SecureWorkspaceController {
         !workspace.projects.some((entry) => entry.id === operation!.target.localProjectId)
       )
         throw Error('原操作执行范围已改变，未重新绑定。');
+      if (operation.kind === 'permission')
+        this.#requirePermissionSupport(operation.target.workspaceId);
       if (action === 'retry') {
         if (operation.state === 'ending') throw Error('已请求封存的原操作只能继续核查或封存。');
         if (operation.state !== 'pending') return;
