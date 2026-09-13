@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, ServerResponse } from 'node:http';
 import { createTaskMcp, type TaskMcp, type TaskMcpOptions } from '../src/runtime/task-mcp';
 import { TASK_LIMITS, taskToolDefinitions } from '../src/task-protocol';
 
@@ -61,10 +61,13 @@ async function send(
 ) {
   const bytes = options.raw ?? Buffer.from(JSON.stringify(body));
   return new Promise<{ status: number; json: any; text: string }>((resolve, reject) => {
+    let result: { status: number; json: any; text: string } | undefined;
+    let failure: Error | undefined;
     const request = httpRequest(
       new URL(options.path ?? '/mcp', mcp.endpoint.url),
       {
         method: options.method ?? 'POST',
+        agent: false,
         headers: {
           Authorization: 'Bearer ' + mcp.endpoint.token,
           Accept: 'application/json, text/event-stream',
@@ -76,17 +79,34 @@ async function send(
       (response) => {
         const parts: Buffer[] = [];
         response.on('data', (part) => parts.push(part));
+        response.on('error', (error) => {
+          failure = error;
+          request.destroy();
+        });
         response.on('end', () => {
-          const text = Buffer.concat(parts).toString('utf8');
-          resolve({
-            status: response.statusCode!,
-            json: text ? JSON.parse(text) : undefined,
-            text,
-          });
+          try {
+            const text = Buffer.concat(parts).toString('utf8');
+            result = {
+              status: response.statusCode!,
+              json: text ? JSON.parse(text) : undefined,
+              text,
+            };
+          } catch (error) {
+            failure = error as Error;
+            request.destroy();
+          }
         });
       },
     );
-    request.on('error', reject);
+    request.on('error', (error) => {
+      failure = error;
+    });
+    request.once('close', () => {
+      // An early HTTP rejection can finish while the upload is still pending.
+      if (result) resolve(result);
+      else if (failure) reject(failure);
+      else reject(new Error('synthetic HTTP transport closed without a complete response'));
+    });
     request.end(bytes);
   });
 }
@@ -302,4 +322,38 @@ test("independent parent endpoints cannot reuse each other's bearer capability",
   assert.equal(second.calls.length, 0);
   await first.mcp.close();
   assert.equal((await second.rpc('tools/list')).status, 200);
+});
+
+test('an asynchronous broken pipe while rejecting an oversized body closes only that transport', async (t) => {
+  const f = await fixture(t);
+  await f.initialize();
+  const originalEnd = ServerResponse.prototype.end;
+  const injected = deferred<void>();
+  const transports: ServerResponse[] = [];
+  t.mock.method(
+    ServerResponse.prototype,
+    'end',
+    function (this: ServerResponse, ...args: Parameters<ServerResponse['end']>) {
+      if (this.statusCode !== 413) return originalEnd.apply(this, args);
+      transports.push(this);
+      queueMicrotask(() => {
+        try {
+          // A socket write can fail after handle() has already replied and returned.
+          this.emit('error', Object.assign(new Error('synthetic write EPIPE'), { code: 'EPIPE' }));
+          assert.equal(this.destroyed, true);
+          assert.equal(this.req.destroyed, true);
+        } finally {
+          this.destroy();
+          injected.resolve();
+        }
+      });
+      return this;
+    },
+  );
+  await assert.rejects(send(f.mcp, {}, { raw: Buffer.alloc(TASK_LIMITS.requestBytes + 1, 32) }));
+  await injected.promise;
+  assert.equal(transports.length, 1);
+  assert.equal(f.calls.length, 0);
+  assert.equal((await f.rpc('tools/list')).status, 200);
+  assert.equal(f.calls.length, 0);
 });

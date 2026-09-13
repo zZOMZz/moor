@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { actorSchema } from '../attention';
+import { id } from '../protocol';
 import {
   e2eeIdSchema,
   e2eeOriginSchema,
@@ -43,6 +45,8 @@ export type TrustClientOptions = {
 const identitySchema = z
   .object({
     owner: e2eeIdSchema.nullable(),
+    actor: actorSchema.optional(),
+    attentionFeatures: z.array(id).max(64).optional(),
     needsSetup: z.boolean(),
     localOnly: z.boolean().optional(),
     google: z
@@ -58,7 +62,11 @@ const identitySchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      !value.actor || (value.actor.kind === 'relay' && value.actor.accountId === value.owner),
+  );
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 function fail(): never {
   throw new Error(TRUST_CLIENT_FAILED);

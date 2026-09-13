@@ -198,6 +198,55 @@ test('wrong local scope sends no credential, and changed server identity never p
   }
 });
 
+test('attention identity stays bound to the relay account before publishing or reading trust', async () => {
+  const f = await fixture();
+  const actor = { kind: 'relay', authorityId: 'synthetic-authority', accountId: owner };
+  const identity = {
+    owner,
+    actor,
+    attentionFeatures: ['attention-v1', 'actor-context-v1', 'attention-followup-v1'],
+    needsSetup: false,
+    localOnly: false,
+  };
+  for (const invalid of [
+    { ...identity, actor: { ...actor, accountId: 'other-account' } },
+    { ...identity, actor: { ...actor, kind: 'local' } },
+    { ...identity, actor: { ...actor, credential: 'private-sentinel' } },
+    { ...identity, attentionFeatures: Array.from({ length: 65 }, (_, i) => 'feature-' + i) },
+    { ...identity, attentionFeatures: [''] },
+  ]) {
+    for (const action of ['publish', 'read'] as const) {
+      f.calls.length = 0;
+      f.setRespond((path) =>
+        Response.json(path === '/api/me' ? invalid : action === 'publish' ? f.receipt : f.page),
+      );
+      await assert.rejects(
+        action === 'publish'
+          ? f.client().publish(f.publish)
+          : f.client().read({ request: f.request, rootPublicKey: f.root.publicKey }),
+        safe,
+      );
+      assert.deepEqual(
+        f.calls.map((call) => call.path),
+        ['/api/me'],
+      );
+    }
+  }
+  f.calls.length = 0;
+  f.setRespond((path) =>
+    Response.json(path === '/api/me' ? identity : path.endsWith('/publish') ? f.receipt : f.page),
+  );
+  assert.deepEqual(await f.client().publish(f.publish), f.receipt);
+  assert.deepEqual(
+    await f.client().read({ request: f.request, rootPublicKey: f.root.publicKey }),
+    f.page,
+  );
+  assert.deepEqual(
+    f.calls.map((call) => call.path),
+    ['/api/me', '/api/security/trust/publish', '/api/me', '/api/security/trust/read'],
+  );
+});
+
 test('publication refuses missing, changed, reordered or cross-root storage receipts without retry', async () => {
   const f = await fixture();
   for (const receipt of [

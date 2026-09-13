@@ -139,6 +139,14 @@ export async function createTaskMcp(options: TaskMcpOptions): Promise<TaskMcp> {
     let id: string | number | null = null,
       key: string | undefined,
       counted = false;
+    // Early rejections can finish before the peer has finished uploading. Stream
+    // errors arrive outside handle()'s promise, including a late response EPIPE.
+    const transportFailed = () => {
+      request.destroy();
+      response.destroy();
+    };
+    request.on('error', transportFailed);
+    response.on('error', transportFailed);
     responses.add(response);
     response.once('close', () => responses.delete(response));
     try {
