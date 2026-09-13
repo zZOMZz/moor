@@ -34,8 +34,20 @@ import {
   steerReceiptSchema,
 } from './interaction-protocol';
 import { SESSION_SEARCH_FEATURE, sessionSearchResultSchema } from './search-protocol';
-import { GIT_WORKTREE_FEATURE, gitStateResultSchema, gitActionReceiptSchema } from './git-protocol';
-import { SESSION_FORK_FEATURE, forkOptionsResultSchema, forkReceiptSchema } from './fork-protocol';
+import {
+  GIT_WORKTREE_FEATURE,
+  SECURE_GIT_OPERATIONS_FEATURE,
+  validateGitOperationResult,
+  gitStateResultSchema,
+  gitActionReceiptSchema,
+} from './git-protocol';
+import {
+  SESSION_FORK_FEATURE,
+  SECURE_FORK_OPERATIONS_FEATURE,
+  validateForkActionReceipt,
+  validateForkOperationResult,
+  forkOptionsResultSchema,
+} from './fork-protocol';
 import { GITHUB_FEATURE, githubReadResultSchema, githubReceiptSchema } from './github-protocol';
 import {
   GITHUB_WRITE_FEATURE,
@@ -111,7 +123,9 @@ const policies = {
   'search-sessions': [SESSION_SEARCH_FEATURE, 2 * MiB],
   'git-state': [GIT_WORKTREE_FEATURE, 2 * MiB],
   'git-action': [GIT_WORKTREE_FEATURE, 2 * MiB],
+  'git-operations': [SECURE_GIT_OPERATIONS_FEATURE, 2 * MiB],
   'fork-options': [SESSION_FORK_FEATURE, 2 * MiB],
+  'fork-operations': [SECURE_FORK_OPERATIONS_FEATURE, 2 * MiB],
   'fork-action': [SESSION_FORK_FEATURE, 2 * MiB],
   cancel: [undefined, SESSION_RESPONSE_LIMITS.receiptBytes],
 } satisfies Record<HostCommandMethod, readonly [string | undefined, number]>;
@@ -407,6 +421,10 @@ export async function validateHostResponse(
           );
           return result;
         }
+        case 'git-operations':
+          return await validateGitOperationResult(raw, command.params);
+        case 'fork-operations':
+          return await validateForkOperationResult(raw, command.params);
         case 'git-state': {
           const result = gitStateResultSchema.parse(raw);
           scope(result, command.params);
@@ -452,7 +470,7 @@ export async function validateHostResponse(
           return result;
         }
         case 'fork-action': {
-          const result = forkReceiptSchema.parse(raw),
+          const result = validateForkActionReceipt(raw, command.params),
             input = command.params;
           scope(result, input);
           requireValue(

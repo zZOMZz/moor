@@ -9,6 +9,7 @@ import {
 } from './git-protocol';
 
 export const SESSION_FORK_FEATURE = 'session-fork-v1';
+export const SECURE_FORK_OPERATIONS_FEATURE = 'secure-fork-operations-v1';
 export const FORK_LIMITS = { turns: 200, message: 1000 } as const;
 const reason = z.string().min(1).max(FORK_LIMITS.message);
 export const forkCutoffSchema = z.discriminatedUnion('kind', [
@@ -99,7 +100,7 @@ export const forkReceiptSchema = scope
   .extend({
     operationId: id,
     childSessionId: id,
-    phase: z.enum(['accepted', 'rejected', 'unknown']),
+    phase: z.enum(['accepted', 'rejected', 'unknown', 'abandoned']),
     confirmed: z.boolean(),
     origin: forkOriginSchema.optional(),
     execution: sessionExecutionSchema.optional(),
@@ -113,3 +114,78 @@ export const forkReceiptSchema = scope
       ctx.addIssue({ code: 'custom', message: 'Fork 尚未确认来源与执行目录' });
   });
 export type ForkReceipt = z.infer<typeof forkReceiptSchema>;
+
+export const forkOperationSchema = z
+  .object({ action: z.enum(['inspect', 'abandon']), request: sessionForkSchema })
+  .strict();
+export type ForkOperation = z.infer<typeof forkOperationSchema>;
+const operationResult = scope.extend({
+  action: z.enum(['inspect', 'abandon']),
+  operationId: id,
+  requestVersion: contentVersionSchema,
+  confirmed: z.literal(true),
+});
+export const forkOperationResultSchema = z.discriminatedUnion('found', [
+  operationResult.extend({ found: z.literal(false) }).strict(),
+  operationResult.extend({ found: z.literal(true), receipt: forkReceiptSchema }).strict(),
+]);
+export type ForkOperationResult = z.infer<typeof forkOperationResultSchema>;
+export async function forkRequestVersion(input: SessionFork): Promise<string> {
+  const bytes = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify(sessionForkSchema.parse(input))),
+  );
+  return (
+    'sha256:' + Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('')
+  );
+}
+export function validateForkActionReceipt(raw: unknown, input: SessionFork): ForkReceipt {
+  const result = forkReceiptSchema.parse(raw);
+  if (
+    result.workspaceId !== input.workspaceId ||
+    result.localProjectId !== input.localProjectId ||
+    result.sessionId !== input.sessionId ||
+    result.operationId !== input.operationId ||
+    result.childSessionId !== input.childSessionId ||
+    (result.origin &&
+      (result.origin.sourceSessionId !== input.sessionId ||
+        result.origin.sourceVersion !== input.expectedSourceVersion ||
+        JSON.stringify(result.origin.cutoff) !== JSON.stringify(input.cutoff) ||
+        result.origin.directory !== input.directory.kind)) ||
+    (input.directory.kind === 'worktree' &&
+      result.execution?.mode === 'worktree' &&
+      (result.execution.revision !== 1 ||
+        result.execution.branch !== input.directory.newBranch ||
+        result.execution.baseOid !== input.directory.expectedOid)) ||
+    (result.phase === 'accepted' &&
+      (input.directory.kind === 'worktree'
+        ? result.execution?.mode !== 'worktree' ||
+          result.execution.revision !== 1 ||
+          result.execution.branch !== input.directory.newBranch ||
+          result.execution.baseOid !== input.directory.expectedOid ||
+          result.origin?.branch !== input.directory.newBranch ||
+          result.origin?.baseOid !== input.directory.expectedOid
+        : result.execution?.revision !== input.expectedExecutionRevision ||
+          result.execution.mode !==
+            (input.expectedExecutionRevision === 0 ? 'shared' : 'worktree')))
+  )
+    throw Error('Fork 原操作回执不匹配');
+  return result;
+}
+export async function validateForkOperationResult(raw: unknown, input: ForkOperation) {
+  const operation = forkOperationSchema.parse(input),
+    result = forkOperationResultSchema.parse(raw),
+    original = operation.request;
+  if (
+    result.action !== operation.action ||
+    result.workspaceId !== original.workspaceId ||
+    result.localProjectId !== original.localProjectId ||
+    result.sessionId !== original.sessionId ||
+    result.operationId !== original.operationId ||
+    result.requestVersion !== (await forkRequestVersion(original)) ||
+    (operation.action === 'abandon' && !result.found)
+  )
+    throw Error('Fork 原操作核查不匹配');
+  if (result.found) validateForkActionReceipt(result.receipt, original);
+  return result;
+}

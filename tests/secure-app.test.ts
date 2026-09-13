@@ -315,6 +315,11 @@ function fake(initial = seed()) {
     'applyMcp',
     'scopedRequest',
     'beforeExtensionWrite',
+    'beforeWorkspaceWrite',
+    'workspaceResourceRequest',
+    'beforeWorkspaceResourceWrite',
+    'openForkChild',
+    'openForkSource',
     'refreshExtensionRecords',
     'updatePreviewAnnotations',
     'addPreviewImage',
@@ -599,6 +604,163 @@ test('draft is saved before explicit send and unsaved edits prevent switching sc
       },
     ]);
     assert.equal(field.value, '');
+  } finally {
+    await view.cleanup();
+  }
+});
+
+for (const label of ['Git 工作目录', 'Fork 会话', 'GitHub'])
+  test(`Composer ${label} rejects a stale rendered target before saving its text or requesting content`, async () => {
+    for (const changed of [
+      'sessionId',
+      'hostDeviceId',
+      'clientDeviceId',
+      'rootKeyId',
+      'projectId',
+      'replicaId',
+      'revision',
+      'generation',
+    ] as const) {
+      const initial = connected();
+      initial.draft = '原会话已保存的草稿';
+      const view = await mount(initial);
+      try {
+        const field = view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!;
+        await view.input(field, '旧界面尚未保存的手工文字');
+        const button = view.button(label);
+        assert.equal(button.disabled, false, `${label}: the original rendered action is enabled`);
+        const shown = structuredClone(view.controller.contentContext),
+          next = structuredClone(shown);
+        if (changed === 'generation') next.generation += 2;
+        else if (changed === 'projectId' || changed === 'replicaId')
+          next.target!.product![changed] = 'other-product-scope';
+        else if (changed === 'revision') next.target!.product!.revision++;
+        else
+          next.target![changed] =
+            changed === 'rootKeyId'
+              ? Buffer.alloc(32, 1).toString('base64url')
+              : 'other-execution-scope';
+        const nextDraft = '新执行目标已有草稿，不能被旧界面覆盖';
+        const drafts = new Map([
+          [JSON.stringify(shown.target), initial.draft],
+          [JSON.stringify(next.target), nextDraft],
+        ]);
+        const storedDrafts = structuredClone(drafts);
+        view.controller.saveDraft = async (text) => {
+          view.calls.push({ name: 'saveDraft', args: [text] });
+          drafts.set(JSON.stringify(view.controller.contentContext.target), text);
+        };
+        const before = structuredClone(view.calls);
+        // Deliberately do not emit a new state or rerender: the enabled DOM still
+        // captures the old target while the controller already addresses the new one.
+        Object.defineProperty(view.controller, 'contentContext', {
+          configurable: true,
+          get: () => structuredClone(next),
+        });
+        assert.equal(view.button(label), button);
+        assert.equal(button.disabled, false);
+        await view.act(async () => button.click());
+        assert.deepEqual(view.calls, before, `${label}/${changed}: no save, navigation or request`);
+        assert.equal(drafts.get(JSON.stringify(next.target)), nextDraft);
+        assert.deepEqual(drafts, storedDrafts);
+        assert.equal(field.value, '旧界面尚未保存的手工文字');
+        assert.match(view.document.body.textContent!, /所属会话已改变/);
+        assert.equal(view.document.querySelector('[role=dialog]'), null);
+      } finally {
+        await view.cleanup();
+      }
+    }
+  });
+
+function forkHistoryState() {
+  const state = connected();
+  state.session!.meta.forkOrigin = {
+    version: 1,
+    sourceSessionId: 'original-source',
+    sourceVersion: 'sha256:' + 'a'.repeat(64),
+    sourceTitle: '合成源会话',
+    cutoff: { kind: 'turn', turnId: 'original-cutoff' },
+    directory: 'same-directory',
+    createdAt: '2026-09-13T00:00:00.000Z',
+  };
+  state.session!.history = [
+    {
+      id: 'displayed-finished-turn',
+      $cid: 'synthetic-fork-turn',
+      role: 'assistant',
+      timestamp: '2026-09-13T00:00:00.000Z',
+      finished: true,
+      userId: undefined,
+      userTurnId: 'original-user-turn',
+      status: undefined,
+      read: undefined,
+      inputConfig: undefined,
+      fileDiff: undefined,
+      items: [{ type: 'text', text: '已显示的合成回合' }],
+    },
+  ];
+  return state;
+}
+
+for (const label of ['从此回合 Fork', '打开源会话'])
+  test(`history ${label} keeps its rendered target and refuses stale scope or connection generation`, async () => {
+    for (const changed of ['session', 'mapping', 'generation', 'offline'] as const) {
+      const view = await mount(forkHistoryState());
+      try {
+        const button = view.button(label),
+          next = structuredClone(view.controller.contentContext);
+        assert.equal(button.disabled, false);
+        if (changed === 'session') next.target!.sessionId = 'unshown-new-session';
+        if (changed === 'mapping') next.target!.product!.revision++;
+        if (changed === 'generation') next.generation += 2;
+        if (changed === 'offline') next.online = false;
+        const before = structuredClone(view.calls);
+        Object.defineProperty(view.controller, 'contentContext', {
+          configurable: true,
+          get: () => structuredClone(next),
+        });
+        assert.equal(view.button(label), button);
+        assert.equal(button.disabled, false);
+        await view.act(async () => button.click());
+        assert.deepEqual(
+          view.calls,
+          before,
+          `${label}/${changed}: no saved draft, navigation or request`,
+        );
+        assert.match(view.document.body.textContent!, /原执行范围已改变/);
+        assert.equal(view.document.querySelector('[role=dialog]'), null);
+      } finally {
+        await view.cleanup();
+      }
+    }
+  });
+
+test('history Fork and source navigation wait for manual draft persistence and source navigation keeps original id', async () => {
+  const view = await mount(forkHistoryState());
+  try {
+    const target = structuredClone(view.controller.contentContext.target);
+    const field = view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!;
+    await view.input(field, '先保留当前会话的手工草稿');
+    const before = structuredClone(view.calls);
+    for (const label of ['从此回合 Fork', '打开源会话']) {
+      assert.equal(view.button(label).disabled, true);
+      await view.click(label);
+    }
+    assert.deepEqual(view.calls, before);
+    assert.equal(field.value, '先保留当前会话的手工草稿');
+    await view.click('保存草稿');
+    assert.equal(view.button('从此回合 Fork').disabled, false);
+    assert.equal(view.button('打开源会话').disabled, false);
+    await view.click('打开源会话');
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'openForkSource',
+      args: [target, 'original-source'],
+    });
+    assert.equal(view.calls.filter((call) => call.name === 'saveDraft').length, 1);
+    assert.equal(
+      view.calls.some((call) => ['send', 'scopedRequest', 'contentRequest'].includes(call.name)),
+      false,
+    );
   } finally {
     await view.cleanup();
   }

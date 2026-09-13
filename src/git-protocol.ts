@@ -7,6 +7,7 @@ import {
 } from './content-protocol';
 
 export const GIT_WORKTREE_FEATURE = 'git-worktree-v1';
+export const SECURE_GIT_OPERATIONS_FEATURE = 'secure-git-operations-v1';
 export const GIT_LIMITS = { branches: 200, changes: 500, issues: 20 } as const;
 export const gitOidSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 // Git's check-ref-format remains authoritative on the execution host.
@@ -112,7 +113,7 @@ export type GitRemove = z.infer<typeof gitRemoveSchema>;
 export const gitActionReceiptSchema = scope
   .extend({
     operationId: id,
-    phase: z.enum(['accepted', 'rejected', 'unknown']),
+    phase: z.enum(['accepted', 'rejected', 'unknown', 'abandoned']),
     confirmed: z.boolean(),
     execution: sessionExecutionSchema,
     message: issue.optional(),
@@ -120,3 +121,68 @@ export const gitActionReceiptSchema = scope
   .strict()
   .refine((value) => value.confirmed === (value.phase === 'accepted'), 'Git 操作确认状态不匹配');
 export type GitActionReceipt = z.infer<typeof gitActionReceiptSchema>;
+
+export const gitOperationSchema = z
+  .object({ action: z.enum(['inspect', 'abandon']), request: gitActionSchema })
+  .strict();
+export type GitOperation = z.infer<typeof gitOperationSchema>;
+const operationResult = scope.extend({
+  action: z.enum(['inspect', 'abandon']),
+  operationId: id,
+  requestVersion: contentVersionSchema,
+  confirmed: z.literal(true),
+});
+export const gitOperationResultSchema = z.discriminatedUnion('found', [
+  operationResult.extend({ found: z.literal(false) }).strict(),
+  operationResult.extend({ found: z.literal(true), receipt: gitActionReceiptSchema }).strict(),
+]);
+export type GitOperationResult = z.infer<typeof gitOperationResultSchema>;
+export async function gitRequestVersion(input: GitAction): Promise<string> {
+  const bytes = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify(gitActionSchema.parse(input))),
+  );
+  return (
+    'sha256:' + Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('')
+  );
+}
+export function validateGitActionReceipt(raw: unknown, input: GitAction): GitActionReceipt {
+  const result = gitActionReceiptSchema.parse(raw);
+  if (
+    result.workspaceId !== input.workspaceId ||
+    result.localProjectId !== input.localProjectId ||
+    result.sessionId !== input.sessionId ||
+    result.operationId !== input.operationId ||
+    (result.phase === 'accepted' &&
+      (result.execution.revision !== input.expectedRevision + 1 ||
+        result.execution.mode !== 'worktree' ||
+        (input.action === 'prepare'
+          ? result.execution.status !== 'ready' ||
+            result.execution.branch !== input.newBranch ||
+            result.execution.baseOid !== input.expectedOid
+          : result.execution.status !== 'removed' ||
+            result.execution.executionId !== input.executionId ||
+            (input.action === 'detach'
+              ? result.execution.disposition !== 'detached'
+              : result.execution.disposition === 'detached'))))
+  )
+    throw Error('Git 原操作回执不匹配');
+  return result;
+}
+export async function validateGitOperationResult(raw: unknown, input: GitOperation) {
+  const operation = gitOperationSchema.parse(input),
+    result = gitOperationResultSchema.parse(raw),
+    original = operation.request;
+  if (
+    result.action !== operation.action ||
+    result.workspaceId !== original.workspaceId ||
+    result.localProjectId !== original.localProjectId ||
+    result.sessionId !== original.sessionId ||
+    result.operationId !== original.operationId ||
+    result.requestVersion !== (await gitRequestVersion(original)) ||
+    (operation.action === 'abandon' && !result.found)
+  )
+    throw Error('Git 原操作核查不匹配');
+  if (result.found) validateGitActionReceipt(result.receipt, original);
+  return result;
+}

@@ -1965,3 +1965,47 @@ test('attachment writes and original recovery require the authenticated recovery
       }
     }
 });
+
+test('secure Git and Fork actions and original-operation recovery fail closed before sending to an older Host', async (t) => {
+  const f = await fixture(t);
+  await f.readCatalog();
+  const git = {
+    ...scope,
+    gitVersion: 1,
+    operationId: 'git-original',
+    expectedRevision: 0,
+    action: 'detach',
+    executionId: 'execution',
+  };
+  const fork = {
+    ...scope,
+    forkVersion: 1,
+    operationId: 'fork-original',
+    childSessionId: 'child',
+    expectedSourceVersion: 'sha256:' + 'a'.repeat(64),
+    expectedExecutionRevision: 0,
+    cutoff: { kind: 'current' },
+    directory: { kind: 'same-directory' },
+  };
+  const sent = f.socket.sent.length;
+  for (const [method, params] of [
+    ['git-action', git],
+    ['fork-action', fork],
+    ['git-operations', { action: 'inspect', request: git }],
+    ['git-operations', { action: 'abandon', request: git }],
+    ['fork-operations', { action: 'inspect', request: fork }],
+    ['fork-operations', { action: 'abandon', request: fork }],
+  ] as const)
+    await assert.rejects(
+      f.client.execute(
+        'host',
+        hostCommandSchema.parse({
+          method,
+          workspaceId: scope.workspaceId,
+          localProjectId: scope.localProjectId,
+          params,
+        }),
+      ),
+    );
+  assert.equal(f.socket.sent.length, sent);
+});

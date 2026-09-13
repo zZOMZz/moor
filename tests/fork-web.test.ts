@@ -297,3 +297,76 @@ test('failed Fork worktrees remain reachable across later operations and only a 
   assert.equal(last.resources.length, 0);
   assert.equal(last.receipt?.phase, 'accepted');
 });
+
+test('accepted Fork cleanup preserves the confirmed child and marks only its removed or detached execution binding', async () => {
+  for (const disposition of ['removed', 'detached'] as const) {
+    const f = fixture(),
+      c = f.create();
+    if (disposition === 'detached')
+      f.options.execution = {
+        mode: 'worktree',
+        status: 'ready',
+        revision: 1,
+        executionId: 'shared-source-execution',
+        branch: 'source-existing',
+        baseOid: oid,
+      };
+    await c.load();
+    await c.refresh();
+    await c.create(
+      { kind: 'current' },
+      disposition === 'detached'
+        ? { kind: 'same-directory' }
+        : {
+            kind: 'worktree',
+            baseBranch: 'main',
+            expectedOid: oid,
+            newBranch: 'feature/accepted-cleanup',
+          },
+    );
+    const accepted = structuredClone(c.receipt!),
+      original = structuredClone(c.operation!),
+      calls = f.calls.length;
+    const result = {
+      gitVersion: 1 as const,
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      sessionId: accepted.childSessionId,
+      confirmed: true as const,
+      repository: f.options.repository!,
+      execution: {
+        ...accepted.execution!,
+        status: 'removed' as const,
+        disposition,
+        revision: accepted.execution!.revision + 1,
+      },
+      canRemove: false,
+      canPrepare: false,
+    };
+    for (const changed of [
+      { ...result, sessionId: target.sessionId },
+      { ...result, workspaceId: 'wrong-workspace' },
+      { ...result, execution: { ...result.execution, executionId: 'wrong-execution' } },
+      { ...result, execution: { ...result.execution, revision: accepted.execution!.revision } },
+    ])
+      await assert.rejects(
+        c.confirmResourceCleanup(accepted.childSessionId, changed),
+        /匹配的清理/,
+      );
+    await c.confirmResourceCleanup(accepted.childSessionId, result);
+    assert.equal(
+      f.calls.length,
+      calls,
+      'cleanup accounting does not issue another directory or Fork request',
+    );
+    assert.deepEqual(c.operation, original);
+    assert.deepEqual(c.receipt, accepted);
+    assert.equal(c.cleanup!.disposition, disposition);
+    const reopened = f.create();
+    await reopened.load();
+    assert.deepEqual(reopened.receipt, accepted);
+    assert.deepEqual(reopened.cleanup, result.execution);
+    if (disposition === 'detached')
+      assert.equal(f.options.execution.status, 'ready', 'the parent directory remains ready');
+  }
+});

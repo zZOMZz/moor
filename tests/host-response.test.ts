@@ -1,3 +1,5 @@
+import { gitActionSchema } from '../src/git-protocol';
+import { sessionForkSchema } from '../src/fork-protocol';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
@@ -52,6 +54,8 @@ const workspace: RuntimeWorkspace = {
     'steer-v1',
     'session-search-v1',
     'git-worktree-v1',
+    'secure-git-operations-v1',
+    'secure-fork-operations-v1',
     'session-fork-v1',
   ],
 };
@@ -208,6 +212,24 @@ function previewReceipt() {
   };
 }
 type Fixture = { params: unknown; result: unknown };
+const gitOriginal = gitActionSchema.parse({
+  ...scope,
+  gitVersion: 1,
+  operationId,
+  expectedRevision: 0,
+  action: 'detach',
+  executionId: 'execution',
+});
+const forkOriginal = sessionForkSchema.parse({
+  ...scope,
+  forkVersion: 1,
+  operationId,
+  childSessionId: 'child',
+  expectedSourceVersion: version,
+  expectedExecutionRevision: 0,
+  cutoff: { kind: 'current' },
+  directory: { kind: 'same-directory' },
+});
 const fixtures = {
   sessions: { params: {}, result: [meta] },
   'agent-options': { params: { agentId: agent.id }, result: agent },
@@ -511,6 +533,30 @@ const fixtures = {
       hits: [],
       more: false,
       partial: false,
+    },
+  },
+  'git-operations': {
+    params: { action: 'inspect', request: gitOriginal },
+    result: {
+      ...scope,
+      gitVersion: 1,
+      operationId,
+      confirmed: true,
+      action: 'inspect',
+      found: false,
+      requestVersion: hash(JSON.stringify(gitOriginal)),
+    },
+  },
+  'fork-operations': {
+    params: { action: 'inspect', request: forkOriginal },
+    result: {
+      ...scope,
+      forkVersion: 1,
+      operationId,
+      confirmed: true,
+      action: 'inspect',
+      found: false,
+      requestVersion: hash(JSON.stringify(forkOriginal)),
     },
   },
   'git-state': {
@@ -899,6 +945,18 @@ test('Git and Fork execution and origin details must confirm the selected operat
     },
   };
   assert.deepEqual(await valid('fork-action', result, request), result);
+  for (const phase of ['unknown', 'rejected', 'abandoned']) {
+    const pending = { ...result, phase, confirmed: false };
+    assert.deepEqual(await valid('fork-action', pending, request), pending);
+    await assert.rejects(
+      valid(
+        'fork-action',
+        { ...pending, execution: { ...pending.execution, branch: 'foreign' } },
+        request,
+      ),
+      failure,
+    );
+  }
   await assert.rejects(
     valid(
       'fork-action',

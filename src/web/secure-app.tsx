@@ -21,6 +21,9 @@ import { SECURE_TURN_AUTHORITY_FEATURE } from '../task-protocol';
 import { SecureSkillsUI, type SecureSkillsUiHandle } from './secure-skills-ui';
 import { SecureMcpUI, SecureMcpDraftCard, type SecureMcpUiHandle } from './secure-mcp-ui';
 import { SecureGithubUI, type SecureGithubUiHandle } from './secure-github-ui';
+import { SecureGitUI, type SecureGitUiHandle } from './secure-git-ui';
+import { SecureForkUI, type SecureForkUiHandle } from './secure-fork-ui';
+import { sameSecureRuntime } from './secure-scoped-storage';
 import {
   SecurePreviewUI,
   SecurePreviewDraftCards,
@@ -81,6 +84,11 @@ export type SecureUiController = Pick<
   | 'previewAnnotations'
   | 'scopedRequest'
   | 'beforeExtensionWrite'
+  | 'beforeWorkspaceWrite'
+  | 'workspaceResourceRequest'
+  | 'beforeWorkspaceResourceWrite'
+  | 'openForkChild'
+  | 'openForkSource'
   | 'refreshExtensionRecords'
   | 'updatePreviewAnnotations'
   | 'addPreviewImage'
@@ -694,6 +702,8 @@ function Composer({
   onMcp,
   onGithub,
   onProjectPreview,
+  onGit,
+  onFork,
 }: {
   state: SecureWorkspaceState;
   controller: SecureUiController;
@@ -704,6 +714,8 @@ function Composer({
   onMcp(target: SecureCliTarget): Promise<void>;
   onGithub(target: SecureCliTarget): Promise<void>;
   onProjectPreview(target: SecureCliTarget): Promise<void>;
+  onGit(target: SecureCliTarget): Promise<void>;
+  onFork(target: SecureCliTarget): Promise<void>;
 }) {
   const [text, setText] = useState(state.draft);
   const session = state.session!;
@@ -749,7 +761,9 @@ function Composer({
     run(async () => {
       if (
         !shownTarget ||
-        productCanonicalJson(shownTarget) !== productCanonicalJson(controller.contentContext.target)
+        productCanonicalJson(shownTarget) !==
+          productCanonicalJson(controller.contentContext.target) ||
+        controller.contentContext.generation !== contentContext.generation
       )
         throw Error('附件显示目标已改变，请重新打开会话。');
       await action();
@@ -791,7 +805,9 @@ function Composer({
       return;
     if (
       !shownTarget ||
-      productCanonicalJson(shownTarget) !== productCanonicalJson(controller.contentContext.target)
+      productCanonicalJson(shownTarget) !==
+        productCanonicalJson(controller.contentContext.target) ||
+      controller.contentContext.generation !== contentContext.generation
     )
       return;
     const review = {
@@ -843,7 +859,8 @@ function Composer({
             run(async () => {
               if (
                 productCanonicalJson(target) !==
-                productCanonicalJson(controller.contentContext.target)
+                  productCanonicalJson(controller.contentContext.target) ||
+                controller.contentContext.generation !== contentContext.generation
               )
                 throw Error('Skills 所属会话已改变，请重新打开。');
               await controller.saveDraft(text);
@@ -867,6 +884,12 @@ function Composer({
             if (!shownTarget) return;
             const target = structuredClone(shownTarget);
             run(async () => {
+              if (
+                productCanonicalJson(target) !==
+                  productCanonicalJson(controller.contentContext.target) ||
+                controller.contentContext.generation !== contentContext.generation
+              )
+                throw Error('GitHub 所属会话已改变，请重新打开。');
               await controller.saveDraft(text);
               await onGithub(target);
             });
@@ -880,6 +903,46 @@ function Composer({
           onClick={() => shownTarget && run(() => onProjectPreview(structuredClone(shownTarget)))}
         >
           网页预览
+        </button>
+        <button
+          type="button"
+          disabled={!shownTarget || state.busy}
+          onClick={() => {
+            if (!shownTarget) return;
+            const target = structuredClone(shownTarget);
+            run(async () => {
+              if (
+                productCanonicalJson(target) !==
+                  productCanonicalJson(controller.contentContext.target) ||
+                controller.contentContext.generation !== contentContext.generation
+              )
+                throw Error('Git 所属会话已改变，请重新打开。');
+              await controller.saveDraft(text);
+              await onGit(target);
+            });
+          }}
+        >
+          Git 工作目录
+        </button>
+        <button
+          type="button"
+          disabled={!shownTarget || state.busy}
+          onClick={() => {
+            if (!shownTarget) return;
+            const target = structuredClone(shownTarget);
+            run(async () => {
+              if (
+                productCanonicalJson(target) !==
+                  productCanonicalJson(controller.contentContext.target) ||
+                controller.contentContext.generation !== contentContext.generation
+              )
+                throw Error('Fork 所属会话已改变，请重新打开。');
+              await controller.saveDraft(text);
+              await onFork(target);
+            });
+          }}
+        >
+          Fork 会话
         </button>
       </div>
       {state.extensionBlock && <p className="secure-warning">{state.extensionBlock}</p>}
@@ -996,6 +1059,14 @@ export function SecureApp({
   const mcpUi = useRef<SecureMcpUiHandle>(null);
   const githubUi = useRef<SecureGithubUiHandle>(null);
   const previewUi = useRef<SecurePreviewUiHandle>(null);
+  const gitUi = useRef<SecureGitUiHandle>(null);
+  const forkUi = useRef<SecureForkUiHandle>(null);
+  const executionViews = useRef(new Map<string, string>());
+  const forkResource = useRef<{
+    parentTarget: SecureCliTarget;
+    sourceTarget: SecureCliTarget;
+    childSessionId: string;
+  } | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [localBusy, setLocalBusy] = useState(false);
@@ -1036,7 +1107,7 @@ export function SecureApp({
     actionLock.current = true;
     setLocalBusy(true);
     setError('');
-    void action()
+    void (async () => action())()
       .catch((reason: unknown) => {
         if (active.current) setError(failure(reason));
       })
@@ -1062,6 +1133,18 @@ export function SecureApp({
     ? agentId
     : (agents[0]?.id ?? '');
   const session = state.session;
+  const sessionContext = structuredClone(controller.contentContext);
+  const sessionTarget =
+    sessionContext.target?.sessionId === session?.meta.id ? sessionContext.target : null;
+  const checkedSessionTarget = () => {
+    if (
+      !sessionTarget ||
+      productCanonicalJson(sessionContext) !== productCanonicalJson(controller.contentContext)
+    )
+      throw Error('会话入口的原执行范围已改变，请重新读取。');
+    return structuredClone(sessionTarget);
+  };
+
   const scopeKey = JSON.stringify([
     state.hostId,
     state.replicaId,
@@ -1069,6 +1152,20 @@ export function SecureApp({
     session?.meta.id,
   ]);
   const project = catalog?.products.projects.find((entry) => entry.id === replica?.projectId);
+  const openGit = async (target: SecureCliTarget) => {
+    if (productCanonicalJson(target) !== productCanonicalJson(controller.contentContext.target))
+      throw Error('工作目录所属会话已改变。');
+    forkResource.current = null;
+    await gitUi.current?.open(target, { newSession: session?.history.length === 0 });
+  };
+  const openFork = async (target: SecureCliTarget, turnId?: string) => {
+    if (productCanonicalJson(target) !== productCanonicalJson(controller.contentContext.target))
+      throw Error('Fork 所属会话已改变。');
+    await forkUi.current?.open(target, {
+      sourceTitle: session?.meta.title || '未命名会话',
+      turnId,
+    });
+  };
   return (
     <div className="secure-app">
       <header className="secure-topbar">
@@ -1340,6 +1437,38 @@ export function SecureApp({
                     </button>
                   </div>
                 </header>
+                {session.meta.forkOrigin && (
+                  <section className="secure-card" aria-label="Fork 来源">
+                    <p>
+                      Fork 自{' '}
+                      {session.meta.forkOrigin.sourceTitle ||
+                        session.meta.forkOrigin.sourceSessionId}{' '}
+                      ·
+                      {session.meta.forkOrigin.directory === 'worktree'
+                        ? '独立工作目录'
+                        : '共享目录'}
+                    </p>
+                    <p>
+                      {session.meta.forkOrigin.cutoff.kind === 'turn'
+                        ? `截止回合 ${session.meta.forkOrigin.cutoff.turnId}`
+                        : '创建时的原生上下文'}
+                    </p>
+                    {session.meta.forkOrigin.branch && <p>分支 {session.meta.forkOrigin.branch}</p>}
+                    <button
+                      disabled={busy || dirty || !connection}
+                      onClick={() =>
+                        run(() =>
+                          controller.openForkSource(
+                            checkedSessionTarget(),
+                            session.meta.forkOrigin!.sourceSessionId,
+                          ),
+                        )
+                      }
+                    >
+                      打开源会话
+                    </button>
+                  </section>
+                )}
                 <details className="secure-session-settings">
                   <summary>会话设置</summary>
                   <form
@@ -1395,6 +1524,16 @@ export function SecureApp({
                           {turn.role === 'user' ? '你' : 'Agent'}
                           {turn.role === 'assistant' && !turn.finished ? ' · 进行中' : ''}
                         </div>
+                        {turn.role === 'assistant' && turn.finished && (
+                          <button
+                            disabled={busy || dirty || !controller.contentContext.target}
+                            onClick={() => {
+                              run(() => openFork(checkedSessionTarget(), turn.id));
+                            }}
+                          >
+                            从此回合 Fork
+                          </button>
+                        )}
                         {(turn.items ?? []).map((item: unknown, index: number) => (
                           <HistoryItem
                             key={scopeKey + ':' + turn.id + ':' + index}
@@ -1426,6 +1565,8 @@ export function SecureApp({
                   onSkills={(target) => skillsUi.current?.open(target) ?? Promise.resolve()}
                   onMcp={(target) => mcpUi.current?.open(target) ?? Promise.resolve()}
                   onGithub={(target) => githubUi.current?.open(target) ?? Promise.resolve()}
+                  onGit={openGit}
+                  onFork={(target) => openFork(target)}
                   onProjectPreview={(target) =>
                     previewUi.current?.open(target) ?? Promise.resolve()
                   }
@@ -1606,6 +1747,89 @@ export function SecureApp({
               appendInstruction={(...args) => controller.appendInstruction(...args)}
               beforeWrite={(...args) => controller.beforeExtensionWrite(...args)}
               changed={(...args) => controller.refreshExtensionRecords(...args)}
+            />
+            <SecureGitUI
+              ref={gitUi}
+              context={() => controller.contentContext}
+              storage={controller.extensionStorage}
+              busy={busy || dirty}
+              request={(...args) => controller.scopedRequest(...args)}
+              resourceRequest={(...args) => controller.workspaceResourceRequest(...args)}
+              beforeWrite={(target, current) =>
+                controller.beforeWorkspaceWrite(target, 'git', current)
+              }
+              beforeResourceWrite={(...args) => controller.beforeWorkspaceResourceWrite(...args)}
+              changed={(...args) => controller.refreshExtensionRecords(...args)}
+              onWrite={async (target, current) => {
+                current();
+                gitUi.current?.close();
+                await githubUi.current?.open(target, 'write');
+              }}
+              onNewSession={async (_target, current) => {
+                current();
+                await controller.createSession(selectedAgent);
+              }}
+              onRefresh={async (target, result, current) => {
+                current();
+                const key = productCanonicalJson(target),
+                  execution = productCanonicalJson(result.execution);
+                const prior = executionViews.current.get(key);
+                executionViews.current.set(key, execution);
+                if (
+                  prior &&
+                  prior !== execution &&
+                  productCanonicalJson(controller.contentContext.target) === key
+                ) {
+                  contentUi.current?.close();
+                  skillsUi.current?.close();
+                  mcpUi.current?.close();
+                  githubUi.current?.close();
+                  await previewUi.current?.close();
+                  current();
+                }
+                const resource = forkResource.current;
+                if (
+                  resource &&
+                  result.execution.status === 'removed' &&
+                  target.sessionId === resource.childSessionId &&
+                  productCanonicalJson({
+                    ...target,
+                    sessionId: resource.parentTarget.sessionId,
+                  }) === productCanonicalJson(resource.parentTarget)
+                ) {
+                  current();
+                  await forkUi.current?.confirmResourceCleanup(
+                    resource.sourceTarget,
+                    resource.childSessionId,
+                    result,
+                    current,
+                  );
+                }
+              }}
+            />
+            <SecureForkUI
+              ref={forkUi}
+              context={() => controller.contentContext}
+              storage={controller.extensionStorage}
+              busy={busy || dirty}
+              request={(...args) => controller.scopedRequest(...args)}
+              beforeWrite={(target, current) =>
+                controller.beforeWorkspaceWrite(target, 'fork', current)
+              }
+              changed={(...args) => controller.refreshExtensionRecords(...args)}
+              openChild={(...args) => controller.openForkChild(...args)}
+              openWorkspace={async (sourceTarget, childSessionId, current) => {
+                current();
+                const parentTarget = controller.contentContext.target;
+                if (!parentTarget || !sameSecureRuntime(parentTarget, sourceTarget))
+                  throw Error('Fork 保留目录所属项目已改变。');
+                const resource = structuredClone({ parentTarget, sourceTarget, childSessionId });
+                forkResource.current = resource;
+                await gitUi.current?.open(
+                  { ...resource.parentTarget, sessionId: childSessionId },
+                  { newSession: false, resource },
+                );
+              }}
             />
             <SecurePreviewUI
               ref={previewUi}

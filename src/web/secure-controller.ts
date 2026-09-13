@@ -57,14 +57,37 @@ import { SECURE_TURN_AUTHORITY_FEATURE } from '../task-protocol';
 import { GITHUB_FEATURE, SECURE_GITHUB_AUTHORITY_FEATURE } from '../github-protocol';
 import { GITHUB_WRITE_FEATURE } from '../github-write-protocol';
 import { PREVIEW_FEATURE, SECURE_PREVIEW_AUTHORITY_FEATURE } from '../preview-protocol';
-import { SecureScopedStorage, sameSecureRuntime } from './secure-scoped-storage';
+import {
+  SecureScopedStorage,
+  sameSecureRuntime,
+  sameSecureRuntimeProject,
+} from './secure-scoped-storage';
 import { ApiError } from './api';
 import { SecurePreviewAnnotations } from './secure-preview';
 import { previewAnnotationSchema, type PreviewAnnotation } from './project-preview';
 import { readSecureGithubExecutionBlock } from './secure-github';
+import { readSecureGitExecutionBlock } from './secure-git';
+import {
+  readSecureForkExecutionBlock,
+  readSecureForkResource,
+  readSecureForkChild,
+  readSecureForkOperation,
+} from './secure-fork';
+import {
+  GIT_WORKTREE_FEATURE,
+  SECURE_GIT_OPERATIONS_FEATURE,
+  type GitStateResult,
+} from '../git-protocol';
+import { SESSION_FORK_FEATURE, SECURE_FORK_OPERATIONS_FEATURE } from '../fork-protocol';
 import { attachmentBytes } from './attachments';
 
 export type SecureExtensionMethod =
+  | 'git-state'
+  | 'git-action'
+  | 'git-operations'
+  | 'fork-options'
+  | 'fork-action'
+  | 'fork-operations'
   | 'github-read'
   | 'github-action'
   | 'github-abandon'
@@ -77,6 +100,12 @@ export type SecureExtensionMethod =
   | 'preview-inspect'
   | 'preview-close';
 const extensionMethods = new Set<SecureExtensionMethod>([
+  'git-state',
+  'git-action',
+  'git-operations',
+  'fork-options',
+  'fork-action',
+  'fork-operations',
   'github-read',
   'github-action',
   'github-abandon',
@@ -90,6 +119,8 @@ const extensionMethods = new Set<SecureExtensionMethod>([
   'preview-close',
 ]);
 const extensionRecovery = new Set<SecureExtensionMethod>([
+  'git-operations',
+  'fork-operations',
   'github-abandon',
   'github-write-inspect',
   'github-write-abandon',
@@ -296,31 +327,59 @@ export class SecureWorkspaceController {
   ): Promise<unknown> {
     const target = secureTargetSchema.parse(structuredClone(inputTarget));
     if (!extensionMethods.has(method)) throw Error('不支持的加密扩展操作。');
-    const lease = this.#lease();
-    const current = () => {
+    const lease = this.#lease(),
+      shown = structuredClone(this.contentContext),
+      frozen = structuredClone(params);
+    const baseCurrent = () => {
       this.#current(lease.generation);
       reviewedCurrent();
-      const context = this.contentContext;
+      if (!shown.online || !shown.target || !same(shown, this.contentContext))
+        throw Error('扩展所属会话或连接已改变，请重新核对原操作。');
+    };
+    baseCurrent();
+    let provenChildRecovery = false;
+    if (
+      method === 'fork-operations' &&
+      shown.target &&
+      !sameSecureRuntime(target, shown.target) &&
+      sameSecureRuntimeProject(target, shown.target)
+    ) {
+      const original = await readSecureForkOperation(
+        this.extensionStorage,
+        target,
+        shown.target.sessionId,
+        baseCurrent,
+      );
+      baseCurrent();
+      const command = this.#command(target, method, frozen);
+      if (command.method !== 'fork-operations' || !same(command.params.request, original.request))
+        throw Error('子会话恢复与已保存的原 Fork 请求不匹配。');
+      provenChildRecovery = true;
+    }
+    const current = () => {
+      baseCurrent();
       if (
-        !context.online ||
-        !context.target ||
         !(
-          same(target, context.target) ||
-          (extensionRecovery.has(method) && sameSecureRuntime(target, context.target))
+          same(target, shown.target) ||
+          (extensionRecovery.has(method) && sameSecureRuntime(target, shown.target!)) ||
+          provenChildRecovery
         )
       )
         throw Error('扩展所属会话或连接已改变，请重新核对原操作。');
     };
     current();
-    const command = this.#command(target, method, structuredClone(params));
-    const request = command.params as Record<string, unknown>;
-    const scoped = 'request' in request ? (request.request as Record<string, unknown>) : request;
-    if (
-      scoped.workspaceId !== target.workspaceId ||
-      scoped.localProjectId !== target.localProjectId ||
-      scoped.sessionId !== target.sessionId
-    )
-      throw Error('扩展请求与原执行范围不匹配。');
+    return this.#scopedDispatch(target, method, frozen, current);
+  }
+  #extensionFeatures(method: SecureExtensionMethod): readonly string[] {
+    if (method.startsWith('git-')) return [GIT_WORKTREE_FEATURE, SECURE_GIT_OPERATIONS_FEATURE];
+    if (method.startsWith('fork-')) return [SESSION_FORK_FEATURE, SECURE_FORK_OPERATIONS_FEATURE];
+    if (method.startsWith('preview-')) return [PREVIEW_FEATURE, SECURE_PREVIEW_AUTHORITY_FEATURE];
+    return [
+      method.startsWith('github-write-') ? GITHUB_WRITE_FEATURE : GITHUB_FEATURE,
+      SECURE_GITHUB_AUTHORITY_FEATURE,
+    ];
+  }
+  #extensionWorkspace(target: SecureCliTarget, method: SecureExtensionMethod) {
     const workspace = this.#state.catalog?.workspaces.find(
       (entry) => entry.id === target.workspaceId,
     );
@@ -330,17 +389,30 @@ export class SecureWorkspaceController {
       workspace.machineId !== target.machineId
     )
       throw Error('执行主机目录尚未确认。');
-    const feature = method.startsWith('preview-')
-      ? PREVIEW_FEATURE
-      : method.startsWith('github-write-')
-        ? GITHUB_WRITE_FEATURE
-        : GITHUB_FEATURE;
-    const authorityFeature = method.startsWith('preview-')
-      ? SECURE_PREVIEW_AUTHORITY_FEATURE
-      : SECURE_GITHUB_AUTHORITY_FEATURE;
-    if (!workspace.features?.includes(feature) || !workspace.features.includes(authorityFeature))
+    if (this.#extensionFeatures(method).some((feature) => !workspace.features?.includes(feature)))
       throw Error('此主机尚未提供完整的加密扩展授权，请升级主机后重新连接。');
+    return workspace;
+  }
+  async #scopedDispatch(
+    target: SecureCliTarget,
+    method: SecureExtensionMethod,
+    params: unknown,
+    current: () => void,
+  ) {
+    current();
+    const lease = this.#lease(),
+      command = this.#command(target, method, structuredClone(params));
+    const request = command.params as Record<string, unknown>;
+    const scoped = 'request' in request ? (request.request as Record<string, unknown>) : request;
+    if (
+      scoped.workspaceId !== target.workspaceId ||
+      scoped.localProjectId !== target.localProjectId ||
+      scoped.sessionId !== target.sessionId
+    )
+      throw Error('扩展请求与原执行范围不匹配。');
+    const workspace = this.#extensionWorkspace(target, method);
     try {
+      current();
       const raw = await this.#execute(lease, target, command);
       current();
       return await validateHostResponse(raw, { command, workspace, current });
@@ -350,6 +422,35 @@ export class SecureWorkspaceController {
         throw new ApiError(error.message, error.rejected ? 409 : 0, error.rejected);
       throw error;
     }
+  }
+  async #executionBlock(target: SecureCliTarget, current: () => void) {
+    const blocks = await Promise.all([
+      readSecureGithubExecutionBlock(this.extensionStorage, target, current),
+      readSecureGitExecutionBlock(this.extensionStorage, target, current),
+      readSecureForkExecutionBlock(this.extensionStorage, target, current),
+    ]);
+    current();
+    return blocks.find((block) => !!block) ?? null;
+  }
+  async #beforeScopedWrite(
+    target: SecureCliTarget,
+    method: SecureExtensionMethod,
+    current: () => void,
+  ) {
+    current();
+    this.#extensionWorkspace(target, method);
+    const block = await this.#executionBlock(target, current);
+    if (block) throw Error(block);
+    const operations = await this.#store.list(target);
+    current();
+    if (
+      operations.some(
+        (operation) =>
+          sameSecureRuntime(operation.target, target) &&
+          ['pending', 'ending'].includes(operation.state),
+      )
+    )
+      throw Error('请先核查原会话操作，再执行新的项目写入。');
   }
   async beforeExtensionWrite(inputTarget: SecureCliTarget, reviewedCurrent: () => void) {
     const target = secureTargetSchema.parse(inputTarget),
@@ -361,29 +462,140 @@ export class SecureWorkspaceController {
       if (!context.online || !same(context.target, target)) throw Error('写入的执行范围已改变。');
     };
     current();
-    const workspace = this.#state.catalog?.workspaces.find(
-      (entry) => entry.id === target.workspaceId,
-    );
-    if (
-      !workspace ||
-      workspace.userId !== target.userId ||
-      workspace.machineId !== target.machineId ||
-      !workspace.features?.includes(GITHUB_FEATURE) ||
-      !workspace.features.includes(SECURE_GITHUB_AUTHORITY_FEATURE)
-    )
-      throw Error('此主机尚未提供完整的加密扩展授权，请升级主机后重新连接。');
-    const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
-    if (block) throw Error(block);
-    const operations = await this.#store.list(target);
-    current();
-    if (
-      operations.some(
-        (operation) =>
-          sameSecureRuntime(operation.target, target) &&
-          ['pending', 'ending'].includes(operation.state),
+    return this.#beforeScopedWrite(target, 'github-action', current);
+  }
+  async beforeWorkspaceWrite(
+    inputTarget: SecureCliTarget,
+    kind: 'git' | 'fork',
+    reviewed: () => void,
+  ) {
+    const target = secureTargetSchema.parse(structuredClone(inputTarget)),
+      generation = this.#generation;
+    const current = () => {
+      this.#current(generation);
+      reviewed();
+      if (!this.contentContext.online || !same(target, this.contentContext.target))
+        throw Error('工作目录或 Fork 的执行范围已改变。');
+    };
+    return this.#beforeScopedWrite(target, kind === 'git' ? 'git-action' : 'fork-action', current);
+  }
+  async #workspaceResource(
+    parentInput: SecureCliTarget,
+    childId: string,
+    reviewed: () => void,
+    sourceInput: SecureCliTarget = parentInput,
+  ) {
+    const parent = secureTargetSchema.parse(structuredClone(parentInput)),
+      source = secureTargetSchema.parse(structuredClone(sourceInput)),
+      generation = this.#generation;
+    const current = () => {
+      this.#current(generation);
+      reviewed();
+      if (
+        !this.contentContext.online ||
+        !same(parent, this.contentContext.target) ||
+        !sameSecureRuntime(source, parent) ||
+        childId === parent.sessionId
       )
+        throw Error('Fork 保留目录所属源会话或映射已改变。');
+    };
+    current();
+    const resource = await readSecureForkResource(this.extensionStorage, source, childId, current);
+    current();
+    if (!resource?.receipt.execution?.executionId)
+      throw Error('未找到经过确认的原 Fork 工作目录。');
+    return {
+      target: secureTargetSchema.parse({ ...parent, sessionId: childId }),
+      resource,
+      current,
+    };
+  }
+  /** A retained Fork directory can exist without a child session. Authority comes from its original receipt. */
+  async workspaceResourceRequest(
+    parent: SecureCliTarget,
+    childId: string,
+    method: 'git-state' | 'git-action' | 'git-operations',
+    params: unknown,
+    reviewed: () => void,
+    source: SecureCliTarget = parent,
+    originalTarget?: SecureCliTarget,
+  ): Promise<unknown> {
+    if (!['git-state', 'git-action', 'git-operations'].includes(method))
+      throw Error('不支持的目录恢复操作。');
+    const { target, resource, current } = await this.#workspaceResource(
+      parent,
+      childId,
+      reviewed,
+      source,
+    );
+    const dispatched = originalTarget
+      ? secureTargetSchema.parse(structuredClone(originalTarget))
+      : target;
+    if (
+      !same(target, dispatched) &&
+      !(method === 'git-operations' && sameSecureRuntime(target, dispatched))
     )
-      throw Error('请先核查原会话操作，再执行新的 GitHub 写入。');
+      throw Error('目录原操作的恢复范围不匹配。');
+    const frozen = structuredClone(params);
+    if (method === 'git-action') {
+      const command = this.#command(target, method, frozen);
+      if (
+        command.method !== 'git-action' ||
+        command.params.action === 'prepare' ||
+        command.params.executionId !== resource.receipt.execution!.executionId
+      )
+        throw Error('目录清理与原 Fork 资源不匹配。');
+    }
+    const result = await this.#scopedDispatch(dispatched, method, frozen, current);
+    current();
+    const value = result as {
+      execution?: GitStateResult['execution'];
+      receipt?: { execution?: GitStateResult['execution'] };
+    };
+    const execution = value.execution ?? value.receipt?.execution;
+    if (execution && execution.executionId !== resource.receipt.execution!.executionId)
+      throw Error('主机返回的目录与原 Fork 资源不匹配。');
+    return result;
+  }
+  async beforeWorkspaceResourceWrite(
+    parent: SecureCliTarget,
+    childId: string,
+    reviewed: () => void,
+    source: SecureCliTarget = parent,
+  ) {
+    const { target, current } = await this.#workspaceResource(parent, childId, reviewed, source);
+    return this.#beforeScopedWrite(target, 'git-action', current);
+  }
+  async openForkChild(sourceInput: SecureCliTarget, childId: string, reviewed: () => void) {
+    const source = secureTargetSchema.parse(structuredClone(sourceInput)),
+      generation = this.#generation,
+      shown = structuredClone(this.contentContext);
+    const current = () => {
+      this.#current(generation);
+      reviewed();
+      if (
+        !shown.online ||
+        !shown.target ||
+        !same(shown, this.contentContext) ||
+        !sameSecureRuntime(source, shown.target)
+      )
+        throw Error('Fork 源会话已改变。');
+    };
+    current();
+    await readSecureForkChild(this.extensionStorage, source, childId, current);
+    current();
+    await this.openSession(childId);
+    await this.refreshSessions();
+  }
+  async openForkSource(input: SecureCliTarget, sourceId: string) {
+    const target = secureTargetSchema.parse(structuredClone(input));
+    if (
+      !this.contentContext.online ||
+      !same(target, this.contentContext.target) ||
+      this.#state.session?.meta.forkOrigin?.sourceSessionId !== sourceId
+    )
+      throw Error('Fork 来源已改变，请重新读取会话。');
+    await this.openSession(sourceId);
   }
   async refreshExtensionRecords(inputTarget: SecureCliTarget, reviewed: () => void) {
     const target = secureTargetSchema.parse(inputTarget),
@@ -394,7 +606,7 @@ export class SecureWorkspaceController {
       if (!same(target, this.contentContext.target)) throw Error('扩展记录的显示目标已改变。');
     };
     current();
-    const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
+    const block = await this.#executionBlock(target, current);
     current();
     this.#state.extensionBlock = block;
     this.#emit();
@@ -562,7 +774,7 @@ export class SecureWorkspaceController {
       const attachments = await this.#attachments.read(target, current);
       const mcpDraft = await this.#mcp.read(target, current);
       const annotations = await this.previewAnnotations.read(target, current);
-      const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
+      const block = await this.#executionBlock(target, current);
       current();
       if (!same(target, this.contentContext.target))
         throw Error('附件草稿目标已改变，请重新读取。');
@@ -772,7 +984,7 @@ export class SecureWorkspaceController {
       const attachments = await this.#attachments.read(target, current);
       const mcpDraft = await this.#mcp.read(target, current);
       const annotations = await this.previewAnnotations.read(target, current);
-      const block = await readSecureGithubExecutionBlock(this.extensionStorage, target, current);
+      const block = await this.#executionBlock(target, current);
       current();
       this.#state.session = read;
       const reviews = sessionPermissionReviews(read, scope(target));
@@ -1133,11 +1345,7 @@ export class SecureWorkspaceController {
         )
       )
         throw Error('发送目标或已审阅的附件、MCP、标注选择已改变，请重新核对后发送。');
-      const extensionBlock = await readSecureGithubExecutionBlock(
-        this.extensionStorage,
-        target,
-        current,
-      );
+      const extensionBlock = await this.#executionBlock(target, current);
       if (extensionBlock) throw Error(extensionBlock);
       if (shownMcp.review?.servers.length) this.#requireMcp(target.workspaceId);
       const read = readClientSession(
@@ -1212,11 +1420,7 @@ export class SecureWorkspaceController {
         prompt,
         current,
         async (value) => {
-          const blocked = await readSecureGithubExecutionBlock(
-            this.extensionStorage,
-            target,
-            current,
-          );
+          const blocked = await this.#executionBlock(target, current);
           if (blocked) throw Error(blocked);
           return this.#mcp.stageTurn(
             target,

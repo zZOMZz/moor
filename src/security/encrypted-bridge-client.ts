@@ -1,3 +1,5 @@
+import { SECURE_GIT_OPERATIONS_FEATURE } from '../git-protocol';
+import { SECURE_FORK_OPERATIONS_FEATURE } from '../fork-protocol';
 import { hostCommandSchema, type HostCommand } from '../bridge/host-command';
 import { validateHostResponse } from '../host-response';
 import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
@@ -175,6 +177,8 @@ function carriesOriginalRecovery(command: HostCommand): boolean {
   return (
     [
       'session-operations',
+      'git-operations',
+      'fork-operations',
       'github-write-inspect',
       'github-write-abandon',
       'preview-inspect',
@@ -579,6 +583,16 @@ export class EncryptedBridgeClient {
       fail();
     assertPermissionReview(command, workspace.features);
     assertAttachmentRecovery(command, workspace.features);
+    if (
+      ['git-action', 'git-operations'].includes(command.method) &&
+      !workspace.features?.includes(SECURE_GIT_OPERATIONS_FEATURE)
+    )
+      fail();
+    if (
+      ['fork-action', 'fork-operations'].includes(command.method) &&
+      !workspace.features?.includes(SECURE_FORK_OPERATIONS_FEATURE)
+    )
+      fail();
     if (catalog.catalogVersion === 1) {
       if (inputTarget !== undefined) fail();
       return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);

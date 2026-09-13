@@ -56,6 +56,8 @@ export type AgentMcpServer =
       headers: Array<{ name: string; value: string }>;
     };
 export type AgentOpenOptions = {
+  /** Host invocation guard, including recovery loads; never serialized into ACP. */
+  assertCurrent?: () => void;
   mcp?: {
     servers: AgentMcpServer[];
     redact: string[];

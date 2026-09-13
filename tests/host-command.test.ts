@@ -65,6 +65,24 @@ const github = {
   expectedRevision: 0,
   action: 'unbind' as const,
 };
+const gitOriginal = {
+  ...scope,
+  gitVersion: 1 as const,
+  operationId,
+  expectedRevision: 0,
+  action: 'detach' as const,
+  executionId: 'execution',
+};
+const forkOriginal = {
+  ...scope,
+  forkVersion: 1 as const,
+  operationId,
+  childSessionId: 'child',
+  expectedSourceVersion: version,
+  expectedExecutionRevision: 0,
+  cutoff: { kind: 'current' as const },
+  directory: { kind: 'same-directory' as const },
+};
 const cases: {
   [M in HostCommandMethod]: {
     params: Extract<HostCommandInput, { method: M }>['params'];
@@ -183,6 +201,11 @@ const cases: {
     params: { ...scope, searchVersion: 1, scope: 'session', query: 'synthetic', limit: 30 },
     call: 'searchSessions',
   },
+  'git-operations': { params: { action: 'inspect', request: gitOriginal }, call: 'gitOperations' },
+  'fork-operations': {
+    params: { action: 'abandon', request: forkOriginal },
+    call: 'forkOperations',
+  },
   'git-state': { params: { ...scope, gitVersion: 1 }, call: 'readGitState' },
   'git-action': {
     params: {
@@ -259,9 +282,9 @@ const envelope = (method: HostCommandMethod, params: unknown = cases[method].par
 const status = (code: number) => (error: unknown) =>
   error instanceof AppError && error.status === code;
 
-test('all 38 commands preserve the exact delegate, parsed payload, project and authority', async () => {
-  assert.equal(HOST_COMMAND_METHODS.length, 38);
-  assert.equal(new Set(HOST_COMMAND_METHODS).size, 38);
+test('all 40 commands preserve the exact delegate, parsed payload, project and authority', async () => {
+  assert.equal(HOST_COMMAND_METHODS.length, 40);
+  assert.equal(new Set(HOST_COMMAND_METHODS).size, 40);
   assert.deepEqual(Object.keys(hostCommandSchemas).sort(), Object.keys(cases).sort());
   const f = fixture();
   const authority = {
@@ -289,7 +312,9 @@ test('all 38 commands preserve the exact delegate, parsed payload, project and a
               ? ['session', 'turn', scope.localProjectId]
               : method === 'mutate' || method.startsWith('preview-')
                 ? [params, scope.localProjectId, authority]
-                : method.startsWith('github-')
+                : method.startsWith('github-') ||
+                    method.startsWith('git-') ||
+                    method.startsWith('fork-')
                   ? [params, scope.localProjectId, checkpoint]
                   : [params, scope.localProjectId];
     assert.deepEqual(f.calls.pop(), { method: call, args: expected }, method);

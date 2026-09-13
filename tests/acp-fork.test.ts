@@ -32,6 +32,10 @@ function fixture(
   mkdirSync(target);
   const wires: any[] = [],
     children: ChildProcessWithoutNullStreams[] = [];
+  let initialized!: () => void;
+  const initializeHeld = new Promise<void>((resolve) => {
+    initialized = resolve;
+  });
   const config: AgentConfig = {
     id: 'synthetic',
     machineId: 'machine',
@@ -53,6 +57,7 @@ function fixture(
     ) as ChildProcessWithoutNullStreams;
     child.on('message', (value: any) => {
       if (value.kind === 'wire') wires.push(value.message);
+      if (value.kind === 'initialize-held') initialized();
     });
     children.push(child);
     return child;
@@ -75,10 +80,37 @@ function fixture(
     sourceNativeId: nativeId,
     messageId: 'exact-native-message',
   };
-  return { cwd, target, driver, config, wires, open, anchor };
+  return { cwd, target, driver, config, wires, children, initializeHeld, open, anchor };
 }
 const rejected = (error: unknown) => error instanceof AppError && error.rejected;
 const unknown = (error: unknown) => error instanceof AppError && !error.rejected;
+
+test('the Host authority guard rejects before launching and between real ACP initialization and native load or fork', async (t) => {
+  const f = fixture(t, 'hold-initialize');
+  let current = false;
+  const assertCurrent = () => {
+    if (!current) throw new AppError(409, 'Synthetic retired encrypted authority');
+  };
+  const input = {
+    sourceNativeId: nativeId,
+    sourceCwd: f.cwd,
+    targetCwd: f.target,
+    assertCurrent,
+  };
+  await assert.rejects(f.driver.fork!(f.config, input));
+  assert.equal(f.children.length, 0);
+  current = true;
+  const pending = f.driver.fork!(f.config, input);
+  await f.initializeHeld;
+  current = false;
+  f.children[0]!.send!({ kind: 'release-initialize' });
+  await assert.rejects(pending, rejected);
+  assert.equal(f.children.length, 1);
+  assert.deepEqual(
+    f.wires.map((wire) => wire.method),
+    ['initialize'],
+  );
+});
 
 test('only pinned advertised native fork capabilities enable supported modes', async (t) => {
   for (const [agent, version, custom, advertised] of [
@@ -272,13 +304,12 @@ test('host lease is checked immediately before native dispatch and known ID is s
   for (const variant of ['success', 'child-load-error', 'changed-after-native', 'journal-error']) {
     const f = fixture(t, variant, 'claude'),
       known: string[] = [];
-    let checks = 0;
     const work = f.driver.fork!(f.config, {
       sourceNativeId: nativeId,
       sourceCwd: f.cwd,
       targetCwd: f.target,
       assertCurrent() {
-        if (++checks === 2 && variant === 'changed-after-native')
+        if (known.length > 0 && variant === 'changed-after-native')
           throw new Error('Synthetic target changed');
       },
       onNativeId(id) {

@@ -108,6 +108,20 @@ export function validateForkReceipt(value: unknown, operation: ForkOperation): F
     throw new Error('Fork 确认的执行目录与原请求不匹配。');
   return receipt;
 }
+function matchesResourceCleanup(receipt: ForkReceipt | undefined, cleanup: SessionExecution) {
+  const original = receipt?.execution;
+  return !!(
+    receipt &&
+    ['accepted', 'rejected', 'abandoned'].includes(receipt.phase) &&
+    original?.mode === 'worktree' &&
+    cleanup.mode === 'worktree' &&
+    cleanup.status === 'removed' &&
+    cleanup.executionId === original.executionId &&
+    cleanup.revision > original.revision &&
+    cleanup.branch === original.branch &&
+    cleanup.baseOid === original.baseOid
+  );
+}
 /** Native context is created only by explicit create/retry requests, never load or refresh. */
 export class SessionForkController {
   readonly target: ForkTarget;
@@ -215,19 +229,13 @@ export class SessionForkController {
           if (
             sessionForkKey(resource.operation.target) !== sessionForkKey(this.target) ||
             !sameScope(resource.operation.request, this.target) ||
-            resource.receipt.phase !== 'rejected' ||
+            !['rejected', 'abandoned'].includes(resource.receipt.phase) ||
             resource.receipt.execution?.mode !== 'worktree'
           )
             throw new Error('Fork 资源记录范围不匹配。');
           validateForkReceipt(resource.receipt, resource.operation);
         }
-        if (
-          stored.cleanup &&
-          (!stored.receipt ||
-            stored.receipt.phase !== 'rejected' ||
-            stored.cleanup.status !== 'removed' ||
-            stored.cleanup.executionId !== stored.receipt.execution?.executionId)
-        )
+        if (stored.cleanup && !matchesResourceCleanup(stored.receipt, stored.cleanup))
           throw new Error('Fork 清理记录范围不匹配。');
         this.resources = stored.resources;
         this.cleanup = stored.cleanup;
@@ -318,7 +326,8 @@ export class SessionForkController {
       const resources = [...this.resources];
       if (
         this.operation &&
-        this.receipt?.phase === 'rejected' &&
+        this.receipt &&
+        ['rejected', 'abandoned'].includes(this.receipt.phase) &&
         this.receipt.execution?.mode === 'worktree' &&
         this.receipt.execution.status !== 'removed' &&
         !this.cleanup
@@ -349,16 +358,10 @@ export class SessionForkController {
           : this.resources.find((resource) => resource.receipt.childSessionId === childSessionId)
               ?.receipt;
       if (
-        !receipt ||
-        receipt.phase !== 'rejected' ||
-        receipt.execution?.mode !== 'worktree' ||
+        !matchesResourceCleanup(receipt, result.execution) ||
         result.workspaceId !== this.target.workspaceId ||
         result.localProjectId !== this.target.localProjectId ||
-        result.sessionId !== childSessionId ||
-        result.execution.mode !== 'worktree' ||
-        result.execution.status !== 'removed' ||
-        result.execution.executionId !== receipt.execution.executionId ||
-        result.execution.revision <= receipt.execution.revision
+        result.sessionId !== childSessionId
       )
         throw new Error('Fork 目录尚未获得匹配的清理确认。');
       const resources = this.resources.filter(

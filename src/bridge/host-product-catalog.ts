@@ -109,6 +109,11 @@ function operationOf(command: HostCommand): Operation | undefined {
     original = object(original.request)!;
     recovery = true;
     inspection = command.method.endsWith('inspect');
+  } else if (command.method === 'git-operations' || command.method === 'fork-operations') {
+    method = command.method === 'git-operations' ? 'git-action' : 'fork-action';
+    original = command.params.request;
+    recovery = true;
+    inspection = command.params.action === 'inspect';
   } else if (command.method === 'github-abandon') {
     method = 'github-action';
     recovery = true;
@@ -606,6 +611,8 @@ export class HostProductCatalog {
     requireTrue(
       [
         'session-operations',
+        'git-operations',
+        'fork-operations',
         'github-write-inspect',
         'github-write-abandon',
         'github-abandon',

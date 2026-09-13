@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { AppError } from '../../src/protocol';
+import { gitActionReceiptSchema } from '../../src/git-protocol';
+import { forkReceiptSchema } from '../../src/fork-protocol';
+import type { AgentForkInput } from '../../src/runtime/agent-fork';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -60,6 +65,7 @@ export async function createSecureDesktopHost(
   options: {
     richContent?: boolean;
     extensions?: boolean;
+    workspaces?: boolean;
     integrations?: { electronPath: string; workerPath: string };
   } = {},
 ) {
@@ -78,6 +84,44 @@ export async function createSecureDesktopHost(
       '---\nname: SYNTHETIC_PRIVATE_SKILL\ndescription: Synthetic review fixture\n---\nSYNTHETIC_PRIVATE_SKILL_BODY\n',
     );
   }
+  const git = (...args: string[]) =>
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'core.hooksPath=/dev/null',
+        '-c',
+        'commit.gpgSign=false',
+        '-c',
+        'user.name=Synthetic',
+        '-c',
+        'user.email=synthetic@example.invalid',
+        '-C',
+        project,
+        ...args,
+      ],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+          ),
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_CONFIG_NOSYSTEM: '1',
+        },
+      },
+    ).trim();
+  if (options.workspaces) {
+    writeFileSync(join(project, 'SYNTHETIC_PRIVATE_BASELINE.txt'), 'SYNTHETIC_PRIVATE_BASELINE\n');
+    git('init', '-b', 'main');
+    git('add', '.');
+    git('commit', '-m', 'Synthetic baseline');
+  }
+  const forks: Omit<AgentForkInput, 'assertCurrent' | 'onNativeId'>[] = [],
+    opens: { cwd: string; nativeId?: string }[] = [];
+  let nextForkFault: 'reject' | 'after-native' | undefined,
+    nativeSequence = 0;
   let relay: Store | undefined,
     application: ReturnType<typeof createApp> | undefined,
     store: RuntimeStore | undefined,
@@ -100,7 +144,7 @@ export async function createSecureDesktopHost(
     mcpCurrent = new Map<number, () => void>();
   let prompts = 0,
     droppedReplies = 0,
-    armed: 'permission' | 'attachment' | 'turn' | 'github-write' | undefined;
+    armed: 'permission' | 'attachment' | 'turn' | 'github-write' | 'git' | 'fork' | undefined;
   type Pending = { socket: WebSocket; record: EncryptedRecord };
   const pending = new Map<string, Pending>();
   let drop: (Pending & { accepted: boolean }) | undefined;
@@ -308,13 +352,13 @@ export async function createSecureDesktopHost(
     const runtime = store;
     runtime.workspace.name = 'SYNTHETIC_PRIVATE_WORKSPACE';
     const projectId = runtime.registerProject(project);
-    runtime.registerAgent('synthetic', {
+    runtime.registerAgent(options.workspaces ? 'codex' : 'synthetic', {
       id: 'synthetic-desktop-agent',
       name: 'SYNTHETIC_PRIVATE_AGENT',
       machineId: runtime.workspace.machineId,
-      cliType: 'custom',
-      agentType: 'synthetic',
-      customAcp: { command: '/synthetic/never-run', args: [] },
+      cliType: options.workspaces ? 'builtin' : 'custom',
+      agentType: options.workspaces ? 'codex' : 'synthetic',
+      ...(!options.workspaces ? { customAcp: { command: '/synthetic/never-run', args: [] } } : {}),
     });
     if (options.integrations)
       integrations = await createSecureIntegrationServices(
@@ -325,18 +369,48 @@ export async function createSecureDesktopHost(
     host = new HostWorkspace(
       runtime,
       {
+        async fork(_config, input) {
+          assert(options.workspaces);
+          input.assertCurrent?.();
+          const fault = nextForkFault;
+          nextForkFault = undefined;
+          const { assertCurrent: _current, onNativeId: _native, ...record } = input;
+          forks.push(structuredClone(record));
+          if (fault === 'reject') throw new AppError(409, 'Synthetic native Fork rejected', true);
+          const nativeId = 'synthetic-fork-native-' + forks.length;
+          await input.onNativeId?.(nativeId);
+          if (fault === 'after-native') throw Error('Synthetic lost native Fork result');
+          return { nativeId };
+        },
         async open(_config, _cwd, nativeId, callbacks, openOptions?: AgentOpenOptions) {
+          openOptions?.assertCurrent?.();
+          if (options.workspaces) opens.push({ cwd: _cwd, nativeId });
           let activeSequence: number | undefined;
           if (options.extensions)
             mcpDescriptors.push(structuredClone(openOptions?.mcp?.servers ?? []));
           const session: AgentSession = {
-            id: nativeId ?? 'synthetic-desktop-native',
+            id:
+              nativeId ??
+              (options.workspaces
+                ? 'synthetic-native-' + ++nativeSequence
+                : 'synthetic-desktop-native'),
+            ...(options.workspaces
+              ? {
+                  forkCapabilities: {
+                    sameDirectory: true,
+                    worktree: true,
+                    turnCutoff: true,
+                    adapter: 'codex-acp' as const,
+                    adapterVersion: '1.11.0' as const,
+                  },
+                }
+              : {}),
             capabilities: syntheticCapabilities,
             inputCapabilities:
               options.richContent || options.integrations
                 ? { image: true, audio: true, embeddedContext: true }
                 : undefined,
-            async prompt(input) {
+            async prompt(input, binding) {
               try {
                 const sequence = ++prompts;
                 activeSequence = sequence;
@@ -354,7 +428,7 @@ export async function createSecureDesktopHost(
                     completedSignal.mark(sequence);
                   })
                   .catch(fail);
-                if (options.extensions || options.integrations) {
+                if (options.extensions || options.integrations || options.workspaces) {
                   if (openOptions?.mcp) {
                     mcpCurrent.set(sequence, openOptions.mcp.assertCurrent);
                     mcpOpened.mark(sequence);
@@ -366,6 +440,18 @@ export async function createSecureDesktopHost(
                     sessionUpdate: 'agent_message_chunk',
                     content: { type: 'text', text: 'SYNTHETIC_PRIVATE_COMPLETED_' + sequence },
                   });
+                  if (options.workspaces && binding)
+                    callbacks.forkAnchor?.(
+                      {
+                        version: 1,
+                        kind: 'completed-turn',
+                        adapter: 'codex-acp',
+                        adapterVersion: '1.11.0',
+                        sourceNativeId: session.id,
+                        messageId: 'synthetic-message-' + binding.expectedTurnId,
+                      },
+                      binding,
+                    );
                   return;
                 }
                 if (options.richContent) {
@@ -473,7 +559,9 @@ export async function createSecureDesktopHost(
           command.params.kind === 'permission') ||
         (armed === 'attachment' && command.method === 'attachment-action') ||
         (armed === 'turn' && command.method === 'mutate' && command.params.kind === 'turn') ||
-        (armed === 'github-write' && command.method === 'github-write-action')
+        (armed === 'github-write' && command.method === 'github-write-action') ||
+        (armed === 'git' && command.method === 'git-action') ||
+        (armed === 'fork' && command.method === 'fork-action')
       ) {
         try {
           current();
@@ -496,8 +584,18 @@ export async function createSecureDesktopHost(
       try {
         const result = await execute(raw, context);
         if (selected) {
-          if (command.method === 'github-write-action') {
-            const receipt = githubWriteReceiptSchema.parse(result);
+          if (
+            command.method === 'github-write-action' ||
+            command.method === 'git-action' ||
+            command.method === 'fork-action'
+          ) {
+            const receipt = (
+              command.method === 'github-write-action'
+                ? githubWriteReceiptSchema
+                : command.method === 'git-action'
+                  ? gitActionReceiptSchema
+                  : forkReceiptSchema
+            ).parse(result);
             assert.equal(receipt.phase, 'accepted');
             assert.equal(receipt.operationId, command.params.operationId);
             selected.accepted = true;
@@ -588,6 +686,27 @@ export async function createSecureDesktopHost(
       inputs,
       mcpDescriptors,
       integrations,
+      workspaces: {
+        forks,
+        opens,
+        project,
+        git,
+        failNextFork(fault: 'reject' | 'after-native') {
+          current();
+          assert(!nextForkFault);
+          nextForkFault = fault;
+        },
+      },
+      dropNextGitReply() {
+        current();
+        assert(!armed && !drop);
+        armed = 'git';
+      },
+      dropNextForkReply() {
+        current();
+        assert(!armed && !drop);
+        armed = 'fork';
+      },
       waitMcpOpened: (sequence: number) => mcpOpened.wait(sequence),
       assertMcpCurrent(sequence: number) {
         const check = mcpCurrent.get(sequence);

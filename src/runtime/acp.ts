@@ -123,10 +123,14 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       validateForkInput(config, input);
       let source;
       try {
-        source = await driver.open(config, input.sourceCwd, input.sourceNativeId, {
-          update: () => {},
-          permission: async () => ({ outcome: { outcome: 'cancelled' } }),
-        });
+        input.assertCurrent?.();
+        source = await driver.open(
+          config,
+          input.sourceCwd,
+          input.sourceNativeId,
+          { update: () => {}, permission: async () => ({ outcome: { outcome: 'cancelled' } }) },
+          { assertCurrent: input.assertCurrent },
+        );
       } catch {
         throw new AppError(409, '原生 Fork 尚未执行，无法读取来源 Agent 会话', true);
       }
@@ -142,6 +146,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       }
     },
     async open(config, cwd, nativeId, callbacks, options) {
+      options?.assertCurrent?.();
       const taskTools = options?.taskTools;
       const mcp = options?.mcp;
       let extraServers: AgentMcpServer[] = [];
@@ -286,6 +291,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         };
       }
       const currentTaskTools = () => {
+        options?.assertCurrent?.();
         if (mcp) {
           try {
             mcp.assertCurrent();
@@ -365,6 +371,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       if (!custom && !entry) throw new Error('不支持的 Agent');
       let child: ReturnType<typeof launch>;
       try {
+        currentTaskTools();
         child = launch(
           custom?.command ?? process.execPath,
           custom?.args ?? [agentRequire.resolve(entry!)],

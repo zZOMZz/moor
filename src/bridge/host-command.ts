@@ -11,8 +11,8 @@ import {
 } from '../project-content-protocol';
 import { questionAnswerSchema, steerRequestSchema } from '../interaction-protocol';
 import { sessionSearchRequestSchema } from '../search-protocol';
-import { gitStateReadSchema, gitActionSchema } from '../git-protocol';
-import { forkOptionsReadSchema, sessionForkSchema } from '../fork-protocol';
+import { gitStateReadSchema, gitActionSchema, gitOperationSchema } from '../git-protocol';
+import { forkOptionsReadSchema, sessionForkSchema, forkOperationSchema } from '../fork-protocol';
 import { githubReadSchema, githubActionSchema } from '../github-protocol';
 import {
   githubWriteReadSchema,
@@ -71,8 +71,10 @@ export const HOST_COMMAND_METHODS = [
   'search-sessions',
   'git-state',
   'git-action',
+  'git-operations',
   'fork-options',
   'fork-action',
+  'fork-operations',
   'cancel',
 ] as const;
 export type HostCommandMethod = (typeof HOST_COMMAND_METHODS)[number];
@@ -117,8 +119,10 @@ export const hostCommandSchemas = {
   'search-sessions': sessionSearchRequestSchema,
   'git-state': gitStateReadSchema,
   'git-action': gitActionSchema,
+  'git-operations': gitOperationSchema,
   'fork-options': forkOptionsReadSchema,
   'fork-action': sessionForkSchema,
+  'fork-operations': forkOperationSchema,
   cancel: sessionCancelSchema,
 } satisfies Record<HostCommandMethod, z.ZodTypeAny>;
 
@@ -188,8 +192,10 @@ export type HostCommandWorkspace = Pick<
   | 'searchSessions'
   | 'readGitState'
   | 'gitAction'
+  | 'gitOperations'
   | 'readForkOptions'
   | 'forkSession'
+  | 'forkOperations'
   | 'cancel'
 > & {
   controlManager: Pick<HostWorkspace['controlManager'], 'control' | 'recover'>;
@@ -358,19 +364,27 @@ export class HostCommandDispatcher {
     } else if (command.method === 'git-state') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.readGitState(body, command.localProjectId);
+      result = await workspace.readGitState(body, command.localProjectId, context.current);
     } else if (command.method === 'git-action') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.gitAction(body, command.localProjectId);
+      result = await workspace.gitAction(body, command.localProjectId, context.current);
+    } else if (command.method === 'git-operations') {
+      const body = command.params;
+      assert(body.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
+      result = await workspace.gitOperations(body, command.localProjectId, context.current);
     } else if (command.method === 'fork-options') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.readForkOptions(body, command.localProjectId);
+      result = await workspace.readForkOptions(body, command.localProjectId, context.current);
     } else if (command.method === 'fork-action') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.forkSession(body, command.localProjectId);
+      result = await workspace.forkSession(body, command.localProjectId, context.current);
+    } else if (command.method === 'fork-operations') {
+      const body = command.params;
+      assert(body.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
+      result = await workspace.forkOperations(body, command.localProjectId, context.current);
     } else if (command.method === 'cancel')
       result = await workspace.cancel(
         command.params.sessionId,

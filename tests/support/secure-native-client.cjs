@@ -65,6 +65,7 @@ module.exports = function runSecureNative(options, scenario) {
       ).createSecureDesktopHost(profile, {
         richContent: options.richContent === true,
         extensions: options.extensions === true,
+        workspaces: options.workspaces === true,
         integrations: options.integrations
           ? {
               electronPath: process.env.MOOR_TEST_DESKTOP_APP

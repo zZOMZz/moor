@@ -1,4 +1,8 @@
 import test from 'node:test';
+import { encryptedCommandHost } from './support/encrypted-command-host';
+import { mappedHost } from './support/mapped-host';
+import type { HostCommand } from '../src/bridge/host-command';
+import { readClientSession, buildSessionTurn } from '../src/session-client';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -838,4 +842,323 @@ test('an unknown Fork with a changed recorded Agent snapshot cannot open or fork
   assert.equal((await f.host.forkSession(request)).phase, 'accepted');
   assert.equal(f.forks.length, 1);
   assert.deepEqual(f.openConfigs.at(-1), original.agent);
+});
+
+test('Fork operations inspect and abandon never load an already dispatched native child, while explicit current action retry only loads its known ID', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  f.afterNative = () => {
+    throw Error('Synthetic lost child confirmation');
+  };
+  const request = await f.request();
+  assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+  f.restart();
+  const before = f.opens.length;
+  for (const action of ['inspect', 'abandon'] as const) {
+    const result = await f.host.forkOperations({ action, request });
+    assert.equal(result.found, true);
+    if (result.found) assert.equal(result.receipt.phase, 'unknown');
+    assert.equal(f.opens.length, before);
+    assert.equal(f.forks.length, 1);
+    assert.equal(f.store.forks.blocked('child'), true);
+  }
+  assert.equal((await f.host.forkSession(request)).phase, 'accepted');
+  assert.deepEqual(f.opens.slice(before), [{ cwd: f.root, native: 'fork-native-1' }]);
+  assert.equal(f.forks.length, 1);
+});
+
+test('never-arrived Fork operations can seal the Host-proven old mapping after cold restart without launching an Agent', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  const request = await f.request();
+  const mapped = mappedHost(() => f.host),
+    original = mapped.target(),
+    before = f.opens.length;
+  const command: HostCommand = {
+    method: 'fork-action',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: request,
+  };
+  const recovery = (action: 'inspect' | 'abandon'): HostCommand => ({
+    ...command,
+    method: 'fork-operations',
+    params: { action, request },
+  });
+  mapped.move();
+  f.restart();
+  mapped.reopen();
+  assert.equal(((await mapped.execute(original, recovery('inspect'))) as any).found, false);
+  assert.equal(f.store.journal.has(request.operationId), false);
+  const sealed = (await mapped.execute(original, recovery('abandon'))) as any;
+  assert.equal(sealed.receipt.phase, 'abandoned');
+  f.restart();
+  mapped.reopen();
+  assert.equal(
+    ((await mapped.execute(original, recovery('inspect'))) as any).receipt.phase,
+    'abandoned',
+  );
+  for (const target of [original, mapped.target()])
+    await assert.rejects(mapped.execute(target, command));
+  assert.equal((await f.host.forkSession(request)).phase, 'abandoned');
+  assert.equal(f.opens.length, before);
+  assert.equal(f.forks.length, 0);
+});
+
+test('encrypted Fork revocation retains a dispatched native ID but prevents acceptance and any recovery load on another channel inspect', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  const request = await f.request(),
+    entered = signal(),
+    release = signal();
+  const encrypted = await encryptedCommandHost(t, () => f.host),
+    first = await encrypted.connect(),
+    second = await encrypted.connect();
+  f.afterNative = async () => {
+    entered.resolve();
+    await release.promise;
+    throw Error('Synthetic missing confirmation');
+  };
+  const command: HostCommand = {
+    method: 'fork-action',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: request,
+  };
+  const pending = first.execute(command, request.sessionId);
+  await entered.promise;
+  first.retire();
+  release.resolve();
+  await assert.rejects(pending);
+  assert.equal(f.store.nativeSession('child'), undefined);
+  const before = f.opens.length;
+  const result = await second.execute(
+    { ...command, method: 'fork-operations', params: { action: 'inspect', request } },
+    request.sessionId,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.result.receipt.phase, 'unknown');
+  assert.equal(f.opens.length, before);
+  assert.equal(f.forks.length, 1);
+  const retried = await second.execute(command, request.sessionId);
+  assert.equal(retried.ok, true);
+  assert.equal(retried.result.phase, 'accepted');
+  assert.equal(f.forks.length, 1);
+});
+
+test('Fork inspection can confirm its prepared worktree without launching native and sealing retains that worktree for explicit cleanup', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  const request = await f.request({
+    kind: 'worktree',
+    baseBranch: 'main',
+    expectedOid: f.git('rev-parse', 'HEAD'),
+    newBranch: 'moor/sealed-preparation',
+  });
+  f.store.journal.db.exec(
+    "CREATE TRIGGER fail_git_fork_receipt BEFORE UPDATE ON operation WHEN NEW.phase='git-accepted' BEGIN SELECT RAISE(ABORT,'Synthetic Git receipt failure'); END",
+  );
+  assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+  assert.equal(f.forks.length, 0);
+  f.restart();
+  const blocked = await f.host.forkOperations({ action: 'abandon', request });
+  assert.equal(blocked.found, true);
+  if (blocked.found) assert.equal(blocked.receipt.phase, 'unknown');
+  assert.equal(f.store.forks.blocked('child'), true);
+  f.store.journal.db.exec('DROP TRIGGER fail_git_fork_receipt');
+  const inspected = await f.host.forkOperations({ action: 'inspect', request });
+  assert.equal(inspected.found, true);
+  if (inspected.found) {
+    assert.equal(inspected.receipt.phase, 'unknown');
+    assert.equal(inspected.receipt.execution?.status, 'ready');
+  }
+  assert.equal(f.forks.length, 0);
+  const sealed = await f.host.forkOperations({ action: 'abandon', request });
+  assert.equal(sealed.found, true);
+  if (sealed.found) {
+    assert.equal(sealed.receipt.phase, 'abandoned');
+    assert.equal(sealed.receipt.execution?.status, 'ready');
+  }
+  assert.equal(f.store.forks.blocked('child'), false);
+  assert.equal(f.forks.length, 0);
+  const cwd = f.host.executionLease(f.scope('child'), undefined, true).rootPath;
+  assert.equal(existsSync(cwd), true);
+  assert.equal((await f.host.forkSession(request)).phase, 'abandoned');
+  assert.equal((await f.host.gitAction(await f.remove('child'))).execution.disposition, 'removed');
+  assert.equal(existsSync(cwd), false);
+});
+
+test('Fork old-mapping recovery refuses missing Host history, directory generation changes and conflicting original claims', async (t) => {
+  for (const scenario of ['missing-history', 'generation', 'new-target-claim', 'changed-body']) {
+    const f = fixture(t);
+    await f.prompt();
+    const request = await f.request(),
+      mapped = mappedHost(() => f.host),
+      target = mapped.target(),
+      before = f.opens.length;
+    const action: HostCommand = {
+      method: 'fork-action',
+      workspaceId: 'workspace',
+      localProjectId: 'project',
+      params: request,
+    };
+    mapped.move();
+    if (scenario === 'missing-history')
+      f.store.journal.db.exec('DELETE FROM encrypted_product_mapping');
+    if (scenario === 'generation') {
+      const project = f.store.machine.get(['localProject', 'project']) as object;
+      f.store.machine.set(['localProject', 'project'], {
+        ...project,
+        rootPath: join(f.root, 'other'),
+      });
+      f.host.updateCatalogue();
+      mapped.products.synchronize();
+      f.store.machine.set(['localProject', 'project'], { ...project, rootPath: f.root });
+      f.host.updateCatalogue();
+      mapped.products.synchronize();
+    }
+    if (scenario === 'new-target-claim') mapped.products.bindOperation(mapped.target(), action);
+    if (scenario === 'changed-body') {
+      await mapped.execute(target, {
+        ...action,
+        method: 'fork-operations',
+        params: { action: 'abandon', request },
+      });
+      request.childSessionId += '-changed';
+    }
+    for (const kind of ['inspect', 'abandon'] as const)
+      await assert.rejects(
+        mapped.execute(target, {
+          ...action,
+          method: 'fork-operations',
+          params: { action: kind, request },
+        }),
+      );
+    assert.equal(f.forks.length, 0);
+    assert.equal(f.opens.length, before);
+  }
+});
+
+test('sealing the exact nested worktree request prevents a later Fork retry from creating native context in a shared directory', async (t) => {
+  const f = fixture(t);
+  await f.prompt();
+  const request = await f.request({
+    kind: 'worktree',
+    baseBranch: 'main',
+    expectedOid: f.git('rev-parse', 'HEAD'),
+    newBranch: 'moor/nested-sealed',
+  });
+  f.store.journal.db.exec(
+    "CREATE TRIGGER stop_worktree BEFORE INSERT ON session_execution BEGIN SELECT RAISE(ABORT,'Synthetic reservation stop'); END",
+  );
+  // A pre-native record can remain after its final rejection receipt also fails.
+  f.store.journal.db.exec(
+    "CREATE TRIGGER stop_fork_receipt BEFORE UPDATE ON operation BEGIN SELECT RAISE(ABORT,'Synthetic receipt stop'); END",
+  );
+  await assert.rejects(f.host.forkSession(request));
+  const record = f.store.forks.record(request.operationId)!;
+  assert.equal(record.phase, 'preparing');
+  assert.ok(record.gitOperationId);
+  f.store.journal.db.exec('DROP TRIGGER stop_worktree');
+  f.store.journal.db.exec('DROP TRIGGER stop_fork_receipt');
+  const original: GitPrepare = {
+    gitVersion: 1,
+    ...f.scope(request.childSessionId),
+    operationId: record.gitOperationId!,
+    action: 'prepare',
+    expectedRevision: 0,
+    baseBranch: 'main',
+    expectedOid: f.git('rev-parse', 'HEAD'),
+    newBranch: 'moor/nested-sealed',
+  };
+  const sealed = await f.host.gitOperations({ action: 'abandon', request: original }, 'project');
+  assert.equal(sealed.found && sealed.receipt.phase, 'abandoned');
+  assert.equal((await f.host.forkSession(request)).phase, 'rejected');
+  assert.equal(f.forks.length, 0);
+  assert.equal(f.store.nativeSession(request.childSessionId), undefined);
+});
+
+test('a persisted Fork child is readable by the real session client and explicitly sends its first turn without exposing native identity', async (t) => {
+  for (const worktree of [false, true]) {
+    const f = fixture(t);
+    await f.prompt();
+    const request = await f.request(
+      worktree
+        ? {
+            kind: 'worktree',
+            baseBranch: 'main',
+            expectedOid: f.git('rev-parse', 'HEAD'),
+            newBranch: 'moor/client-child',
+          }
+        : { kind: 'same-directory' },
+    );
+    const receipt = await f.host.forkSession(request);
+    assert.equal(receipt.phase, 'accepted');
+    assert.equal(f.forks.length, 1);
+    const native = f.store.nativeSession(
+      'child',
+      f.host.executionLease(f.scope('child'), undefined, true),
+    );
+    assert.ok(native);
+    f.restart();
+    const encrypted = await encryptedCommandHost(t, () => f.host),
+      client = await encrypted.connect();
+    const scope = { ...f.scope('child'), userId: 'local:synthetic', machineId: 'machine' };
+    const read = async () => {
+      const response = await client.execute(
+        {
+          method: 'session',
+          workspaceId: scope.workspaceId,
+          localProjectId: scope.localProjectId,
+          params: { sessionId: scope.sessionId },
+        },
+        scope.sessionId,
+      );
+      assert.equal(response.ok, true);
+      assert.equal(JSON.stringify(response.result).includes(native!), false);
+      return response.result;
+    };
+    const raw = await read(),
+      initial = readClientSession(raw, scope);
+    assert.deepEqual(initial.history, []);
+    assert.equal(initial.meta.id, scope.sessionId);
+    assert.equal(initial.meta.forkOrigin?.sourceSessionId, request.sessionId);
+    const turn = buildSessionTurn({
+      scope,
+      read: raw,
+      agent: initial.agent!,
+      prompt: 'Synthetic first child instruction',
+      operationId: 'child-first-operation',
+      turnId: 'child-first-turn',
+      peerId: 'child-client',
+      now: '2026-09-13T00:00:00.000Z',
+    });
+    assert.equal(f.prompts.length, 1, 'reading and building an offline turn cannot execute');
+    const delivered = await client.execute(
+      {
+        method: 'mutate',
+        workspaceId: scope.workspaceId,
+        localProjectId: scope.localProjectId,
+        params: turn,
+      },
+      scope.sessionId,
+    );
+    assert.equal(delivered.ok, true);
+    assert.equal(delivered.result.delivered, true);
+    await f.host.active.get(scope.sessionId)?.done;
+    const final = readClientSession(await read(), scope);
+    assert.equal(final.history[0]?.id, 'child-first-turn');
+    assert.equal(
+      (final.history[0]?.inputConfig as { prompt: string }).prompt,
+      'Synthetic first child instruction',
+    );
+    assert.equal(final.history.filter((entry) => entry.role === 'user').length, 1);
+    assert.equal(f.prompts.length, 2);
+    assert.equal(f.forks.length, 1);
+    assert.equal(f.opens.at(-1)?.native, native);
+    assert.equal(
+      f.store.nativeSession('child', f.host.executionLease(f.scope('child'), undefined, true)),
+      native,
+    );
+  }
 });

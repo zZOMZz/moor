@@ -181,15 +181,7 @@ export class Journal {
     );
     this.db
       .prepare('UPDATE operation SET phase=?,result=? WHERE id=?')
-      .run(
-        result.phase === 'accepted'
-          ? 'git-accepted'
-          : result.phase === 'rejected'
-            ? 'git-rejected'
-            : 'git-unknown',
-        JSON.stringify(result),
-        action.operationId,
-      );
+      .run('git-' + result.phase, JSON.stringify(result), action.operationId);
     return result;
   }
   close() {

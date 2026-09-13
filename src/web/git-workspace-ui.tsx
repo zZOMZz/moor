@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
 import { GitBranch, X } from 'lucide-react';
 import { paint } from './ui';
@@ -15,14 +15,25 @@ export type GitWorkspacePanelProps = {
   onRetry(): void;
   onNewDraft(): void;
   onWrite?(): void;
+  onInspect?(): void;
+  onAbandon?(): void;
+  onRecovery?(): void;
+  navigationDisabled?: boolean;
+  location?: ReactNode;
+  /** A changed directory must not inherit the previous cleanup consent. */
+  confirmationKey?: string;
 };
 export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
   const [baseline, setBaseline] = useState(''),
     [newBranch, setNewBranch] = useState(''),
-    [confirmRemove, setConfirmRemove] = useState(false);
+    [removeConsent, setRemoveConsent] = useState(''),
+    [abandonConsent, setAbandonConsent] = useState('');
   const controller = p.controller,
     state = controller?.state,
     execution = controller?.execution;
+  const confirmationKey = p.confirmationKey ?? 'legacy',
+    confirmRemove = removeConsent === confirmationKey,
+    originalKey = JSON.stringify(controller?.pending);
   const choice = state?.repository.branches.find(
     (branch) => JSON.stringify([branch.name, branch.oid]) === baseline,
   );
@@ -36,6 +47,33 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
   const blocked = Boolean(
     p.reason || controller?.busy || controller?.pending || controller?.loadError,
   );
+  const latest = useRef({
+    baseline,
+    newBranch,
+    removeConsent,
+    abandonConsent,
+    confirmationKey,
+    originalKey,
+    blocked,
+  });
+  latest.current = {
+    baseline,
+    newBranch,
+    removeConsent,
+    abandonConsent,
+    confirmationKey,
+    originalKey,
+    blocked,
+  };
+  const cleanup = (action?: () => void) => {
+    const current = latest.current;
+    if (
+      !current.blocked &&
+      current.confirmationKey === confirmationKey &&
+      current.removeConsent === confirmationKey
+    )
+      action?.();
+  };
   return (
     <Dialog.Root open onOpenChange={(open) => !open && p.onClose()}>
       <Dialog.Portal>
@@ -50,6 +88,12 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
           <Dialog.Description>
             查看当前会话的工作目录与 Git 状态。创建和清理目录都需要手动操作，不会自动运行 Agent。
           </Dialog.Description>
+          {p.location}
+          {p.onRecovery && (
+            <button disabled={p.navigationDisabled} onClick={p.onRecovery}>
+              原项目映射的 Git 记录
+            </button>
+          )}
           {p.onWrite && (
             <button disabled={blocked} onClick={p.onWrite}>
               提交与推送
@@ -67,12 +111,71 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
                   : controller.pending.request.action === 'detach'
                     ? '脱离'
                     : '清理'}
-                操作结果待确认。刷新和重连不会发送。手动重试沿用原请求；主机已记录的操作只核查结果，不重复执行。
+                {p.onInspect
+                  ? '操作结果待确认。刷新和重连不会发送；核查只读取原请求结果，封存不能撤销已执行的目录操作。'
+                  : '操作结果待确认。刷新和重连不会发送。手动重试沿用原请求；主机已记录的操作只核查结果，不重复执行。'}
               </p>
-              <button disabled={Boolean(p.reason) || controller.busy} onClick={p.onRetry}>
-                重试确认
+              {p.onInspect && (
+                <details>
+                  <summary>已保存的原 Git 请求</summary>
+                  <pre className="github-body">
+                    {JSON.stringify(controller.pending.request, null, 2)}
+                  </pre>
+                </details>
+              )}
+              <button
+                disabled={Boolean(p.reason) || controller.busy}
+                onClick={p.onInspect ?? p.onRetry}
+              >
+                {p.onInspect ? '核查原 Git 操作' : '重试确认'}
               </button>
+              {p.onAbandon && (
+                <>
+                  <label>
+                    <input
+                      type="checkbox"
+                      disabled={Boolean(p.reason) || controller.busy}
+                      checked={abandonConsent === originalKey}
+                      onChange={(event) =>
+                        setAbandonConsent(event.target.checked ? originalKey : '')
+                      }
+                    />
+                    我确认封存此原请求；已经执行的目录操作不会撤销
+                  </label>
+                  <button
+                    disabled={
+                      Boolean(p.reason) || controller.busy || abandonConsent !== originalKey
+                    }
+                    onClick={() => {
+                      const current = latest.current;
+                      if (
+                        !p.reason &&
+                        !controller.busy &&
+                        current.originalKey === originalKey &&
+                        current.abandonConsent === originalKey
+                      )
+                        p.onAbandon?.();
+                    }}
+                  >
+                    封存原 Git 操作
+                  </button>
+                </>
+              )}
             </div>
+          )}
+          {controller?.receipt && (
+            <p role="status">
+              原操作 {controller.receipt.operationId} ·{' '}
+              {
+                {
+                  accepted: '主机已确认',
+                  rejected: '主机已拒绝',
+                  unknown: '结果仍未知',
+                  abandoned: '原请求已封存',
+                }[controller.receipt.phase]
+              }
+              {controller.receipt.message ? ` · ${controller.receipt.message}` : ''}
+            </p>
           )}
           {execution && (
             <p>
@@ -138,7 +241,14 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
                 <form
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (choice) p.onPrepare(choice.name, choice.oid, newBranch);
+                    const current = latest.current;
+                    if (
+                      choice &&
+                      !current.blocked &&
+                      current.baseline === baseline &&
+                      current.newBranch === newBranch
+                    )
+                      p.onPrepare(choice.name, choice.oid, newBranch);
                   }}
                 >
                   <h3>为新会话创建独立工作目录</h3>
@@ -201,13 +311,15 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
                           type="checkbox"
                           checked={confirmRemove}
                           disabled={blocked}
-                          onChange={(event) => setConfirmRemove(event.target.checked)}
+                          onChange={(event) =>
+                            setRemoveConsent(event.target.checked ? confirmationKey : '')
+                          }
                         />
                         我确认脱离此会话，保留其他会话目录
                       </label>
                       <button
                         disabled={blocked || !confirmRemove || !p.onDetach}
-                        onClick={p.onDetach}
+                        onClick={() => cleanup(p.onDetach)}
                       >
                         脱离此会话，保留目录
                       </button>
@@ -219,11 +331,16 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
                           type="checkbox"
                           checked={confirmRemove}
                           disabled={blocked}
-                          onChange={(event) => setConfirmRemove(event.target.checked)}
+                          onChange={(event) =>
+                            setRemoveConsent(event.target.checked ? confirmationKey : '')
+                          }
                         />
                         我确认清理此会话的独立工作目录
                       </label>
-                      <button disabled={blocked || !confirmRemove} onClick={p.onRemove}>
+                      <button
+                        disabled={blocked || !confirmRemove}
+                        onClick={() => cleanup(p.onRemove)}
+                      >
                         清理工作目录
                       </button>
                     </>

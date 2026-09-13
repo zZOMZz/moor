@@ -8,12 +8,16 @@ const canonical = productCanonicalJson;
 const same = (left: unknown, right: unknown) => canonical(left) === canonical(right);
 const LIMIT_BYTES = 96 * 1024 * 1024;
 const prefixes = [
+  'git-workspace-v1/',
+  'session-fork-v1/',
   'github-binding-v1/',
   'github-write-v1/',
   'project-preview-v1/',
   'preview-annotations-v1/',
 ] as const;
 const namespaces = [
+  'git',
+  'fork',
   'github',
   'github-write',
   'preview',
@@ -57,6 +61,11 @@ export function sameSecureRuntime(left: SecureCliTarget, right: SecureCliTarget)
   const { product: _right, ...b } = secureTargetSchema.parse(right);
   return same(a, b);
 }
+export function sameSecureRuntimeProject(left: SecureCliTarget, right: SecureCliTarget) {
+  const { product: _left, sessionId: _leftSession, ...a } = secureTargetSchema.parse(left);
+  const { product: _right, sessionId: _rightSession, ...b } = secureTargetSchema.parse(right);
+  return same(a, b);
+}
 function authority(target: SecureCliTarget) {
   const { origin, owner, rootKeyId, clientDeviceId } = secureTargetSchema.parse(target);
   return { origin, owner, rootKeyId, clientDeviceId };
@@ -73,14 +82,19 @@ function validateRecord(record: SecureScopedRecord) {
   validKey(record.target, record.key);
   const projected = secureGitTarget(record.target);
   if (!same(projected, record.value.target)) throw Error('扩展记录的内外执行身份不一致。');
-  const pending = record.value.pending;
-  if (
-    pending &&
-    typeof pending === 'object' &&
-    'target' in pending &&
-    !same(pending.target, projected)
-  )
-    throw Error('待确认扩展操作不属于原执行身份。');
+  const originals: unknown[] = [record.value.pending, record.value.operation];
+  if (record.key.startsWith('session-fork-v1/') && Array.isArray(record.value.resources))
+    for (const resource of record.value.resources)
+      if (resource && typeof resource === 'object' && 'operation' in resource)
+        originals.push(resource.operation);
+  for (const pending of originals)
+    if (
+      pending &&
+      typeof pending === 'object' &&
+      'target' in pending &&
+      !same(pending.target, projected)
+    )
+      throw Error('待确认扩展操作不属于原执行身份。');
 }
 
 /** Isolated records for finite controllers. Legacy cache keys never address legacy storage. */
@@ -110,6 +124,15 @@ export class SecureScopedStorage {
     current();
     return structuredClone(
       loaded.document.records.filter((record) => sameSecureRuntime(record.target, target)),
+    );
+  }
+  /** A Fork's original source row also protects its child within the same runtime project. */
+  async listProject(input: SecureCliTarget, current: () => void): Promise<SecureScopedRecord[]> {
+    const target = secureTargetSchema.parse(input);
+    const loaded = await this.#load(target, current);
+    current();
+    return structuredClone(
+      loaded.document.records.filter((record) => sameSecureRuntimeProject(record.target, target)),
     );
   }
   async read(input: SecureCliTarget, key: string, current: () => void): Promise<unknown> {

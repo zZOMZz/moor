@@ -195,3 +195,54 @@ test('runtime execution locks cover old mappings and cancel a queued scope witho
   await rejected;
   assert.equal(called, false);
 });
+
+test('Git and Fork rows retain original source identity while child lookup stays in the exact runtime project', async () => {
+  const { store } = fixture();
+  const child = { ...target, sessionId: 'child' };
+  const mapped = { ...target, product: { ...target.product!, revision: 2 } };
+  const address = (value: SecureCliTarget, prefix: string) =>
+    gitWorkspaceKey(secureGitTarget(value)).replace('git-workspace-v1/', prefix);
+  await store.compareWrite(target, address(target, 'session-fork-v1/'), 0, row(), current);
+  await store.compareWrite(child, address(child, 'git-workspace-v1/'), 0, row(child), current);
+  await store.compareWrite(mapped, address(mapped, 'session-fork-v1/'), 0, row(mapped), current);
+  assert.equal((await store.list(child, current)).length, 1);
+  assert.deepEqual(
+    (await store.listProject(child, current)).map((record) => record.target),
+    [target, child, mapped],
+  );
+  for (const field of [
+    'origin',
+    'owner',
+    'rootKeyId',
+    'clientDeviceId',
+    'hostDeviceId',
+    'workspaceId',
+    'localProjectId',
+    'userId',
+    'machineId',
+  ]) {
+    const other = {
+      ...child,
+      [field]:
+        field === 'origin'
+          ? 'https://other.invalid'
+          : field === 'rootKeyId'
+            ? Buffer.alloc(32, 2).toString('base64url')
+            : 'foreign',
+    };
+    assert.equal((await store.listProject(other, current)).length, 0, field);
+  }
+  const foreign = { target: secureGitTarget(child) };
+  for (const extra of [{ operation: foreign }, { resources: [{ operation: foreign }] }])
+    await assert.rejects(
+      store.compareWrite(
+        target,
+        address(target, 'session-fork-v1/'),
+        1,
+        { ...row(target, 2), ...extra },
+        current,
+      ),
+      /原执行身份/,
+    );
+  assert.deepEqual(await store.read(target, address(target, 'session-fork-v1/'), current), row());
+});

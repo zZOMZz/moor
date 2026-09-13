@@ -1804,3 +1804,262 @@ test('root preflight permits an ordinary reviewed commit and its own newly stage
   assert.deepEqual(actions[0].command.params, reviewed);
   assert.equal(f.prompts(), 0);
 });
+
+test('workspace broker accepts only finite reviewed scope and requires the secure Git/Fork capability', async (t) => {
+  const f = await fixture(t);
+  prepareSyntheticGit(f.project);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!;
+  const read = {
+    gitVersion: 1,
+    workspaceId: target.workspaceId,
+    localProjectId: target.localProjectId,
+    sessionId: target.sessionId,
+  };
+  const result = (await f.controller.scopedRequest(target, 'git-state', read, () => {})) as {
+    confirmed: boolean;
+  };
+  assert.equal(result.confirmed, true);
+  await f.controller.beforeWorkspaceWrite(target, 'git', () => {});
+  const count = f.requests.length;
+  await assert.rejects(
+    f.controller.scopedRequest(
+      target,
+      'git-state',
+      { ...read, sessionId: 'copied-child' },
+      () => {},
+    ),
+    /范围不匹配/,
+  );
+  await assert.rejects(
+    f.controller.scopedRequest(
+      { ...target, sessionId: 'copied-child' },
+      'git-state',
+      { ...read, sessionId: 'copied-child' },
+      () => {},
+    ),
+    /已改变/,
+  );
+  await assert.rejects(
+    f.controller.workspaceResourceRequest(
+      target,
+      'copied-child',
+      'git-state',
+      { ...read, sessionId: 'copied-child' },
+      () => {},
+    ),
+    /尚未确认/,
+  );
+  assert.equal(
+    f.requests.length,
+    count,
+    'ordinary child reads cannot bypass the selected session or fabricate resource authority',
+  );
+  f.fault.omitExtensionFeature = 'secure-git-operations-v1';
+  await f.controller.selectHost('host');
+  await f.controller.selectReplica('replica');
+  await f.controller.openSession(target.sessionId);
+  const before = f.requests.length;
+  await assert.rejects(
+    f.controller.scopedRequest(target, 'git-state', read, () => {}),
+    /完整的加密扩展授权/,
+  );
+  await assert.rejects(
+    f.controller.beforeWorkspaceWrite(target, 'git', () => {}),
+    /完整的加密扩展授权/,
+  );
+  assert.equal(f.requests.length, before);
+});
+
+test('all new execution paths respect durable original Fork requests, including an older product mapping', async (t) => {
+  const f = await fixture(t);
+  prepareSyntheticGit(f.project);
+  await f.ready();
+  await f.create();
+  const originalTarget = structuredClone(f.controller.contentContext.target!);
+  f.products.replicas[0].revision++;
+  await f.controller.selectHost('host');
+  await f.controller.selectReplica('replica');
+  await f.controller.openSession(originalTarget.sessionId);
+  const target = f.controller.contentContext.target!,
+    inner = secureGitTarget(originalTarget);
+  const { sessionForkKey } = await import('../src/web/session-fork');
+  const operation = {
+    target: inner,
+    sourceExecution: { mode: 'shared', status: 'ready', revision: 0 },
+    request: {
+      forkVersion: 1,
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      sessionId: target.sessionId,
+      operationId: 'pending-original-fork',
+      childSessionId: 'reserved-child',
+      expectedSourceVersion: 'sha256:' + 'a'.repeat(64),
+      expectedExecutionRevision: 0,
+      cutoff: { kind: 'current' },
+      directory: { kind: 'same-directory' },
+    },
+  };
+  await f.controller.extensionStorage.compareWrite(
+    originalTarget,
+    sessionForkKey(inner),
+    0,
+    { version: 1, cacheRevision: 1, target: inner, operation, resources: [] },
+    () => {},
+  );
+  await f.controller.refreshExtensionRecords(target, () => {});
+  assert.match(f.controller.state.extensionBlock!, /Fork 结果待确认/);
+  const before = f.requests.length;
+  const records = structuredClone([...f.memory.values]);
+  await assert.rejects(f.controller.send('Must not execute'), /Fork 结果待确认/);
+  await assert.rejects(
+    f.controller.beforeExtensionWrite(target, () => {}),
+    /Fork 结果待确认/,
+  );
+  await assert.rejects(
+    f.controller.beforeWorkspaceWrite(target, 'git', () => {}),
+    /Fork 结果待确认/,
+  );
+  await assert.rejects(
+    f.controller.beforeWorkspaceWrite(target, 'fork', () => {}),
+    /Fork 结果待确认/,
+  );
+  assert.equal(f.requests.length, before);
+  assert.deepEqual([...f.memory.values], records);
+  await assert.rejects(
+    f.controller.scopedRequest(originalTarget, 'fork-action', operation.request, () => {}),
+    /已改变/,
+  );
+  const inspected = (await f.controller.scopedRequest(
+    originalTarget,
+    'fork-operations',
+    { action: 'inspect', request: operation.request },
+    () => {},
+  )) as { found: boolean };
+  assert.equal(inspected.found, false);
+  const last = f.requests.at(-1)!;
+  assert.equal(last.action, 'execute');
+  if (last.action !== 'execute') throw Error('Expected original recovery');
+  assert.deepEqual(last.target, originalTarget.product);
+  assert.deepEqual(last.command.params, { action: 'inspect', request: operation.request });
+  assert.equal(f.prompts(), 0);
+});
+
+test('workspace reads and resource proofs fail closed after a selected session ABA', async (t) => {
+  const f = await fixture(t);
+  prepareSyntheticGit(f.project);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    entered = signal(),
+    finish = signal();
+  f.fault.before = async (input) => {
+    if (input.action === 'execute' && input.command.method === 'git-state') {
+      entered.resolve();
+      await finish.promise;
+    }
+  };
+  const pending = f.controller.scopedRequest(
+    target,
+    'git-state',
+    {
+      gitVersion: 1,
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      sessionId: target.sessionId,
+    },
+    () => {},
+  );
+  await entered.promise;
+  await f.controller.openSession(target.sessionId);
+  finish.resolve();
+  await assert.rejects(pending, /已改变/);
+  assert.equal(f.prompts(), 0);
+});
+
+test('a reserved child can inspect only the exact persisted source Fork, without broad cross-session authority', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const source = structuredClone(f.controller.contentContext.target!);
+  await f.controller.createSession('agent', 'Synthetic reserved child');
+  await f.controller.refreshSessions();
+  const childId = f.controller.state.sessions.find((item) => item.id !== source.sessionId)!.id;
+  await f.controller.openSession(childId);
+  const child = f.controller.contentContext.target!,
+    inner = secureGitTarget(source);
+  const { sessionForkKey } = await import('../src/web/session-fork');
+  const request = {
+    forkVersion: 1,
+    workspaceId: source.workspaceId,
+    localProjectId: source.localProjectId,
+    sessionId: source.sessionId,
+    operationId: 'original-parent-fork',
+    childSessionId: childId,
+    expectedSourceVersion: 'sha256:' + 'a'.repeat(64),
+    expectedExecutionRevision: 0,
+    cutoff: { kind: 'current' },
+    directory: { kind: 'same-directory' },
+  };
+  await f.controller.extensionStorage.compareWrite(
+    source,
+    sessionForkKey(inner),
+    0,
+    {
+      version: 1,
+      cacheRevision: 1,
+      target: inner,
+      operation: {
+        target: inner,
+        request,
+        sourceExecution: { mode: 'shared', status: 'ready', revision: 0 },
+      },
+      resources: [],
+    },
+    () => {},
+  );
+  const before = f.requests.length;
+  await assert.rejects(
+    f.controller.scopedRequest(
+      source,
+      'fork-operations',
+      { action: 'inspect', request: { ...request, operationId: 'copied' } },
+      () => {},
+    ),
+    /原 Fork 请求不匹配/,
+  );
+  await assert.rejects(
+    f.controller.scopedRequest(source, 'fork-action', request, () => {}),
+    /已改变/,
+  );
+  await assert.rejects(
+    f.controller.scopedRequest(
+      source,
+      'git-state',
+      {
+        gitVersion: 1,
+        workspaceId: source.workspaceId,
+        localProjectId: source.localProjectId,
+        sessionId: source.sessionId,
+      },
+      () => {},
+    ),
+    /已改变/,
+  );
+  assert.equal(f.requests.length, before);
+  const result = (await f.controller.scopedRequest(
+    source,
+    'fork-operations',
+    { action: 'inspect', request },
+    () => {},
+  )) as { found: boolean };
+  assert.equal(result.found, false);
+  assert.deepEqual(f.controller.contentContext.target, child);
+  const sent = f.requests.at(-1)!;
+  assert.equal(sent.action, 'execute');
+  if (sent.action !== 'execute') throw Error('Expected exact original recovery');
+  assert.deepEqual(sent.target, source.product);
+  assert.deepEqual(sent.command.params, { action: 'inspect', request });
+  assert.equal(f.prompts(), 0);
+});

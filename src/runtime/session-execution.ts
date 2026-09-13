@@ -9,6 +9,10 @@ import type { ContentScope } from '../content-protocol';
 import type { AttachmentScope, RuntimeStore } from './store';
 import {
   gitActionSchema,
+  gitOperationSchema,
+  gitOperationResultSchema,
+  type GitOperation,
+  type GitOperationResult,
   gitActionReceiptSchema,
   gitStateReadSchema,
   gitStateResultSchema,
@@ -38,6 +42,8 @@ export type ExecutionRecord = {
   plan: WorktreePlan;
   managed?: ManagedWorktree;
   operationId: string;
+  /** Explicit false proves the guarded writer has never dispatched; absent is legacy unknown. */
+  dispatched?: boolean;
 };
 export type ExecutionLease = AttachmentScope & {
   rootPath: string;
@@ -249,13 +255,47 @@ export class SessionExecutionManager {
     }
   }
   private fresh(scope: AttachmentScope) {
-    return (
-      !this.host.store.searchSource(scope.sessionId) &&
-      !this.host.store.hasNativeSession(scope.sessionId) &&
-      !metas(this.host.store.meta)['session-' + scope.sessionId]
-    );
+    const store = this.host.store,
+      source = store.searchSource(scope.sessionId),
+      meta = metas(store.meta)['session-' + scope.sessionId];
+    if (store.hasNativeSession(scope.sessionId)) return false;
+    if (!source && !meta) return true; // A v3 local draft has not been persisted yet.
+    const agent = store.agents.binding(scope),
+      project = meta?.project as { kind?: string; localProjectId?: string } | undefined;
+    if (
+      source?.revision !== 1 ||
+      !meta ||
+      meta.id !== scope.sessionId ||
+      meta.userId !== scope.userId ||
+      meta.machineId !== scope.machineId ||
+      project?.kind !== 'local' ||
+      project.localProjectId !== scope.localProjectId ||
+      meta.isArchived !== false ||
+      (meta.status as { type?: string } | undefined)?.type !== 'idle' ||
+      meta.latestUserMsgId ||
+      meta.lastHandledUserMsgId ||
+      meta.forkOrigin ||
+      !agent ||
+      agent.id !== meta.agentConfigId ||
+      agent.machineId !== scope.machineId ||
+      agent.cliType !== meta.cliType ||
+      agent.agentType !== meta.agentType
+    )
+      return false;
+    const view = mirror(store.doc(scope.sessionId), scope.sessionId);
+    try {
+      const state = view.getState();
+      return state.session.id === scope.sessionId && state.history.length === 0;
+    } finally {
+      view.dispose();
+    }
   }
-  async read(input: GitStateRead, localProjectId?: string): Promise<GitStateResult> {
+  async read(
+    input: GitStateRead,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GitStateResult> {
+    checkpoint?.();
     const request = gitStateReadSchema.parse(input),
       lease = this.host.projectRootLease(request, localProjectId),
       scope = this.scope(lease);
@@ -267,6 +307,7 @@ export class SessionExecutionManager {
         repository = unavailable(execution.reason ?? '此会话工作目录当前不可读取');
       else {
         const result = await this.git.inspectProjectWorktree(record.repository, record.managed);
+        checkpoint?.();
         this.current(lease);
         if (result.status === 'ready') repository = result.state;
         else {
@@ -276,6 +317,7 @@ export class SessionExecutionManager {
       }
     } else {
       repository = (await this.git.readProjectGit(lease.rootPath)).state;
+      checkpoint?.();
       this.current(lease);
     }
     const latest = this.host.store.executions.info(scope);
@@ -319,7 +361,12 @@ export class SessionExecutionManager {
         !this.host.store.forks.blocked(scope.sessionId),
     });
   }
-  async action(input: GitAction, localProjectId?: string): Promise<GitActionReceipt> {
+  async action(
+    input: GitAction,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GitActionReceipt> {
+    checkpoint?.();
     const action = gitActionSchema.parse(input);
     assert(
       this.host.taskManager?.allowsGit(action.sessionId, action.operationId) !== false,
@@ -335,6 +382,7 @@ export class SessionExecutionManager {
     this.busy.add(action.sessionId);
     try {
       return await this.host.serial(action.sessionId, async () => {
+        checkpoint?.();
         assert(
           this.host.store.forks.allowsGit(action.sessionId, action.operationId),
           409,
@@ -345,14 +393,14 @@ export class SessionExecutionManager {
           store = this.host.store;
         const journalScope = JSON.stringify(values(scope)),
           previous = store.journal.lookup(journalScope, action);
-        if (previous && ['git-accepted', 'git-rejected'].includes(previous.phase))
+        if (previous && ['git-accepted', 'git-rejected', 'git-abandoned'].includes(previous.phase))
           return gitActionReceiptSchema.parse(JSON.parse(previous.result));
         if (previous) {
           assert(['git-staged', 'git-unknown'].includes(previous.phase), 409, 'Git 操作编号已使用');
           const record = store.executions.get(scope);
           assert(record?.operationId === action.operationId, 409, '此会话的 Git 操作已变化');
           return repositorySerial(record.repository.id, () =>
-            this.recover(action, lease, record, journalScope),
+            this.recover(action, lease, record, journalScope, checkpoint),
           );
         }
         assert(this.idle(scope.sessionId), 409, '请先停止活动回合并保存结果，再处理工作目录');
@@ -362,6 +410,7 @@ export class SessionExecutionManager {
         if (action.action === 'prepare') {
           assert(!record && this.fresh(scope), 409, '只能为尚未发送指令的新会话准备工作目录');
           const read = await this.git.readProjectGit(lease.rootPath);
+          checkpoint?.();
           this.current(lease);
           assert(
             read.repository && read.state.writeSupported,
@@ -369,6 +418,7 @@ export class SessionExecutionManager {
             '此项目当前不支持准备 Git 工作目录',
           );
           return repositorySerial(read.repository.id, async () => {
+            checkpoint?.();
             this.current(lease);
             assert(this.idle(scope.sessionId) && this.fresh(scope), 409, '会话状态已变化');
             const executionId = 'execution_' + randomUUID();
@@ -383,6 +433,7 @@ export class SessionExecutionManager {
               repository: read.repository!,
               plan,
               operationId: action.operationId,
+              dispatched: false,
               execution: {
                 mode: 'worktree',
                 status: 'creating',
@@ -394,7 +445,14 @@ export class SessionExecutionManager {
             };
             this.stage(action, staged, journalScope);
             try {
-              const managed = await this.git.prepareProjectWorktree(staged.repository, plan);
+              const managed = await this.git.prepareProjectWorktree(staged.repository, plan, {
+                assertCurrent: () => {
+                  checkpoint?.();
+                  this.current(lease);
+                },
+                onDispatched: () => this.dispatched(staged, action, journalScope),
+              });
+              checkpoint?.();
               this.current(lease);
               return this.accept(
                 action,
@@ -417,6 +475,7 @@ export class SessionExecutionManager {
           '只能清理此会话已确认的 Moor 工作目录',
         );
         return repositorySerial(record.repository.id, async () => {
+          checkpoint?.();
           this.current(lease);
           assert(this.idle(scope.sessionId), 409, '活动会话不能清理工作目录');
           const bindings = store.executions.boundSessions(scope, info.executionId);
@@ -433,6 +492,7 @@ export class SessionExecutionManager {
               },
             };
             return store.transaction(() => {
+              checkpoint?.();
               store.journal.stageGit(journalScope, action, detached);
               const result = gitActionReceiptSchema.parse({
                 gitVersion: 1,
@@ -454,6 +514,7 @@ export class SessionExecutionManager {
             record.repository,
             record.managed!,
           );
+          checkpoint?.();
           this.current(lease);
           assert(
             inspected.status === 'ready' &&
@@ -468,6 +529,7 @@ export class SessionExecutionManager {
           const staged = {
             ...record,
             operationId: action.operationId,
+            dispatched: false,
             execution: {
               ...record.execution,
               status: 'removing' as const,
@@ -476,9 +538,21 @@ export class SessionExecutionManager {
           };
           this.stage(action, staged, journalScope);
           try {
-            await this.git.removeProjectWorktree(record.repository, record.managed!, {
-              expectedStateVersion: action.expectedStateVersion,
-            });
+            await this.git.removeProjectWorktree(
+              record.repository,
+              record.managed!,
+              {
+                expectedStateVersion: action.expectedStateVersion,
+              },
+              {
+                assertCurrent: () => {
+                  checkpoint?.();
+                  this.current(lease);
+                },
+                onDispatched: () => this.dispatched(staged, action, journalScope),
+              },
+            );
+            checkpoint?.();
             this.current(lease);
             return this.accept(
               action,
@@ -497,6 +571,122 @@ export class SessionExecutionManager {
       });
     } finally {
       this.busy.delete(action.sessionId);
+    }
+  }
+  private dispatched(record: ExecutionRecord, action: GitAction, journalScope: string) {
+    this.host.store.transaction(() => {
+      const saved = this.host.store.executions.get(record.scope);
+      assert(saved?.operationId === action.operationId, 409, 'Git 原操作已变化');
+      assert(
+        this.host.store.journal.lookup(journalScope, action)?.phase === 'git-staged',
+        409,
+        'Git 原操作已结束',
+      );
+      record.dispatched = true;
+      this.host.store.executions.put({ ...saved, dispatched: true });
+    });
+  }
+  async operations(
+    input: GitOperation,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<GitOperationResult> {
+    const operation = gitOperationSchema.parse(input),
+      request = operation.request;
+    checkpoint?.();
+    assert(!this.busy.has(request.sessionId), 409, 'Git 原操作仍在执行，请等待原请求结束');
+    this.busy.add(request.sessionId);
+    try {
+      return await this.host.serial(request.sessionId, async () => {
+        const lease = this.host.projectRootLease(request, localProjectId),
+          scope = this.scope(lease),
+          store = this.host.store;
+        const current = () => {
+          checkpoint?.();
+          this.current(lease);
+        };
+        current();
+        const journalScope = JSON.stringify(values(scope));
+        const base = {
+          gitVersion: 1 as const,
+          workspaceId: request.workspaceId,
+          localProjectId: request.localProjectId,
+          sessionId: request.sessionId,
+          operationId: request.operationId,
+          action: operation.action,
+          requestVersion:
+            'sha256:' + createHash('sha256').update(JSON.stringify(request)).digest('hex'),
+          confirmed: true as const,
+        };
+        const result = (receipt?: GitActionReceipt) => {
+          current();
+          return gitOperationResultSchema.parse(
+            receipt ? { ...base, found: true, receipt } : { ...base, found: false },
+          );
+        };
+        const previous = store.journal.lookup(journalScope, request);
+        if (!previous) {
+          if (operation.action === 'inspect') return result();
+          const receipt = gitActionReceiptSchema.parse({
+            gitVersion: 1,
+            workspaceId: request.workspaceId,
+            localProjectId: request.localProjectId,
+            sessionId: request.sessionId,
+            operationId: request.operationId,
+            phase: 'abandoned',
+            confirmed: false,
+            execution: store.executions.info(scope),
+            message: '原 Git 请求已封存，不会执行迟到的同编号请求。',
+          });
+          store.transaction(() => {
+            current();
+            store.journal.stageGit(journalScope, request, null);
+            store.journal.settleGit(journalScope, request, receipt);
+          });
+          return result(receipt);
+        }
+        assert(previous.phase.startsWith('git-'), 409, '原操作编号属于另一类操作');
+        if (['git-accepted', 'git-rejected', 'git-abandoned'].includes(previous.phase))
+          return result(gitActionReceiptSchema.parse(JSON.parse(previous.result)));
+        const record = store.executions.get(scope);
+        assert(record?.operationId === request.operationId, 409, 'Git 原操作执行记录不匹配');
+        if (operation.action === 'abandon' && record.dispatched === false) {
+          const execution =
+            request.action === 'prepare'
+              ? shared()
+              : {
+                  ...record.execution,
+                  status: 'ready' as const,
+                  revision: request.expectedRevision,
+                  reason: undefined,
+                };
+          const receipt = gitActionReceiptSchema.parse({
+            gitVersion: 1,
+            workspaceId: request.workspaceId,
+            localProjectId: request.localProjectId,
+            sessionId: request.sessionId,
+            operationId: request.operationId,
+            phase: 'abandoned',
+            confirmed: false,
+            execution,
+            message: '主机已确认原 Git 写入尚未派发，并已封存原请求。',
+          });
+          store.transaction(() => {
+            current();
+            if (request.action === 'prepare')
+              store.executions.removeRejected(scope, request.operationId);
+            else store.executions.put({ ...record, execution });
+            store.journal.settleGit(journalScope, request, receipt);
+          });
+          return result(receipt);
+        }
+        const receipt = await repositorySerial(record.repository.id, () =>
+          this.recover(request, lease, record, journalScope, checkpoint),
+        );
+        return result(receipt);
+      });
+    } finally {
+      this.busy.delete(request.sessionId);
     }
   }
   private stage(action: GitAction, record: ExecutionRecord, journalScope: string) {
@@ -528,6 +718,9 @@ export class SessionExecutionManager {
     record: ExecutionRecord,
     journalScope: string,
   ): GitActionReceipt {
+    const durable = this.host.store.executions.get(record.scope);
+    if (durable?.operationId === action.operationId && durable.dispatched === true)
+      record = { ...record, dispatched: true };
     const execution = { ...record.execution, status: 'unknown' as const, reason: safeMessage };
     const result = gitActionReceiptSchema.parse({
       gitVersion: 1,
@@ -586,14 +779,28 @@ export class SessionExecutionManager {
     lease: RootLease,
     record: ExecutionRecord,
     journalScope: string,
+    checkpoint?: () => void,
   ) {
     try {
+      checkpoint?.();
       this.current(lease);
+      assert(
+        record.repository.projectRoot === realpathSync(lease.rootPath),
+        409,
+        '原 Git 操作的项目目录已变化',
+      );
       assert(this.idle(record.scope.sessionId), 409, '活动会话不能恢复 Git 操作');
       const result = await this.git.inspectProjectWorktree(
         record.repository,
         record.managed ?? record.plan,
+        {
+          assertCurrent: () => {
+            checkpoint?.();
+            this.current(lease);
+          },
+        },
       );
+      checkpoint?.();
       this.current(lease);
       const { reason: _reason, ...execution } = record.execution;
       if (action.action === 'prepare' && result.status === 'ready')
@@ -615,6 +822,7 @@ export class SessionExecutionManager {
     } catch {
       /* Inspection never repeats a Git mutation. */
     }
+    checkpoint?.();
     return this.unknown(action, record, journalScope);
   }
 }

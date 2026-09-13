@@ -1,4 +1,7 @@
 import test from 'node:test';
+import { encryptedCommandHost } from './support/encrypted-command-host';
+import { mappedHost } from './support/mapped-host';
+import type { HostCommand } from '../src/bridge/host-command';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -134,17 +137,19 @@ function fixture(t: { after(fn: () => unknown): void }, subproject = false) {
     async prepareProjectWorktree(
       repo: Parameters<typeof prepareProjectWorktree>[0],
       plan: Parameters<typeof prepareProjectWorktree>[1],
+      options: ProjectGitOptions = {},
     ) {
       prepares++;
-      return prepareProjectWorktree(repo, plan, { checkpoint });
+      return prepareProjectWorktree(repo, plan, { ...options, checkpoint });
     },
     async removeProjectWorktree(
       repo: Parameters<typeof removeProjectWorktree>[0],
       managed: Parameters<typeof removeProjectWorktree>[1],
       input: Parameters<typeof removeProjectWorktree>[2],
+      options: ProjectGitOptions = {},
     ) {
       removes++;
-      const result = await removeProjectWorktree(repo, managed, input, { checkpoint });
+      const result = await removeProjectWorktree(repo, managed, input, { ...options, checkpoint });
       afterRemove?.();
       return result;
     },
@@ -683,4 +688,297 @@ test('external branch changes reject both the first turn and native resume befor
   await f.finish();
   assert.equal(f.opens[1]!.cwd, cwd);
   assert.equal(f.opens[1]!.native, 'synthetic-native');
+});
+
+test('encrypted Git revocation before the actual subprocess dispatch leaves the branch absent and another channel can inspect the original', async (t) => {
+  const f = fixture(t),
+    request = f.prepare(),
+    entered = signal(),
+    release = signal();
+  const encrypted = await encryptedCommandHost(t, () => f.host),
+    first = await encrypted.connect(),
+    second = await encrypted.connect();
+  f.checkpoint = async (stage) => {
+    if (stage === 'before-prepare') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const command: HostCommand = {
+    method: 'git-action',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: request,
+  };
+  const pending = first.execute(command, request.sessionId);
+  await entered.promise;
+  first.retire();
+  release.resolve();
+  await assert.rejects(pending);
+  assert.throws(() =>
+    git(f.repository, 'rev-parse', '--verify', 'refs/heads/' + request.newBranch),
+  );
+  const inspected = await second.execute(
+    { ...command, method: 'git-operations', params: { action: 'inspect', request } },
+    request.sessionId,
+  );
+  assert.equal(inspected.ok, true);
+  assert.equal(inspected.result.found, true);
+  assert.equal(inspected.result.receipt.phase, 'rejected');
+  assert.equal(f.prepares, 1);
+  assert.equal((await f.read()).execution.mode, 'shared');
+});
+
+test('encrypted Git revocation after the worktree write preserves its unknown original and another channel confirms without another mutation', async (t) => {
+  const f = fixture(t),
+    request = f.prepare(),
+    entered = signal(),
+    release = signal();
+  const encrypted = await encryptedCommandHost(t, () => f.host),
+    first = await encrypted.connect(),
+    second = await encrypted.connect();
+  f.checkpoint = async (stage) => {
+    if (stage === 'after-prepare') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const command: HostCommand = {
+    method: 'git-action',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: request,
+  };
+  const pending = first.execute(command, request.sessionId);
+  await entered.promise;
+  const concurrent = await second.execute(
+    { ...command, method: 'git-operations', params: { action: 'abandon', request } },
+    request.sessionId,
+  );
+  assert.equal(concurrent.ok, false);
+  first.retire();
+  release.resolve();
+  await assert.rejects(pending);
+  assert.equal((await f.read()).execution.status, 'unknown');
+  const inspected = await second.execute(
+    { ...command, method: 'git-operations', params: { action: 'inspect', request } },
+    request.sessionId,
+  );
+  assert.equal(inspected.ok, true);
+  assert.equal(inspected.result.receipt.phase, 'accepted');
+  assert.equal(inspected.result.receipt.execution.status, 'ready');
+  assert.equal(f.prepares, 1);
+});
+
+test('never-arrived Git operations inspect and seal a Host-proven old mapping after cold restart without creating a worktree', async (t) => {
+  const f = fixture(t),
+    request = f.prepare(),
+    mapped = mappedHost(() => f.host),
+    original = mapped.target();
+  const action: HostCommand = {
+    method: 'git-action',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: request,
+  };
+  const recovery = (kind: 'inspect' | 'abandon'): HostCommand => ({
+    ...action,
+    method: 'git-operations',
+    params: { action: kind, request },
+  });
+  mapped.move();
+  f.restart();
+  mapped.reopen();
+  assert.equal(((await mapped.execute(original, recovery('inspect'))) as any).found, false);
+  assert.equal(f.store.journal.has(request.operationId), false);
+  const sealed = (await mapped.execute(original, recovery('abandon'))) as any;
+  assert.equal(sealed.receipt.phase, 'abandoned');
+  f.restart();
+  mapped.reopen();
+  assert.equal(
+    ((await mapped.execute(original, recovery('inspect'))) as any).receipt.phase,
+    'abandoned',
+  );
+  for (const target of [original, mapped.target()])
+    await assert.rejects(mapped.execute(target, action));
+  assert.equal((await f.host.gitAction(request)).phase, 'abandoned');
+  assert.equal(f.prepares, 0);
+});
+
+test('only durable never-dispatched proof permits sealing an unresolved Git reservation after restart', async (t) => {
+  for (const legacy of [false, true]) {
+    const f = fixture(t),
+      request = f.prepare();
+    f.checkpoint = (stage) => {
+      if (stage === 'before-prepare') throw Error('Synthetic failure before Git dispatch');
+    };
+    f.store.journal.db.exec(
+      "CREATE TRIGGER fail_git_receipt BEFORE UPDATE ON operation BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END",
+    );
+    assert.equal((await f.host.gitAction(request)).phase, 'unknown');
+    const scope = { ...f.scope(), userId: 'local:synthetic', machineId: 'machine' };
+    const record = f.store.executions.get(scope)!;
+    assert.equal(record.dispatched, false);
+    assert.equal(existsSync(record.plan.targetPath), false);
+    if (legacy) {
+      const { dispatched: _dispatched, ...oldRecord } = record;
+      f.store.executions.put(oldRecord);
+    }
+    f.restart();
+    f.store.journal.db.exec('DROP TRIGGER fail_git_receipt');
+    const result = await f.host.gitOperations({ action: 'abandon', request }, 'project');
+    assert.equal(result.found, true);
+    if (!result.found) throw Error('Missing original');
+    assert.equal(result.receipt.phase, legacy ? 'unknown' : 'abandoned');
+    assert.equal(Boolean(f.store.executions.get(scope)), legacy);
+    assert.equal(f.prepares, 1, 'inspection and sealing do not call the Git writer again');
+    assert.throws(() =>
+      git(f.repository, 'rev-parse', '--verify', 'refs/heads/' + request.newBranch),
+    );
+    assert.equal((await f.host.gitAction(request)).phase, legacy ? 'unknown' : 'abandoned');
+    assert.equal(f.prepares, 1);
+  }
+});
+
+test('Git old-mapping recovery refuses missing Host history, directory generation changes and conflicting original claims', async (t) => {
+  for (const scenario of ['missing-history', 'generation', 'new-target-claim', 'changed-body']) {
+    const f = fixture(t),
+      request = f.prepare(),
+      mapped = mappedHost(() => f.host),
+      target = mapped.target();
+    const action: HostCommand = {
+      method: 'git-action',
+      workspaceId: 'workspace',
+      localProjectId: 'project',
+      params: request,
+    };
+    mapped.move();
+    if (scenario === 'missing-history')
+      f.store.journal.db.exec('DELETE FROM encrypted_product_mapping');
+    if (scenario === 'generation') {
+      const project = f.store.machine.get(['localProject', 'project']) as object;
+      f.store.machine.set(['localProject', 'project'], { ...project, rootPath: f.privateRoot });
+      f.host.updateCatalogue();
+      mapped.products.synchronize();
+      f.store.machine.set(['localProject', 'project'], { ...project, rootPath: f.root });
+      f.host.updateCatalogue();
+      mapped.products.synchronize();
+    }
+    if (scenario === 'new-target-claim') mapped.products.bindOperation(mapped.target(), action);
+    if (scenario === 'changed-body') {
+      await mapped.execute(target, {
+        ...action,
+        method: 'git-operations',
+        params: { action: 'abandon', request },
+      });
+      request.newBranch += '-changed';
+    }
+    for (const kind of ['inspect', 'abandon'] as const)
+      await assert.rejects(
+        mapped.execute(target, {
+          ...action,
+          method: 'git-operations',
+          params: { action: kind, request },
+        }),
+      );
+    assert.equal(f.prepares, 0);
+  }
+});
+
+test('a Host-confirmed empty session can prepare its first worktree through the encrypted channel and keeps the pinned Agent', async (t) => {
+  const f = fixture(t),
+    encrypted = await encryptedCommandHost(t, () => f.host),
+    client = await encrypted.connect();
+  const scope = f.scope();
+  const created = await client.execute(
+    {
+      method: 'session-control',
+      workspaceId: scope.workspaceId,
+      localProjectId: scope.localProjectId,
+      params: {
+        ...scope,
+        controlVersion: 1,
+        userId: 'local:synthetic',
+        machineId: 'machine',
+        operationId: 'create-empty',
+        action: 'create',
+        agentId: 'agent',
+      },
+    },
+    scope.sessionId,
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.result.status, 'accepted');
+  assert.equal((await f.read()).canPrepare, true);
+  const request = f.prepare();
+  const prepared = await client.execute(
+    {
+      method: 'git-action',
+      workspaceId: scope.workspaceId,
+      localProjectId: scope.localProjectId,
+      params: request,
+    },
+    scope.sessionId,
+  );
+  assert.equal(prepared.ok, true);
+  assert.equal(prepared.result.phase, 'accepted');
+  assert.equal(prepared.result.execution.branch, request.newBranch);
+  assert.equal(
+    f.opens.length,
+    0,
+    'creating and preparing an empty session do not launch the Agent',
+  );
+  assert.equal(
+    f.store.agents.binding({ ...scope, userId: 'local:synthetic', machineId: 'machine' })!.id,
+    'agent',
+  );
+  await f.start();
+  await f.finish();
+  assert.equal((await f.read()).canPrepare, false);
+  assert.equal(f.prepares, 1);
+  assert.notEqual(f.opens[0]!.cwd, f.root);
+});
+
+test('persisted session freshness refuses archived, previously used, native Fork and mismatched Agent metadata even with empty visible history', async (t) => {
+  for (const scenario of [
+    'archived',
+    'handled',
+    'pending',
+    'fork',
+    'agent',
+    'native',
+    'rewritten',
+  ]) {
+    const f = fixture(t),
+      scope = f.scope();
+    await f.host.controlManager.control(
+      {
+        ...scope,
+        controlVersion: 1,
+        userId: 'local:synthetic',
+        machineId: 'machine',
+        operationId: 'create-empty',
+        action: 'create',
+        agentId: 'agent',
+      },
+      'project',
+    );
+    assert.equal((await f.read()).canPrepare, true);
+    if (scenario === 'native') f.store.setNativeSession(scope.sessionId, 'synthetic-native');
+    else if (scenario === 'rewritten')
+      f.store.persist(scope.sessionId, f.store.doc(scope.sessionId));
+    else
+      putMeta(f.store.meta, 'session-' + scope.sessionId, {
+        ...(scenario === 'archived' ? { isArchived: true } : {}),
+        ...(scenario === 'handled'
+          ? { latestUserMsgId: 'old-turn', lastHandledUserMsgId: 'old-turn' }
+          : {}),
+        ...(scenario === 'pending' ? { latestUserMsgId: 'pending-turn' } : {}),
+        ...(scenario === 'fork' ? { forkOrigin: { sourceSessionId: 'source' } } : {}),
+        ...(scenario === 'agent' ? { agentConfigId: 'foreign-agent' } : {}),
+      });
+    assert.equal((await f.read()).canPrepare, false, scenario);
+    await assert.rejects(f.host.gitAction(f.prepare()), scenario);
+    assert.equal(f.prepares, 0);
+  }
 });

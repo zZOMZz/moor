@@ -75,6 +75,8 @@ export const PROJECT_GIT_LIMITS = {
   attributeFiles: 32,
 } as const;
 export type ProjectGitOptions = {
+  assertCurrent?: () => void;
+  onDispatched?: () => void;
   // Host-injected deterministic checkpoints; never supplied by a remote caller.
   checkpoint?: (
     stage: 'before-prepare' | 'after-prepare' | 'before-remove',
@@ -164,6 +166,7 @@ function run(
   write = false,
   writing?: () => void,
 ): Promise<CommandResult> {
+  options.assertCurrent?.();
   const remaining = (options as BudgetOptions)[budgetKey];
   assert(
     remaining &&
@@ -177,6 +180,8 @@ function run(
   );
   const maxBuffer = maximum(options);
   return new Promise((done, reject) => {
+    options.assertCurrent?.();
+    if (write) options.onDispatched?.();
     writing?.();
     execFile(
       'git',
@@ -229,6 +234,12 @@ function run(
         windowsHide: true,
       },
       (error, stdout, stderr) => {
+        try {
+          options.assertCurrent?.();
+        } catch (error) {
+          reject(error);
+          return;
+        }
         remaining.bytes += Buffer.byteLength(stdout) + Buffer.byteLength(stderr);
         if (remaining.bytes > PROJECT_GIT_LIMITS.totalBytes) {
           reject(new AppError(409, 'Git 检查超出总读取限制'));

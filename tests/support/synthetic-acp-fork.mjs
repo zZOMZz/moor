@@ -11,11 +11,21 @@ const assistant = (messageId, extra = {}) => ({
   content: { type: 'text', text: 'Synthetic answer' },
   ...extra,
 });
-readline.createInterface({ input: process.stdin }).on('line', (line) => {
+readline.createInterface({ input: process.stdin }).on('line', async (line) => {
   const message = JSON.parse(line),
     { method, id, params } = message;
   process.send?.({ kind: 'wire', message });
-  if (method === 'initialize')
+  if (method === 'initialize') {
+    if (variant === 'hold-initialize') {
+      const released = new Promise((resolve) => {
+        process.once('message', (value) => {
+          if (value?.kind !== 'release-initialize') throw Error('Unexpected synthetic signal');
+          resolve();
+        });
+      });
+      process.send?.({ kind: 'initialize-held' });
+      await released;
+    }
     return send({
       id,
       result: {
@@ -27,6 +37,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
         },
       },
     });
+  }
   if (method === 'session/new' || method === 'session/load') {
     const sessionId = params.sessionId ?? 'native-synthetic';
     if (sessionId === 'native-child' && variant === 'child-load-error')

@@ -150,7 +150,13 @@ import {
   NOTIFICATION_LIMITS,
   type HostNotificationEvent,
 } from '../notification-protocol';
-import { GIT_WORKTREE_FEATURE, type GitAction, type GitStateRead } from '../git-protocol';
+import {
+  GIT_WORKTREE_FEATURE,
+  SECURE_GIT_OPERATIONS_FEATURE,
+  type GitOperation,
+  type GitAction,
+  type GitStateRead,
+} from '../git-protocol';
 import { SessionExecutionManager, type ExecutionLease } from '../runtime/session-execution';
 import { SessionForkManager } from '../runtime/session-fork';
 import { SessionPreviewManager, type SessionPreviewOptions } from '../runtime/session-preview';
@@ -178,7 +184,13 @@ import {
   type GithubRead,
   type GithubAction,
 } from '../github-protocol';
-import { SESSION_FORK_FEATURE, type ForkOptionsRead, type SessionFork } from '../fork-protocol';
+import {
+  SESSION_FORK_FEATURE,
+  SECURE_FORK_OPERATIONS_FEATURE,
+  type ForkOperation,
+  type ForkOptionsRead,
+  type SessionFork,
+} from '../fork-protocol';
 
 type Active = {
   turnId: string;
@@ -305,7 +317,9 @@ export class HostWorkspace {
       STEER_FEATURE,
       NOTIFICATIONS_FEATURE,
       GIT_WORKTREE_FEATURE,
+      SECURE_GIT_OPERATIONS_FEATURE,
       SESSION_FORK_FEATURE,
+      SECURE_FORK_OPERATIONS_FEATURE,
       GITHUB_FEATURE,
       SECURE_GITHUB_AUTHORITY_FEATURE,
       GITHUB_WRITE_FEATURE,
@@ -700,8 +714,8 @@ export class HostWorkspace {
   checkExecutionLease(lease: ExecutionLease) {
     assert(isDeepStrictEqual(this.executionLease(lease), lease), 409, '会话执行目录已变化');
   }
-  readGitState(input: GitStateRead, localProjectId?: string) {
-    return this.executionManager.read(input, localProjectId);
+  readGitState(input: GitStateRead, localProjectId?: string, checkpoint?: () => void) {
+    return this.executionManager.read(input, localProjectId, checkpoint);
   }
   readPreview(input: PreviewRead, localProjectId?: string, authority?: TaskAuthorityLease) {
     return this.previewManager.read(input, localProjectId, authority);
@@ -787,15 +801,15 @@ export class HostWorkspace {
     this.changed(input.request.sessionId);
     return result;
   }
-  async readForkOptions(input: ForkOptionsRead, localProjectId?: string) {
+  async readForkOptions(input: ForkOptionsRead, localProjectId?: string, checkpoint?: () => void) {
     try {
-      return await this.forkManager.options(input, localProjectId);
+      return await this.forkManager.options(input, localProjectId, checkpoint);
     } catch (error) {
       if (error instanceof AppError) throw error;
       throw new AppError(409, 'Fork 来源状态不可读取，请重新检查执行电脑');
     }
   }
-  async forkSession(input: SessionFork, localProjectId?: string) {
+  async forkSession(input: SessionFork, localProjectId?: string, checkpoint?: () => void) {
     assert(
       this.taskManager.allowsGit(input.sessionId, input.operationId) &&
         this.taskManager.allowsCreate(input.childSessionId, input.operationId),
@@ -804,7 +818,7 @@ export class HostWorkspace {
     );
     try {
       const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
-        this.forkManager.action(input, localProjectId),
+        this.forkManager.action(input, localProjectId, checkpoint),
       );
       this.changed(input.childSessionId);
       return result;
@@ -813,12 +827,22 @@ export class HostWorkspace {
       throw new AppError(409, 'Fork 检查或保存失败，请重新读取原操作状态');
     }
   }
-  async gitAction(input: GitAction, localProjectId?: string) {
+  async gitAction(input: GitAction, localProjectId?: string, checkpoint?: () => void) {
     assert(!this.forkManager.busy.has(input.sessionId), 409, '此会话正在处理 Fork，请等待原操作');
     const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
-      this.executionManager.action(input, localProjectId),
+      this.executionManager.action(input, localProjectId, checkpoint),
     );
     this.changed(input.sessionId);
+    return result;
+  }
+  async gitOperations(input: GitOperation, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.executionManager.operations(input, localProjectId, checkpoint);
+    this.changed(input.request.sessionId);
+    return result;
+  }
+  async forkOperations(input: ForkOperation, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.forkManager.operations(input, localProjectId, checkpoint);
+    this.changed(input.request.childSessionId);
     return result;
   }
   searchSessions(input: SessionSearchRequest, localProjectId?: string) {

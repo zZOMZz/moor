@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
 import { GitFork, X } from 'lucide-react';
 import { paint } from './ui';
@@ -10,6 +10,11 @@ export type SessionForkPanelProps = {
   sourceTitle: string;
   initialTurnId?: string;
   reason?: string;
+  working?: boolean;
+  retryDisabled?: boolean;
+  pendingDescription?: string;
+  createLabel?: string;
+  children?: ReactNode;
   onClose(): void;
   onRefresh(turnId?: string): void;
   onCreate(cutoff: ForkCutoff, directory: ForkDirectory): void;
@@ -32,6 +37,7 @@ export function SessionForkPanel(p: SessionForkPanelProps) {
   );
   const busy = !!(
     p.reason ||
+    p.working ||
     !controller?.loaded ||
     controller?.busy ||
     controller?.loadError ||
@@ -72,11 +78,17 @@ export function SessionForkPanel(p: SessionForkPanelProps) {
           {controller?.pending && (
             <section className="fork-pending" role="status">
               <p>
-                原 Fork 结果待确认。刷新和重连不会发送。手动重试沿用原请求；主机已经调用的原生 Fork
-                不会再次调用。
+                {p.pendingDescription ??
+                  '原 Fork 结果待确认。刷新和重连不会发送。手动重试沿用原请求；主机已经调用的原生 Fork 不会再次调用。'}
               </p>
               <button
-                disabled={!!p.reason || controller.busy || !!controller.loadError}
+                disabled={
+                  !!p.reason ||
+                  p.working ||
+                  p.retryDisabled ||
+                  controller.busy ||
+                  !!controller.loadError
+                }
                 onClick={p.onRetry}
               >
                 重试确认 Fork
@@ -86,14 +98,17 @@ export function SessionForkPanel(p: SessionForkPanelProps) {
           {receipt?.phase === 'accepted' && (
             <section role="status">
               <p>主机已确认新会话及原生上下文。</p>
-              <button disabled={controller?.busy || !!p.reason} onClick={p.onOpenChild}>
+              <button
+                disabled={p.working || controller?.busy || !!p.reason}
+                onClick={p.onOpenChild}
+              >
                 打开已确认的副本
               </button>
             </section>
           )}
           {receipt?.execution?.mode === 'worktree' && !controller?.cleanup && (
             <button
-              disabled={controller?.busy}
+              disabled={p.working || controller?.busy}
               onClick={() => p.onOpenWorkspace(receipt.childSessionId)}
             >
               查看本次分叉的工作目录
@@ -106,7 +121,7 @@ export function SessionForkPanel(p: SessionForkPanelProps) {
               {controller.resources.map((resource) => (
                 <button
                   key={resource.receipt.childSessionId}
-                  disabled={controller.busy}
+                  disabled={p.working || controller.busy}
                   onClick={() => p.onOpenWorkspace(resource.receipt.childSessionId)}
                 >
                   查看保留目录 ·{' '}
@@ -235,18 +250,23 @@ export function SessionForkPanel(p: SessionForkPanelProps) {
                 </section>
               )}
               <button type="submit" disabled={busy || !availableCutoff || !availableDirectory}>
-                创建原生会话副本
+                {p.createLabel ?? '创建原生会话副本'}
               </button>
             </form>
           )}
           <button
             disabled={
-              !!p.reason || !controller?.loaded || controller.busy || !!controller.loadError
+              !!p.reason ||
+              p.working ||
+              !controller?.loaded ||
+              controller.busy ||
+              !!controller.loadError
             }
             onClick={() => p.onRefresh(turnId)}
           >
             重新读取 Fork 选项
           </button>
+          {p.children}
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

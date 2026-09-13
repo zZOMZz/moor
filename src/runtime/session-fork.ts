@@ -9,6 +9,10 @@ import {
   forkOptionsResultSchema,
   forkReceiptSchema,
   sessionForkSchema,
+  forkOperationSchema,
+  forkOperationResultSchema,
+  type ForkOperation,
+  type ForkOperationResult,
   FORK_LIMITS,
   type ForkOptionsRead,
   type ForkOptionsResult,
@@ -55,7 +59,7 @@ type ForkRecord = {
   agent: AgentConfig;
   capabilities: AgentForkCapabilities;
   anchor?: AgentForkAnchor;
-  phase: 'preparing' | 'dispatched' | 'returned' | 'accepted' | 'rejected';
+  phase: 'preparing' | 'dispatched' | 'returned' | 'accepted' | 'rejected' | 'abandoned';
   gitOperationId?: string;
   targetExecution?: ExecutionLease;
   targetDirectory?: ReturnType<typeof directoryIdentity>;
@@ -88,7 +92,7 @@ export class SessionForkStore {
   }
   blocked(sessionId: string) {
     const row = this.child(sessionId);
-    return !!row && !['accepted', 'rejected'].includes(row.phase);
+    return !!row && !['accepted', 'rejected', 'abandoned'].includes(row.phase);
   }
   allowsGit(sessionId: string, operationId: string) {
     const row = this.child(sessionId);
@@ -281,12 +285,18 @@ export class SessionForkManager {
         : unavailable,
     };
   }
-  async options(input: ForkOptionsRead, localProjectId?: string): Promise<ForkOptionsResult> {
+  async options(
+    input: ForkOptionsRead,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<ForkOptionsResult> {
+    checkpoint?.();
     const request = forkOptionsReadSchema.parse(input);
     assert(!this.busy.has(request.sessionId), 409, '来源会话正在处理 Fork');
     return this.host.serial(request.sessionId, async () => {
       this.busy.add(request.sessionId);
       try {
+        checkpoint?.();
         const source = this.source(request, localProjectId);
         if (
           source.nativeId &&
@@ -298,6 +308,7 @@ export class SessionForkManager {
             source.execution.rootPath,
             source.nativeId,
             { update: () => {}, permission: async () => ({ outcome: { outcome: 'cancelled' } }) },
+            { assertCurrent: checkpoint },
           );
           let capabilities = session.forkCapabilities;
           try {
@@ -305,6 +316,7 @@ export class SessionForkManager {
           } finally {
             await session.close();
           }
+          checkpoint?.();
           assert(
             this.idle(request.sessionId) &&
               this.source(request, localProjectId).sourceVersion === source.sourceVersion,
@@ -321,7 +333,7 @@ export class SessionForkManager {
             ),
           );
         }
-        return await this.readOptions(request, localProjectId);
+        return await this.readOptions(request, localProjectId, checkpoint);
       } finally {
         this.busy.delete(request.sessionId);
       }
@@ -330,7 +342,9 @@ export class SessionForkManager {
   private async readOptions(
     input: ForkOptionsRead,
     localProjectId?: string,
+    checkpoint?: () => void,
   ): Promise<ForkOptionsResult> {
+    checkpoint?.();
     const request = forkOptionsReadSchema.parse(input),
       source = this.source(request, localProjectId),
       idle = this.idle(request.sessionId),
@@ -379,6 +393,7 @@ export class SessionForkManager {
         '来源会话已变化，请重新读取',
       );
     }
+    checkpoint?.();
     const { turnId: _turn, ...responseScope } = request;
     return forkOptionsResultSchema.parse({
       ...responseScope,
@@ -427,7 +442,11 @@ export class SessionForkManager {
     this.host.store.journal.settleFork(scopeKey(record.scope), record.request, result);
     return result;
   }
-  private reject(record: ForkRecord, message: string) {
+  private reject(
+    record: ForkRecord,
+    message: string,
+    phase: 'rejected' | 'abandoned' = 'rejected',
+  ) {
     const store = this.host.store;
     return store.transaction(() => {
       if (record.request.directory.kind === 'same-directory') {
@@ -435,8 +454,8 @@ export class SessionForkManager {
         if (execution?.operationId === record.request.operationId)
           store.executions.removeRejected(this.childScope(record), record.request.operationId);
       }
-      const next = { ...record, phase: 'rejected' as const };
-      return this.saveReceipt(next, this.receipt(next, 'rejected', message));
+      const next = { ...record, phase };
+      return this.saveReceipt(next, this.receipt(next, phase, message));
     });
   }
   private unknown(
@@ -450,7 +469,8 @@ export class SessionForkManager {
       return result;
     }
   }
-  private current(record: ForkRecord) {
+  private current(record: ForkRecord, checkpoint?: () => void) {
+    checkpoint?.();
     this.host.ensureConnected();
     this.assertAgentBinding(record);
     const source = this.source(record.scope);
@@ -484,7 +504,8 @@ export class SessionForkManager {
       newBranch,
     };
   }
-  private targetCurrent(record: ForkRecord) {
+  private targetCurrent(record: ForkRecord, checkpoint?: () => void) {
+    checkpoint?.();
     assert(record.targetExecution && record.targetDirectory, 409, 'Fork 子会话目录身份尚未确认');
     const current = this.host.executionLease(this.childScope(record), undefined, true);
     assert(
@@ -514,7 +535,12 @@ export class SessionForkManager {
       'Agent 未返回可确认的独立原生会话',
     );
   }
-  async action(input: SessionFork, localProjectId?: string): Promise<ForkReceipt> {
+  async action(
+    input: SessionFork,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<ForkReceipt> {
+    checkpoint?.();
     const request = sessionForkSchema.parse(input);
     assert(
       !this.host.executionManager.busy.has(request.childSessionId),
@@ -530,6 +556,7 @@ export class SessionForkManager {
     this.busy.add(request.childSessionId);
     try {
       return await this.host.serial(request.sessionId, async () => {
+        checkpoint?.();
         const store = this.host.store,
           sourceLease = this.host.projectLease(request, localProjectId),
           { rootPath: _root, ...scope } = sourceLease;
@@ -538,7 +565,10 @@ export class SessionForkManager {
           localProjectId,
         );
         const previous = store.journal.lookup(scopeKey(scope), request);
-        if (previous && ['fork-accepted', 'fork-rejected'].includes(previous.phase))
+        if (
+          previous &&
+          ['fork-accepted', 'fork-rejected', 'fork-abandoned'].includes(previous.phase)
+        )
           return forkReceiptSchema.parse(JSON.parse(previous.result));
         let record = store.forks.record(request.operationId);
         if (previous) {
@@ -626,6 +656,7 @@ export class SessionForkManager {
               : {}),
           };
           store.transaction(() => {
+            checkpoint?.();
             store.reserveAttachmentScope({ ...scope, sessionId: request.childSessionId });
             store.journal.stageFork(scopeKey(scope), request);
             store.forks.stage(record!);
@@ -646,21 +677,23 @@ export class SessionForkManager {
           if (record!.phase === 'accepted' || record!.phase === 'rejected')
             throw new AppError(409, 'Fork 回执状态不一致');
           if (record!.phase === 'dispatched')
-            return record!.nativeId ? await this.recoverNative(record!) : this.unknown(record!);
-          if (record!.phase === 'returned') return this.accept(record!);
+            return record!.nativeId
+              ? await this.recoverNative(record!, checkpoint)
+              : this.unknown(record!);
+          if (record!.phase === 'returned') return this.accept(record!, checkpoint);
           if (request.directory.kind === 'worktree') {
             const git = this.prepareAction(record!);
-            if (!store.journal.has(git.operationId)) this.current(record!);
-            const result = await this.host.executionManager.action(git, localProjectId);
+            if (!store.journal.has(git.operationId)) this.current(record!, checkpoint);
+            const result = await this.host.executionManager.action(git, localProjectId, checkpoint);
             if (result.phase === 'unknown')
               return this.unknown(
                 record!,
                 '工作目录操作尚未确认；请手动查询原 Fork 操作，原生 Fork 尚未调用。',
               );
-            if (result.phase === 'rejected')
+            if (result.phase === 'rejected' || result.phase === 'abandoned')
               return this.reject(record!, result.message ?? '工作目录创建被拒绝，原生 Fork 未调用');
           }
-          this.current(record!);
+          this.current(record!, checkpoint);
           const targetExecution = this.host.executionLease(
             this.childScope(record!),
             localProjectId,
@@ -679,8 +712,8 @@ export class SessionForkManager {
             targetCwd: targetExecution.rootPath,
             anchor: record.anchor,
             assertCurrent: () => {
-              this.current(record!);
-              this.targetCurrent(record!);
+              this.current(record!, checkpoint);
+              this.targetCurrent(record!, checkpoint);
             },
             onNativeId: (nativeId) => {
               this.nativeResult(record!, nativeId);
@@ -691,7 +724,7 @@ export class SessionForkManager {
           this.nativeResult(record, result.nativeId);
           record = { ...record, nativeId: result.nativeId, phase: 'returned' };
           store.transaction(() => store.forks.save(record!));
-          return this.accept(record);
+          return this.accept(record, checkpoint);
         } catch (error) {
           // Only a pre-native stage, or the driver's explicit proof that no fork
           // call started, can be safely rejected and release the child reservation.
@@ -726,11 +759,130 @@ export class SessionForkManager {
       this.busy.delete(request.childSessionId);
     }
   }
-  private async recoverNative(record: ForkRecord): Promise<ForkReceipt> {
+  async operations(
+    input: ForkOperation,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<ForkOperationResult> {
+    const operation = forkOperationSchema.parse(input),
+      request = operation.request;
+    checkpoint?.();
+    assert(
+      !this.busy.has(request.sessionId) &&
+        !this.busy.has(request.childSessionId) &&
+        !this.host.executionManager.busy.has(request.childSessionId),
+      409,
+      '原 Fork 或工作目录仍在执行，请等待原请求结束',
+    );
+    this.busy.add(request.sessionId);
+    this.busy.add(request.childSessionId);
+    try {
+      return await this.host.serial(request.sessionId, async () => {
+        const store = this.host.store,
+          { rootPath: _root, ...scope } = this.host.projectLease(request, localProjectId);
+        const current = () => {
+          checkpoint?.();
+          const { rootPath: _root, ...latest } = this.host.projectLease(request, localProjectId);
+          assert(isDeepStrictEqual(scope, latest), 409, '原 Fork 所属范围已变化');
+        };
+        current();
+        this.host.projectRootLease(
+          { ...request, sessionId: request.childSessionId },
+          localProjectId,
+        );
+        const base = {
+          forkVersion: 1 as const,
+          workspaceId: request.workspaceId,
+          localProjectId: request.localProjectId,
+          sessionId: request.sessionId,
+          operationId: request.operationId,
+          action: operation.action,
+          requestVersion: hash(JSON.stringify(request)),
+          confirmed: true as const,
+        };
+        const result = (receipt?: ForkReceipt) => {
+          current();
+          return forkOperationResultSchema.parse(
+            receipt ? { ...base, found: true, receipt } : { ...base, found: false },
+          );
+        };
+        const previous = store.journal.lookup(scopeKey(scope), request);
+        if (!previous) {
+          if (operation.action === 'inspect') return result();
+          const receipt = forkReceiptSchema.parse({
+            forkVersion: 1,
+            workspaceId: request.workspaceId,
+            localProjectId: request.localProjectId,
+            sessionId: request.sessionId,
+            operationId: request.operationId,
+            childSessionId: request.childSessionId,
+            phase: 'abandoned',
+            confirmed: false,
+            message: '原 Fork 请求已封存，不会执行迟到的同编号请求。',
+          });
+          store.transaction(() => {
+            current();
+            store.journal.stageFork(scopeKey(scope), request);
+            store.journal.settleFork(scopeKey(scope), request, receipt);
+          });
+          return result(receipt);
+        }
+        assert(previous.phase.startsWith('fork-'), 409, '原操作编号属于另一类操作');
+        if (['fork-accepted', 'fork-rejected', 'fork-abandoned'].includes(previous.phase))
+          return result(forkReceiptSchema.parse(JSON.parse(previous.result)));
+        const record = store.forks.record(request.operationId);
+        assert(
+          record &&
+            isDeepStrictEqual(record.request, request) &&
+            scopeKey(record.scope) === scopeKey(scope),
+          409,
+          'Fork 原操作记录不匹配',
+        );
+        this.assertAgentBinding(record);
+        if (record.phase === 'returned') return result(this.accept(record, checkpoint));
+        if (record.phase === 'dispatched')
+          return result(
+            this.unknown(
+              record,
+              '原生 Fork 已派发，核查不会启动或载入 Agent；请在原映射明确重试已知结果，未知结果仍保留保护。',
+            ),
+          );
+        assert(record.phase === 'preparing', 409, 'Fork 原操作阶段不可验证');
+        if (request.directory.kind === 'worktree') {
+          const git = await this.host.executionManager.operations(
+            { action: operation.action, request: this.prepareAction(record) },
+            localProjectId,
+            checkpoint,
+          );
+          current();
+          if (git.found && git.receipt.phase === 'unknown')
+            return result(
+              this.unknown(record, '原工作目录结果尚未确认，未封存或重复执行原生 Fork。'),
+            );
+        }
+        if (operation.action === 'abandon')
+          return result(
+            this.reject(
+              record,
+              '原生 Fork 尚未派发，原请求已封存；已创建的工作目录仍保留，请明确检查和清理。',
+              'abandoned',
+            ),
+          );
+        return result(
+          this.unknown(record, '原生 Fork 尚未派发；核查不会继续创建，需明确重试原操作或封存。'),
+        );
+      });
+    } finally {
+      this.busy.delete(request.sessionId);
+      this.busy.delete(request.childSessionId);
+    }
+  }
+  private async recoverNative(record: ForkRecord, checkpoint?: () => void): Promise<ForkReceipt> {
     assert(record.nativeId && record.targetExecution, 409, '缺少已知原生 Fork 结果');
     const current = () => {
+      checkpoint?.();
       this.host.projectLease(record.scope);
-      this.targetCurrent(record);
+      this.targetCurrent(record, checkpoint);
     };
     current();
     const session = await this.driver.open(
@@ -738,6 +890,7 @@ export class SessionForkManager {
       record.targetExecution.rootPath,
       record.nativeId,
       { update: () => {}, permission: async () => ({ outcome: { outcome: 'cancelled' } }) },
+      { assertCurrent: current },
     );
     try {
       current();
@@ -748,14 +901,15 @@ export class SessionForkManager {
     current();
     const recovered = { ...record, phase: 'returned' as const };
     this.host.store.transaction(() => this.host.store.forks.save(recovered));
-    return this.accept(recovered);
+    return this.accept(recovered, checkpoint);
   }
-  private accept(record: ForkRecord): ForkReceipt {
+  private accept(record: ForkRecord, checkpoint?: () => void): ForkReceipt {
+    checkpoint?.();
     const store = this.host.store,
       scope = this.childScope(record);
     this.host.projectLease(record.scope);
     assert(record.nativeId && record.targetExecution, 409, '缺少已确认的原生 Fork 结果');
-    const current = this.targetCurrent(record);
+    const current = this.targetCurrent(record, checkpoint);
     assert(
       !store.searchSource(scope.sessionId) && !metas(store.meta)['session-' + scope.sessionId],
       409,
@@ -765,6 +919,7 @@ export class SessionForkManager {
       doc = store.doc(scope.sessionId),
       view = mirror(doc, scope.sessionId);
     view.setState((state) => {
+      state.session.id = scope.sessionId;
       state.history.splice(0);
     });
     view.dispose();
@@ -790,6 +945,7 @@ export class SessionForkManager {
     const previous = store.meta;
     try {
       return store.transaction(() => {
+        checkpoint?.();
         store.agents.bind(scope, record.agent);
         store.meta = next;
         store.setNativeSession(scope.sessionId, record.nativeId!, current);
