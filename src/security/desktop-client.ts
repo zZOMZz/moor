@@ -6,6 +6,8 @@ import { actorSchema } from '../attention';
 import { id } from '../protocol';
 import { snapshotSecureInput } from '../desktop/secure-input.cjs';
 import { DeviceManager } from './device-manager';
+import { fingerprintRequest } from './e2ee-pairing';
+import { verifyPublicTrustEntry } from './trust-publication';
 import {
   EncryptedBridgeClient,
   EncryptedHostError,
@@ -194,6 +196,7 @@ export class DesktopSecureClient {
   #generation = 0;
   #closed = false;
   #pending = 0;
+  #deviceAction = false;
   #pendingBytes = 0;
   #lifetime = new AbortController();
 
@@ -259,9 +262,18 @@ export class DesktopSecureClient {
         else connection.socket?.close(1000);
       } catch {}
   }
-  #status(manager: DeviceManager): DesktopSecureStatus {
+  async #status(manager: DeviceManager): Promise<DesktopSecureStatus> {
     const state = manager.status(),
       connection = this.#connection;
+    const pending =
+      'device' in state && state.pending
+        ? { ...state.pending, fingerprint: await fingerprintRequest(state.pending.request) }
+        : null;
+    const trust =
+      'device' in state && state.trust
+        ? (manager.current() ?? (await verifyPublicTrustEntry(state.trust)))
+        : undefined;
+    if (manager.status().revision !== state.revision) fail();
     if (connection?.client) this.#assertConnection(connection);
     return desktopSecureStatusSchema.parse({
       device:
@@ -273,8 +285,13 @@ export class DesktopSecureClient {
               deviceId: state.device.deviceId,
               roles: state.device.roles,
               trustEpoch: state.trust?.checkpoint.epoch ?? null,
+              pending,
+              trust: state.trust,
+              devices: trust?.manifest.devices ?? [],
             }
-          : { phase: 'empty', revision: null },
+          : state.phase === 'cancelled'
+            ? state
+            : { phase: 'empty', revision: null },
       connecting: !!connection && !connection.client,
       connection: connection?.client
         ? {
@@ -338,7 +355,8 @@ export class DesktopSecureClient {
     return this.#status(endpoint);
   }
   async request(input: unknown): Promise<DesktopSecureResult> {
-    if (this.#closed || this.#pending >= DESKTOP_SECURE_LIMITS.pending) return failure();
+    if (this.#closed || this.#deviceAction || this.#pending >= DESKTOP_SECURE_LIMITS.pending)
+      return failure();
     let request: ReturnType<typeof desktopSecureRequestSchema.parse>;
     let bytes: number;
     try {
@@ -360,7 +378,23 @@ export class DesktopSecureClient {
       this.#pendingBytes + bytes > DESKTOP_SECURE_LIMITS.pendingBytes
     )
       return failure();
+    const deviceAction =
+      request.action === 'device-pair' ||
+      request.action === 'device-renew' ||
+      request.action === 'device-cancel' ||
+      request.action === 'device-accept';
+    if (deviceAction) {
+      this.#deviceAction = true;
+      // Device changes are explicit, and terminate every older request before authentication or I/O.
+      // Preserve the one locked manager so a mutation cannot race a second file owner.
+      this.#generation++;
+      const lifetime = this.#lifetime;
+      this.#lifetime = new AbortController();
+      if (this.#connection) this.#dropConnection(this.#connection);
+      lifetime.abort();
+    }
     const generation = this.#generation;
+    let account: DesktopAccount | undefined;
     let connection: Connection | undefined;
     if (request.action === 'connect') {
       if (this.#connection) return failure();
@@ -386,6 +420,7 @@ export class DesktopSecureClient {
     } catch {
       this.#pending--;
       this.#pendingBytes -= bytes;
+      if (deviceAction) this.#deviceAction = false;
       this.invalidate();
       return failure();
     }
@@ -399,6 +434,65 @@ export class DesktopSecureClient {
         if (signal.aborted) fail();
         if (request.action === 'connect') return this.#connect(connection!);
         if (request.action === 'status') return this.#status(await this.#endpoint(generation));
+        if (
+          request.action === 'device-pair' ||
+          request.action === 'device-renew' ||
+          request.action === 'device-cancel' ||
+          request.action === 'device-accept'
+        ) {
+          const manager = await this.#endpoint(generation);
+          this.#assertGeneration(generation);
+          const state = manager.status();
+          if (state.revision !== request.expectedRevision) fail();
+          const pin =
+            request.action === 'device-pair' ? request.pin : 'pin' in state ? state.pin : undefined;
+          if (
+            !pin ||
+            (request.action === 'device-pair' &&
+              state.phase !== 'empty' &&
+              state.phase !== 'cancelled')
+          )
+            fail();
+          if (
+            'device' in state &&
+            (state.device.roles.length !== 1 || state.device.roles[0] !== 'client')
+          )
+            fail();
+          const authenticated = await this.#options.authenticate();
+          this.#assertGeneration(generation);
+          account = Object.freeze({
+            ...accountSchema.parse({
+              origin: authenticated.origin,
+              owner: authenticated.owner,
+              cookie: authenticated.cookie,
+            }),
+            current: authenticated.current,
+          });
+          const current = () => {
+            this.#assertGeneration(generation);
+            if (signal.aborted) fail();
+            account!.current();
+            if (pin.accountId !== account!.owner || pin.serverOrigin !== account!.origin) fail();
+          };
+          current();
+          if (request.action === 'device-pair')
+            await manager.beginPairing(
+              {
+                pin,
+                expectedRevision: request.expectedRevision,
+                deviceId: randomUUID(),
+                roles: ['client'],
+              },
+              { current },
+            );
+          else if (request.action === 'device-renew')
+            await manager.renewPairing(request.expectedRevision, { current });
+          else if (request.action === 'device-cancel')
+            manager.cancelPairing(request.expectedRevision, { current });
+          else await manager.acceptPairing(request, { current });
+          current();
+          return this.#status(manager);
+        }
         this.#assertConnection(connection!);
         const client = connection!.client!;
         if (request.action === 'disconnect') return { disconnected: true };
@@ -424,6 +518,7 @@ export class DesktopSecureClient {
       const value = await bounded(run(), signal);
       this.#assertGeneration(generation);
       if (signal.aborted) fail();
+      account?.current();
       if (connection) {
         if (connection.client) this.#assertConnection(connection);
         else this.#assertAttempt(connection);
@@ -439,6 +534,7 @@ export class DesktopSecureClient {
       try {
         this.#assertGeneration(generation);
         if (signal.aborted) fail();
+        account?.current();
         if (connection) this.#assertConnection(connection);
         else this.#manager?.current();
         current = true;
@@ -458,6 +554,7 @@ export class DesktopSecureClient {
       return failure();
     } finally {
       signal.removeEventListener('abort', expired);
+      if (deviceAction) this.#deviceAction = false;
       this.#pending--;
       this.#pendingBytes -= bytes;
     }

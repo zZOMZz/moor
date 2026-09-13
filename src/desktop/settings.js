@@ -67,6 +67,7 @@ $('settings').onsubmit = async (e) => {
 };
 $('local').onclick = () => window.personal.open('local');
 $('remote').onclick = () => window.personal.open('remote');
+$('secure').onclick = () => window.personal.open('secure');
 
 function renderHealth(value) {
   if (value.notifications && !notificationsBusy) renderNotifications(value.notifications);

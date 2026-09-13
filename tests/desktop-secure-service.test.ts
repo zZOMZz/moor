@@ -435,7 +435,7 @@ test('status shares a single private endpoint, returns public fields and makes n
   assert.equal(f.calls.length, 0);
   assert.equal(f.counts().authenticates, 0);
   assert(!JSON.stringify(first).includes(f.endpointPath));
-  for (const secret of ['privateKey', 'recoveryCapsule', 'signedManifest', f.cookie])
+  for (const secret of ['privateKey', 'recoveryCapsule', f.cookie])
     assert(!JSON.stringify(first).includes(secret));
   await assert.rejects(DeviceManager.open(f.endpointPath));
   f.service.close();
@@ -952,4 +952,37 @@ test('legacy entry carries only an explicit original operation with null product
   };
   await f.answer(request, { ok: true, result });
   assert.deepEqual(value(await pending), result);
+});
+
+test('an explicit device change closes active work before checking enrollment and never reconnects', async (t) => {
+  const f = await fixture(t);
+  const connectionId = await f.connect();
+  await f.readCatalog(connectionId);
+  const before = desktopSecureStatusSchema.parse(
+    value(await f.service.request({ action: 'status' })),
+  );
+  assert('pending' in before.device);
+  const operation = f.service.request({
+    action: 'execute',
+    connectionId,
+    hostId: 'host',
+    target: f.target,
+    command,
+  });
+  const request = await f.next();
+  const changed = f.service.request({
+    action: 'device-renew',
+    expectedRevision: before.device.revision,
+  });
+  assert.equal(f.sockets[0]!.readyState, 3);
+  unavailable(await operation);
+  unavailable(await changed);
+  await f.answer(request, { ok: true, result: [] });
+  const after = desktopSecureStatusSchema.parse(
+    value(await f.service.request({ action: 'status' })),
+  );
+  assert.deepEqual(after.device, before.device);
+  assert.equal(after.connection, null);
+  assert.equal(after.connecting, false);
+  assert.equal(f.sockets.length, 1);
 });

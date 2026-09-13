@@ -7,6 +7,7 @@ const {
   session,
   Notification,
   shell,
+  protocol,
 } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,6 +30,14 @@ const { DesktopAgentSettings } = require('./agent-settings.cjs');
 const { DesktopMcpSettings } = require('./mcp-settings.cjs');
 const { DesktopGoogleAuth } = require('./google-auth.cjs');
 const { DesktopSecureBridge } = require('./secure-client.cjs');
+const { DesktopSecureAccount } = require('./secure-account.cjs');
+const { CLIENT_SCHEME, CLIENT_PRIVILEGES, CLIENT_URL } = require('./client-assets.cjs');
+const {
+  CLIENT_PARTITION,
+  prepareClientSession,
+  createClientWindow,
+} = require('./client-window.cjs');
+protocol.registerSchemesAsPrivileged([{ scheme: CLIENT_SCHEME, privileges: CLIENT_PRIVILEGES }]);
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -53,6 +62,7 @@ settings.notifications = notificationSettings(settings.notifications);
 let settingsWindow,
   localWindow,
   remoteWindow,
+  secureWindow,
   bridge,
   quitting = false,
   localOrigin = '',
@@ -98,7 +108,7 @@ const write = (file, value) => {
 const contentWindows = new Map();
 const secureClient = new DesktopSecureBridge({
   registry: contentWindows,
-  remoteWindow: () => remoteWindow,
+  remoteWindow: () => secureWindow,
   origin: () => settings.server,
   endpointPath: () => {
     const directory = path.join(data, '.moor-security');
@@ -117,6 +127,23 @@ const googleAuth = new DesktopGoogleAuth({
   origin: () => settings.server,
   openExternal: (url) => shell.openExternal(url),
   confirm: (window, options) => dialog.showMessageBox(window, options),
+});
+const secureGoogleAuth = new DesktopGoogleAuth({
+  registry: contentWindows,
+  remoteWindow: () => secureWindow,
+  origin: () => settings.server,
+  openExternal: (url) => shell.openExternal(url),
+  confirm: (window, options) => dialog.showMessageBox(window, options),
+});
+const secureAccount = new DesktopSecureAccount({
+  registry: contentWindows,
+  remoteWindow: () => secureWindow,
+  origin: () => settings.server,
+  onInvalidate: (contents) => {
+    secureClient.invalidate(contents);
+    secureGoogleAuth.invalidate(contents);
+    return secureGoogleAuth.cookieWrites;
+  },
 });
 const attachmentSaver = createAttachmentSaver({
   registry: contentWindows,
@@ -190,7 +217,8 @@ function lockedWindow(origin, partition) {
 }
 function openPage(window, origin) {
   const registered = contentWindows.get(window.webContents);
-  if (registered && registered.origin !== new URL(origin).origin) {
+  if (registered?.trustedClient && origin !== CLIENT_URL) return;
+  if (registered && !registered.trustedClient && registered.origin !== new URL(origin).origin) {
     googleAuth.invalidate(window.webContents);
     attachmentSaver.invalidate(window.webContents);
     secureClient.invalidate(window.webContents);
@@ -247,6 +275,49 @@ function showRemote() {
     remoteWindow = null;
   });
   openPage(remoteWindow, settings.server);
+}
+let clientPreparation;
+async function showSecure() {
+  if (!settings.server) {
+    showSettings();
+    return;
+  }
+  const origin = settings.server;
+  try {
+    const clientSession = session.fromPartition(CLIENT_PARTITION);
+    clientPreparation ??= prepareClientSession(clientSession, path.join(contentRoot, 'public'));
+    await clientPreparation;
+    if (quitting || settings.server !== origin) return;
+    if (secureWindow && !secureWindow.isDestroyed()) {
+      secureWindow.show();
+      secureWindow.focus();
+      return;
+    }
+    const window = createClientWindow({
+      BrowserWindow,
+      session: clientSession,
+      origin,
+      preloadPath: path.join(__dirname, 'secure-preload.cjs'),
+      registry: contentWindows,
+      invalidate: (contents) => {
+        secureClient.invalidate(contents);
+        secureAccount.invalidate(contents);
+        secureGoogleAuth.invalidate(contents);
+        attachmentSaver.invalidate(contents);
+      },
+    });
+    secureWindow = window;
+    window.on('closed', () => {
+      if (secureWindow === window) secureWindow = null;
+    });
+    openPage(window, CLIENT_URL);
+  } catch {
+    void dialog.showMessageBox({
+      type: 'error',
+      title: 'Moor 加密工作区未能打开',
+      message: '安装包中的可信客户端资源不可用，请重新安装当前版本。',
+    });
+  }
 }
 function showSettings() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
@@ -659,6 +730,8 @@ ipcMain.handle('personal:save', async (event, value) => {
   if (changed) {
     googleAuth.invalidate();
     secureClient.invalidate();
+    secureGoogleAuth.invalidate();
+    secureAccount.invalidate();
   }
   settings = {
     server,
@@ -671,6 +744,10 @@ ipcMain.handle('personal:save', async (event, value) => {
   if (changed && remoteWindow) {
     remoteWindow.close();
     remoteWindow = null;
+  }
+  if (changed && secureWindow) {
+    secureWindow.close();
+    secureWindow = null;
   }
   await restartBridge();
   return { ok: true, paired: Boolean(code) };
@@ -689,14 +766,22 @@ ipcMain.handle('personal:notification-test', async (event) => {
   return nativeNotifications.state();
 });
 ipcMain.handle('moor:save-attachment', (event, value) => attachmentSaver.save(event, value));
-ipcMain.handle('moor:google-auth-begin', (event, value) => googleAuth.begin(event, value));
-ipcMain.handle('moor:google-auth-complete', (event, value) => googleAuth.complete(event, value));
-ipcMain.handle('moor:google-auth-cancel', (event, value) => googleAuth.cancel(event, value));
+function googleFor(event) {
+  if (contentWindows.get(event.sender)?.trustedClient !== true) return googleAuth;
+  if (secureAccount.isLoggingOut(event.sender)) throw new Error('正在退出账号，请完成后重试。');
+  return secureGoogleAuth;
+}
+ipcMain.handle('moor:google-auth-begin', (event, value) => googleFor(event).begin(event, value));
+ipcMain.handle('moor:google-auth-complete', (event, value) =>
+  googleFor(event).complete(event, value),
+);
+ipcMain.handle('moor:google-auth-cancel', (event, value) => googleFor(event).cancel(event, value));
 ipcMain.handle('moor:secure-client', (event, value) => secureClient.request(event, value));
+ipcMain.handle('moor:secure-account', (event, value) => secureAccount.request(event, value));
 ipcMain.handle('moor:cancel-attachment-save', (event) => attachmentSaver.cancel(event));
 ipcMain.handle('personal:open', async (event, mode) => {
   trusted(event);
-  mode === 'remote' ? showRemote() : showLocal();
+  mode === 'secure' ? await showSecure() : mode === 'remote' ? showRemote() : showLocal();
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -715,6 +800,7 @@ else {
           submenu: [
             { label: '本机工作区', click: () => showLocal() },
             { label: '我的所有电脑', click: showRemote },
+            { label: '加密工作区', click: showSecure },
             { label: '连接设置…', accelerator: 'CmdOrCtrl+,', click: showSettings },
             { type: 'separator' },
             { role: 'quit' },
@@ -752,6 +838,8 @@ else {
     mcpSettings.close();
     googleAuth.close();
     secureClient.close();
+    secureGoogleAuth.close();
+    secureAccount.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

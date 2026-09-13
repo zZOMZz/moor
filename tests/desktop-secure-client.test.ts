@@ -422,9 +422,17 @@ test('the trusted preload exposes finite application entry points', async () => 
       };
     },
   });
-  assert.deepEqual(Object.keys(exposed.get('moorSecure')).sort(), ['request', 'version']);
+  assert.deepEqual(Object.keys(exposed.get('moorSecure')).sort(), [
+    'account',
+    'request',
+    'version',
+  ]);
   await exposed.get('moorSecure').request({ action: 'status' });
-  assert.deepEqual(calls, [['moor:secure-client', { action: 'status' }]]);
+  await exposed.get('moorSecure').account({ action: 'status' });
+  assert.deepEqual(calls, [
+    ['moor:secure-client', { action: 'status' }],
+    ['moor:secure-account', { action: 'status' }],
+  ]);
   assert.deepEqual(Object.keys(exposed.get('moorDesktop')).sort(), [
     'cancelAttachmentSave',
     'googleAuth',

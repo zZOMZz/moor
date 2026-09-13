@@ -92,6 +92,20 @@ const stateSchema = z
       value.approvals.length,
   );
 type State = z.infer<typeof stateSchema>;
+const cancelledStateSchema = z
+  .object({ version: z.literal(1), cancelled: z.literal(true), pin: trustPinSchema })
+  .strict();
+export type DeviceManagerStatus =
+  | { phase: 'empty'; revision: null }
+  | { phase: 'cancelled'; revision: number; pin: TrustPin }
+  | (Pick<State, 'pin' | 'device' | 'trust'> & {
+      phase: 'active' | 'revoked' | 'pending';
+      revision: number;
+      canUnlockRoot: boolean;
+      pendingPublications: number;
+      pending: { request: PairingRequest; expired: boolean } | null;
+      approvals: { pairingId: string; deviceId: string; expiresAt: number; fingerprint: string }[];
+    });
 type Roles = TrustedDevice['roles'];
 const identitySchema = z
   .object({
@@ -178,6 +192,7 @@ export class DeviceManager {
   #revision: number | null = null;
   #state: State | undefined;
   #trust: VerifiedTrust | undefined;
+  #cancelled: TrustPin | undefined;
   #closed = false;
 
   private constructor(file: PrivateEndpointFile, now: () => number) {
@@ -190,6 +205,13 @@ export class DeviceManager {
       manager = new DeviceManager(PrivateEndpointFile.open(path), options.now ?? Date.now);
       const snapshot = manager.#file.load();
       if (snapshot) {
+        const cancelled = cancelledStateSchema.safeParse(snapshot.value);
+        if (cancelled.success) {
+          manager.#cancelled = cancelled.data.pin;
+          manager.#revision = snapshot.revision;
+          manager.#assert();
+          return manager;
+        }
         const state = stateSchema.parse(snapshot.value);
         await validatePrivate(state.device, state.privateKey);
         if (state.pending) {
@@ -261,6 +283,7 @@ export class DeviceManager {
     this.#revision = saved.revision;
     this.#state = value;
     this.#trust = trust;
+    this.#cancelled = undefined;
   }
   #active() {
     this.#assert();
@@ -293,12 +316,12 @@ export class DeviceManager {
     this.#assert();
     return this.#isDeviceCurrent() ? this.#trust : undefined;
   }
-  status() {
+  status(): DeviceManagerStatus {
     this.#assert();
     const state = this.#state;
     return state
       ? structuredClone({
-          revision: this.#revision,
+          revision: this.#revision!,
           phase: state.trust ? (this.#isDeviceCurrent() ? 'active' : 'revoked') : 'pending',
           pin: state.pin,
           device: state.device,
@@ -318,7 +341,13 @@ export class DeviceManager {
             fingerprint: item.fingerprint,
           })),
         })
-      : { revision: null, phase: 'empty' as const };
+      : this.#cancelled
+        ? {
+            revision: this.#revision!,
+            phase: 'cancelled' as const,
+            pin: structuredClone(this.#cancelled),
+          }
+        : { revision: null, phase: 'empty' as const };
   }
   async encryptionKey(): Promise<CryptoKey> {
     this.#assert();
@@ -454,8 +483,20 @@ export class DeviceManager {
       return fail();
     }
   }
-  async beginPairing(input: { pin: TrustPin; deviceId: string; roles: Roles }) {
+  async beginPairing(
+    input: { pin: TrustPin; deviceId: string; roles: Roles; expectedRevision?: number | null },
+    options: { current?: () => void } = {},
+  ) {
     try {
+      options.current?.();
+      const expected = z
+        .number()
+        .int()
+        .positive()
+        .safe()
+        .nullable()
+        .parse(input.expectedRevision ?? null);
+      if (this.#state || (expected !== null && !this.#cancelled)) fail();
       const pin = trustPinSchema.parse(input.pin),
         identity = identitySchema.parse({
           accountId: pin.accountId,
@@ -463,11 +504,12 @@ export class DeviceManager {
           deviceId: input.deviceId,
           roles: input.roles,
         });
-      this.#assert(null);
+      this.#assert(expected);
       const own = await newDevice(identity.deviceId, identity.roles);
       const request = await createPairingRequest({ pin, device: own.device, now: this.#now() });
       const fingerprint = await fingerprintRequest(request);
-      this.#write(null, {
+      options.current?.();
+      this.#write(expected, {
         version: 1,
         pin,
         ...own,
@@ -504,8 +546,9 @@ export class DeviceManager {
       return fail();
     }
   }
-  async renewPairing(expectedRevision: number) {
+  async renewPairing(expectedRevision: number, options: { current?: () => void } = {}) {
     try {
+      options.current?.();
       this.#assert(expectedRevision);
       const state = this.#state;
       if (!state?.pending) fail();
@@ -515,6 +558,7 @@ export class DeviceManager {
         now: this.#now(),
       });
       const fingerprint = await fingerprintRequest(request);
+      options.current?.();
       this.#write(
         expectedRevision,
         { ...state, pending: { ...state.pending, request } },
@@ -536,13 +580,39 @@ export class DeviceManager {
       return fail();
     }
   }
-  async acceptPairing(input: {
-    expectedRevision: number;
-    approval: string;
-    rootPublicKey: RootPublicJwk;
-    signedManifest: string;
-  }) {
+  /** Cancels only a pending request. A never-enrolled endpoint retains its revision tombstone. */
+  cancelPairing(expectedRevision: number, options: { current?: () => void } = {}) {
     try {
+      options.current?.();
+      this.#assert(expectedRevision);
+      const state = this.#state;
+      if (!state?.pending) fail();
+      if (state.trust) return this.cancelRotation(expectedRevision);
+      const saved = this.#file.save(expectedRevision, {
+        version: 1,
+        cancelled: true,
+        pin: state.pin,
+      });
+      this.#revision = saved.revision;
+      this.#cancelled = state.pin;
+      this.#state = undefined;
+      this.#trust = undefined;
+      return this.status();
+    } catch {
+      return fail();
+    }
+  }
+  async acceptPairing(
+    input: {
+      expectedRevision: number;
+      approval: string;
+      rootPublicKey: RootPublicJwk;
+      signedManifest: string;
+    },
+    options: { current?: () => void } = {},
+  ) {
+    try {
+      options.current?.();
       const expected = input.expectedRevision,
         approval = input.approval,
         root = rootPublicJwkSchema.parse(input.rootPublicKey),
@@ -567,6 +637,7 @@ export class DeviceManager {
       )
         fail();
       if (pending.request.expiresAt <= this.#now()) fail();
+      options.current?.();
       this.#write(
         expected,
         {

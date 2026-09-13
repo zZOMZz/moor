@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { hostCommandSchema } from '../bridge/host-command';
-import { e2eeIdSchema, trustPinSchema } from './e2ee-trust';
+import {
+  e2eeDigestSchema,
+  e2eeIdSchema,
+  rootPublicJwkSchema,
+  trustedDeviceSchema,
+  trustPinSchema,
+  E2EE_TRUST_LIMITS,
+} from './e2ee-trust';
+import { E2EE_PAIRING_LIMITS, pairingRequestSchema } from './e2ee-pairing';
+import { publicTrustEntrySchema } from './trust-publication';
 import {
   encryptedBridgeHostDescriptorSchema,
   encryptedCatalogOperationSchema,
@@ -22,6 +31,7 @@ export const DESKTOP_SECURE_LIMITS = Object.freeze({
   identityChunks: 4096,
   deadlineMs: 30000,
 });
+const revision = z.number().int().positive().safe();
 const connectionId = z.string().uuid();
 const connection = { connectionId };
 const host = { ...connection, hostId: e2eeIdSchema };
@@ -31,6 +41,24 @@ const legacyCommand = command.refine((value) => value.method === 'session-operat
 /** The renderer cannot choose a URL, endpoint file, cookie, key or general IPC operation. */
 export const desktopSecureRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('status') }).strict(),
+  z
+    .object({
+      action: z.literal('device-pair'),
+      expectedRevision: revision.nullable(),
+      pin: trustPinSchema,
+    })
+    .strict(),
+  z.object({ action: z.literal('device-renew'), expectedRevision: revision }).strict(),
+  z.object({ action: z.literal('device-cancel'), expectedRevision: revision }).strict(),
+  z
+    .object({
+      action: z.literal('device-accept'),
+      expectedRevision: revision,
+      approval: z.string().min(1).max(E2EE_PAIRING_LIMITS.approvalCharacters),
+      rootPublicKey: rootPublicJwkSchema,
+      signedManifest: z.string().min(1).max(E2EE_TRUST_LIMITS.signedCharacters),
+    })
+    .strict(),
   z.object({ action: z.literal('connect') }).strict(),
   z.object({ action: z.literal('disconnect'), ...connection }).strict(),
   z.object({ action: z.literal('catalog'), ...host }).strict(),
@@ -71,12 +99,23 @@ const configuredDevice = z
       .min(1)
       .max(2),
     trustEpoch: z.number().int().positive().safe().nullable(),
+    pending: z
+      .object({
+        request: pairingRequestSchema,
+        fingerprint: e2eeDigestSchema,
+        expired: z.boolean(),
+      })
+      .strict()
+      .nullable(),
+    trust: publicTrustEntrySchema.nullable(),
+    devices: z.array(trustedDeviceSchema).max(E2EE_TRUST_LIMITS.devices),
   })
   .strict();
 export const desktopSecureStatusSchema = z
   .object({
     device: z.union([
       z.object({ phase: z.literal('empty'), revision: z.null() }).strict(),
+      z.object({ phase: z.literal('cancelled'), revision, pin: trustPinSchema }).strict(),
       configuredDevice,
     ]),
     connecting: z.boolean(),

@@ -12,6 +12,8 @@ const desktopFiles = [
   'web-preload.cjs',
   'secure-preload.cjs',
   'secure-client.cjs',
+  'secure-account.cjs',
+  'client-window.cjs',
   'secure-input.cjs',
   'content-authority.cjs',
   'client-assets.cjs',

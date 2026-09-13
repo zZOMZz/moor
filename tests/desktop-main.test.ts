@@ -121,6 +121,14 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   let directoryGate: ReturnType<typeof gate> | undefined,
     directoryResult = directory;
   const electron = {
+    protocol: {
+      registerSchemesAsPrivileged: (values: any[]) => {
+        assert.equal(values.length, 1);
+        assert.equal(values[0].scheme, 'moor-client');
+        assert.equal(values[0].privileges.bypassCSP, false);
+        assert.equal(values[0].privileges.allowServiceWorkers, false);
+      },
+    },
     app: application,
     BrowserWindow: Window,
     Notification: NativeNotification,

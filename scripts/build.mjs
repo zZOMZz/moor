@@ -134,7 +134,11 @@ const utilities = await postcss([tailwind()]).process(
 );
 await writeFile(
   'dist/public/style.css',
-  utilities.css + '\n' + (await readFile('src/web/public/style.css', 'utf8')),
+  utilities.css +
+    '\n' +
+    (await readFile('src/web/public/style.css', 'utf8')) +
+    '\n' +
+    (await readFile('src/web/secure-style.css', 'utf8')),
 );
 
 const { createHash } = await import('node:crypto');

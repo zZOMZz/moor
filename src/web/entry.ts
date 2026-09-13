@@ -1,15 +1,24 @@
 import { api, type Identity } from './api';
 import { firstStartupSource } from './bootstrap';
-import * as cache from './cache';
 
 // Fetch identity alongside the UI. Signing in never needs the session WASM runtime.
 export async function start() {
+  if (
+    location.protocol === 'moor-client:' &&
+    (window as unknown as { moorSecure?: { version: number } }).moorSecure?.version === 1
+  ) {
+    const { bootSecure } = await import('./secure-app');
+    await bootSecure();
+    window.dispatchEvent(new Event('moor:ready'));
+    return;
+  }
   if (location.pathname === '/auth/google/complete') {
     const { showGoogleComplete } = await import('./ui');
     showGoogleComplete();
     window.dispatchEvent(new Event('moor:ready'));
     return;
   }
+  const cache = await import('./cache');
   const identity = api('/api/me').catch(() => null) as Promise<Identity | null>;
   const cachedOwner = cache.read<string>('last-owner').catch(() => undefined);
   const [source, { showAuth }] = await Promise.all([

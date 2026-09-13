@@ -17,6 +17,10 @@ const SECURE_CLIENT_IPC_LIMITS = Object.freeze({
 });
 const actions = new Set([
   'status',
+  'device-pair',
+  'device-renew',
+  'device-cancel',
+  'device-accept',
   'connect',
   'disconnect',
   'catalog',

@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('moorSecure', {
   version: 1,
   request: (value) => ipcRenderer.invoke('moor:secure-client', value),
+  account: (value) => ipcRenderer.invoke('moor:secure-account', value),
 });
 contextBridge.exposeInMainWorld('moorDesktop', {
   version: 1,
