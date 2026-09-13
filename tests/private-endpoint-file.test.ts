@@ -55,6 +55,19 @@ function fixture(t: TestContext) {
   return { root, directory, file, open, children };
 }
 
+// The IPC handlers retain their SQLite owners after module evaluation. A live process
+// alone is insufficient: force GC across turns before testing exclusion or process death.
+async function collectChildOwner(child: ChildProcess, closed: Promise<unknown>) {
+  const held = Promise.race([
+    once(child, 'message').then(([message]) => message),
+    closed.then(() => {
+      throw Error('Synthetic lock owner exited during garbage collection');
+    }),
+  ]);
+  child.send({ collect: true });
+  assert.deepEqual(await held, { held: true });
+}
+
 test('explicit private-file CAS creates revision one, returns independent snapshots and persists across reopen', (t) => {
   const f = fixture(t),
     store = f.open();
@@ -401,12 +414,24 @@ test('lifetime lock excludes another process and is released by process exit wit
     import { PrivateEndpointFile } from ${JSON.stringify(resolve('src/security/private-endpoint-file.ts'))};
     const store = PrivateEndpointFile.open(process.argv[1]);
     store.save(null, {synthetic:true});
+    process.on('message', (message) => {
+      if (message.collect) {
+        global.gc({execution:'sync', type:'major'});
+        setImmediate(() => {
+          global.gc({execution:'sync', type:'major'});
+          store.load();
+          process.send({held:true});
+        });
+        return;
+      }
+      store.load();
+      process.exit(0);
+    });
     process.send({ready:true});
-    process.on('message', () => process.exit(0));
   `;
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', '--input-type=module', '-e', script, f.file],
+    ['--expose-gc', '--import', 'tsx', '--input-type=module', '-e', script, f.file],
     {
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
@@ -421,6 +446,7 @@ test('lifetime lock excludes another process and is released by process exit wit
     }),
   ]);
   assert.deepEqual(message, { ready: true });
+  await collectChildOwner(child, closed);
   assert.throws(() => f.open(), safe());
   const before = fs.statSync(f.file + '.lock').ino;
   child.send({ stop: true });
@@ -467,13 +493,29 @@ test('foreign hot journals and databases remain byte-for-byte untouched instead 
     database.exec('BEGIN EXCLUSIVE');
     const update = database.prepare('UPDATE operator_rows SET value=? WHERE id=?');
     for (let index = 1; index <= 40; index++) update.run(Buffer.alloc(3000, 66), index);
+    process.on('message', (message) => {
+      if (message.collect) {
+        global.gc({execution:'sync', type:'major'});
+        setImmediate(() => {
+          global.gc({execution:'sync', type:'major'});
+          database.prepare('SELECT 1').get();
+          process.send({held:true});
+        });
+        return;
+      }
+      database.prepare('SELECT 1').get();
+      process.exit(0);
+    });
     process.send({ready:true, initial, dirty:hash()});
-    process.on('message', () => process.exit(0));
   `;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', script, lock], {
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-    env: { ...process.env, NODE_NO_WARNINGS: '1' },
-  });
+  const child = spawn(
+    process.execPath,
+    ['--expose-gc', '--input-type=module', '-e', script, lock],
+    {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    },
+  );
   const closed = once(child, 'close');
   f.children.push({ child, closed });
   const message = await Promise.race([
@@ -486,6 +528,7 @@ test('foreign hot journals and databases remain byte-for-byte untouched instead 
   ]);
   assert.equal(message.ready, true);
   assert.notEqual(message.initial, message.dirty);
+  await collectChildOwner(child, closed);
   child.kill('SIGKILL');
   assert.equal((await closed)[1], 'SIGKILL');
   const before = fs.readFileSync(lock),
@@ -567,12 +610,24 @@ test('SIGKILL leaves only a recognized empty cold journal and a new process can 
     import { PrivateEndpointFile } from ${JSON.stringify(resolve('src/security/private-endpoint-file.ts'))};
     const store = PrivateEndpointFile.open(process.argv[1]);
     store.save(null, {synthetic:'durable-before-crash'});
+    process.on('message', (message) => {
+      if (message.collect) {
+        global.gc({execution:'sync', type:'major'});
+        setImmediate(() => {
+          global.gc({execution:'sync', type:'major'});
+          store.load();
+          process.send({held:true});
+        });
+        return;
+      }
+      store.load();
+      process.exit(0);
+    });
     process.send({ready:true});
-    process.on('message', () => process.exit(0));
   `;
   const child = spawn(
     process.execPath,
-    ['--import', 'tsx', '--input-type=module', '-e', script, f.file],
+    ['--expose-gc', '--import', 'tsx', '--input-type=module', '-e', script, f.file],
     {
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: { ...process.env, NODE_NO_WARNINGS: '1' },
@@ -589,6 +644,7 @@ test('SIGKILL leaves only a recognized empty cold journal and a new process can 
     ]),
     { ready: true },
   );
+  await collectChildOwner(child, closed);
   assert.throws(() => f.open(), safe());
   const before = fs.readFileSync(f.file),
     lockInode = fs.statSync(f.file + '.lock').ino;
