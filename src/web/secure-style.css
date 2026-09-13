@@ -515,3 +515,104 @@
   color: var(--muted);
   text-align: center;
 }
+.secure-attachment-select {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+}
+.secure-attachment-controls svg,
+.secure-attachment-card svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.secure-attachment-card {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start !important;
+  gap: 10px;
+  max-width: 100%;
+  text-align: left;
+  margin: 10px 0;
+}
+.secure-attachment-card > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.secure-attachment-card strong {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.secure-attachment-card small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.secure-attachment-card img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 5px;
+}
+.secure-attachment-drafts {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.secure-attachment-drafts li {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.secure-attachment-drafts p {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.secure-attachment-preview {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+.secure-attachment-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.secure-attachment-heading h2 {
+  overflow-wrap: anywhere;
+}
+.secure-attachment-heading svg {
+  width: 18px;
+  height: 18px;
+}
+.secure-attachment-preview-body {
+  margin: 20px 0;
+  min-width: 0;
+}
+.secure-attachment-preview-body img,
+.secure-attachment-preview-body audio {
+  max-width: 100%;
+}
+.secure-attachment-preview-body img {
+  display: block;
+  max-height: 55vh;
+  object-fit: contain;
+  margin: auto;
+}
+.secure-attachment-preview-body audio {
+  width: 100%;
+}
+.secure-attachment-preview-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}

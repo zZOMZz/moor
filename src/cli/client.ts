@@ -306,7 +306,7 @@ export class CliClient {
         if (parsed.operationId !== op.operationId) throw new Error();
         receipt = parsed;
         if (!parsed.accepted) state = 'abandoned';
-      } else {
+      } else if (request.kind === 'metadata') {
         const parsed = validateSessionActionReceipt(request.value, raw);
         if (
           parsed.accepted &&
@@ -315,7 +315,7 @@ export class CliClient {
           throw new Error();
         receipt = parsed;
         if (!parsed.accepted) state = 'abandoned';
-      }
+      } else throw new Error('This CLI operation is not a supported session original');
       return summary(this.state.transition(op.operationId, ['pending'], state, receipt));
     } catch (error) {
       if (error instanceof CliHttpError && error.rejected && first) {

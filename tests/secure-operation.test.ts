@@ -326,3 +326,73 @@ test('permission confirmation and abandonment retain the durable original throug
     close(reopened);
   }
 });
+
+test('attachment originals retain exact upload/remove bodies and reject relabelled or unbound scope', () => {
+  for (const action of ['upload', 'remove'] as const) {
+    const params = {
+      contentVersion: 1,
+      operationId: 'attachment-original',
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      sessionId: target.sessionId,
+      action,
+      ...(action === 'upload'
+        ? {
+            attachment: {
+              contentVersion: 1,
+              attachmentId: 'attachment',
+              name: 'synthetic.txt',
+              content: {
+                version: 'sha256:' + 'a'.repeat(64),
+                byteLength: 1,
+                mediaType: 'text/plain',
+              },
+            },
+            data: 'YQ==',
+          }
+        : { attachmentId: 'attachment' }),
+    };
+    const body =
+      JSON.stringify(
+        {
+          method: 'attachment-action',
+          workspaceId: target.workspaceId,
+          localProjectId: target.localProjectId,
+          params,
+        },
+        null,
+        2,
+      ) + '\n';
+    const input: SecureCliOperation = {
+      operationId: params.operationId,
+      kind: action === 'upload' ? 'attachment-upload' : 'attachment-remove',
+      target,
+      body,
+      requestVersion: requestVersion(body),
+      state: 'pending',
+      createdAt: now,
+    };
+    assert.deepEqual(secureOperationSchema.parse(JSON.parse(JSON.stringify(input))), input);
+    assert.deepEqual(secureOriginal(input), { kind: 'attachment', value: params });
+    assert.throws(() =>
+      secureOperationSchema.parse({
+        ...input,
+        kind: action === 'upload' ? 'attachment-remove' : 'attachment-upload',
+      }),
+    );
+    for (const field of ['workspaceId', 'localProjectId', 'sessionId', 'operationId']) {
+      const raw = JSON.parse(body);
+      raw.params[field] = 'wrong';
+      assert.throws(
+        () => secureOperationSchema.parse({ ...input, body: JSON.stringify(raw) }),
+        field,
+      );
+    }
+    const extra = JSON.parse(body);
+    extra.params.owner = 'untrusted-extra-authority';
+    assert.throws(() => secureOperationSchema.parse({ ...input, body: JSON.stringify(extra) }));
+    assert.equal(secureOperationSchema.parse({ ...input, state: 'ending' }).state, 'ending');
+    for (const state of ['abandoned', 'accepted'])
+      assert.throws(() => secureOperationSchema.parse({ ...input, state }));
+  }
+});

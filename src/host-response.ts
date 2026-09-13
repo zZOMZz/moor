@@ -59,6 +59,7 @@ import {
 import { MCP_FEATURE, MCP_LIMITS, validateMcpRead } from './mcp-protocol';
 import {
   SESSION_CONTROL_FEATURE,
+  ATTACHMENT_OPERATIONS_FEATURE,
   SESSION_CONTROL_LIMITS,
   validateSessionControlReceipt,
   validateSessionOperationResult,
@@ -182,6 +183,8 @@ export async function validateHostResponse(
           workspace.projects.some((p) => p.id === command.localProjectId)) &&
         (!policy[0] || workspace.features?.includes(policy[0])),
     );
+    if (command.method === 'session-operations' && command.params.request.kind === 'attachment')
+      requireValue(workspace.features?.includes(ATTACHMENT_OPERATIONS_FEATURE));
     const json = JSON.stringify(raw);
     requireValue(typeof json === 'string' && new TextEncoder().encode(json).length <= policy[1]);
     // Keep caller-owned values from changing during WebCrypto awaits. No parsed

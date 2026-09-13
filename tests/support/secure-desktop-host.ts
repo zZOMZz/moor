@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { Store } from '../../src/relay/accounts';
@@ -15,6 +15,7 @@ import { DeviceManager } from '../../src/security/device-manager';
 import { PrivateEndpointFile } from '../../src/security/private-endpoint-file';
 import { generateRecoveryKey } from '../../src/security/e2ee-recovery';
 import { mutationReceiptSchema } from '../../src/session-responses';
+import { attachmentReceiptSchema } from '../../src/attachment-protocol';
 import {
   ENCRYPTED_BRIDGE_PATHS,
   encryptedCatalogSchema,
@@ -52,12 +53,17 @@ function sequenceSignal() {
 }
 
 /** Native GUI fixture: production Relay, Host, encrypted transport and private device files. */
-export async function createSecureDesktopHost(root: string) {
+export async function createSecureDesktopHost(
+  root: string,
+  options: { richContent?: boolean } = {},
+) {
   const privateRoot = join(root, 'private'),
     project = join(root, 'SYNTHETIC_PRIVATE_PROJECT'),
     relayFile = join(root, 'relay.sqlite');
   mkdirSync(privateRoot, { mode: 0o700 });
   mkdirSync(project, { mode: 0o700 });
+  if (options.richContent)
+    writeFileSync(join(project, 'SYNTHETIC_PRIVATE_FILE.txt'), 'SYNTHETIC_PRIVATE_BEFORE\n');
   let relay: Store | undefined,
     application: ReturnType<typeof createApp> | undefined,
     store: RuntimeStore | undefined,
@@ -71,10 +77,11 @@ export async function createSecureDesktopHost(root: string) {
     fixtureError: Error | undefined;
   const permissionSignal = sequenceSignal(),
     completedSignal = sequenceSignal(),
-    outcomes: unknown[] = [];
+    outcomes: unknown[] = [],
+    inputs: unknown[] = [];
   let prompts = 0,
     droppedReplies = 0,
-    armed = false;
+    armed: 'permission' | 'attachment' | undefined;
   type Pending = { socket: WebSocket; record: EncryptedRecord };
   const pending = new Map<string, Pending>();
   let drop: (Pending & { accepted: boolean }) | undefined;
@@ -292,9 +299,13 @@ export async function createSecureDesktopHost(root: string) {
           const session: AgentSession = {
             id: nativeId ?? 'synthetic-desktop-native',
             capabilities: syntheticCapabilities,
-            async prompt() {
+            inputCapabilities: options.richContent
+              ? { image: true, audio: true, embeddedContext: true }
+              : undefined,
+            async prompt(input) {
               try {
                 const sequence = ++prompts;
+                inputs.push(structuredClone(input));
                 const runEntry = [...host!.active].find(([, run]) => run.session === session);
                 assert(runEntry?.[1].done, 'Synthetic prompt must belong to one active Host run');
                 const [sessionId, run] = runEntry;
@@ -308,6 +319,28 @@ export async function createSecureDesktopHost(root: string) {
                     completedSignal.mark(sequence);
                   })
                   .catch(fail);
+                if (options.richContent) {
+                  writeFileSync(
+                    join(project, 'SYNTHETIC_PRIVATE_FILE.txt'),
+                    'SYNTHETIC_PRIVATE_AFTER_' + sequence + '\n',
+                  );
+                  callbacks.update({
+                    sessionUpdate: 'agent_message_chunk',
+                    content: {
+                      type: 'resource',
+                      resource: {
+                        uri: 'file:///synthetic/SYNTHETIC_PRIVATE_GENERATED_' + sequence + '.txt',
+                        mimeType: 'text/plain',
+                        text: 'SYNTHETIC_PRIVATE_OUTPUT_' + sequence,
+                      },
+                    },
+                  });
+                  callbacks.update({
+                    sessionUpdate: 'agent_message_chunk',
+                    content: { type: 'text', text: 'SYNTHETIC_PRIVATE_COMPLETED_' + sequence },
+                  });
+                  return;
+                }
                 const result = callbacks.permission({
                   toolCall: {
                     toolCallId: 'synthetic-tool-' + sequence,
@@ -359,7 +392,12 @@ export async function createSecureDesktopHost(root: string) {
     dispatcher.execute = async (raw, context) => {
       const command = hostCommandSchema.parse(raw);
       let selected: typeof drop;
-      if (armed && command.method === 'mutate' && command.params.kind === 'permission') {
+      if (
+        (armed === 'permission' &&
+          command.method === 'mutate' &&
+          command.params.kind === 'permission') ||
+        (armed === 'attachment' && command.method === 'attachment-action')
+      ) {
         try {
           current();
           assert.equal(
@@ -373,7 +411,7 @@ export async function createSecureDesktopHost(root: string) {
           assert.equal(resource.workspaceId, command.workspaceId);
           assert.equal(resource.projectId, command.localProjectId);
           selected = drop = { ...original, accepted: false };
-          armed = false;
+          armed = undefined;
         } catch (error) {
           throw fail(error);
         }
@@ -381,9 +419,12 @@ export async function createSecureDesktopHost(root: string) {
       try {
         const result = await execute(raw, context);
         if (selected) {
-          const receipt = mutationReceiptSchema.parse(result);
+          const receipt =
+            command.method === 'attachment-action'
+              ? attachmentReceiptSchema.parse(result)
+              : mutationReceiptSchema.parse(result);
           assert(
-            command.method === 'mutate' &&
+            (command.method === 'mutate' || command.method === 'attachment-action') &&
               receipt.accepted &&
               receipt.operationId === command.params.operationId,
           );
@@ -455,6 +496,7 @@ export async function createSecureDesktopHost(root: string) {
       cookie,
       clientFile,
       outcomes,
+      inputs,
       get prompts() {
         return prompts;
       },
@@ -466,7 +508,12 @@ export async function createSecureDesktopHost(root: string) {
       dropNextPermissionReply() {
         current();
         assert(!armed && !drop, 'Synthetic permission reply fault is already armed');
-        armed = true;
+        armed = 'permission';
+      },
+      dropNextAttachmentReply() {
+        current();
+        assert(!armed && !drop, 'Synthetic attachment reply fault is already armed');
+        armed = 'attachment';
       },
       assertOpaque() {
         current();

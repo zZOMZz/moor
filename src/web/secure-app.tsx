@@ -13,6 +13,18 @@ import type {
 import type { RootPublicJwk } from '../security/e2ee-trust';
 import { productCanonicalJson } from '../security/encrypted-product-catalog';
 import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
+import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
+import { ATTACHMENT_OPERATIONS_FEATURE } from '../session-control-protocol';
+import type { AttachmentReference } from '../content-protocol';
+import type { SecureCliTarget } from '../cli/secure-operation';
+import type { SecureAttachmentDraft } from './secure-attachments';
+import {
+  SecureContentUI,
+  SecureAttachmentCard,
+  SecureAttachmentControls,
+  secureAttachmentInputReason,
+  type SecureContentUiHandle,
+} from './secure-content-ui';
 
 type Account = {
   origin: string;
@@ -37,9 +49,15 @@ export type SecureUiController = Pick<
   | 'refreshSessions'
   | 'openSession'
   | 'refreshSession'
+  | 'refreshAgentOptions'
   | 'createSession'
   | 'send'
   | 'respondPermission'
+  | 'contentContext'
+  | 'contentRequest'
+  | 'readAttachment'
+  | 'addAttachments'
+  | 'removeAttachment'
   | 'stop'
   | 'metadata'
   | 'recover'
@@ -309,6 +327,15 @@ function sessionOperations(state: SecureWorkspaceState) {
       operation.target.localProjectId === session.meta.project.localProjectId,
   );
 }
+function attachmentRecoverySupported(state: SecureWorkspaceState, target: SecureCliTarget) {
+  const workspace = state.catalog?.workspaces.find((entry) => entry.id === target.workspaceId);
+  return (
+    state.hostId === target.hostDeviceId &&
+    !!workspace?.features?.includes(ATTACHMENTS_FEATURE) &&
+    workspace.features.includes(ATTACHMENT_OPERATIONS_FEATURE)
+  );
+}
+
 function pendingForSession(state: SecureWorkspaceState): boolean {
   return sessionOperations(state).some((operation) =>
     ['pending', 'ending'].includes(operation.state),
@@ -526,8 +553,10 @@ function HistoryItem({
   busy,
   controller,
   run,
+  onAttachment,
 }: {
   value: unknown;
+  onAttachment(reference: AttachmentReference): void;
   finished: boolean;
   turnId: string;
   state: SecureWorkspaceState;
@@ -580,6 +609,17 @@ function HistoryItem({
           </summary>
           <pre>{displayText(item.content ?? item.rawOutput ?? item.rawInput)}</pre>
         </details>
+        {Array.isArray(item.content) &&
+          item.content
+            .filter((entry) => entry && typeof entry === 'object' && entry.type === 'attachment')
+            .map((entry, index) => (
+              <SecureAttachmentCard
+                key={index}
+                value={entry.attachment}
+                disabled={busy}
+                onOpen={onAttachment}
+              />
+            ))}
         {permission !== undefined && (
           <PermissionCard
             currentReview={currentReview}
@@ -603,12 +643,7 @@ function HistoryItem({
     );
   }
   if (item.type === 'attachment')
-    return (
-      <details>
-        <summary>附件记录</summary>
-        <pre>{displayText(item.attachment)}</pre>
-      </details>
-    );
+    return <SecureAttachmentCard value={item.attachment} disabled={busy} onOpen={onAttachment} />;
   return (
     <details>
       <summary>会话记录 · {displayText(item.type ?? '内容')}</summary>
@@ -622,11 +657,13 @@ function Composer({
   controller,
   run,
   onDirty,
+  onPreview,
 }: {
   state: SecureWorkspaceState;
   controller: SecureUiController;
   run: Run;
   onDirty: (value: boolean) => void;
+  onPreview(item: SecureAttachmentDraft): void;
 }) {
   const [text, setText] = useState(state.draft);
   const session = state.session!;
@@ -642,20 +679,78 @@ function Composer({
     session.meta.status?.type === 'working' ||
     session.history.some((turn) => turn.role === 'assistant' && !turn.finished);
   const blocked = pendingForSession(state);
+  const replica = state.catalog?.products.replicas.find((entry) => entry.id === state.replicaId);
+  const workspace = state.catalog?.workspaces.find(
+    (entry) => entry.id === replica?.runtimeWorkspaceId,
+  );
+  const contentContext = controller.contentContext;
+  const candidateTarget = contentContext.target;
+  const device = state.status?.device;
+  const shownTarget =
+    candidateTarget &&
+    replica &&
+    device &&
+    'deviceId' in device &&
+    candidateTarget.origin === device.pin.serverOrigin &&
+    candidateTarget.owner === device.pin.accountId &&
+    candidateTarget.rootKeyId === device.pin.rootKeyId &&
+    candidateTarget.clientDeviceId === device.deviceId &&
+    candidateTarget.hostDeviceId === state.hostId &&
+    candidateTarget.sessionId === session.meta.id &&
+    candidateTarget.workspaceId === replica.runtimeWorkspaceId &&
+    candidateTarget.localProjectId === replica.localProjectId &&
+    candidateTarget.userId === session.meta.userId &&
+    candidateTarget.machineId === session.meta.machineId &&
+    candidateTarget.product?.replicaId === replica.id &&
+    candidateTarget.product.revision === replica.revision
+      ? structuredClone(candidateTarget)
+      : null;
+  const attachmentAction = (action: () => Promise<void>) =>
+    run(async () => {
+      if (
+        !shownTarget ||
+        productCanonicalJson(shownTarget) !== productCanonicalJson(controller.contentContext.target)
+      )
+        throw Error('附件显示目标已改变，请重新打开会话。');
+      await action();
+    });
+
+  const attachmentRemoteSupported =
+    !!workspace?.features?.includes(ATTACHMENTS_FEATURE) &&
+    !!workspace.features.includes(ATTACHMENT_OPERATIONS_FEATURE);
+  const attachmentUnsupported =
+    state.attachmentDraft.length > 0 &&
+    (!attachmentRemoteSupported ||
+      state.attachmentDraft.some(
+        (item) =>
+          item.status === 'pending' ||
+          !!secureAttachmentInputReason(item.reference, session.agent?.inputCapabilities),
+      ));
   const unavailable =
+    !shownTarget ||
     !state.status?.connection ||
     state.busy ||
     running ||
     session.meta.isArchived ||
     session.persisted === false ||
     !!session.persistenceError ||
-    blocked;
+    blocked ||
+    attachmentUnsupported;
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (unavailable || !text.trim()) return;
+    if (unavailable || (!text.trim() && state.attachmentDraft.length === 0)) return;
+    if (
+      !shownTarget ||
+      productCanonicalJson(shownTarget) !== productCanonicalJson(controller.contentContext.target)
+    )
+      return;
+    const review = {
+      target: structuredClone(shownTarget),
+      attachments: structuredClone(state.attachmentDraft),
+    };
     run(async () => {
       await controller.saveDraft(text);
-      await controller.send(text);
+      await controller.send(text, review);
     });
   }
   return (
@@ -669,9 +764,52 @@ function Composer({
           rows={4}
           placeholder="写下任务，或先保存为本机草稿…"
           onChange={(event) => setText(event.target.value)}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData?.files ?? []);
+            if (files.length) {
+              event.preventDefault();
+              if (!state.busy) attachmentAction(() => controller.addAttachments(files));
+            }
+          }}
           disabled={state.busy}
         />
       </label>
+      <div className="secure-actions">
+        <button
+          type="button"
+          disabled={!shownTarget || !state.status?.connection || state.busy || running}
+          onClick={() => {
+            if (!shownTarget) return;
+            const reviewedTarget = structuredClone(shownTarget);
+            run(() => controller.refreshAgentOptions(reviewedTarget));
+          }}
+        >
+          检查附件输入能力
+        </button>
+        <span className="secure-muted">只检查此会话固定 Agent 的能力，不发送指令。</span>
+      </div>
+      <SecureAttachmentControls
+        items={state.attachmentDraft}
+        busy={state.busy}
+        disabled={!shownTarget}
+        online={!!state.status?.connection}
+        remoteSupported={attachmentRemoteSupported}
+        canRetry={(id) =>
+          state.operations.some(
+            (operation) => operation.operationId === id && operation.state === 'pending',
+          )
+        }
+        capabilities={session.agent?.inputCapabilities}
+        onFiles={(files) => attachmentAction(() => controller.addAttachments(files))}
+        onRemove={(id) => attachmentAction(() => controller.removeAttachment(id))}
+        onRetry={(operationId) => attachmentAction(() => controller.recover(operationId, 'retry'))}
+        onPreview={onPreview}
+      />
+      {state.attachmentDraft.length > 0 && !attachmentRemoteSupported && (
+        <p className="secure-warning">
+          执行主机尚不支持可恢复的附件操作，请升级主机后重新核对目录。附件草稿保留在本机。
+        </p>
+      )}
       <div className="secure-composer-bottom">
         <span className="secure-muted" role="status">
           {dirty ? '草稿尚未保存；保存后可切换会话。' : '草稿保存在本机，重连后需手动发送。'}
@@ -684,7 +822,11 @@ function Composer({
           >
             保存草稿
           </button>
-          <button className="secure-primary" type="submit" disabled={unavailable || !text.trim()}>
+          <button
+            className="secure-primary"
+            type="submit"
+            disabled={unavailable || (!text.trim() && state.attachmentDraft.length === 0)}
+          >
             发送
           </button>
         </div>
@@ -713,6 +855,7 @@ export function SecureApp({
   onAccountVerified?: (value: Account | null) => void;
 }) {
   const [state, setState] = useState(controller.state);
+  const contentUi = useRef<SecureContentUiHandle>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [localBusy, setLocalBusy] = useState(false);
@@ -1024,6 +1167,22 @@ export function SecureApp({
                   </div>
                   <div className="secure-actions">
                     <button
+                      disabled={busy || !controller.contentContext.target}
+                      onClick={() =>
+                        run(() => contentUi.current?.openProject('tree') ?? Promise.resolve())
+                      }
+                    >
+                      项目文件
+                    </button>
+                    <button
+                      disabled={busy || !controller.contentContext.target}
+                      onClick={() =>
+                        run(() => contentUi.current?.openProject('changes') ?? Promise.resolve())
+                      }
+                    >
+                      会话变更
+                    </button>
+                    <button
                       disabled={busy || !connection || dirty}
                       onClick={() => run(() => controller.refreshSession())}
                     >
@@ -1100,6 +1259,12 @@ export function SecureApp({
                           <HistoryItem
                             key={scopeKey + ':' + turn.id + ':' + index}
                             value={item}
+                            onAttachment={(reference) =>
+                              run(
+                                () =>
+                                  contentUi.current?.openAttachment(reference) ?? Promise.resolve(),
+                              )
+                            }
                             finished={turn.finished}
                             turnId={turn.id}
                             state={state}
@@ -1118,6 +1283,11 @@ export function SecureApp({
                   controller={controller}
                   run={run}
                   onDirty={setDirty}
+                  onPreview={(item) =>
+                    run(async () => {
+                      contentUi.current?.openDraft(item);
+                    })
+                  }
                 />
               </>
             ) : (
@@ -1148,6 +1318,13 @@ export function SecureApp({
               <ul>
                 {state.operations.map((operation) => (
                   <li key={operation.operationId}>
+                    {operation.kind.startsWith('attachment-') && (
+                      <p className="secure-muted">
+                        附件结果未知时，可核查、重试或封存原操作。封存需主机确认，未确认前仍保留草稿并阻止发送。
+                        {!attachmentRecoverySupported(state, operation.target) &&
+                          ' 请先选择原执行主机并重新核对目录；主机需要支持可恢复的附件操作。'}
+                      </p>
+                    )}
                     {operation.kind === 'permission' && (
                       <p className="secure-muted">
                         审批决定的原操作。封存仅结束此记录的投递，不会取消主机等待的审批请求。
@@ -1155,15 +1332,19 @@ export function SecureApp({
                     )}
                     <div className="secure-section-title">
                       <strong>
-                        {operation.kind === 'permission'
-                          ? '审批决定'
-                          : operation.kind === 'turn'
-                            ? '发送指令'
-                            : operation.kind === 'create'
-                              ? '创建会话'
-                              : operation.kind === 'stop'
-                                ? '停止回合'
-                                : '会话设置'}
+                        {operation.kind === 'attachment-upload'
+                          ? '上传附件'
+                          : operation.kind === 'attachment-remove'
+                            ? '移除附件'
+                            : operation.kind === 'permission'
+                              ? '审批决定'
+                              : operation.kind === 'turn'
+                                ? '发送指令'
+                                : operation.kind === 'create'
+                                  ? '创建会话'
+                                  : operation.kind === 'stop'
+                                    ? '停止回合'
+                                    : '会话设置'}
                       </strong>
                       <span>{operationLabels[operation.state]}</span>
                     </div>
@@ -1188,7 +1369,12 @@ export function SecureApp({
                     {['pending', 'ending'].includes(operation.state) && (
                       <div className="secure-actions">
                         <button
-                          disabled={busy || !connection}
+                          disabled={
+                            busy ||
+                            !connection ||
+                            (operation.kind.startsWith('attachment-') &&
+                              !attachmentRecoverySupported(state, operation.target))
+                          }
                           onClick={() =>
                             run(() => controller.recover(operation.operationId, 'inspect'))
                           }
@@ -1196,7 +1382,13 @@ export function SecureApp({
                           核查原操作
                         </button>
                         <button
-                          disabled={busy || !connection || operation.state === 'ending'}
+                          disabled={
+                            busy ||
+                            !connection ||
+                            operation.state === 'ending' ||
+                            (operation.kind.startsWith('attachment-') &&
+                              !attachmentRecoverySupported(state, operation.target))
+                          }
                           onClick={() =>
                             run(() => controller.recover(operation.operationId, 'retry'))
                           }
@@ -1204,7 +1396,12 @@ export function SecureApp({
                           重试原操作
                         </button>
                         <button
-                          disabled={busy || !connection}
+                          disabled={
+                            busy ||
+                            !connection ||
+                            (operation.kind.startsWith('attachment-') &&
+                              !attachmentRecoverySupported(state, operation.target))
+                          }
                           onClick={() =>
                             run(() => controller.recover(operation.operationId, 'abandon'))
                           }
@@ -1220,6 +1417,7 @@ export function SecureApp({
                 <p className="secure-muted">此账号尚无本机原操作记录。</p>
               )}
             </details>
+            <SecureContentUI ref={contentUi} controller={controller} state={state} />
           </main>
         </div>
       )}

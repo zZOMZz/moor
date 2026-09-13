@@ -1,6 +1,11 @@
 import { hostCommandSchema, type HostCommand } from '../bridge/host-command';
 import { validateHostResponse } from '../host-response';
 import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
+import {
+  ATTACHMENT_OPERATIONS_FEATURE,
+  SESSION_CONTROL_FEATURE,
+} from '../session-control-protocol';
+import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
 import { devicePublicKey } from './e2ee-crypto';
 import {
   E2eeChannel,
@@ -69,6 +74,16 @@ function assertPermissionReview(command: HostCommand, features: string[] = []) {
   if (
     mutation?.kind === 'permission' &&
     (!mutation.permissionReview || !features.includes(PERMISSION_REVIEW_FEATURE))
+  )
+    fail();
+}
+function assertAttachmentRecovery(command: HostCommand, features: string[] = []) {
+  if (
+    (command.method === 'attachment-action' ||
+      (command.method === 'session-operations' && command.params.request.kind === 'attachment')) &&
+    (!features.includes(ATTACHMENT_OPERATIONS_FEATURE) ||
+      !features.includes(ATTACHMENTS_FEATURE) ||
+      (command.method === 'session-operations' && !features.includes(SESSION_CONTROL_FEATURE)))
   )
     fail();
 }
@@ -563,6 +578,7 @@ export class EncryptedBridgeClient {
     if (!workspace || !workspace.projects.some((project) => project.id === command.localProjectId))
       fail();
     assertPermissionReview(command, workspace.features);
+    assertAttachmentRecovery(command, workspace.features);
     if (catalog.catalogVersion === 1) {
       if (inputTarget !== undefined) fail();
       return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);
@@ -594,6 +610,7 @@ export class EncryptedBridgeClient {
     if (!workspace || !workspace.projects.some((project) => project.id === command.localProjectId))
       fail();
     assertPermissionReview(command, workspace.features);
+    assertAttachmentRecovery(command, workspace.features);
     return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);
   }
   async catalogAction(

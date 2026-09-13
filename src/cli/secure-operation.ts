@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { id, mutationSchema } from '../protocol';
+import { attachmentReceiptSchema } from '../attachment-protocol';
 import {
   encryptedProductTargetSchema,
   encryptedProductAuthoritySchema,
@@ -9,6 +10,7 @@ import { hostCommandSchema } from '../bridge/host-command';
 import { e2eeDigestSchema, e2eeOriginSchema } from '../security/e2ee-trust';
 import {
   sessionOriginalOperationSchema,
+  validateSessionControlReceipt,
   type SessionOriginalOperation,
 } from '../session-control-protocol';
 
@@ -31,7 +33,15 @@ export type SecureCliTarget = z.infer<typeof secureTargetSchema>;
 export const secureOperationSchema = z
   .object({
     operationId: id,
-    kind: z.enum(['turn', 'permission', 'create', 'stop', 'session-action']),
+    kind: z.enum([
+      'turn',
+      'permission',
+      'create',
+      'stop',
+      'session-action',
+      'attachment-upload',
+      'attachment-remove',
+    ]),
     target: secureTargetSchema,
     body: z.string().max(48 * 1024 * 1024),
     requestVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -48,9 +58,11 @@ export const secureOperationSchema = z
       const expected =
         operation.kind === 'turn' || operation.kind === 'permission'
           ? 'mutate'
-          : operation.kind === 'session-action'
-            ? 'session-action'
-            : 'session-control';
+          : operation.kind.startsWith('attachment-')
+            ? 'attachment-action'
+            : operation.kind === 'session-action'
+              ? 'session-action'
+              : 'session-control';
       if (
         command.method !== expected ||
         command.workspaceId !== target.workspaceId ||
@@ -64,6 +76,35 @@ export const secureOperationSchema = z
           if (!Object.hasOwn(raw.params, 'permissionReview')) throw Error();
           id.parse(command.params.expectedTurnId);
           id.parse(command.params.requestId);
+        }
+      }
+      if (command.method === 'attachment-action') {
+        if (operation.kind !== `attachment-${command.params.action}`) throw Error();
+        if (operation.state === 'accepted' || operation.state === 'abandoned') {
+          const direct = attachmentReceiptSchema.safeParse(operation.receipt);
+          const recovered = direct.success
+            ? undefined
+            : validateSessionControlReceipt(
+                operation.receipt,
+                { controlVersion: 1, ...target },
+                { kind: 'attachment', value: command.params },
+              );
+          if (operation.state === 'abandoned') {
+            if (recovered?.status !== 'abandoned') throw Error();
+          } else {
+            if (recovered && recovered.status !== 'accepted') throw Error();
+            const receipt = direct.success ? direct.data : recovered!.attachmentReceipt!;
+            if (
+              receipt.operationId !== operation.operationId ||
+              receipt.workspaceId !== target.workspaceId ||
+              receipt.localProjectId !== target.localProjectId ||
+              receipt.sessionId !== target.sessionId ||
+              (command.params.action === 'upload'
+                ? JSON.stringify(receipt.attachment) !== JSON.stringify(command.params.attachment)
+                : receipt.removed !== true)
+            )
+              throw Error();
+          }
         }
       }
       const params = command.params as {
@@ -103,7 +144,9 @@ export function secureOriginal(operation: SecureCliOperation): SessionOriginalOp
         ? 'mutation'
         : operation.kind === 'session-action'
           ? 'metadata'
-          : 'control',
+          : operation.kind === 'attachment-upload' || operation.kind === 'attachment-remove'
+            ? 'attachment'
+            : 'control',
     value: command.params,
   });
 }

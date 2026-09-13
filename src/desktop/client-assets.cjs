@@ -20,7 +20,7 @@ const CLIENT_PRIVILEGES = Object.freeze({
 });
 const CLIENT_CSP =
   "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; " +
-  "connect-src 'self'; worker-src 'self'; img-src 'self' data:; font-src 'self'; " +
+  "connect-src 'self'; worker-src 'self'; img-src 'self' data:; media-src data:; font-src 'self'; " +
   "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const fixed = Object.freeze({
   'index.html': 'text/html; charset=utf-8',

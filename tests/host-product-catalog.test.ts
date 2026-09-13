@@ -637,3 +637,41 @@ test('Task operation reference recovery uses a current lease and retains the ori
   move(f.store);
   for (const command of commands) assert.throws(() => f.store.acquire(selected, command));
 });
+
+test('published mapping history commits atomically, preserves old evidence and fails closed before publishing when history cannot persist', (t) => {
+  const f = fixture(t);
+  f.db.exec(
+    "CREATE TRIGGER fail_mapping_insert BEFORE INSERT ON encrypted_product_mapping BEGIN SELECT RAISE(ABORT,'synthetic unavailable history'); END",
+  );
+  assert.throws(() => f.store.read(), /synthetic unavailable/);
+  assert.equal(
+    f.db.prepare('SELECT count(*) AS count FROM encrypted_product_catalog').get()?.count,
+    0,
+  );
+  assert.equal(
+    f.db.prepare('SELECT count(*) AS count FROM encrypted_product_mapping').get()?.count,
+    0,
+  );
+  f.db.exec('DROP TRIGGER fail_mapping_insert');
+  const selected = target(f.store.read()),
+    priorRows = f.db.prepare('SELECT * FROM encrypted_product_mapping').all();
+  assert.equal(priorRows.length, 1);
+  assert.deepEqual(JSON.parse(String(priorRows[0].value)).target, selected);
+  f.store.action(createWorkspace(f.store));
+  const before = f.store.read();
+  f.db.exec(
+    "CREATE TRIGGER fail_mapping_insert BEFORE INSERT ON encrypted_product_mapping BEGIN SELECT RAISE(ABORT,'synthetic unavailable history'); END",
+  );
+  const request: EncryptedProductAction = {
+    version: 1,
+    action: 'move-host',
+    operationId: 'failed-move',
+    expectedRevision: before.revision,
+    runtimeWorkspaceId: 'runtime',
+    targetWorkspaceId: 'other-space',
+  };
+  assert.throws(() => f.store.action(request), /synthetic unavailable/);
+  assert.deepEqual(f.store.read(), before);
+  assert.deepEqual(f.db.prepare('SELECT * FROM encrypted_product_mapping').all(), priorRows);
+  assert.equal(f.store.inspect(request).found, false);
+});

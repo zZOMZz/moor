@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { assert } from '../protocol';
+import { attachmentReceiptSchema, type AttachmentReceipt } from '../attachment-protocol';
 import { Flock, LoroDoc, metas, mirror, putMeta } from '../model';
 import type { HostWorkspace } from '../bridge/host-workspace';
 import {
@@ -27,12 +28,14 @@ function receipt(
   scope: SessionControlScope,
   original: SessionOriginalOperation,
   status: SessionControlReceipt['status'],
+  attachmentReceipt?: AttachmentReceipt,
 ): SessionControlReceipt {
   return {
     ...envelope(scope),
     operationId: original.value.operationId,
     kind: original.kind === 'control' ? original.value.action : original.kind,
     status,
+    ...(attachmentReceipt ? { attachmentReceipt } : {}),
   };
 }
 
@@ -74,7 +77,19 @@ export class SessionControlManager {
       );
       return validateSessionControlReceipt(JSON.parse(row.result), scope, original);
     }
-    if (row.phase === 'accepted') return receipt(scope, original, 'accepted');
+    if (row.phase === 'accepted')
+      return validateSessionControlReceipt(
+        receipt(
+          scope,
+          original,
+          'accepted',
+          original.kind === 'attachment'
+            ? attachmentReceiptSchema.parse(JSON.parse(row.result))
+            : undefined,
+        ),
+        scope,
+        original,
+      );
     assert(row.phase === 'operation-abandoned', 409, '原操作尚无可确认结果，不能重新派发');
     return receipt(scope, original, 'abandoned');
   }
@@ -239,7 +254,10 @@ export class SessionControlManager {
       const original = request.request;
       // A CLI mutation always follows a separately confirmed empty creation.
       // This also prevents a guessed scope from sealing an unrelated new draft.
-      if (original.kind !== 'control' || original.value.action === 'stop')
+      if (
+        original.kind !== 'attachment' &&
+        (original.kind !== 'control' || original.value.action === 'stop')
+      )
         this.host.checkProject(request.sessionId, request.localProjectId);
       let known = this.existing(request, original);
       if (known?.status === 'stopping') known = this.settleStop(request, original);

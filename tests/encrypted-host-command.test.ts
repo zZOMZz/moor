@@ -1035,3 +1035,115 @@ test('encrypted permission review bindings survive direct and mapped execution a
     }
   }
 });
+
+test('encrypted attachment recovery authenticates the original product claim after a move and never routes recovery back to attachment execution', async (t) => {
+  for (const action of ['upload', 'remove'] as const) {
+    const f = await productFixture(t),
+      selected = f.target();
+    const original = {
+      ...scope,
+      contentVersion: 1,
+      operationId: `attachment-${action}`,
+      action,
+      ...(action === 'upload'
+        ? {
+            data: 'YQ==',
+            attachment: {
+              contentVersion: 1,
+              attachmentId: 'attachment',
+              name: 'SYNTHETIC_PRIVATE_FILE.txt',
+              content: {
+                version: 'sha256:' + 'a'.repeat(64),
+                byteLength: 1,
+                mediaType: 'text/plain',
+              },
+            },
+          }
+        : { attachmentId: 'attachment' }),
+    };
+    const upload = command('attachment-action', original);
+    assert.equal(
+      (await f.read(await f.adapter.execute(await f.mapped(upload, selected)))).value.ok,
+      true,
+    );
+    await f.move();
+    for (const current of [selected, f.target()])
+      assert.equal(
+        (await f.read(await f.adapter.execute(await f.mapped(upload, current)))).value.ok,
+        false,
+      );
+    for (const recovering of ['inspect', 'abandon'] as const) {
+      const recovery = command('session-operations', {
+        ...scope,
+        controlVersion: 1,
+        userId: 'synthetic-user',
+        machineId: 'synthetic-machine',
+        action: recovering,
+        request: { kind: 'attachment', value: original },
+      });
+      const sealed = await f.mapped(recovery, selected);
+      assert.equal(JSON.stringify(sealed).includes('SYNTHETIC_PRIVATE_FILE'), false);
+      const result = await f.read(await f.adapter.execute(sealed));
+      assert.equal(result.value.ok, true);
+      assert.equal(f.calls.at(-1)?.method, 'controlManager.recover');
+      assert.deepEqual((f.calls.at(-1)?.args[0] as any).request.value, original);
+      assert.equal(
+        (await f.read(await f.adapter.execute(await f.mapped(recovery, f.target())))).value.ok,
+        false,
+      );
+      const altered = structuredClone(recovery) as any;
+      if (action === 'upload') altered.params.request.value.attachment.name = 'altered.txt';
+      else altered.params.request.value.attachmentId = 'altered';
+      assert.equal(
+        (await f.read(await f.adapter.execute(await f.mapped(altered, selected)))).value.ok,
+        false,
+      );
+    }
+    assert.equal(f.calls.filter((call) => call.method === 'attachmentAction').length, 1);
+    assert.equal(f.calls.filter((call) => call.method === 'controlManager.recover').length, 2);
+  }
+});
+
+test('encrypted never-arrived attachment recovery uses Host-published mapping history only for inspect and seal', async (t) => {
+  const f = await productFixture(t),
+    selected = f.target();
+  const original = {
+    ...scope,
+    contentVersion: 1,
+    operationId: 'never-arrived-attachment',
+    action: 'remove',
+    attachmentId: 'attachment',
+  };
+  await f.move();
+  for (const action of ['inspect', 'abandon'] as const) {
+    const recovery = command('session-operations', {
+      ...scope,
+      controlVersion: 1,
+      userId: 'synthetic-user',
+      machineId: 'synthetic-machine',
+      action,
+      request: { kind: 'attachment', value: original },
+    });
+    assert.equal(
+      (await f.read(await f.adapter.execute(await f.mapped(recovery, selected)))).value.ok,
+      true,
+    );
+    assert.equal(f.calls.at(-1)?.method, 'controlManager.recover');
+    assert.deepEqual((f.calls.at(-1)?.args[0] as any).request.value, original);
+    assert.equal(
+      f.db.prepare('SELECT count(*) AS count FROM encrypted_product_operation').get()?.count,
+      action === 'inspect' ? 0 : 1,
+    );
+  }
+  assert.equal(f.calls.length, 2);
+  for (const target of [selected, f.target()])
+    assert.equal(
+      (
+        await f.read(
+          await f.adapter.execute(await f.mapped(command('attachment-action', original), target)),
+        )
+      ).value.ok,
+      false,
+    );
+  assert.equal(f.calls.length, 2);
+});

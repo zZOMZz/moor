@@ -5,11 +5,15 @@ import type { SecureAccountApi, SecureUiController } from '../src/web/secure-app
 import type { SecureWorkspaceState } from '../src/web/secure-controller';
 import { sessionPermissionReviews } from '../src/session-client';
 import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
+import { ATTACHMENTS_FEATURE } from '../src/attachment-protocol';
+import { ATTACHMENT_OPERATIONS_FEATURE } from '../src/session-control-protocol';
+import { createHash } from 'node:crypto';
+import type { AttachmentReference } from '../src/content-protocol';
 
 const pin = {
   serverOrigin: 'https://relay.synthetic.invalid',
   accountId: 'synthetic-owner',
-  rootKeyId: 'a'.repeat(43),
+  rootKeyId: 'A'.repeat(43),
 };
 const account = {
   origin: pin.serverOrigin,
@@ -27,6 +31,7 @@ function seed(): SecureWorkspaceState {
     session: null,
     operations: [],
     draft: '',
+    attachmentDraft: [],
     permissionReviews: [],
     notice: null,
     busy: false,
@@ -231,6 +236,37 @@ function fake(initial = seed()) {
     get state() {
       return structuredClone(state);
     },
+    get contentContext() {
+      const device = state.status?.device;
+      const session = state.session;
+      const replica = state.catalog?.products.replicas.find(
+        (entry) => entry.id === state.replicaId,
+      );
+      if (!device || !('deviceId' in device) || !session || !replica)
+        return { target: null, online: false, generation: 0 };
+      return {
+        target: {
+          origin: device.pin.serverOrigin,
+          owner: device.pin.accountId,
+          rootKeyId: device.pin.rootKeyId,
+          clientDeviceId: device.deviceId,
+          hostDeviceId: state.hostId!,
+          workspaceId: replica.runtimeWorkspaceId,
+          localProjectId: replica.localProjectId,
+          machineId: replica.machineId,
+          userId: replica.userId,
+          sessionId: session.meta.id,
+          product: {
+            catalogWorkspaceId: replica.catalogWorkspaceId,
+            projectId: replica.projectId,
+            replicaId: replica.id,
+            revision: replica.revision,
+          },
+        },
+        online: !!state.status?.connection,
+        generation: 0,
+      };
+    },
     subscribe(listener: (state: SecureWorkspaceState) => void) {
       listeners.add(listener);
       listener(structuredClone(state));
@@ -258,9 +294,14 @@ function fake(initial = seed()) {
     'refreshSessions',
     'openSession',
     'refreshSession',
+    'refreshAgentOptions',
     'createSession',
     'send',
     'respondPermission',
+    'addAttachments',
+    'removeAttachment',
+    'readAttachment',
+    'contentRequest',
     'stop',
     'metadata',
     'recover',
@@ -315,10 +356,43 @@ async function mount(
     'MouseEvent',
     'navigator',
     'FormData',
+    'NodeFilter',
+    'Document',
+    'DocumentFragment',
+    'ShadowRoot',
+    'DOMRect',
+    'KeyboardEvent',
   ])
     setGlobal(name, (dom.window as unknown as Record<string, unknown>)[name]);
   setGlobal('window', dom.window);
   setGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  setGlobal('getComputedStyle', dom.window.getComputedStyle.bind(dom.window));
+  const animation = (callback: FrameRequestCallback) => {
+    queueMicrotask(() => callback(0));
+    return 1;
+  };
+  const resize = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+  const media = () => ({
+    matches: true,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+  });
+  setGlobal('requestAnimationFrame', animation);
+  setGlobal('cancelAnimationFrame', () => {});
+  setGlobal('ResizeObserver', resize);
+  setGlobal('matchMedia', media);
+  Object.assign(dom.window, {
+    requestAnimationFrame: animation,
+    cancelAnimationFrame() {},
+    ResizeObserver: resize,
+    matchMedia: media,
+  });
   const { createElement, act } = await import('react');
   const { createRoot } = await import('react-dom/client');
   const { SecureApp } = await import('../src/web/secure-app');
@@ -499,7 +573,13 @@ test('draft is saved before explicit send and unsaved edits prevent switching sc
     await view.submit(field.form!);
     assert.deepEqual(view.calls.slice(1), [
       { name: 'saveDraft', args: ['只使用合成数据'] },
-      { name: 'send', args: ['只使用合成数据'] },
+      {
+        name: 'send',
+        args: [
+          '只使用合成数据',
+          { target: view.controller.contentContext.target, attachments: [] },
+        ],
+      },
     ]);
     assert.equal(field.value, '');
   } finally {
@@ -1051,6 +1131,449 @@ test('hosts without exact permission capability remain readable and require upgr
       false,
     );
     assert.equal(view.button('刷新会话').disabled, false);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+function attachmentFixture(
+  type = 'text/plain',
+  text = '合成附件 <script>no()</script>',
+  id = 'attachment',
+) {
+  const bytes = Buffer.from(text);
+  const reference: AttachmentReference = {
+    contentVersion: 1,
+    attachmentId: id,
+    name: type.startsWith('audio/')
+      ? 'synthetic.wav'
+      : type.startsWith('image/')
+        ? 'synthetic.png'
+        : 'synthetic.txt',
+    content: {
+      version: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      byteLength: bytes.byteLength,
+      mediaType: type,
+    },
+  };
+  return { reference, data: bytes.toString('base64') };
+}
+function attachmentState() {
+  const state = connected();
+  state.catalog!.workspaces[0].features!.push(ATTACHMENTS_FEATURE, ATTACHMENT_OPERATIONS_FEATURE);
+  state.session!.agent = {
+    id: 'agent',
+    name: '合成 Agent',
+    cliType: 'synthetic',
+    agentType: 'synthetic',
+    inputCapabilities: { image: true, audio: true, embeddedContext: true },
+  };
+  state.attachmentDraft = [{ ...attachmentFixture(), status: 'draft' }];
+  return state;
+}
+
+test('file selection and paste only add local attachment drafts without upload or execution', async () => {
+  const view = await mount(connected());
+  try {
+    const win = view.document.defaultView!;
+    const file = new win.File(['synthetic'], 'selected.txt', { type: 'text/plain' });
+    const input = view.document.querySelector<HTMLInputElement>('.secure-attachment-input')!;
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    await view.act(async () => input.dispatchEvent(new win.Event('change', { bubbles: true })));
+    const paste = new win.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { files: [file] } });
+    await view.act(async () => view.document.querySelector('#secure-prompt')!.dispatchEvent(paste));
+    assert.equal(paste.defaultPrevented, true);
+    assert.deepEqual(
+      view.calls.slice(1).map((call) => call.name),
+      ['addAttachments', 'addAttachments'],
+    );
+    assert.equal((view.calls[1].args[0] as File[])[0], file);
+    assert.equal(
+      view.calls.some((call) => call.name === 'send' || call.name === 'recover'),
+      false,
+    );
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('attachment-only send freezes displayed scope and files before awaiting text draft persistence', async () => {
+  const state = attachmentState();
+  const view = await mount(state);
+  let saved!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    saved = resolve;
+  });
+  try {
+    const shown = structuredClone(state.attachmentDraft);
+    const target = structuredClone(view.controller.contentContext.target);
+    view.controller.saveDraft = async () => saving;
+    assert.equal(view.button('发送').disabled, false);
+    await view.submit(view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!.form!);
+    const newer = structuredClone(state);
+    newer.attachmentDraft.push({
+      ...attachmentFixture('text/plain', 'different', 'new-attachment'),
+      status: 'draft',
+    });
+    await view.act(async () => view.update(newer));
+    await view.act(async () => saved());
+    assert.deepEqual(view.calls.at(-1), {
+      name: 'send',
+      args: ['', { target, attachments: shown }],
+    });
+  } finally {
+    saved();
+    await view.cleanup();
+  }
+});
+
+test('pending attachment operations recover only original ids and remain blocked while seal is unconfirmed', async () => {
+  const state = attachmentState();
+  const draft = state.attachmentDraft[0];
+  draft.status = 'pending';
+  draft.pendingAction = 'upload';
+  draft.pendingOperationId = 'upload-original';
+  const fixture = fake(state);
+  state.operations = [
+    {
+      operationId: 'upload-original',
+      kind: 'attachment-upload',
+      target: fixture.controller.contentContext.target!,
+      body: '{}',
+      requestVersion: 'sha256:' + 'b'.repeat(64),
+      state: 'pending',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+  const view = await mount(state);
+  try {
+    assert.equal(view.button('发送').disabled, true);
+    const ledger = view.document.querySelector('.secure-operations')!;
+    assert.match(ledger.textContent!, /上传附件/);
+    assert.match(ledger.textContent!, /封存需主机确认/);
+    await view.click('核查原操作');
+    assert.deepEqual(view.calls.at(-1), { name: 'recover', args: ['upload-original', 'inspect'] });
+    await view.click('使用原操作重试确认');
+    assert.deepEqual(view.calls.at(-1), { name: 'recover', args: ['upload-original', 'retry'] });
+    await view.click('封存原操作');
+    assert.deepEqual(view.calls.at(-1), { name: 'recover', args: ['upload-original', 'abandon'] });
+    const ending = structuredClone(state);
+    ending.operations[0].state = 'ending';
+    await view.act(async () => view.update(ending));
+    assert.equal(view.button('使用原操作重试确认').disabled, true);
+    assert.equal(view.button('重试原操作').disabled, true);
+    assert.equal(view.button('核查原操作').disabled, false);
+    assert.equal(view.button('封存原操作').disabled, false);
+    assert.equal(view.button('发送').disabled, true);
+    assert.equal(view.document.querySelector('[aria-label="移除附件草稿：synthetic.txt"]'), null);
+    assert.equal(
+      view.calls.some((call) => call.name === 'removeAttachment' || call.name === 'send'),
+      false,
+    );
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('history and tool attachments read exact references and safely preview text without remote assets', async () => {
+  const state = permissionState();
+  const attachment = attachmentFixture();
+  (state.session!.history[0].items![0] as any).content = [
+    { type: 'attachment', attachment: attachment.reference },
+  ];
+  state.session!.history[0].items!.push({
+    type: 'attachment',
+    attachment: { ...attachment.reference, attachmentId: 'direct' },
+  });
+  updatePermissionReviews(state);
+  const view = await mount(state);
+  try {
+    view.controller.readAttachment = async (reference) => {
+      view.calls.push({ name: 'readAttachment', args: [reference] });
+      return {
+        target: view.controller.contentContext.target!,
+        reference,
+        data: attachment.data,
+        source: 'host',
+        cacheSaved: true,
+      };
+    };
+    const cards = view.document.querySelectorAll<HTMLButtonElement>(
+      '.secure-history .secure-attachment-card',
+    );
+    assert.equal(cards.length, 2);
+    await view.act(async () => cards[0].click());
+    assert.deepEqual(view.calls.at(-1), { name: 'readAttachment', args: [attachment.reference] });
+    const preview = view.document.querySelector('.secure-attachment-preview')!;
+    assert.match(preview.textContent!, /合成附件 <script>no\(\)<\/script>/);
+    assert.equal(preview.querySelector('script, iframe, object'), null);
+    assert.equal(preview.querySelector('img, audio'), null);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('changing the selected scope hides pending attachment data and cancels an in-progress native save', async () => {
+  const state = attachmentState();
+  const view = await mount(state);
+  const saved: unknown[] = [];
+  let cancel = 0,
+    finishSave!: (result: { status: 'saved' }) => void;
+  const waitingSave = new Promise<{ status: 'saved' }>((resolve) => {
+    finishSave = resolve;
+  });
+  try {
+    Object.assign(view.document.defaultView!, {
+      moorDesktop: {
+        version: 1,
+        saveAttachment: (value: unknown) => {
+          saved.push(value);
+          return waitingSave;
+        },
+        cancelAttachmentSave: async () => {
+          cancel++;
+        },
+      },
+    });
+    const previewButton = view.document.querySelector<HTMLButtonElement>(
+      '[aria-label="预览附件草稿：synthetic.txt"]',
+    )!;
+    await view.act(async () => previewButton.click());
+    await view.click('保存附件');
+    assert.equal(saved.length, 1);
+    assert.deepEqual((saved[0] as any).scope, {
+      owner: pin.accountId,
+      deviceId: 'host',
+      workspaceId: 'runtime',
+      localProjectId: 'local',
+      sessionId: 'session',
+    });
+    const priorCancelled = cancel;
+    const next = structuredClone(state);
+    next.session!.meta.id = 'other-session';
+    await view.act(async () => view.update(next));
+    assert.equal(view.document.querySelector('.secure-attachment-preview'), null);
+    assert(cancel > priorCancelled);
+    await view.act(async () => finishSave({ status: 'saved' }));
+    assert.equal(view.document.querySelector('.secure-attachment-preview'), null);
+    assert.doesNotMatch(view.document.body.textContent!, /附件已保存/);
+  } finally {
+    finishSave({ status: 'saved' });
+    await view.cleanup();
+  }
+});
+
+test('project panel uses only frozen finite file reads and closes immediately on target changes', async (t) => {
+  t.mock.method(crypto.subtle, 'digest', async (algorithm: string, bytes: Uint8Array) => {
+    assert.equal(algorithm, 'SHA-256');
+    return Uint8Array.from(createHash('sha256').update(bytes).digest()).buffer;
+  });
+  const view = await mount(connected());
+  try {
+    const text = '# 合成文件\n<script>no()</script>';
+    const bytes = Buffer.from(text);
+    const version = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+    view.controller.contentRequest = async (target, method, params) => {
+      view.calls.push({
+        name: 'contentRequest',
+        args: [structuredClone(target), method, structuredClone(params)],
+      });
+      const scope = {
+        contentVersion: 1,
+        workspaceId: target.workspaceId,
+        localProjectId: target.localProjectId,
+        sessionId: target.sessionId,
+        confirmed: true,
+      };
+      if (method === 'read-project-tree')
+        return {
+          ...scope,
+          version,
+          source: 'directory',
+          entries: [{ path: 'readme.md', type: 'file', size: bytes.byteLength }],
+          offset: 0,
+          total: 1,
+          partial: false,
+          enumerationComplete: true,
+          issues: [],
+        };
+      if (method === 'file-content')
+        return {
+          ...scope,
+          path: 'readme.md',
+          status: 'content',
+          encoding: 'base64',
+          content: { version, byteLength: bytes.byteLength, mediaType: 'text/plain' },
+          data: bytes.toString('base64'),
+        };
+      throw Error('Unexpected synthetic content method');
+    };
+    await view.click('项目文件');
+    const file = view.document.querySelector<HTMLButtonElement>(
+      '[aria-label="查看文件：readme.md"]',
+    )!;
+    assert.ok(file, view.document.body.textContent!);
+    await view.act(async () => file.click());
+    const panel = view.document.querySelector('.project-content-panel')!;
+    assert.match(panel.textContent!, /合成文件/);
+    assert.equal(panel.querySelector('script'), null);
+    const calls = view.calls.filter((call) => call.name === 'contentRequest');
+    assert.deepEqual(
+      calls.map((call) => call.args[1]),
+      ['read-project-tree', 'file-content'],
+    );
+    assert.deepEqual(calls[0].args[0], calls[1].args[0]);
+    const next = connected();
+    next.session!.meta.id = 'another-session';
+    await view.act(async () => view.update(next));
+    assert.equal(view.document.querySelector('.project-content-panel'), null);
+    assert.equal(view.calls.filter((call) => call.name === 'contentRequest').length, 2);
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('attachment previews use only safe inline media and audio never autoplays', async () => {
+  for (const type of ['image/png', 'audio/wav', 'image/svg+xml', 'text/html']) {
+    const state = attachmentState();
+    state.attachmentDraft = [
+      { ...attachmentFixture(type, '<script>synthetic</script>'), status: 'draft' },
+    ];
+    const view = await mount(state);
+    try {
+      const open = view.document.querySelector<HTMLButtonElement>(
+        '.secure-attachment-drafts .secure-attachment-card',
+      )!;
+      await view.act(async () => open.click());
+      const body = view.document.querySelector('.secure-attachment-preview-body')!;
+      assert.equal(body.querySelector('script, iframe, object, embed'), null);
+      if (type === 'image/png')
+        assert.match(body.querySelector('img')!.src, /^data:image\/png;base64,/);
+      else if (type === 'audio/wav') {
+        const audio = body.querySelector('audio')!;
+        assert.match(audio.src, /^data:audio\/wav;base64,/);
+        assert.equal(audio.autoplay, false);
+        assert.equal(audio.preload, 'none');
+        assert.equal(audio.controls, true);
+      } else {
+        assert.equal(body.querySelector('img, audio'), null);
+        assert.match(body.textContent!, /此格式不在页面中嵌入/);
+      }
+    } finally {
+      await view.cleanup();
+    }
+  }
+});
+
+test('late attachment reads never restore bytes after the displayed session changes', async () => {
+  const state = permissionState();
+  const attachment = attachmentFixture('text/plain', '不得晚到展示的合成内容');
+  state.session!.history[0].items = [{ type: 'attachment', attachment: attachment.reference }];
+  const view = await mount(state);
+  let finish!: (value: Awaited<ReturnType<SecureUiController['readAttachment']>>) => void;
+  const pending = new Promise<Awaited<ReturnType<SecureUiController['readAttachment']>>>(
+    (resolve) => {
+      finish = resolve;
+    },
+  );
+  const target = view.controller.contentContext.target!;
+  try {
+    view.controller.readAttachment = async () => pending;
+    const card = view.document.querySelector<HTMLButtonElement>(
+      '.secure-history .secure-attachment-card',
+    )!;
+    await view.act(async () => card.click());
+    assert.match(view.document.body.textContent!, /正在读取并核对附件/);
+    const next = connected();
+    next.session!.meta.id = 'new-session';
+    await view.act(async () => view.update(next));
+    assert.equal(view.document.querySelector('.secure-attachment-preview'), null);
+    await view.act(async () => finish({ ...attachment, target, source: 'host', cacheSaved: true }));
+    assert.equal(view.document.querySelector('.secure-attachment-preview'), null);
+    assert.doesNotMatch(view.document.body.textContent!, /不得晚到展示的合成内容/);
+  } finally {
+    finish({ ...attachment, target, source: 'host', cacheSaved: true });
+    await view.cleanup();
+  }
+});
+
+test('older attachment hosts keep local drafts available but cannot send or recover uploads', async () => {
+  const state = attachmentState();
+  state.catalog!.workspaces[0].features = [ATTACHMENTS_FEATURE];
+  const view = await mount(state);
+  try {
+    assert.equal(view.button('发送').disabled, true);
+    assert.equal(view.button('添加附件').disabled, false);
+    assert.match(view.document.body.textContent!, /尚不支持可恢复的附件操作/);
+    await view.click('移除');
+    assert.deepEqual(view.calls.at(-1), { name: 'removeAttachment', args: ['attachment'] });
+    const pending = structuredClone(state);
+    pending.attachmentDraft[0].status = 'pending';
+    pending.attachmentDraft[0].pendingOperationId = 'old-upload';
+    pending.attachmentDraft[0].pendingAction = 'upload';
+    pending.operations = [
+      {
+        operationId: 'old-upload',
+        kind: 'attachment-upload',
+        target: view.controller.contentContext.target!,
+        body: '{}',
+        requestVersion: 'sha256:' + 'b'.repeat(64),
+        state: 'pending',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+    await view.act(async () => view.update(pending));
+    for (const label of ['使用原操作重试确认', '核查原操作', '重试原操作', '封存原操作']) {
+      assert.equal(view.button(label).disabled, true);
+      await view.click(label);
+    }
+    assert.equal(
+      view.calls.some((call) => call.name === 'recover' || call.name === 'send'),
+      false,
+    );
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('checking attachment input capability binds the shown session and never uploads or sends', async () => {
+  const state = attachmentState();
+  delete state.session!.agent!.inputCapabilities;
+  const view = await mount(state);
+  try {
+    const shownTarget = structuredClone(view.controller.contentContext.target!);
+    assert.equal(view.button('发送').disabled, true);
+    assert.equal(view.button('检查附件输入能力').disabled, false);
+    assert.equal(
+      view.calls.some((call) => call.name === 'refreshAgentOptions'),
+      false,
+    );
+    await view.click('检查附件输入能力');
+    assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [shownTarget] });
+    assert.equal(
+      view.calls.some(
+        (call) => call.name === 'send' || call.name === 'recover' || call.name === 'addAttachments',
+      ),
+      false,
+    );
+    const capable = structuredClone(state);
+    capable.session!.agent!.inputCapabilities = {
+      image: true,
+      audio: false,
+      embeddedContext: true,
+    };
+    await view.act(async () => view.update(capable));
+    assert.equal(view.button('发送').disabled, false);
+    assert.equal(view.calls.filter((call) => call.name === 'refreshAgentOptions').length, 1);
+    for (const variation of ['offline', 'busy', 'running']) {
+      const next = structuredClone(state);
+      if (variation === 'offline') next.status!.connection = null;
+      if (variation === 'busy') next.busy = true;
+      if (variation === 'running') next.session!.meta.status = { type: 'working' };
+      await view.act(async () => view.update(next));
+      assert.equal(view.button('检查附件输入能力').disabled, true, variation);
+    }
   } finally {
     await view.cleanup();
   }

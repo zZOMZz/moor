@@ -517,6 +517,9 @@ export class EncryptedCliClient {
         if (parsed.operationId !== op.operationId) throw Error();
         receipt = parsed;
         if (!parsed.accepted) state = 'abandoned';
+      } else if (original.kind === 'attachment') {
+        // The durable attachment schema validates the complete original receipt before accepting it.
+        receipt = raw;
       } else {
         const parsed = validateSessionActionReceipt(original.value, raw);
         receipt = parsed;

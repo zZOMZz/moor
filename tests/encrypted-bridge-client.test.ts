@@ -1853,3 +1853,115 @@ test('permission execution and original recovery require the exact authenticated
         }
     }
 });
+
+test('attachment writes and original recovery require the authenticated recovery capability before any frame, including legacy and historical mappings', async (t) => {
+  const { ATTACHMENT_OPERATIONS_FEATURE } = await import('../src/session-control-protocol');
+  for (const version of [1, 2])
+    for (const supported of [false, true]) {
+      const f = await fixture(t),
+        advertised: EncryptedCatalog =
+          version === 1 ? structuredClone(catalog) : await productCatalog();
+      advertised.workspaces[0]!.features = [
+        'session-control-v1',
+        'attachments-v1',
+        ...(supported ? [ATTACHMENT_OPERATIONS_FEATURE] : []),
+      ];
+      advertised.workspaces.push({
+        ...structuredClone(advertised.workspaces[0]!),
+        id: 'another-runtime',
+        projects: [],
+        features: ['session-control-v1', 'attachments-v1', ATTACHMENT_OPERATIONS_FEATURE],
+      });
+      await f.readCatalog(advertised);
+      const original = {
+        ...scope,
+        contentVersion: 1,
+        operationId: 'original-attachment',
+        action: 'upload',
+        data: 'YQ==',
+        attachment: {
+          contentVersion: 1,
+          attachmentId: 'attachment',
+          name: 'synthetic.txt',
+          content: {
+            mediaType: 'text/plain',
+            byteLength: 1,
+            version: 'sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+          },
+        },
+      };
+      const accepted = {
+        ...scope,
+        contentVersion: 1,
+        operationId: original.operationId,
+        accepted: true,
+        delivered: true,
+        attachment: original.attachment,
+      };
+      const recoveryScope = {
+        ...scope,
+        controlVersion: 1,
+        userId: 'local-owner',
+        machineId: 'machine',
+      };
+      for (const action of ['upload', 'inspect', 'abandon', 'legacy-inspect', 'legacy-abandon']) {
+        const operation = action.includes('abandon') ? 'abandon' : 'inspect';
+        const command = hostCommandSchema.parse({
+          method: action === 'upload' ? 'attachment-action' : 'session-operations',
+          workspaceId: scope.workspaceId,
+          localProjectId: scope.localProjectId,
+          params:
+            action === 'upload'
+              ? original
+              : {
+                  ...recoveryScope,
+                  action: operation,
+                  request: { kind: 'attachment', value: original },
+                },
+        });
+        const oldTarget: ReturnType<typeof encryptedCommandTarget> | undefined =
+          version === 2 && !action.startsWith('legacy-')
+            ? structuredClone(encryptedCommandTarget(advertised, command))
+            : undefined;
+        if (oldTarget && action !== 'upload') oldTarget.revision = 1;
+        const before = f.socket.sent.length,
+          saved = JSON.stringify(command);
+        const pending = action.startsWith('legacy-')
+          ? f.client.executeLegacyOperation('host', command)
+          : f.client.execute('host', command, oldTarget);
+        if (!supported) {
+          await assert.rejects(pending, unknown);
+          assert.equal(f.socket.sent.length, before);
+          continue;
+        }
+        const request = await f.next();
+        assert.deepEqual(
+          request.body,
+          version === 1 || action.startsWith('legacy-')
+            ? command
+            : { method: 'mapped-command', target: oldTarget, command },
+        );
+        const result =
+          action === 'upload'
+            ? accepted
+            : {
+                ...recoveryScope,
+                confirmed: true,
+                action: operation,
+                operationId: original.operationId,
+                found: true,
+                receipt: {
+                  ...recoveryScope,
+                  confirmed: true,
+                  operationId: original.operationId,
+                  kind: 'attachment',
+                  status: 'accepted',
+                  attachmentReceipt: accepted,
+                },
+              };
+        await f.answer(request, { ok: true, result });
+        assert.deepEqual(await pending, result);
+        assert.equal(JSON.stringify(command), saved);
+      }
+    }
+});

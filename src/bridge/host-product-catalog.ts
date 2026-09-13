@@ -51,6 +51,22 @@ type Claim = {
   original: string;
   runtime: { machineId: string; userId: string; rootPath: string; generation: number };
 };
+const mappingSchema = z
+  .object({
+    authority: encryptedProductAuthoritySchema,
+    target: encryptedProductTargetSchema,
+    workspaceId: id,
+    localProjectId: id,
+    runtime: z
+      .object({
+        machineId: id,
+        userId: z.string().min(1).max(160),
+        rootPath: z.string().min(1).max(4096),
+        generation: z.number().int().positive().safe(),
+      })
+      .strict(),
+  })
+  .strict();
 const fileLeases = new Map<string, Map<string, number>>();
 const memoryLeases = new WeakMap<DatabaseSync, Map<string, number>>();
 let transactionId = 0;
@@ -75,9 +91,12 @@ function operationOf(command: HostCommand): Operation | undefined {
     inspection = false,
     historical = true;
   if (command.method === 'session-operations') {
-    method = { control: 'session-control', mutation: 'mutate', metadata: 'session-action' }[
-      command.params.request.kind
-    ];
+    method = {
+      control: 'session-control',
+      mutation: 'mutate',
+      metadata: 'session-action',
+      attachment: 'attachment-action',
+    }[command.params.request.kind];
     original = command.params.request.value;
     recovery = true;
     inspection = command.params.action === 'inspect';
@@ -151,6 +170,7 @@ export class HostProductCatalog {
       CREATE TABLE IF NOT EXISTS encrypted_product_catalog(authority TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS encrypted_product_receipt(operation_id TEXT PRIMARY KEY, authority TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS encrypted_product_operation(operation_id TEXT PRIMARY KEY, authority TEXT NOT NULL, fingerprint TEXT NOT NULL, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS encrypted_product_mapping(authority TEXT NOT NULL, target TEXT NOT NULL, fingerprint TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(authority,target));
     `);
   }
   private transaction<T>(run: () => T): T {
@@ -211,6 +231,47 @@ export class HostProductCatalog {
       this.db
         .prepare('INSERT INTO encrypted_product_catalog VALUES(?,?,?)')
         .run(this.authorityKey, state.catalog.revision, JSON.stringify(state));
+    }
+    this.recordMappings(state);
+  }
+  /** Host-authored mapping evidence is committed before a catalog can be published. */
+  private recordMappings(state: Persisted): void {
+    for (const replica of state.catalog.replicas) {
+      if (!replica.available) continue;
+      const mapping = mappingSchema.parse({
+        authority: this.authority,
+        target: {
+          catalogWorkspaceId: replica.catalogWorkspaceId,
+          projectId: replica.projectId,
+          replicaId: replica.id,
+          revision: replica.revision,
+        },
+        workspaceId: replica.runtimeWorkspaceId,
+        localProjectId: replica.localProjectId,
+        runtime: {
+          machineId: replica.machineId,
+          userId: replica.userId,
+          rootPath: state.roots[replica.id],
+          generation: state.generations[replica.id],
+        },
+      });
+      const target = productCanonicalJson(mapping.target),
+        fingerprint = digest(mapping);
+      const previous = this.db
+        .prepare(
+          'SELECT fingerprint,value FROM encrypted_product_mapping WHERE authority=? AND target=?',
+        )
+        .get(this.authorityKey, target);
+      if (previous) {
+        requireTrue(
+          previous.fingerprint === fingerprint &&
+            digest(mappingSchema.parse(JSON.parse(String(previous.value)))) === fingerprint,
+        );
+      } else {
+        this.db
+          .prepare('INSERT INTO encrypted_product_mapping VALUES(?,?,?,?)')
+          .run(this.authorityKey, target, fingerprint, JSON.stringify(mapping));
+      }
     }
   }
   runtime(): EncryptedCatalog {
@@ -293,6 +354,8 @@ export class HostProductCatalog {
         catalog.revision++;
         this.save(state, previousRevision);
       }
+      // On upgrade, only the current Host mapping is recorded; absent historical evidence is not invented.
+      this.recordMappings(state);
       return encryptedProductCatalogSchema.parse(catalog);
     });
   }
@@ -532,9 +595,34 @@ export class HostProductCatalog {
     const row = this.db
       .prepare('SELECT authority,fingerprint FROM encrypted_product_operation WHERE operation_id=?')
       .get(operation.operationId);
+    const claim = this.makeClaim(target, command, operation);
+    if (row) {
+      requireTrue(row.authority === this.authorityKey && row.fingerprint === digest(claim));
+      return;
+    }
+    // An attachment frame may never have reached this Host. Only immutable evidence written
+    // when the Host published that exact mapping can authorize inspecting or sealing it.
+    // This grants no execution and cannot replace an existing operation claim.
     requireTrue(
-      row?.authority === this.authorityKey &&
-        row.fingerprint === digest(this.makeClaim(target, command, operation)),
+      command.method === 'session-operations' && command.params.request.kind === 'attachment',
+    );
+    const historical = this.db
+      .prepare(
+        'SELECT fingerprint,value FROM encrypted_product_mapping WHERE authority=? AND target=?',
+      )
+      .get(this.authorityKey, productCanonicalJson(target));
+    if (!historical) fail();
+    const mapping = mappingSchema.parse(JSON.parse(String(historical.value)));
+    requireTrue(
+      historical.fingerprint === digest(mapping) &&
+        digest(mapping) ===
+          digest({
+            authority: this.authority,
+            target,
+            workspaceId: command.workspaceId,
+            localProjectId: command.localProjectId,
+            runtime: claim.runtime,
+          }),
     );
   }
   acquire(

@@ -6,6 +6,8 @@ import { sessionReadResponseSchema, validateSessionBundle } from './session-resp
 import { taskPlanSchema, type TaskPlan } from './task-protocol';
 import { mcpServerIdsSchema } from './mcp-protocol';
 import { permissionItemJson, PERMISSION_REVIEW_MAX_BYTES } from './permission-review';
+import { promptAttachmentsSchema } from './attachment-protocol';
+import type { AttachmentReference } from './content-protocol';
 export type SessionClientScope = {
   userId: string;
   machineId: string;
@@ -50,10 +52,13 @@ export function buildSessionTurn(input: {
   now: string;
   taskPlan?: TaskPlan;
   mcpServerIds?: string[];
+  /** The caller obtains these from confirmed uploads for this exact execution target. */
+  attachments?: AttachmentReference[];
 }) {
   const read = readClientSession(input.read, input.scope),
     agent = agentSchema.parse(input.agent),
-    taskPlan = input.taskPlan === undefined ? undefined : taskPlanSchema.parse(input.taskPlan);
+    taskPlan = input.taskPlan === undefined ? undefined : taskPlanSchema.parse(input.taskPlan),
+    attachments = promptAttachmentsSchema.parse(input.attachments ?? []);
   if (taskPlan && read.meta.taskOrigin) throw new Error('子任务不能创建下一层协作任务');
   if (read.persisted === false || read.persistenceError)
     throw new Error('主机结果尚未持久保存，不能据此发送新指令');
@@ -70,11 +75,20 @@ export function buildSessionTurn(input: {
   )
     throw new Error('Agent 与会话固定版本不匹配');
   if (
-    !input.prompt.trim() ||
+    (!input.prompt.trim() && attachments.length === 0) ||
     input.prompt.length > 100000 ||
     new TextEncoder().encode(input.prompt).byteLength > 1024 * 1024
   )
-    throw new Error('指令必须为 100000 字符且 1 MiB 以内的非空文本');
+    throw new Error('指令必须在 100000 字符且 1 MiB 以内，并包含文本或附件');
+  for (const attachment of attachments) {
+    const category = attachment.content.mediaType.split('/')[0];
+    if (
+      !agent.inputCapabilities?.[
+        category === 'image' ? 'image' : category === 'audio' ? 'audio' : 'embeddedContext'
+      ]
+    )
+      throw Error('当前 Agent 不支持所选附件类型，请移除附件或选择支持的 Agent。');
+  }
   const time = z.string().datetime().parse(input.now),
     doc = new LoroDoc();
   doc.import(decode(read.update));
@@ -105,8 +119,12 @@ export function buildSessionTurn(input: {
           mcpServerIds: mcpServerIdsSchema.parse(input.mcpServerIds ?? []),
           taskToolsEnabled: !!taskPlan,
           ...(taskPlan ? { taskPlan } : {}),
+          ...(attachments.length ? { attachments } : {}),
         },
-        items: [{ type: 'text', text: input.prompt }],
+        items: [
+          { type: 'text', text: input.prompt },
+          ...attachments.map((attachment) => ({ type: 'attachment' as const, attachment })),
+        ],
         fileDiff: null,
       });
     });

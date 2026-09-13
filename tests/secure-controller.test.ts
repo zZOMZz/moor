@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HostWorkspace } from '../src/bridge/host-workspace';
@@ -15,6 +15,7 @@ import {
 import { encryptedCatalogSchema } from '../src/security/encrypted-bridge-protocol';
 import type { AgentCallbacks } from '../src/runtime/agent';
 import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
+import { SecureAttachments } from '../src/web/secure-attachments';
 import { syntheticCapabilities } from './support/agent-capabilities';
 import { LoroDoc, decode, delta, mirror } from '../src/model';
 
@@ -307,6 +308,7 @@ async function fixture(t: TestContext, uuid?: () => string) {
   };
   return {
     controller,
+    project,
     request,
     store,
     memory,
@@ -338,6 +340,116 @@ async function fixture(t: TestContext, uuid?: () => string) {
     },
   };
 }
+
+test('content requests read the selected Host scope and never accept a mutation or foreign target', async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.controller.contentContext.target, null);
+  await f.ready();
+  await f.create();
+  writeFileSync(join(f.project, 'synthetic.txt'), 'Synthetic encrypted content\n');
+  const context = f.controller.contentContext,
+    target = context.target!;
+  assert.equal(context.online, true);
+  const params = {
+    contentVersion: 1,
+    workspaceId: target.workspaceId,
+    localProjectId: target.localProjectId,
+    sessionId: target.sessionId,
+    path: 'synthetic.txt',
+  };
+  const file = (await f.controller.contentRequest(target, 'file-content', params)) as any;
+  assert.equal(Buffer.from(file.data, 'base64').toString(), 'Synthetic encrypted content\n');
+  const count = f.requests.length;
+  await assert.rejects(f.controller.contentRequest(target, 'mutate' as any, params));
+  await assert.rejects(
+    f.controller.contentRequest(
+      { ...target, rootKeyId: 'sha256:' + 'f'.repeat(64) },
+      'file-content',
+      params,
+    ),
+  );
+  await assert.rejects(
+    f.controller.contentRequest(target, 'file-content', { ...params, sessionId: 'other-session' }),
+  );
+  assert.equal(f.requests.length, count, 'bad requests never reach main IPC');
+  await f.controller.disconnect();
+  const offline = f.controller.contentContext;
+  assert.deepEqual(offline.target, target);
+  assert.equal(offline.online, false);
+  assert(offline.generation > context.generation);
+  await assert.rejects(f.controller.contentRequest(target, 'file-content', params));
+  f.account(null);
+  assert.equal(f.controller.contentContext.target, null);
+});
+
+test('a pending content read cannot return after the selected session document is invalidated', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  writeFileSync(join(f.project, 'synthetic.txt'), 'Synthetic delayed content\n');
+  const target = f.controller.contentContext.target!,
+    entered = signal(),
+    release = signal();
+  f.fault.before = async (input) => {
+    if (input.action === 'execute' && input.command.method === 'file-content') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const reading = f.controller.contentRequest(target, 'file-content', {
+    contentVersion: 1,
+    workspaceId: target.workspaceId,
+    localProjectId: target.localProjectId,
+    sessionId: target.sessionId,
+    path: 'synthetic.txt',
+  });
+  const rejected = assert.rejects(reading);
+  await entered.promise;
+  f.controller.invalidate();
+  release.resolve();
+  await rejected;
+  assert.equal(f.controller.contentContext.target, null);
+});
+
+test('a render-time empty attachment review cannot send attachments loaded after that render', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const shown = {
+    target: f.controller.contentContext.target!,
+    attachments: f.controller.state.attachmentDraft,
+  };
+  const otherPage = new SecureAttachments(f.store);
+  await otherPage.addFiles(
+    shown.target,
+    [],
+    [new File(['Synthetic unseen attachment'], 'unreviewed.txt', { type: 'text/plain' })],
+    () => {},
+  );
+  await f.controller.refreshOperations();
+  assert.equal(f.controller.state.attachmentDraft.length, 1);
+  const count = f.requests.length;
+  await assert.rejects(f.controller.send('Synthetic reviewed prompt', shown), /已审阅/);
+  assert.equal(f.requests.length, count);
+  assert.equal(f.prompts(), 0);
+  assert(f.controller.state.operations.every((operation) => operation.kind === 'create'));
+});
+
+test('a render-time send target cannot be moved to a later selected session', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const shown = { target: f.controller.contentContext.target!, attachments: [] };
+  await f.controller.createSession('agent', 'Other synthetic session');
+  await f.controller.refreshSessions();
+  await f.controller.openSession(
+    f.controller.state.sessions.find((session) => session.id !== shown.target.sessionId)!.id,
+  );
+  const count = f.requests.length;
+  await assert.rejects(f.controller.send('Synthetic old target prompt', shown), /发送目标/);
+  assert.equal(f.requests.length, count);
+  assert.equal(f.prompts(), 0);
+});
 
 test('explicit desktop workflow uses actual Host receipts and CRDT for create, rename, send and exact stop', async (t) => {
   const f = await fixture(t);
@@ -583,7 +695,18 @@ test('controller dispatch snapshot cannot be overtaken by another store committi
     release = signal(),
     queued = signal();
   const read = f.memory.read.bind(f.memory);
-  let reads = 0;
+  const exclusive = f.memory.exclusive.bind(f.memory);
+  let dispatchLockHeld = false;
+  f.memory.exclusive = (key, current, task) =>
+    exclusive(key, current, async () => {
+      dispatchLockHeld = true;
+      try {
+        return await task();
+      } finally {
+        dispatchLockHeld = false;
+      }
+    });
+  let paused = false;
   f.memory.read = async (key) => {
     const snapshot = await read(key);
     if (
@@ -593,8 +716,10 @@ test('controller dispatch snapshot cannot be overtaken by another store committi
       (snapshot as { operations: Array<{ kind: string; state: string }> }).operations.some(
         (entry) => entry.kind === 'turn' && entry.state === 'pending',
       ) &&
-      ++reads === 2
+      dispatchLockHeld &&
+      !paused
     ) {
+      paused = true;
       entered.resolve();
       await release.promise;
     }

@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { id, mutationSchema, sessionActionSchema } from './protocol';
 import { contentScopeSchema } from './content-protocol';
+import { attachmentActionSchema, attachmentReceiptSchema } from './attachment-protocol';
 
 export const SESSION_CONTROL_FEATURE = 'session-control-v1';
-export const SESSION_CONTROL_LIMITS = { requestBytes: 48 * 1024 * 1024, responseBytes: 4096 };
+export const ATTACHMENT_OPERATIONS_FEATURE = 'attachment-operations-v1';
+export const SESSION_CONTROL_LIMITS = { requestBytes: 48 * 1024 * 1024, responseBytes: 64 * 1024 };
 export const sessionControlScopeSchema = contentScopeSchema.extend({
   sessionId: id.regex(/^[A-Za-z0-9_-]+$/),
   controlVersion: z.literal(1),
@@ -25,6 +27,7 @@ export const sessionOriginalOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('control'), value: sessionControlActionSchema }).strict(),
   z.object({ kind: z.literal('mutation'), value: mutationSchema }).strict(),
   z.object({ kind: z.literal('metadata'), value: sessionActionSchema }).strict(),
+  z.object({ kind: z.literal('attachment'), value: attachmentActionSchema }).strict(),
 ]);
 export const sessionOperationSchema = sessionControlScopeSchema
   .extend({
@@ -46,13 +49,16 @@ export const sessionOperationSchema = sessionControlScopeSchema
 export const sessionControlReceiptSchema = base
   .extend({
     confirmed: z.literal(true),
-    kind: z.enum(['create', 'stop', 'mutation', 'metadata']),
+    kind: z.enum(['create', 'stop', 'mutation', 'metadata', 'attachment']),
     status: z.enum(['accepted', 'abandoned', 'stopping', 'interrupted']),
+    attachmentReceipt: attachmentReceiptSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (['stopping', 'interrupted'].includes(value.status) && value.kind !== 'stop')
       ctx.addIssue({ code: 'custom', message: '只有停止操作可以处于停止核查状态' });
+    if ((value.kind === 'attachment' && value.status === 'accepted') !== !!value.attachmentReceipt)
+      ctx.addIssue({ code: 'custom', message: '附件核查必须携带原主机接受回执' });
   });
 const result = sessionControlScopeSchema.extend({
   confirmed: z.literal(true),
@@ -87,6 +93,20 @@ export function validateSessionControlReceipt(
     parsed.kind !== (original.kind === 'control' ? original.value.action : original.kind)
   )
     throw new Error('主机回执与原会话操作不匹配');
+  if (original.kind === 'attachment' && parsed.status === 'accepted') {
+    const accepted = parsed.attachmentReceipt!,
+      action = original.value;
+    if (
+      accepted.workspaceId !== scope.workspaceId ||
+      accepted.localProjectId !== scope.localProjectId ||
+      accepted.sessionId !== scope.sessionId ||
+      accepted.operationId !== action.operationId ||
+      (action.action === 'upload'
+        ? JSON.stringify(accepted.attachment) !== JSON.stringify(action.attachment)
+        : accepted.removed !== true)
+    )
+      throw new Error('附件核查回执与完整原操作不匹配');
+  }
   return parsed;
 }
 export function validateSessionOperationResult(raw: unknown, request: SessionOperation) {

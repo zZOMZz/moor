@@ -58,7 +58,10 @@ import { SessionSkillsManager, type SessionSkillsOptions } from '../runtime/sess
 import { ROLE_FEATURE, type RolesRead, type RolesActionRequest } from '../role-protocol';
 import { SessionRolesManager } from '../runtime/session-roles';
 import { SessionControlManager } from '../runtime/session-control';
-import { SESSION_CONTROL_FEATURE } from '../session-control-protocol';
+import {
+  SESSION_CONTROL_FEATURE,
+  ATTACHMENT_OPERATIONS_FEATURE,
+} from '../session-control-protocol';
 import { SessionTaskManager } from '../runtime/session-tasks';
 import { createTaskMcp } from '../runtime/task-mcp';
 import { McpSettings } from '../runtime/mcp-settings';
@@ -303,6 +306,7 @@ export class HostWorkspace {
       ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
       SESSION_CONTROL_FEATURE,
+      ATTACHMENT_OPERATIONS_FEATURE,
       SESSION_TASKS_FEATURE,
       MCP_FEATURE,
     ];
@@ -1137,6 +1141,7 @@ export class HostWorkspace {
       const journal = this.store.journal;
       const receipt = journal.lookup(this.workspace.id, action);
       if (receipt?.phase === 'accepted') return JSON.parse(receipt.result);
+      assert(!receipt, 409, '原附件操作已封存或尚无可验证结果，不能重新执行');
       const id = action.action === 'upload' ? action.attachment.attachmentId : action.attachmentId;
       const stored = this.store.attachment(scope, id);
       let bytes: Buffer | undefined;

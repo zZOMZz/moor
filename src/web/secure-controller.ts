@@ -41,10 +41,38 @@ import {
   sessionOperationSchema,
   validateSessionControlReceipt,
   validateSessionOperationResult,
+  ATTACHMENT_OPERATIONS_FEATURE,
 } from '../session-control-protocol';
-import { sessionActionSchema } from '../protocol';
+import { agentSchema, sessionActionSchema } from '../protocol';
 import { SecureStore, type SecureAuthority } from './secure-store';
 import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
+import { validateHostResponse } from '../host-response';
+import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
+import type { AttachmentReference } from '../content-protocol';
+import { SecureAttachments, type SecureAttachmentDraft } from './secure-attachments';
+
+export type SecureContentReadMethod =
+  | 'read-project-tree'
+  | 'file-content'
+  | 'read-turn-diff'
+  | 'read-diff-file'
+  | 'read-attachment';
+export type SecureContentContext = {
+  target: SecureCliTarget | null;
+  online: boolean;
+  generation: number;
+};
+export type SecureSendReview = {
+  target: SecureCliTarget;
+  attachments: SecureAttachmentDraft[];
+};
+const contentReadMethods: ReadonlySet<string> = new Set<SecureContentReadMethod>([
+  'read-project-tree',
+  'file-content',
+  'read-turn-diff',
+  'read-diff-file',
+  'read-attachment',
+]);
 
 export type SecurePermissionReview = { target: SecureCliTarget; request: SessionPermissionReview };
 export type SecureWorkspaceState = {
@@ -56,6 +84,7 @@ export type SecureWorkspaceState = {
   session: ReturnType<typeof readClientSession> | null;
   operations: SecureCliOperation[];
   draft: string;
+  attachmentDraft: SecureAttachmentDraft[];
   permissionReviews: SecurePermissionReview[];
   notice: string | null;
   busy: boolean;
@@ -74,6 +103,7 @@ const empty = (): SecureWorkspaceState => ({
   session: null,
   operations: [],
   draft: '',
+  attachmentDraft: [],
   permissionReviews: [],
   notice: null,
   busy: false,
@@ -111,6 +141,7 @@ export class SecureWorkspaceController {
   #request: (request: DesktopSecureRequest) => Promise<unknown>;
   #account: () => { origin: string; owner: string } | null;
   #store: SecureStore;
+  #attachments: SecureAttachments;
   #uuid: () => string;
   #now: () => string;
   constructor(options: {
@@ -123,11 +154,70 @@ export class SecureWorkspaceController {
     this.#request = options.request;
     this.#account = options.account;
     this.#store = options.store ?? new SecureStore();
+    this.#attachments = new SecureAttachments(this.#store);
     this.#uuid = options.uuid ?? (() => crypto.randomUUID());
     this.#now = options.now ?? (() => new Date().toISOString());
   }
   get state(): SecureWorkspaceState {
     return structuredClone(this.#state);
+  }
+  get contentContext(): SecureContentContext {
+    const unavailable = { target: null, online: false, generation: this.#generation };
+    try {
+      this.#current(this.#generation);
+      const target = this.#draftTarget;
+      if (
+        !target ||
+        target.sessionId !== this.#state.session?.meta.id ||
+        !same(this.#authority(), {
+          origin: target.origin,
+          owner: target.owner,
+          rootKeyId: target.rootKeyId,
+          clientDeviceId: target.clientDeviceId,
+        })
+      )
+        return unavailable;
+      let online = false;
+      try {
+        online = same(target, this.#target(target.sessionId));
+      } catch {
+        // Explicit disconnect keeps only the already-read, account-bound cache target.
+      }
+      return { target: structuredClone(target), online, generation: this.#generation };
+    } catch {
+      return unavailable;
+    }
+  }
+  async contentRequest(
+    inputTarget: SecureCliTarget,
+    method: SecureContentReadMethod,
+    params: unknown,
+  ): Promise<unknown> {
+    const target = secureTargetSchema.parse(structuredClone(inputTarget));
+    if (!contentReadMethods.has(method)) throw Error('此入口只允许读取已选会话的文件与附件。');
+    const context = this.contentContext,
+      lease = this.#lease();
+    if (!context.online || !same(context.target, target))
+      throw Error('内容目标已改变，请重新选择并读取当前会话。');
+    const command = this.#command(target, method, structuredClone(params)),
+      request = command.params as Record<string, unknown>;
+    if (
+      request.workspaceId !== target.workspaceId ||
+      request.localProjectId !== target.localProjectId ||
+      request.sessionId !== target.sessionId
+    )
+      throw Error('内容请求与当前执行范围不匹配。');
+    const workspace = this.#state.catalog?.workspaces.find(
+      (entry) => entry.id === target.workspaceId,
+    );
+    if (!workspace) throw Error('执行主机目录尚未确认。');
+    const current = () => {
+      this.#current(lease.generation);
+      const now = this.contentContext;
+      if (!now.online || !same(now.target, target)) throw Error('内容目标已改变，请重新读取。');
+    };
+    const raw = await this.#execute(lease, target, command);
+    return validateHostResponse(raw, { command, workspace, current });
   }
   subscribe(listener: (state: SecureWorkspaceState) => void) {
     this.#listeners.add(listener);
@@ -164,6 +254,7 @@ export class SecureWorkspaceController {
       sessions: [],
       session: null,
       draft: '',
+      attachmentDraft: [],
       permissionReviews: [],
     });
   }
@@ -222,6 +313,14 @@ export class SecureWorkspaceController {
     current();
     if (!same(authority, this.#authority())) throw Error('当前账号已改变。');
     this.#state.operations = operations;
+    if (this.#draftTarget) {
+      const target = this.#draftTarget;
+      const attachments = await this.#attachments.read(target, current);
+      current();
+      if (!same(target, this.contentContext.target))
+        throw Error('附件草稿目标已改变，请重新读取。');
+      this.#state.attachmentDraft = attachments;
+    }
   }
   #lease(): Lease {
     const status = this.#state.status,
@@ -374,6 +473,7 @@ export class SecureWorkspaceController {
       sessions: [],
       session: null,
       draft: '',
+      attachmentDraft: [],
       permissionReviews: [],
     });
     return this.refreshSessions();
@@ -404,6 +504,7 @@ export class SecureWorkspaceController {
     this.#state.session = null;
     this.#state.permissionReviews = [];
     this.#state.draft = '';
+    this.#state.attachmentDraft = [];
     return this.#run(async (current) => {
       const lease = this.#lease(),
         target = this.#target(sessionId);
@@ -412,6 +513,7 @@ export class SecureWorkspaceController {
         scope(target),
       );
       const draft = await this.#store.readDraft(target);
+      const attachments = await this.#attachments.read(target, current);
       current();
       this.#state.session = read;
       const reviews = sessionPermissionReviews(read, scope(target));
@@ -422,6 +524,7 @@ export class SecureWorkspaceController {
         this.#state.notice = PERMISSION_UNSUPPORTED;
       this.#draftTarget = structuredClone(target);
       this.#state.draft = draft;
+      this.#state.attachmentDraft = attachments;
     });
   }
   async refreshSession() {
@@ -452,6 +555,115 @@ export class SecureWorkspaceController {
       await this.#store.saveDraft(target, expected, text, current);
       current();
       this.#state.draft = text;
+    });
+  }
+  #attachmentTarget(): SecureCliTarget {
+    const { target } = this.contentContext;
+    if (!target) throw Error('请先选择并读取会话，再操作附件。');
+    return target;
+  }
+  #requireAttachments(workspaceId: string) {
+    const features = this.#state.catalog?.workspaces.find(
+      (entry) => entry.id === workspaceId,
+    )?.features;
+    if (
+      !features?.includes(ATTACHMENTS_FEATURE) ||
+      !features.includes(ATTACHMENT_OPERATIONS_FEATURE)
+    )
+      throw Error('执行主机尚未提供附件能力，请升级主机后重新核对目录。');
+  }
+  async addAttachments(files: readonly File[]) {
+    const selected = [...files];
+    return this.#run(async (current) => {
+      const target = this.#attachmentTarget();
+      const items = await this.#attachments.addFiles(
+        target,
+        this.#state.attachmentDraft,
+        selected,
+        current,
+      );
+      current();
+      this.#state.attachmentDraft = items;
+    });
+  }
+  async removeAttachment(attachmentId: string) {
+    return this.#write(async (current) => {
+      const target = this.#attachmentTarget(),
+        items = this.#state.attachmentDraft;
+      const item = items.find((entry) => entry.reference.attachmentId === attachmentId);
+      if (!item) throw Error('此附件草稿已经改变，请重新读取。');
+      if (item.status === 'pending') throw Error('请先用原操作重试确认此附件结果。');
+      if (item.status === 'draft') {
+        this.#state.attachmentDraft = await this.#attachments.removeDraft(
+          target,
+          items,
+          attachmentId,
+          current,
+        );
+        return;
+      }
+      const lease = this.#lease();
+      if (!same(target, this.#target(target.sessionId)))
+        throw Error('附件目标已改变，请重新读取。');
+      this.#requireAttachments(target.workspaceId);
+      const operation = await this.#attachments.stage(
+        target,
+        attachmentId,
+        'remove',
+        this.#uuid(),
+        this.#now(),
+        current,
+      );
+      await this.#operations(current);
+      this.#emit();
+      await this.#deliver(lease, operation, true, current);
+    });
+  }
+  async readAttachment(reference: AttachmentReference) {
+    const context = this.contentContext,
+      target = this.#attachmentTarget(),
+      shown = structuredClone(reference);
+    const current = () => {
+      this.#current(context.generation);
+      if (!same(target, this.contentContext.target))
+        throw Error('附件显示目标已改变，请重新读取。');
+    };
+    return this.#attachments.readContent(
+      target,
+      shown,
+      current,
+      context.online
+        ? () =>
+            this.contentRequest(target, 'read-attachment', {
+              contentVersion: 1,
+              workspaceId: target.workspaceId,
+              localProjectId: target.localProjectId,
+              sessionId: target.sessionId,
+              attachmentId: shown.attachmentId,
+            })
+        : undefined,
+    );
+  }
+  async refreshAgentOptions(inputTarget: SecureCliTarget) {
+    const shown = secureTargetSchema.parse(structuredClone(inputTarget));
+    return this.#run(async (current) => {
+      const target = this.#attachmentTarget(),
+        lease = this.#lease(),
+        read = this.#state.session!;
+      if (!same(target, shown) || !same(target, this.#target(target.sessionId)))
+        throw Error('能力检查目标已改变，请重新核对当前会话。');
+      const workspace = this.#state.catalog!.workspaces.find(
+        (entry) => entry.id === target.workspaceId,
+      )!;
+      const command = this.#command(target, 'agent-options', {
+        agentId: read.meta.agentConfigId,
+        sessionId: target.sessionId,
+      });
+      const raw = await this.#execute(lease, target, command);
+      const updated = await validateHostResponse(raw, { command, workspace, current });
+      current();
+      this.#state.session = { ...read, agent: agentSchema.parse(updated) };
+      this.#state.notice = '已读取此会话固定 Agent 的能力，未发送指令。';
     });
   }
   async #write(task: (current: () => void) => Promise<void>) {
@@ -489,11 +701,19 @@ export class SecureWorkspaceController {
   async #deliver(lease: Lease, operation: SecureCliOperation, first: boolean, current: () => void) {
     if (operation.kind === 'permission')
       this.#requirePermissionSupport(operation.target.workspaceId);
+    const attachment = ['attachment-upload', 'attachment-remove'].includes(operation.kind);
+    if (attachment) this.#requireAttachments(operation.target.workspaceId);
     try {
       const raw = await this.#store.dispatch(operation, current, (original) =>
         this.#execute(lease, original.target, hostCommandSchema.parse(JSON.parse(original.body))),
       );
       current();
+      if (attachment) {
+        const next = await this.#attachments.confirm(operation, raw, current);
+        current();
+        this.#state.notice = '主机已确认附件操作。';
+        return next;
+      }
       const original = secureOriginal(operation);
       let receipt: unknown,
         state: SecureCliOperation['state'] = 'accepted';
@@ -507,11 +727,11 @@ export class SecureWorkspaceController {
         if (result.operationId !== operation.operationId) throw Error('主机确认与原操作不匹配。');
         receipt = result;
         if (!result.accepted) state = 'abandoned';
-      } else {
+      } else if (original.kind === 'metadata') {
         const result = validateSessionActionReceipt(original.value, raw);
         receipt = result;
         if (!result.accepted) state = 'abandoned';
-      }
+      } else throw Error('附件原操作必须按完整附件回执确认。');
       const next = await this.#store.transition(operation, ['pending'], state, receipt, current);
       current();
       this.#state.notice =
@@ -557,12 +777,19 @@ export class SecureWorkspaceController {
       await this.#deliver(lease, operation, true, current);
     });
   }
-  async send(prompt: string) {
+  async send(prompt: string, review?: SecureSendReview) {
+    const shown = review ? structuredClone(review) : undefined;
     return this.#write(async (current) => {
       const lease = this.#lease(),
         prior = this.#state.session;
       if (!prior) throw Error('请先读取会话。');
       const target = this.#target(prior.meta.id);
+      const shownAttachments = shown?.attachments ?? [];
+      if (
+        (shown && !same(target, secureTargetSchema.parse(shown.target))) ||
+        !same(shownAttachments, this.#state.attachmentDraft)
+      )
+        throw Error('发送目标或已审阅的附件已改变，请重新核对后发送。');
       const read = readClientSession(
         await this.#execute(
           lease,
@@ -573,16 +800,51 @@ export class SecureWorkspaceController {
       );
       current();
       if (!read.agent) throw Error('主机未提供此会话的固定 Agent 版本。');
-      const action = buildSessionTurn({
+      const currentAttachments = await this.#attachments.read(target, current);
+      current();
+      if (!same(shownAttachments, currentAttachments))
+        throw Error('附件草稿已在另一页面改变，请重新读取并核对后发送。');
+      if (shownAttachments.some((item) => item.status === 'pending'))
+        throw Error('请先用原操作重试确认附件结果，再手动发送。');
+      if (shownAttachments.length) this.#requireAttachments(target.workspaceId);
+      const references = shownAttachments.map((item) => item.reference);
+      // Validate the reviewed prompt and Agent capabilities before uploading any bytes.
+      const turnInput = {
         scope: scope(target),
         read,
         agent: read.agent,
         prompt,
+        attachments: references,
         operationId: this.#uuid(),
         turnId: this.#uuid(),
         peerId: this.#uuid().replaceAll('-', '').slice(0, 16),
         now: this.#now(),
-      });
+      };
+      const action = buildSessionTurn(turnInput);
+      for (const item of shownAttachments) {
+        if (item.status === 'uploaded') continue;
+        const operation = await this.#attachments.stage(
+          target,
+          item.reference.attachmentId,
+          'upload',
+          this.#uuid(),
+          this.#now(),
+          current,
+        );
+        await this.#operations(current);
+        this.#emit();
+        const result = await this.#deliver(lease, operation, true, current);
+        if (result?.state !== 'accepted') return;
+      }
+      const uploaded = await this.#attachments.read(target, current);
+      current();
+      if (
+        references.some(
+          (reference) =>
+            !uploaded.some((item) => item.status === 'uploaded' && same(item.reference, reference)),
+        )
+      )
+        throw Error('已审阅的附件状态已改变，请重新核对后发送。');
       const operation = await this.#stage(
         target,
         'turn',
@@ -590,6 +852,10 @@ export class SecureWorkspaceController {
         current,
       );
       const result = await this.#deliver(lease, operation, true, current);
+      if (result?.state === 'accepted' && references.length) {
+        this.#state.attachmentDraft = await this.#attachments.forget(target, references, current);
+        current();
+      }
       if (result?.state === 'accepted' && this.#state.draft === prompt) {
         await this.#store.saveDraft(target, prompt, '', current);
         current();
@@ -716,6 +982,8 @@ export class SecureWorkspaceController {
         throw Error('原操作执行范围已改变，未重新绑定。');
       if (operation.kind === 'permission')
         this.#requirePermissionSupport(operation.target.workspaceId);
+      if (['attachment-upload', 'attachment-remove'].includes(operation.kind))
+        this.#requireAttachments(operation.target.workspaceId);
       if (action === 'retry') {
         if (operation.state === 'ending') throw Error('已请求封存的原操作只能继续核查或封存。');
         if (operation.state !== 'pending') return;
