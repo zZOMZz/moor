@@ -36,6 +36,7 @@ import {
   openSecureHostEndpoint,
   type SecureHostEndpoint,
 } from '../src/bridge/encrypted-host';
+import type { TaskAuthorityLease } from '../src/task-protocol';
 import { DeviceManager } from '../src/security/device-manager';
 import { generateRecoveryKey } from '../src/security/e2ee-recovery';
 import { PrivateEndpointFile } from '../src/security/private-endpoint-file';
@@ -89,6 +90,8 @@ async function fixture(
     ready?: boolean;
     deadline?: (ms: number) => AbortSignal;
     guard?: () => void;
+    invalidated?: () => void;
+    mutation?: (authority: TaskAuthorityLease) => unknown;
   } = {},
 ) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -145,6 +148,11 @@ async function fixture(
   };
   const workspace = {
     closed: false,
+    mutate(_value: unknown, _project: string, authority: TaskAuthorityLease) {
+      return (
+        options.mutation?.(authority) ?? { accepted: true, delivered: true, operationId: 'turn' }
+      );
+    },
     list(projectId: string) {
       assert.equal(projectId, 'project');
       calls++;
@@ -162,6 +170,7 @@ async function fixture(
     dispatcher,
     catalog: options.catalog ?? (() => catalog),
     deadline: options.deadline,
+    invalidated: options.invalidated,
   });
   const [relay, request] = (await connected) as [
     WebSocket,
@@ -600,4 +609,93 @@ test('secure endpoint opens real private leases and rejects role, identity and s
   writeFileSync(connectionFile, original.replace('SYNTHETIC_COOKIE', 'CHANGED___COOKIE'));
   assert.throws(() => reopened.current());
   reopened.close();
+});
+
+test('retiring one authenticated client promptly invalidates its grants while another client remains usable', async (t) => {
+  let invalidations = 0;
+  const f = await fixture(t, {
+    invalidated: () => {
+      invalidations++;
+    },
+  });
+  await f.response({ method: 'catalog', params: {} });
+  const second = await f.makeClient(),
+    secondId = newChannelChallenge();
+  t.after(() => second.close());
+  await f.response({ method: 'catalog', params: {} }, catalogResource, second, secondId);
+  f.relay.send(
+    JSON.stringify({ protocol: 4, type: 'client-closed', clientConnectionId: f.connectionId }),
+  );
+  // This second response is an ordered protocol barrier, with no polling or sleep.
+  assert.equal(
+    (await f.response({ method: 'catalog', params: {} }, catalogResource, second, secondId)).ok,
+    true,
+  );
+  assert.equal(invalidations, 1);
+  assert.equal(f.transport.ready, true);
+  for (const id of [f.connectionId, newChannelChallenge()])
+    f.relay.send(JSON.stringify({ protocol: 4, type: 'client-closed', clientConnectionId: id }));
+  assert.equal(
+    (await f.response({ method: 'catalog', params: {} }, catalogResource, second, secondId)).ok,
+    true,
+  );
+  assert.equal(
+    invalidations,
+    1,
+    'duplicate or unrelated retirements do not revoke the surviving route',
+  );
+});
+
+test('channel retirement revokes only authorities derived from that exact authenticated client connection', async (t) => {
+  const grants: TaskAuthorityLease[] = [];
+  const revoked: number[] = [];
+  const f = await fixture(t, {
+    mutation: (authority) => {
+      grants.push(authority);
+      return { accepted: true, delivered: true, operationId: 'turn' };
+    },
+    invalidated: () => {
+      grants.forEach((grant, index) => {
+        try {
+          grant.current();
+        } catch {
+          revoked.push(index);
+        }
+      });
+    },
+  });
+  const second = await f.makeClient(),
+    secondId = newChannelChallenge();
+  t.after(() => second.close());
+  const command = {
+    method: 'mutate',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    params: {
+      workspaceId: 'workspace',
+      sessionId: 'session',
+      operationId: 'turn',
+      kind: 'turn',
+      expectedTurnId: null,
+      update: 'SYNTHETIC_MUTATION',
+    },
+  };
+  const resource: EncryptedResource = { ...projectResource, kind: 'session', sessionId: 'session' };
+  for (const [client, id] of [
+    [f.client, f.connectionId],
+    [second, secondId],
+  ] as const)
+    assert.equal((await f.response(command, resource, client, id)).ok, true);
+  assert.equal(grants.length, 2);
+  grants.forEach((grant) => assert.doesNotThrow(() => grant.current()));
+  f.relay.send(
+    JSON.stringify({ protocol: 4, type: 'client-closed', clientConnectionId: f.connectionId }),
+  );
+  assert.equal(
+    (await f.response({ method: 'catalog', params: {} }, catalogResource, second, secondId)).ok,
+    true,
+  );
+  assert.deepEqual(revoked, [0]);
+  assert.throws(() => grants[0].current());
+  assert.doesNotThrow(() => grants[1].current());
 });

@@ -121,9 +121,11 @@ node dist/cli.mjs secure read SESSION_ID --endpoint /absolute/private/.moor-secu
   --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID --json
 ```
 
-同样的明确目标参数支持 `list`、`mcp`、`stop`、`archive`、`restore`、`rename`、`pin`、`unpin`；`list` 不传会话。`rename` 从 `--stdin` 或 `--file` 读取标题，`stop --turn TURN_ID` 核对当前活动回合。`send` 可提供 `--model`、`--effort`、`--mode` 与 `--mcp-server-ids`，已有会话仍固定原 Agent 版本。当前没有审批回应、问题回答、附件上传、`--wait`、`--follow` 或通知子命令；使用手动 `read` 查看结果，需要人工回应的回合仍可精确停止。
+同样的明确目标参数支持 `list`、`mcp`、`stop`、`archive`、`restore`、`rename`、`pin`、`unpin`；`list` 不传会话。`rename` 从 `--stdin` 或 `--file` 读取标题，`stop --turn TURN_ID` 核对当前活动回合。`send` 可提供 `--model`、`--effort`、`--mode` 与 `--mcp-server-ids`，已有会话仍固定原 Agent 版本。当前没有审批回应、问题回答、附件上传、通用 `--wait`、`--follow` 或通知子命令；使用手动 `read` 查看结果，需要人工回应的回合仍可精确停止。
 
-发送前先把原请求保存到独立的私有加密操作表。丢失响应、超时或无法验证时退出码为 6，并返回原操作编号；不自动重发，也不把中转错误当成主机拒绝。手动恢复：
+选中 MCP 的 `secure send` 要求主机报告 `secure-turn-authority-v1`：先保存接受回执，再保持原授权连接，前台只读等待原操作绑定的精确回合结束，默认不设时限。可明确传入 `--timeout MS`，范围为 1–86400000 毫秒；带完整绑定的待确认 MCP 原操作在手动 `secure retry` 接受后同样等待。等待不重发指令，完成结果与接受回执分别报告，退出与撤销边界见[MCP 的 CLI 用法](mcp.md#cli)。
+
+发送前先把原请求保存到独立的私有加密操作表。接受回执丢失、请求超时或无法验证时退出码为 6，并返回原操作编号；不自动重发，也不把中转错误当成主机拒绝。手动恢复：
 
 ```sh
 node dist/cli.mjs secure operations --json
@@ -133,6 +135,8 @@ node dist/cli.mjs secure abandon OPERATION_ID --endpoint /absolute/private/.moor
 ```
 
 `operations` 只读本机摘要，不含原正文；其余恢复命令从原记录选择主机与执行范围，不能另传目标。重试沿用原操作编号、正文和请求哈希，新版目录下还冻结原产品工作区、产品、副本和映射版本；恢复时不会用新目录替换它们。映射变化后仍可提交原范围核查或封存，由主机核对历史绑定。升级后的主机上，旧的无产品映射待确认操作只能 `inspect` 或 `abandon`，不能推测新映射后重发。主机已接受时返回原结果。请求封存后保持 `ending`，在主机确认前不能重试执行；已接受操作不能借封存撤销。旧 `session retry` 无法读取加密操作，避免通过旧 HTTP 发送。这里的“加密操作表”指使用加密传输的私有操作记录，SQLite 正文本身没有磁盘加密。
+
+新指令保存精确的 `userTurnId` 并纳入原请求摘要。升级前缺少此字段的旧待确认 `turn`，包括普通文字指令，只能 `secure inspect` 或 `secure abandon`，不能猜测最新回合后重试；已接受的旧记录仍可读取原回执，不重新执行。
 
 产品目录由每台主机独立保存，变更通过同一条加密链路提交。先读取 `secure catalog`，核对 `products.authority`、全局 `products.revision` 和目标副本版本；然后提供明确的动作和 `expectedRevision`。CLI 生成固定原操作编号，在独立的私有 `secure_catalog_outbox` 中保存完整动作后才发送：
 
@@ -254,8 +258,10 @@ node dist/cli.mjs operation abandon OPERATION_ID --json
 | 4      | 网络/HTTP 读取失败、响应读取不可确认、离线或未持久保存 |
 | 5      | 明确拒绝、范围/能力不匹配，或原停止已中断              |
 | 6      | 请求或核查结果未知，保留原编号手动处理                 |
-| 7      | 等待超时，未停止 Agent                                 |
-| 130    | Ctrl-C 中断 CLI，未停止 Agent                          |
+| 7      | 等待超时，或已接受的加密 MCP 回合未成功完成            |
+| 130    | Ctrl-C 中断 CLI                                        |
+
+普通 `session` 等待超时或中断不会发送停止操作。`secure` MCP 等待超时、中断或失去连接则关闭原授权通道，主机请求撤销相应回合，已接受的原记录仍保留；这不保证已经派发的外部动作已停止或回滚，需核查原结果。
 
 默认状态位于 `~/.moor-cli-v1/moor-cli-v1.sqlite`，可用 `--state-dir` 指定项目外的绝对私有目录。目录使用 `0700`，数据库使用 `0600`；文件、祖先目录或身份变化时停止请求。数据库包含登录凭据、Google 待完成接续和待确认正文，没有额外文件加密，不能提交到 Git、复制到程序包或放入共享目录。同一次 Google 接续的所有命令必须使用相同的状态目录。项目文件读取与快照额外排除 CLI 保留文件名。
 

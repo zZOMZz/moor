@@ -15,6 +15,11 @@ import { productCanonicalJson } from '../security/encrypted-product-catalog';
 import { PERMISSION_REVIEW_FEATURE } from '../permission-review';
 import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
 import { ATTACHMENT_OPERATIONS_FEATURE } from '../session-control-protocol';
+import { SKILLS_FEATURE } from '../skills-protocol';
+import { MCP_FEATURE } from '../mcp-protocol';
+import { SECURE_TURN_AUTHORITY_FEATURE } from '../task-protocol';
+import { SecureSkillsUI, type SecureSkillsUiHandle } from './secure-skills-ui';
+import { SecureMcpUI, SecureMcpDraftCard, type SecureMcpUiHandle } from './secure-mcp-ui';
 import type { AttachmentReference } from '../content-protocol';
 import type { SecureCliTarget } from '../cli/secure-operation';
 import type { SecureAttachmentDraft } from './secure-attachments';
@@ -63,6 +68,9 @@ export type SecureUiController = Pick<
   | 'recover'
   | 'refreshOperations'
   | 'saveDraft'
+  | 'appendInstruction'
+  | 'readMcpCatalog'
+  | 'applyMcp'
   | 'close'
   | 'invalidate'
 >;
@@ -333,6 +341,16 @@ function attachmentRecoverySupported(state: SecureWorkspaceState, target: Secure
     state.hostId === target.hostDeviceId &&
     !!workspace?.features?.includes(ATTACHMENTS_FEATURE) &&
     workspace.features.includes(ATTACHMENT_OPERATIONS_FEATURE)
+  );
+}
+function mcpRecoverySupported(state: SecureWorkspaceState, target: SecureCliTarget) {
+  const features = state.catalog?.workspaces.find(
+    (entry) => entry.id === target.workspaceId,
+  )?.features;
+  return (
+    state.hostId === target.hostDeviceId &&
+    !!features?.includes(MCP_FEATURE) &&
+    features.includes(SECURE_TURN_AUTHORITY_FEATURE)
   );
 }
 
@@ -658,12 +676,16 @@ function Composer({
   run,
   onDirty,
   onPreview,
+  onSkills,
+  onMcp,
 }: {
   state: SecureWorkspaceState;
   controller: SecureUiController;
   run: Run;
   onDirty: (value: boolean) => void;
   onPreview(item: SecureAttachmentDraft): void;
+  onSkills(target: SecureCliTarget): Promise<void>;
+  onMcp(target: SecureCliTarget): Promise<void>;
 }) {
   const [text, setText] = useState(state.draft);
   const session = state.session!;
@@ -735,7 +757,10 @@ function Composer({
     session.persisted === false ||
     !!session.persistenceError ||
     blocked ||
-    attachmentUnsupported;
+    attachmentUnsupported ||
+    (!!state.mcpDraft?.review?.servers.length &&
+      (!workspace?.features?.includes(MCP_FEATURE) ||
+        !workspace.features.includes(SECURE_TURN_AUTHORITY_FEATURE)));
   function submit(event: FormEvent) {
     event.preventDefault();
     if (unavailable || (!text.trim() && state.attachmentDraft.length === 0)) return;
@@ -747,6 +772,7 @@ function Composer({
     const review = {
       target: structuredClone(shownTarget),
       attachments: structuredClone(state.attachmentDraft),
+      mcpDraft: structuredClone(state.mcpDraft),
     };
     run(async () => {
       await controller.saveDraft(text);
@@ -774,6 +800,52 @@ function Composer({
           disabled={state.busy}
         />
       </label>
+      <div className="secure-actions">
+        <button
+          type="button"
+          disabled={
+            !shownTarget ||
+            state.busy ||
+            !contentContext.online ||
+            !workspace?.features?.includes(SKILLS_FEATURE)
+          }
+          onClick={() => {
+            if (!shownTarget) return;
+            const target = structuredClone(shownTarget);
+            run(async () => {
+              if (
+                productCanonicalJson(target) !==
+                productCanonicalJson(controller.contentContext.target)
+              )
+                throw Error('Skills 所属会话已改变，请重新打开。');
+              await controller.saveDraft(text);
+              await onSkills(target);
+            });
+          }}
+        >
+          Skills
+        </button>
+        <button
+          type="button"
+          disabled={!shownTarget || state.busy || !state.mcpDraft}
+          onClick={() => shownTarget && run(() => onMcp(structuredClone(shownTarget)))}
+        >
+          额外 MCP
+        </button>
+      </div>
+      {state.mcpDraft && (
+        <SecureMcpDraftCard
+          draft={state.mcpDraft}
+          onOpen={() => shownTarget && run(() => onMcp(structuredClone(shownTarget)))}
+        />
+      )}
+      {!!state.mcpDraft?.review?.servers.length &&
+        (!workspace?.features?.includes(MCP_FEATURE) ||
+          !workspace.features.includes(SECURE_TURN_AUTHORITY_FEATURE)) && (
+          <p className="secure-warning">
+            执行主机尚不支持完整的加密回合授权。MCP 选择保留，升级主机并重新核对目录后才能发送。
+          </p>
+        )}
       <div className="secure-actions">
         <button
           type="button"
@@ -856,6 +928,8 @@ export function SecureApp({
 }) {
   const [state, setState] = useState(controller.state);
   const contentUi = useRef<SecureContentUiHandle>(null);
+  const skillsUi = useRef<SecureSkillsUiHandle>(null);
+  const mcpUi = useRef<SecureMcpUiHandle>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountLoading, setAccountLoading] = useState(true);
   const [localBusy, setLocalBusy] = useState(false);
@@ -1283,6 +1357,8 @@ export function SecureApp({
                   controller={controller}
                   run={run}
                   onDirty={setDirty}
+                  onSkills={(target) => skillsUi.current?.open(target) ?? Promise.resolve()}
+                  onMcp={(target) => mcpUi.current?.open(target) ?? Promise.resolve()}
                   onPreview={(item) =>
                     run(async () => {
                       contentUi.current?.openDraft(item);
@@ -1323,6 +1399,15 @@ export function SecureApp({
                         附件结果未知时，可核查、重试或封存原操作。封存需主机确认，未确认前仍保留草稿并阻止发送。
                         {!attachmentRecoverySupported(state, operation.target) &&
                           ' 请先选择原执行主机并重新核对目录；主机需要支持可恢复的附件操作。'}
+                      </p>
+                    )}
+                    {!!operation.mcpReview?.servers.length && (
+                      <p className="secure-muted">
+                        原指令已固定 MCP：
+                        {operation.mcpReview.servers.map((server) => server.name).join('、')}。
+                        核查和重试使用原授权；后续草稿不会替换它。
+                        {!mcpRecoverySupported(state, operation.target) &&
+                          ' 请先选择原主机，并核对其加密回合授权能力。'}
                       </p>
                     )}
                     {operation.kind === 'permission' && (
@@ -1373,7 +1458,9 @@ export function SecureApp({
                             busy ||
                             !connection ||
                             (operation.kind.startsWith('attachment-') &&
-                              !attachmentRecoverySupported(state, operation.target))
+                              !attachmentRecoverySupported(state, operation.target)) ||
+                            (!!operation.mcpReview?.servers.length &&
+                              !mcpRecoverySupported(state, operation.target))
                           }
                           onClick={() =>
                             run(() => controller.recover(operation.operationId, 'inspect'))
@@ -1387,7 +1474,9 @@ export function SecureApp({
                             !connection ||
                             operation.state === 'ending' ||
                             (operation.kind.startsWith('attachment-') &&
-                              !attachmentRecoverySupported(state, operation.target))
+                              !attachmentRecoverySupported(state, operation.target)) ||
+                            (!!operation.mcpReview?.servers.length &&
+                              !mcpRecoverySupported(state, operation.target))
                           }
                           onClick={() =>
                             run(() => controller.recover(operation.operationId, 'retry'))
@@ -1400,7 +1489,9 @@ export function SecureApp({
                             busy ||
                             !connection ||
                             (operation.kind.startsWith('attachment-') &&
-                              !attachmentRecoverySupported(state, operation.target))
+                              !attachmentRecoverySupported(state, operation.target)) ||
+                            (!!operation.mcpReview?.servers.length &&
+                              !mcpRecoverySupported(state, operation.target))
                           }
                           onClick={() =>
                             run(() => controller.recover(operation.operationId, 'abandon'))
@@ -1418,6 +1509,25 @@ export function SecureApp({
               )}
             </details>
             <SecureContentUI ref={contentUi} controller={controller} state={state} />
+            <SecureSkillsUI
+              ref={skillsUi}
+              context={() => controller.contentContext}
+              request={(target, method, params) =>
+                controller.contentRequest(target, method, params)
+              }
+              appendInstruction={(target, instruction, current) =>
+                controller.appendInstruction(target, instruction, current)
+              }
+            />
+            <SecureMcpUI
+              ref={mcpUi}
+              context={() => controller.contentContext}
+              draft={() => state.mcpDraft}
+              readCatalog={(target) => controller.readMcpCatalog(target)}
+              apply={(target, expected, servers, catalog, current) =>
+                controller.applyMcp(target, expected, servers, catalog, current)
+              }
+            />
           </main>
         </div>
       )}

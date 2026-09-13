@@ -6,7 +6,7 @@ import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { Store } from '../../src/relay/accounts';
 import { createApp } from '../../src/relay/http';
 import { RuntimeStore } from '../../src/runtime/store';
-import type { AgentSession } from '../../src/runtime/agent';
+import type { AgentSession, AgentOpenOptions } from '../../src/runtime/agent';
 import { HostWorkspace } from '../../src/bridge/host-workspace';
 import { HostCommandDispatcher, hostCommandSchema } from '../../src/bridge/host-command';
 import { HostProductCatalog } from '../../src/bridge/host-product-catalog';
@@ -55,7 +55,7 @@ function sequenceSignal() {
 /** Native GUI fixture: production Relay, Host, encrypted transport and private device files. */
 export async function createSecureDesktopHost(
   root: string,
-  options: { richContent?: boolean } = {},
+  options: { richContent?: boolean; extensions?: boolean } = {},
 ) {
   const privateRoot = join(root, 'private'),
     project = join(root, 'SYNTHETIC_PRIVATE_PROJECT'),
@@ -64,6 +64,14 @@ export async function createSecureDesktopHost(
   mkdirSync(project, { mode: 0o700 });
   if (options.richContent)
     writeFileSync(join(project, 'SYNTHETIC_PRIVATE_FILE.txt'), 'SYNTHETIC_PRIVATE_BEFORE\n');
+  if (options.extensions) {
+    const skills = join(project, '.agents/skills/synthetic');
+    mkdirSync(skills, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(skills, 'SKILL.md'),
+      '---\nname: SYNTHETIC_PRIVATE_SKILL\ndescription: Synthetic review fixture\n---\nSYNTHETIC_PRIVATE_SKILL_BODY\n',
+    );
+  }
   let relay: Store | undefined,
     application: ReturnType<typeof createApp> | undefined,
     store: RuntimeStore | undefined,
@@ -79,9 +87,13 @@ export async function createSecureDesktopHost(
     completedSignal = sequenceSignal(),
     outcomes: unknown[] = [],
     inputs: unknown[] = [];
+  const mcpOpened = sequenceSignal(),
+    mcpContinue = sequenceSignal(),
+    mcpDescriptors: unknown[] = [],
+    mcpCurrent = new Map<number, () => void>();
   let prompts = 0,
     droppedReplies = 0,
-    armed: 'permission' | 'attachment' | undefined;
+    armed: 'permission' | 'attachment' | 'turn' | undefined;
   type Pending = { socket: WebSocket; record: EncryptedRecord };
   const pending = new Map<string, Pending>();
   let drop: (Pending & { accepted: boolean }) | undefined;
@@ -97,6 +109,8 @@ export async function createSecureDesktopHost(
     fixtureError ??= error instanceof Error ? error : Error('Synthetic fixture failed');
     permissionSignal.fail(fixtureError);
     completedSignal.fail(fixtureError);
+    mcpOpened.fail(fixtureError);
+    mcpContinue.fail(fixtureError);
     return fixtureError;
   };
   const current = () => {
@@ -192,6 +206,8 @@ export async function createSecureDesktopHost(
     const error = Error('Synthetic fixture closed');
     permissionSignal.fail(error);
     completedSignal.fail(error);
+    mcpOpened.fail(error);
+    mcpContinue.fail(error);
     transport?.close();
     endpoint?.close();
     connection?.close();
@@ -283,7 +299,7 @@ export async function createSecureDesktopHost(
     store = new RuntimeStore(join(privateRoot, 'runtime.sqlite'));
     const runtime = store;
     runtime.workspace.name = 'SYNTHETIC_PRIVATE_WORKSPACE';
-    runtime.registerProject(project);
+    const projectId = runtime.registerProject(project);
     runtime.registerAgent('synthetic', {
       id: 'synthetic-desktop-agent',
       name: 'SYNTHETIC_PRIVATE_AGENT',
@@ -295,7 +311,10 @@ export async function createSecureDesktopHost(
     host = new HostWorkspace(
       runtime,
       {
-        async open(_config, _cwd, nativeId, callbacks) {
+        async open(_config, _cwd, nativeId, callbacks, openOptions?: AgentOpenOptions) {
+          let activeSequence: number | undefined;
+          if (options.extensions)
+            mcpDescriptors.push(structuredClone(openOptions?.mcp?.servers ?? []));
           const session: AgentSession = {
             id: nativeId ?? 'synthetic-desktop-native',
             capabilities: syntheticCapabilities,
@@ -305,6 +324,7 @@ export async function createSecureDesktopHost(
             async prompt(input) {
               try {
                 const sequence = ++prompts;
+                activeSequence = sequence;
                 inputs.push(structuredClone(input));
                 const runEntry = [...host!.active].find(([, run]) => run.session === session);
                 assert(runEntry?.[1].done, 'Synthetic prompt must belong to one active Host run');
@@ -319,6 +339,20 @@ export async function createSecureDesktopHost(
                     completedSignal.mark(sequence);
                   })
                   .catch(fail);
+                if (options.extensions) {
+                  if (openOptions?.mcp) {
+                    mcpCurrent.set(sequence, openOptions.mcp.assertCurrent);
+                    mcpOpened.mark(sequence);
+                    await mcpContinue.wait(sequence);
+                    if (run.stopped) return;
+                    openOptions.mcp.assertCurrent();
+                  }
+                  callbacks.update({
+                    sessionUpdate: 'agent_message_chunk',
+                    content: { type: 'text', text: 'SYNTHETIC_PRIVATE_COMPLETED_' + sequence },
+                  });
+                  return;
+                }
                 if (options.richContent) {
                   writeFileSync(
                     join(project, 'SYNTHETIC_PRIVATE_FILE.txt'),
@@ -368,8 +402,12 @@ export async function createSecureDesktopHost(
                 throw fail(error);
               }
             },
-            async cancel() {},
-            close() {},
+            async cancel() {
+              if (activeSequence) mcpContinue.mark(activeSequence);
+            },
+            close() {
+              if (activeSequence) mcpContinue.mark(activeSequence);
+            },
           };
           return session;
         },
@@ -378,6 +416,22 @@ export async function createSecureDesktopHost(
       () => {},
     );
     const workspace = host;
+    if (options.extensions) {
+      for (const name of ['A', 'B'])
+        await workspace.mcpSettings.handle({
+          action: 'save',
+          expectedRevision: workspace.mcpSettings.read().revision,
+          name: 'SYNTHETIC_PRIVATE_MCP_' + name,
+          description: 'SYNTHETIC_PRIVATE_MCP_DESCRIPTION_' + name,
+          enabled: true,
+          projectIds: [projectId],
+          connection: {
+            transport: 'http',
+            url: 'https://synthetic.invalid/mcp/' + name,
+            headers: { Authorization: 'SYNTHETIC_PRIVATE_MCP_SECRET_' + name },
+          },
+        });
+    }
     endpoint = await openSecureHostEndpoint({
       endpointFile: hostFile,
       connectionFile,
@@ -396,7 +450,8 @@ export async function createSecureDesktopHost(
         (armed === 'permission' &&
           command.method === 'mutate' &&
           command.params.kind === 'permission') ||
-        (armed === 'attachment' && command.method === 'attachment-action')
+        (armed === 'attachment' && command.method === 'attachment-action') ||
+        (armed === 'turn' && command.method === 'mutate' && command.params.kind === 'turn')
       ) {
         try {
           current();
@@ -465,6 +520,10 @@ export async function createSecureDesktopHost(
       dispatcher,
       products,
       catalog: () => ({ ...runtimeCatalog(), catalogVersion: 2, products: products.read() }),
+      invalidated: () => {
+        workspace.taskManager.invalidateUnavailable();
+        workspace.invalidateMcp();
+      },
     });
     const activeTransport = transport;
     await new Promise<void>((resolve, reject) => {
@@ -497,6 +556,14 @@ export async function createSecureDesktopHost(
       clientFile,
       outcomes,
       inputs,
+      mcpDescriptors,
+      waitMcpOpened: (sequence: number) => mcpOpened.wait(sequence),
+      assertMcpCurrent(sequence: number) {
+        const check = mcpCurrent.get(sequence);
+        assert(check, 'Synthetic MCP grant must have opened');
+        check();
+      },
+      continueMcp: (sequence: number) => mcpContinue.mark(sequence),
       get prompts() {
         return prompts;
       },
@@ -514,6 +581,11 @@ export async function createSecureDesktopHost(
         current();
         assert(!armed && !drop, 'Synthetic attachment reply fault is already armed');
         armed = 'attachment';
+      },
+      dropNextTurnReply() {
+        current();
+        assert(!armed && !drop, 'Synthetic turn reply fault is already armed');
+        armed = 'turn';
       },
       assertOpaque() {
         current();

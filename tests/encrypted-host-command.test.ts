@@ -884,7 +884,7 @@ test('historical mapped recovery uses a durable claim after organization moves a
   assert.equal(f.calls.length, 3);
 });
 
-test('an unknown inspection never creates a historical mapping claim; stale inspect and abandon remain rejected', async (t) => {
+test('an unknown inspection creates no claim and Host-published old mappings authorize exact inspection and sealing', async (t) => {
   const f = await productFixture(t),
     selected = f.target();
   assert.equal(
@@ -900,12 +900,12 @@ test('an unknown inspection never creates a historical mapping claim; stale insp
     const response = await f.read(
       await f.adapter.execute(await f.mapped(productRecovery(mutation, action), selected)),
     );
-    assert.equal(response.value.ok, false);
+    assert.equal(response.value.ok, true);
   }
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls.length, 3);
   assert.equal(
     f.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!.count,
-    0,
+    1,
   );
 });
 

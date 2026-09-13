@@ -75,6 +75,7 @@ import {
 import { MCP_UNSUPPORTED_TRANSPORT, MCP_AUTHORIZATION_EXPIRED } from '../runtime/acp';
 import {
   SESSION_TASKS_FEATURE,
+  SECURE_TURN_AUTHORITY_FEATURE,
   taskPlanSchema,
   type TaskPlan,
   type TaskAuthorityLease,
@@ -308,6 +309,7 @@ export class HostWorkspace {
       SESSION_CONTROL_FEATURE,
       ATTACHMENT_OPERATIONS_FEATURE,
       SESSION_TASKS_FEATURE,
+      SECURE_TURN_AUTHORITY_FEATURE,
       MCP_FEATURE,
     ];
     this.workspace.projects = this.machine

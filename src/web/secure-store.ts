@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   secureOperationSchema,
   secureTargetSchema,
+  secureOperationDigestSource,
   type SecureCliOperation,
   type SecureCliTarget,
 } from '../cli/secure-operation';
@@ -51,12 +52,9 @@ const runtimeKey = (target: SecureCliTarget) => {
   return canonical(runtime);
 };
 export async function secureBrowserRequestVersion(
-  value: Pick<SecureCliOperation, 'body' | 'target'>,
+  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'userTurnId'>,
 ) {
-  const target = secureTargetSchema.parse(value.target);
-  const source = target.product
-    ? JSON.stringify(['mapped-command', target, value.body])
-    : value.body;
+  const source = secureOperationDigestSource(value);
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
   return (
     'sha256:' +

@@ -62,7 +62,10 @@ module.exports = function runSecureNative(options, scenario) {
       });
       const fixture = await (
         await import(pathToFileURL(helperPath).href)
-      ).createSecureDesktopHost(profile, { richContent: options.richContent === true });
+      ).createSecureDesktopHost(profile, {
+        richContent: options.richContent === true,
+        extensions: options.extensions === true,
+      });
       const registry = new Map(),
         requests = [],
         errors = [],
@@ -129,7 +132,24 @@ module.exports = function runSecureNative(options, scenario) {
       window.webContents.on('console-message', (event) => {
         if (event.level === 'error') errors.push(event.message);
       });
-      const js = (source) => window.webContents.executeJavaScript(source);
+      const js = async (source) => {
+        try {
+          return await window.webContents.executeJavaScript(source);
+        } catch (error) {
+          const body = await window.webContents
+            .executeJavaScript('document.body.textContent')
+            .catch(() => 'Unavailable document');
+          throw Error(
+            String(error) +
+              '\nSynthetic renderer check: ' +
+              source.slice(0, 1800) +
+              '\n' +
+              String(body).slice(0, 9000) +
+              '\n' +
+              errors.join('\n'),
+          );
+        }
+      };
       const waitFor = (expression) =>
         js(`new Promise((resolve,reject)=>{
     let observer;
@@ -160,12 +180,12 @@ module.exports = function runSecureNative(options, scenario) {
     Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(element,option.value);
     element.dispatchEvent(new Event('change',{bubbles:true}));
   })()`);
-      const permissionRecord = (kind = 'permission') =>
+      const permissionRecord = (kind = 'permission', operationId) =>
         js(`new Promise((resolve,reject)=>{
     const request=indexedDB.open('moor-secure-workspace-v1',1);
     request.onerror=()=>reject(request.error);
     request.onsuccess=()=>{const db=request.result,tx=db.transaction('state','readonly'),read=tx.objectStore('state').getAll();
-      read.onsuccess=()=>resolve(read.result.flatMap(value=>value.operations??[]).find(value=>value.kind===${JSON.stringify(kind)}));
+      read.onsuccess=()=>resolve(read.result.flatMap(value=>value.operations??[]).find(value=>value.kind===${JSON.stringify(kind)}&&(${JSON.stringify(operationId)}===undefined||value.operationId===${JSON.stringify(operationId)})));
       tx.oncomplete=()=>db.close();tx.onerror=()=>reject(tx.error);};
   })`);
       async function connectProject() {

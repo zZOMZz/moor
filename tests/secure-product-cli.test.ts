@@ -719,3 +719,83 @@ test('a v1 Host remains readable while product selection and organize cannot ass
   assert.equal(f.calls.length, 1);
   assert.deepEqual(f.state.secureCatalogOperationSummaries().operations, []);
 });
+
+test('reviewed MCP originals reject an older Host before retry, inspection or sealing and preserve their exact ledger record', async (t) => {
+  const f = await runFixture(t),
+    base = sessionInput('reviewed-mcp');
+  const original = f.state.secureStage({
+    ...base,
+    kind: 'turn',
+    target: { ...base.target, rootKeyId: f.authority.rootKeyId },
+    body: JSON.stringify({
+      method: 'mutate',
+      workspaceId: base.target.workspaceId,
+      localProjectId: base.target.localProjectId,
+      params: {
+        workspaceId: base.target.workspaceId,
+        sessionId: base.target.sessionId,
+        operationId: base.operationId,
+        kind: 'turn',
+        expectedTurnId: null,
+        update: 'SYNTHETIC_ORIGINAL_DELTA',
+      },
+    }),
+    mcpReview: {
+      reviewId: 'review',
+      servers: [
+        {
+          id: 'mcpv_11111111-1111-4111-8111-111111111111',
+          name: 'Synthetic tools',
+          description: 'Reviewed synthetic tools',
+          transport: 'http',
+        },
+      ],
+    },
+  });
+  for (const action of ['retry', 'inspect', 'abandon']) {
+    await assert.rejects(
+      f.run([action, original.operationId]),
+      (error: any) => error.code === 'mcp',
+    );
+    assert.deepEqual(f.state.secureOperation(original.operationId), original);
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test('old pending text turns without an immutable userTurnId allow inspection and sealing but cannot be retried', async (t) => {
+  const f = await runFixture(t),
+    base = sessionInput('old-text');
+  const original = f.state.secureStage({
+    ...base,
+    kind: 'turn',
+    target: { ...base.target, rootKeyId: f.authority.rootKeyId },
+    body: JSON.stringify({
+      method: 'mutate',
+      workspaceId: base.target.workspaceId,
+      localProjectId: base.target.localProjectId,
+      params: {
+        workspaceId: base.target.workspaceId,
+        sessionId: base.target.sessionId,
+        operationId: base.operationId,
+        kind: 'turn',
+        expectedTurnId: null,
+        update: 'SYNTHETIC_OLD_DELTA',
+      },
+    }),
+  });
+  await assert.rejects(
+    f.run(['retry', original.operationId]),
+    (error: any) => error.code === 'turn-binding' && error.operationId === original.operationId,
+  );
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.state.secureOperation(original.operationId), original);
+  f.onExecute(async (command) => {
+    assert.equal(command.method, 'session-operations');
+    if (command.method !== 'session-operations') throw Error();
+    const { request, ...scope } = command.params;
+    return { ...scope, confirmed: true, operationId: request.value.operationId, found: false };
+  });
+  assert.equal(((await f.run(['inspect', original.operationId])) as any).inspection.found, false);
+  assert.equal(f.calls.length, 1);
+  assert.deepEqual(f.state.secureOperation(original.operationId), original);
+});

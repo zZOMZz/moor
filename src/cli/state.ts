@@ -17,6 +17,7 @@ import { id } from '../protocol';
 import { CliError } from './args';
 import {
   secureOperationSchema,
+  secureOperationDigestSource,
   secureCatalogOperationSchema,
   secureTargetSchema,
   secureCatalogTargetSchema,
@@ -59,11 +60,10 @@ export type CliConnection = { origin: string; cookie: string; owner: string };
 export function requestVersion(body: string) {
   return 'sha256:' + createHash('sha256').update(body).digest('hex');
 }
-function secureRequestVersion(value: Pick<SecureCliOperation, 'body' | 'target'>) {
-  const target = secureTargetSchema.parse(value.target);
-  return requestVersion(
-    target.product ? JSON.stringify(['mapped-command', target, value.body]) : value.body,
-  );
+function secureRequestVersion(
+  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'userTurnId'>,
+) {
+  return requestVersion(secureOperationDigestSource(value));
 }
 function secureCatalogRequestVersion(value: Pick<SecureCatalogOperation, 'body' | 'target'>) {
   return requestVersion(
@@ -304,6 +304,7 @@ export class CliState {
       if (prior) {
         if (
           prior.body !== value.body ||
+          prior.requestVersion !== value.requestVersion ||
           prior.kind !== value.kind ||
           JSON.stringify(prior.target) !== JSON.stringify(value.target)
         )

@@ -33,11 +33,19 @@ try {
     emit(await client.run(args));
   }
 } catch (error) {
-  const safe = controller.signal.aborted
-    ? new CliError('interrupted', '等待或请求已中断；Agent 未被停止，原请求请手动核查。', 130)
-    : error instanceof CliError
+  const safe =
+    error instanceof CliError && error.code === 'interrupted'
       ? error
-      : new CliError('invalid', '输入、状态或服务器响应不可验证；未自动重试。', 1);
+      : controller.signal.aborted
+        ? new CliError(
+            'interrupted',
+            '等待或请求已中断；连接已关闭，原请求的执行结果请手动核查。',
+            130,
+            error instanceof CliError ? error.operationId : undefined,
+          )
+        : error instanceof CliError
+          ? error
+          : new CliError('invalid', '输入、状态或服务器响应不可验证；未自动重试。', 1);
   const result = {
     cliVersion: 1,
     ok: false,

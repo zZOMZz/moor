@@ -32,6 +32,7 @@ function seed(): SecureWorkspaceState {
     operations: [],
     draft: '',
     attachmentDraft: [],
+    mcpDraft: null,
     permissionReviews: [],
     notice: null,
     busy: false,
@@ -307,6 +308,9 @@ function fake(initial = seed()) {
     'recover',
     'refreshOperations',
     'saveDraft',
+    'appendInstruction',
+    'readMcpCatalog',
+    'applyMcp',
   ] as const) {
     (controller as unknown as Record<string, unknown>)[name] = async (...args: unknown[]) => {
       calls.push({ name, args });
@@ -577,7 +581,7 @@ test('draft is saved before explicit send and unsaved edits prevent switching sc
         name: 'send',
         args: [
           '只使用合成数据',
-          { target: view.controller.contentContext.target, attachments: [] },
+          { target: view.controller.contentContext.target, attachments: [], mcpDraft: null },
         ],
       },
     ]);
@@ -1220,7 +1224,7 @@ test('attachment-only send freezes displayed scope and files before awaiting tex
     await view.act(async () => saved());
     assert.deepEqual(view.calls.at(-1), {
       name: 'send',
-      args: ['', { target, attachments: shown }],
+      args: ['', { target, attachments: shown, mcpDraft: null }],
     });
   } finally {
     saved();
@@ -1575,6 +1579,104 @@ test('checking attachment input capability binds the shown session and never upl
       assert.equal(view.button('检查附件输入能力').disabled, true, variation);
     }
   } finally {
+    await view.cleanup();
+  }
+});
+
+test('Composer saves the visible unsaved text before opening Skills or issuing its first read', async () => {
+  const state = connected();
+  state.catalog!.workspaces[0].features!.push('skills-read-v1');
+  const view = await mount(state);
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    }),
+    waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const original = view.controller.saveDraft.bind(view.controller);
+  let requested = 0;
+  view.controller.saveDraft = async (text) => {
+    entered();
+    await waiting;
+    return original(text);
+  };
+  view.controller.contentRequest = async (target, method, params) => {
+    requested++;
+    assert.equal(method, 'skills-read');
+    assert.equal(view.controller.state.draft, 'Visible latest unsaved input');
+    return {
+      ...(params as object),
+      view: 'list',
+      confirmed: true,
+      catalogVersion: 'sha256:' + 'a'.repeat(64),
+      executionRevision: 0,
+      sources: [],
+      skills: [],
+      issues: [],
+      truncated: false,
+    };
+  };
+  try {
+    await view.input(
+      view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!,
+      'Visible latest unsaved input',
+    );
+    await view.click('Skills');
+    await started;
+    assert.equal(requested, 0);
+    await view.act(async () => {
+      release();
+      await waiting;
+    });
+    assert.equal(requested, 1);
+    assert(view.document.querySelector('.skills-panel'));
+    assert.equal(view.calls.filter((call) => call.name === 'send').length, 0);
+  } finally {
+    release();
+    await view.cleanup();
+  }
+});
+test('Composer passes the rendered empty MCP review after another page updates selection during save', async () => {
+  const initial = connected();
+  const view = await mount(initial);
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    const target = structuredClone(view.controller.contentContext.target!);
+    const state = structuredClone(initial);
+    state.mcpDraft = { target };
+    await view.act(async () => view.update(state));
+    const field = view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!;
+    await view.input(field, 'Reviewed text');
+    view.controller.saveDraft = async () => waiting;
+    await view.submit(field.form!);
+    const changed = structuredClone(state);
+    changed.mcpDraft = {
+      target,
+      review: {
+        reviewId: 'other-page-review',
+        servers: [
+          {
+            id: 'server-original-version',
+            name: 'Never shown before send',
+            description: 'Synthetic',
+            transport: 'http',
+          },
+        ],
+      },
+    };
+    await view.act(async () => view.update(changed));
+    await view.act(async () => release());
+    const sent = view.calls.find((call) => call.name === 'send')!;
+    assert.deepEqual(sent.args, [
+      'Reviewed text',
+      { target, attachments: [], mcpDraft: { target } },
+    ]);
+  } finally {
+    release();
     await view.cleanup();
   }
 });

@@ -424,7 +424,7 @@ test('operation claims preserve original identity and only permit proven histori
   assert.throws(() => f.store.acquire(selected, recover()));
 });
 
-test('unproven historical recovery is rejected and an inspection never invents a claim', (t) => {
+test('Host mapping history authorizes inspection without inventing an operation claim and sealing fixes the original', (t) => {
   const f = fixture(t),
     selected = target(f.store.read());
   f.store.bindOperation(selected, recover());
@@ -433,8 +433,16 @@ test('unproven historical recovery is rejected and an inspection never invents a
     0,
   );
   move(f.store);
-  assert.throws(() => f.store.acquire(selected, recover()));
-  assert.throws(() => f.store.acquire(selected, recover('abandon')));
+  for (const action of ['inspect', 'abandon'] as const) {
+    const lease = f.store.acquire(selected, recover(action));
+    f.store.bindOperation(selected, recover(action));
+    lease.current();
+    lease.release();
+    assert.equal(
+      f.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!.count,
+      action === 'inspect' ? 0 : 1,
+    );
+  }
 });
 
 test('legacy original numbers cannot acquire new mapped identity; legacy recovery remains possible', (t) => {

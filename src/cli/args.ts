@@ -160,6 +160,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     if (command === 'send')
       for (const key of ['model', 'effort', 'mode', 'mcp-server-ids']) allowed.add(key);
     if (command === 'stop') allowed.add('turn');
+    if (['send', 'retry'].includes(command)) allowed.add('timeout');
     const runtimeSelection = !!flags.workspace && !!flags.project && !flags.space && !flags.replica,
       productSelection = !!flags.space && !!flags.replica && !flags.workspace && !flags.project;
     if (
@@ -250,9 +251,11 @@ export const cliHelp = `Moor CLI (cliVersion 1)
   secure list|create|read|send|stop|mcp|rename|archive|restore|pin|unpin [ID]
     --endpoint PATH --host ID --space ID --replica ID
     或明确使用 --workspace ID --project ID 选择对应运行项目
+  secure send [ID] ... --mcp-server-ids ID,ID [--timeout MS]
+    保持前台连接直到原 MCP 回合结束；Ctrl-C 或显式超时会撤销该连接授权
   secure operations | secure inspect|retry|abandon ID --endpoint PATH
   secure organize --endpoint PATH --host ID --stdin | --file PATH
   secure catalog-operations | secure catalog-inspect|catalog-retry|catalog-abandon ID --endpoint PATH
 通用：--json、--state-dir PATH、--connection PATH
-默认不会发送恢复的请求；重试与结束只作用于原编号。等待超时或 Ctrl-C 不停止 Agent。
+默认不会发送恢复的请求；重试与结束只作用于原编号。普通会话等待超时或 Ctrl-C 不发送停止操作；加密 MCP 等待退出会关闭授权连接，已派发的外部操作请核查原结果。
 `;

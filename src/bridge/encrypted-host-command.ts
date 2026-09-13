@@ -75,16 +75,19 @@ export class EncryptedHostCommands {
   private readonly admission: { active: number };
   private readonly catalog?: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
   private readonly products?: HostProductCatalog;
+  private readonly invalidateAuthorizations?: () => void;
   constructor(options: {
     channel: E2eeChannel;
     dispatcher: HostCommandDispatcher;
     catalog?: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
     products?: HostProductCatalog;
+    invalidateAuthorizations?: () => void;
   }) {
     this.channel = options.channel;
     this.dispatcher = options.dispatcher;
     this.catalog = options.catalog;
     this.products = options.products;
+    this.invalidateAuthorizations = options.invalidateAuthorizations;
     let admission = admissions.get(options.dispatcher);
     if (!admission) {
       admission = { active: 0 };
@@ -115,6 +118,7 @@ export class EncryptedHostCommands {
       throw new Error(E2EE_CRYPTO_FAILED);
     const { header } = received;
     let lease: ReturnType<HostProductCatalog['acquire']> | undefined;
+    let executionCurrent: (() => void) | undefined;
     const current = () => {
       channel.assertCurrent();
       lease?.current();
@@ -173,6 +177,7 @@ export class EncryptedHostCommands {
                   ? products.inspect(request.params.request)
                   : products.abandon(request.params.request)
                 : undefined;
+          if (request.method === 'catalog-action') this.invalidateAuthorizations?.();
           return await respond(encoder.encode(JSON.stringify({ ok: true, result })));
         } catch (error) {
           // A store/commit failure cannot certify that a previous operation did
@@ -200,6 +205,8 @@ export class EncryptedHostCommands {
           lease = products.acquire(request.target, command, header.resource);
           current();
           products.bindOperation(request.target, command);
+          if (command.method === 'mutate' && command.params.kind === 'turn')
+            executionCurrent = products.executionCurrent(request.target, command);
         } catch (error) {
           return await failure(
             error instanceof AppError ? error.status : 409,
@@ -253,7 +260,15 @@ export class EncryptedHostCommands {
         current();
         const result = await dispatcher.execute(command, {
           current,
-          authority: { ...authority, current },
+          authority: {
+            ...authority,
+            current: executionCurrent
+              ? () => {
+                  channel.assertCurrent();
+                  executionCurrent!();
+                }
+              : current,
+          },
         });
         plaintext = encoder.encode(JSON.stringify({ ok: true, result }));
       } catch (error) {

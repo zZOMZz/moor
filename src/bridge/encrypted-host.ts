@@ -116,6 +116,7 @@ export class EncryptedHostTransport {
   readonly #catalog: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
   readonly #products?: HostProductCatalog;
   readonly #closedCallback?: () => void;
+  readonly #invalidated?: () => void;
   readonly #hello;
   readonly #descriptor: EncryptedBridgeHostDescriptor;
   readonly #channels = new Map<string, Channel>();
@@ -135,6 +136,7 @@ export class EncryptedHostTransport {
     catalog: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
     products?: HostProductCatalog;
     closed?: () => void;
+    invalidated?: () => void;
     /** Injectable deadline signal for deterministic transport tests. */
     deadline?: (ms: number) => AbortSignal;
   }) {
@@ -143,6 +145,7 @@ export class EncryptedHostTransport {
     this.#catalog = options.catalog;
     this.#products = options.products;
     this.#closedCallback = options.closed;
+    this.#invalidated = options.invalidated;
     this.#handshake = (options.deadline ?? AbortSignal.timeout)(
       ENCRYPTED_BRIDGE_LIMITS.handshakeMs,
     );
@@ -221,10 +224,12 @@ export class EncryptedHostTransport {
     });
   }
   #retire(entry: Channel) {
+    const wasActive = entry.active;
     entry.active = false;
     entry.channel?.close();
     if (this.#clients.get(entry.connectionId) === entry) this.#clients.delete(entry.connectionId);
     // #channels deliberately retains the challenge tombstone until this socket closes.
+    if (wasActive && !this.#closed) this.#invalidated?.();
   }
   #receiver(connectionId: string, record: EncryptedRecord): Channel {
     const trust = this.#current();
@@ -279,6 +284,7 @@ export class EncryptedHostTransport {
           dispatcher: this.#dispatcher,
           catalog: this.#catalog,
           products: this.#products,
+          invalidateAuthorizations: this.#invalidated,
         });
       },
       () => {

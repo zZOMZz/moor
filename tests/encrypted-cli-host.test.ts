@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer, type ServerResponse } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import {
   copyFileSync,
@@ -47,15 +48,30 @@ test(
       packagedRuntime = packagedApp && join(packagedApp, 'Contents/Resources/app/runtime'),
       executable = packagedApp ? join(packagedApp, 'Contents/MacOS/Electron') : process.execPath;
     writeFileSync(aggregateFile, '', { mode: 0o600 });
+    let gateResponse: ServerResponse | undefined, gateEntered: (() => void) | undefined;
+    const gateServer = createServer((_request, response) => {
+      gateResponse = response;
+      gateEntered?.();
+    });
+    gateServer.listen(0, '127.0.0.1');
+    await once(gateServer, 'listening');
+    const gateAddress = gateServer.address();
+    assert(gateAddress && typeof gateAddress === 'object');
+    const gateUrl = 'http://127.0.0.1:' + gateAddress.port;
+    t.after(async () => {
+      gateResponse?.end('{}');
+      gateServer.closeAllConnections();
+      await new Promise<void>((resolve) => gateServer.close(() => resolve()));
+    });
     writeFileSync(
       syntheticAgent,
       `import readline from 'node:readline'; import {appendFileSync} from 'node:fs';
-const log=process.argv[2], send=v=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...v})+'\\n'); let pending;
+const log=process.argv[2], gate=process.argv[3], send=v=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...v})+'\\n'); let pending;
 readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);
-if(m.method==='initialize') return send({id:m.id,result:{protocolVersion:m.params.protocolVersion,agentCapabilities:{loadSession:true},agentInfo:{name:'Synthetic secure fixture',version:'1'},authMethods:[]}});
-if(m.method==='session/new') return send({id:m.id,result:{sessionId:'synthetic-secure-native'}});
-if(m.method==='session/load') return send({id:m.id,result:{}});
-if(m.method==='session/prompt') {const text=m.params.prompt.filter(p=>p.type==='text').map(p=>p.text).join('');appendFileSync(log,JSON.stringify({event:'prompt',text})+'\\n');const holding=text.includes('hold-for-stop');send({method:'session/update',params:{sessionId:m.params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:holding?'synthetic-holding':'SYNTHETIC_PRIVATE_AGENT_RESPONSE'}}}});if(holding)pending=m;else send({id:m.id,result:{stopReason:'end_turn'}});return;}
+if(m.method==='initialize') return send({id:m.id,result:{protocolVersion:m.params.protocolVersion,agentCapabilities:{loadSession:true,mcpCapabilities:{http:true,sse:true}},agentInfo:{name:'Synthetic secure fixture',version:'1'},authMethods:[]}});
+if(m.method==='session/new'){appendFileSync(log,JSON.stringify({event:'mcp',servers:m.params.mcpServers})+'\\n');return send({id:m.id,result:{sessionId:'synthetic-secure-native'}});}
+if(m.method==='session/load'){appendFileSync(log,JSON.stringify({event:'mcp',servers:m.params.mcpServers})+'\\n');return send({id:m.id,result:{}});}
+if(m.method==='session/prompt') {const text=m.params.prompt.filter(p=>p.type==='text').map(p=>p.text).join('');appendFileSync(log,JSON.stringify({event:'prompt',text})+'\\n');const holding=text.includes('hold-for-stop');send({method:'session/update',params:{sessionId:m.params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:holding?'synthetic-holding':'SYNTHETIC_PRIVATE_AGENT_RESPONSE'}}}});if(text.includes('mcp-gated')){pending=m;void fetch(gate).then(()=>{if(pending===m){pending=undefined;send({id:m.id,result:{stopReason:'end_turn'}});}});return;}if(holding)pending=m;else send({id:m.id,result:{stopReason:'end_turn'}});return;}
 if(m.method==='session/cancel'){appendFileSync(log,JSON.stringify({event:'cancel'})+'\\n');if(pending)send({id:pending.id,result:{stopReason:'cancelled'}});pending=undefined;return;}
 if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthetic method'}});
 });\n`,
@@ -240,7 +256,7 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
       expectedRevision: 0,
       name: 'SYNTHETIC_PRIVATE_AGENT_NAME',
       command: realpathSync(executable),
-      args: [syntheticAgent, aggregateFile],
+      args: [syntheticAgent, aggregateFile, gateUrl],
     });
     const preset = saved.presets[0];
     const checked = await configure({
@@ -710,6 +726,174 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
       ),
     );
     assert.equal((await run(['catalog-operations'])).operations.length, 3);
+    // A foreground secure MCP send keeps the exact CLI channel after acceptance.
+    // The synthetic ACP prompt waits for this explicit HTTP barrier, never a timer.
+    currentHost.child.kill('SIGTERM');
+    assert.equal((await currentHost.closed)[0], 0);
+    const mcpConfiguration = child(
+      'host',
+      ['--config', config, '--runtime-data', runtimeFile, '--mcp-config-stdin'],
+      JSON.stringify({
+        action: 'save',
+        expectedRevision: 0,
+        name: 'SYNTHETIC_PRIVATE_MCP',
+        description: 'Synthetic foreground tool capability',
+        projectIds: [projectId],
+        enabled: true,
+        connection: {
+          transport: 'http',
+          url: gateUrl + '/mcp',
+          headers: { Authorization: 'Bearer SYNTHETIC_PRIVATE_MCP_TOKEN' },
+        },
+      }),
+    );
+    assert.equal(
+      (await mcpConfiguration.closed)[0],
+      0,
+      mcpConfiguration.output().stderr + mcpConfiguration.output().stdout,
+    );
+    hostReady = new Promise<void>((resolve) => {
+      hostReadyResolve = resolve;
+    });
+    currentHost = child('host', hostArguments);
+    await Promise.race([
+      hostReady,
+      currentHost.closed.then(() => {
+        throw Error(currentHost.output().stderr);
+      }),
+    ]);
+    const mcp = (await run(['mcp', sessionId, ...target])).servers[0];
+    assert.ok(mcp?.id);
+    for (const end of ['complete', 'interrupt'] as const) {
+      let entered!: () => void, observed!: () => void;
+      const promptEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const readObserved = new Promise<void>((resolve) => {
+        observed = resolve;
+      });
+      gateEntered = entered;
+      let acceptedOperation: any;
+      const priorState = new CliState(stateDirectory);
+      const priorIds = new Set(
+        priorState.secureOperationSummaries().operations.map((op) => op.operationId),
+      );
+      priorState.close();
+      onRecord = () => {
+        const snapshot = new CliState(stateDirectory);
+        try {
+          const candidate = snapshot
+            .secureOperationSummaries()
+            .operations.find(
+              (op: any) =>
+                op.kind === 'turn' &&
+                !priorIds.has(op.operationId) &&
+                op.state === 'accepted' &&
+                op.userTurnId &&
+                op.mcpReview?.servers?.length &&
+                (!acceptedOperation || op.operationId === acceptedOperation.operationId),
+            );
+          if (!candidate) return;
+          const record = snapshot.secureOperation(candidate.operationId)!;
+          acceptedOperation = record;
+          observed();
+        } finally {
+          snapshot.close();
+        }
+      };
+      const foreground = child(
+        'cli',
+        [
+          '--json',
+          '--state-dir',
+          stateDirectory,
+          'secure',
+          'send',
+          sessionId,
+          ...target,
+          '--stdin',
+          '--mcp-server-ids',
+          mcp.id,
+          '--endpoint',
+          clientFile,
+        ],
+        'mcp-gated-' + end,
+      );
+      await Promise.race([
+        Promise.all([promptEntered, readObserved]),
+        foreground.closed.then(() => {
+          throw Error(foreground.output().stderr + foreground.output().stdout);
+        }),
+      ]);
+      onRecord = undefined;
+      assert.equal(foreground.child.exitCode, null);
+      assert.equal(acceptedOperation.state, 'accepted');
+      assert.ok(acceptedOperation.userTurnId);
+      const mounted = readFileSync(aggregateFile, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter((row) => row.event === 'mcp')
+        .at(-1);
+      assert.ok(
+        JSON.stringify(mounted.servers).includes('SYNTHETIC_PRIVATE_MCP_TOKEN'),
+        'real ACP session setup receives the Host-private configuration',
+      );
+      if (end === 'complete') gateResponse!.end('{}');
+      else foreground.child.kill('SIGINT');
+      const [code] = await foreground.closed;
+      assert.equal(
+        code,
+        end === 'complete' ? 0 : 130,
+        foreground.output().stderr + foreground.output().stdout,
+      );
+      const output = JSON.parse(
+        (end === 'complete' ? foreground.output().stdout : foreground.output().stderr)
+          .trim()
+          .split('\n')
+          .at(-1)!,
+      );
+      if (end === 'complete') {
+        assert.equal(output.data.state, 'accepted');
+        assert.equal(output.data.execution.userTurnId, acceptedOperation.userTurnId);
+        assert.equal(output.data.execution.status, 'handled');
+      } else {
+        assert.equal(output.error.code, 'interrupted');
+        assert.equal(output.error.operationId, acceptedOperation.operationId);
+        const canceled = await untilSession((session) =>
+          session.history.some(
+            (turn: any) =>
+              turn.role === 'assistant' &&
+              turn.userTurnId === acceptedOperation.userTurnId &&
+              turn.finished,
+          ),
+        );
+        assert.equal(
+          canceled.history.find(
+            (turn: any) =>
+              turn.role === 'assistant' && turn.userTurnId === acceptedOperation.userTurnId,
+          ).status,
+          'canceled',
+        );
+        gateResponse!.end('{}');
+      }
+      const persisted = new CliState(stateDirectory);
+      try {
+        assert.deepEqual(
+          persisted.secureOperation(acceptedOperation.operationId),
+          acceptedOperation,
+        );
+      } finally {
+        persisted.close();
+      }
+      const prompts = readFileSync(aggregateFile, 'utf8');
+      assert.equal((await run(['retry', acceptedOperation.operationId])).state, 'accepted');
+      assert.equal(
+        readFileSync(aggregateFile, 'utf8'),
+        prompts,
+        'reading the original receipt never restarts its MCP turn',
+      );
+    }
     const wire = JSON.stringify(captured);
     const database = JSON.stringify(
       store.db

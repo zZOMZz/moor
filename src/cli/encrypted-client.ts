@@ -31,10 +31,11 @@ import {
   validateSessionOperationResult,
 } from '../session-control-protocol';
 import { mcpReadSchema, mcpServerIdsSchema, validateMcpRead } from '../mcp-protocol';
+import { SECURE_TURN_AUTHORITY_FEATURE } from '../task-protocol';
 import { CliError, type CliArgs } from './args';
 import { CliHttp, connectionSchema } from './http';
 import { cliInput } from './input';
-import type { CliDependencies } from './client';
+import { waitPause, type CliDependencies } from './client';
 import {
   secureOriginal,
   secureCatalogOriginal,
@@ -256,6 +257,20 @@ export class EncryptedCliClient {
         return await this.deliverCatalog(client, staged, true, current);
       }
       if (original) {
+        if (args.flags.timeout !== undefined && !original.mcpReview?.servers.length)
+          throw new CliError('usage', '--timeout 仅用于等待含 MCP 的原回合。');
+        if (
+          original.mcpReview?.servers.length &&
+          !catalog.workspaces
+            .find((workspace) => workspace.id === original.target.workspaceId)
+            ?.features?.includes(SECURE_TURN_AUTHORITY_FEATURE)
+        )
+          throw new CliError(
+            'mcp',
+            '执行主机尚不支持完整的加密回合授权，请升级后核查原 MCP 操作。',
+            5,
+            original.operationId,
+          );
         this.matchTarget(original.target, catalog, {
           origin: auth.connection.origin,
           owner: auth.connection.owner,
@@ -279,7 +294,25 @@ export class EncryptedCliClient {
               5,
               original.operationId,
             );
-          return await this.deliver(client, original, false, current);
+          if (original.kind === 'turn' && !original.userTurnId)
+            throw new CliError(
+              'turn-binding',
+              '旧回合原操作没有精确回合绑定，只能 inspect 或 abandon；未重发。',
+              5,
+              original.operationId,
+            );
+          const confirmation = await this.deliver(client, original, false, current);
+          return original.mcpReview?.servers.length && confirmation.state === 'accepted'
+            ? {
+                ...confirmation,
+                execution: await this.waitForMcp(
+                  client,
+                  this.state.secureOperation(original.operationId)!,
+                  args,
+                  current,
+                ),
+              }
+            : confirmation;
         }
         return await this.recover(client, original, args.command as 'inspect' | 'abandon', current);
       }
@@ -344,12 +377,24 @@ export class EncryptedCliClient {
           args.flags.session ??
           (args.command === 'create' ? this.uuid() : undefined),
       });
-      const stage = (kind: SecureCliOperation['kind'], request: HostCommand) => {
+      const stage = (
+        kind: SecureCliOperation['kind'],
+        request: HostCommand,
+        mcpReview?: SecureCliOperation['mcpReview'],
+        userTurnId?: string,
+      ) => {
         current();
         client!.assertCurrent();
         const operationId = (request.params as { operationId: string }).operationId;
         return this.state.secureStage(
-          { operationId, kind, target, body: JSON.stringify(request) },
+          {
+            operationId,
+            kind,
+            target,
+            body: JSON.stringify(request),
+            ...(mcpReview ? { mcpReview } : {}),
+            ...(userTurnId ? { userTurnId } : {}),
+          },
           new Date(this.now()).toISOString(),
         );
       };
@@ -402,13 +447,27 @@ export class EncryptedCliClient {
         const mcpServerIds = mcpServerIdsSchema.parse(
           args.flags['mcp-server-ids'] ? String(args.flags['mcp-server-ids']).split(',') : [],
         );
+        if (args.flags.timeout !== undefined && !mcpServerIds.length)
+          throw new CliError('usage', '--timeout 仅用于等待含 MCP 的原回合。');
+        let mcpReview: SecureCliOperation['mcpReview'];
         if (mcpServerIds.length) {
+          if (!workspace.features?.includes(SECURE_TURN_AUTHORITY_FEATURE))
+            throw new CliError(
+              'mcp',
+              '执行主机尚不支持完整的加密回合授权，请升级后重新审阅 MCP。',
+              5,
+            );
           const mcp = await readMcp();
           if (mcpServerIds.some((id) => !mcp.servers.some((server) => server.id === id)))
             throw new CliError('mcp', '所选 MCP 版本不可用；请重新核对。', 5);
+          mcpReview = {
+            reviewId: this.uuid(),
+            servers: mcpServerIds.map((id) => mcp.servers.find((server) => server.id === id)!),
+          };
         }
         const prompt = (await cliInput(args, this.deps.stdin))!;
         current();
+        const userTurnId = this.uuid();
         const request = buildSessionTurn({
           scope: scope(target),
           read,
@@ -421,11 +480,23 @@ export class EncryptedCliClient {
             ...(args.flags.mode ? { modeId: String(args.flags.mode) } : {}),
           },
           operationId: this.uuid(),
-          turnId: this.uuid(),
+          turnId: userTurnId,
           peerId: this.uuid().replaceAll('-', '').slice(0, 16),
           now: new Date(this.now()).toISOString(),
         });
-        return await this.deliver(client, stage('turn', command('mutate', request)), true, current);
+        const op = stage('turn', command('mutate', request), mcpReview, userTurnId);
+        const confirmation = await this.deliver(client, op, true, current);
+        return mcpReview?.servers.length && confirmation.state === 'accepted'
+          ? {
+              ...confirmation,
+              execution: await this.waitForMcp(
+                client,
+                this.state.secureOperation(op.operationId)!,
+                args,
+                current,
+              ),
+            }
+          : confirmation;
       }
       if (args.command === 'stop') {
         const active = read.history.find((turn) => turn.role === 'assistant' && !turn.finished),
@@ -489,6 +560,107 @@ export class EncryptedCliClient {
       !workspace.projects.some((project) => project.id === target.localProjectId)
     )
       throw new CliError('scope', '原操作的执行范围已改变；未迁移或重发。', 5);
+  }
+  /** Keep this authorization channel alive; observing completion never resends the original. */
+  private async waitForMcp(
+    client: EncryptedBridgeClient,
+    operation: SecureCliOperation,
+    args: CliArgs,
+    current: () => void,
+  ) {
+    const userTurnId = operation.userTurnId;
+    if (!userTurnId || operation.state !== 'accepted' || !operation.mcpReview?.servers.length)
+      throw new CliError(
+        'turn-binding',
+        '原 MCP 操作缺少精确回合绑定；请手动核查。',
+        6,
+        operation.operationId,
+      );
+    const duration = args.flags.timeout === undefined ? undefined : Number(args.flags.timeout);
+    const expiresAt = duration === undefined ? undefined : this.now() + duration;
+    const ending =
+      duration === undefined ? undefined : (this.deps.deadline ?? AbortSignal.timeout)(duration);
+    const signals = [this.deps.signal, ending].filter((signal): signal is AbortSignal => !!signal);
+    const signal = signals.length ? AbortSignal.any(signals) : undefined;
+    const close = () => client.close();
+    signal?.addEventListener('abort', close, { once: true });
+    try {
+      if (signal?.aborted) close();
+      while (true) {
+        current();
+        if (ending?.aborted || (expiresAt !== undefined && this.now() >= expiresAt)) throw Error();
+        const target = operation.target;
+        const raw = await client.execute(
+          target.hostDeviceId,
+          {
+            method: 'session',
+            workspaceId: target.workspaceId,
+            localProjectId: target.localProjectId,
+            params: { sessionId: target.sessionId },
+          },
+          target.product,
+        );
+        current();
+        const read = readClientSession(raw, scope(target));
+        if (signal?.aborted || (expiresAt !== undefined && this.now() >= expiresAt)) throw Error();
+        if (read.persisted === false || read.persistenceError) throw Error();
+        const user = read.history.find((turn) => turn.id === userTurnId && turn.role === 'user');
+        if (
+          !user ||
+          user.userId !== target.userId ||
+          JSON.stringify(
+            mcpServerIdsSchema.parse(
+              (user.inputConfig as { mcpServerIds?: unknown } | undefined)?.mcpServerIds,
+            ),
+          ) !== JSON.stringify(operation.mcpReview.servers.map((server) => server.id))
+        )
+          throw Error();
+        const assistants = read.history.filter(
+          (turn) => turn.role === 'assistant' && turn.userTurnId === userTurnId,
+        );
+        if (assistants.length > 1) throw Error();
+        const assistant = assistants[0];
+        if (assistant?.finished) {
+          if (assistant.status !== 'handled')
+            throw new CliError(
+              'turn-failed',
+              '主机已接受原 MCP 操作，但此精确回合未成功完成；原接受回执已保留。',
+              7,
+              operation.operationId,
+            );
+          return { userTurnId, assistantTurnId: assistant.id, status: 'handled' as const };
+        }
+        await (this.deps.pause ?? waitPause)(
+          expiresAt === undefined ? 1000 : Math.max(1, Math.min(1000, expiresAt - this.now())),
+          signal,
+        );
+      }
+    } catch (error) {
+      if (this.deps.signal?.aborted)
+        throw new CliError(
+          'interrupted',
+          '原 MCP 操作已被主机接受；等待中断并关闭授权连接，已请求撤销此回合。已派发的外部操作请核查原结果。',
+          130,
+          operation.operationId,
+        );
+      if (ending?.aborted || (expiresAt !== undefined && this.now() >= expiresAt))
+        throw new CliError(
+          'wait-timeout',
+          '原 MCP 操作已被主机接受；等待超时并关闭授权连接，已请求撤销此回合。已派发的外部操作请核查原结果。',
+          7,
+          operation.operationId,
+        );
+      if (error instanceof CliError && error.code === 'turn-failed') throw error;
+      throw new CliError(
+        'execution-unconfirmed',
+        '原 MCP 操作已被主机接受，但精确回合结果无法确认；授权连接已关闭，原接受回执已保留。',
+        6,
+        operation.operationId,
+      );
+    } finally {
+      signal?.removeEventListener('abort', close);
+      client.close();
+    }
   }
   private async deliver(
     client: EncryptedBridgeClient,

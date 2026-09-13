@@ -600,12 +600,10 @@ export class HostProductCatalog {
       requireTrue(row.authority === this.authorityKey && row.fingerprint === digest(claim));
       return;
     }
-    // An attachment frame may never have reached this Host. Only immutable evidence written
+    // A session frame may never have reached this Host. Only immutable evidence written
     // when the Host published that exact mapping can authorize inspecting or sealing it.
     // This grants no execution and cannot replace an existing operation claim.
-    requireTrue(
-      command.method === 'session-operations' && command.params.request.kind === 'attachment',
-    );
+    requireTrue(command.method === 'session-operations');
     const historical = this.db
       .prepare(
         'SELECT fingerprint,value FROM encrypted_product_mapping WHERE authority=? AND target=?',
@@ -657,6 +655,20 @@ export class HostProductCatalog {
         else this.leases.delete(this.authorityKey);
       },
     };
+  }
+  /** A turn's authority outlives one response, but never its exact active execution mapping. */
+  executionCurrent(rawTarget: EncryptedProductTarget, rawCommand: HostCommand): () => void {
+    const target = encryptedProductTargetSchema.parse(rawTarget),
+      command = hostCommandSchema.parse(rawCommand);
+    requireTrue(command.method === 'mutate' && command.params.kind === 'turn');
+    requireTrue(this.currentTarget(target, command));
+    const runtime = this.runtimeEvidence(command);
+    const current = () => {
+      requireTrue(this.currentTarget(target, command));
+      requireTrue(digest(runtime) === digest(this.runtimeEvidence(command)));
+    };
+    current();
+    return current;
   }
   /** A permanent scope claim, not a delivery receipt or evidence that Agent work began. */
   bindOperation(rawTarget: EncryptedProductTarget | null, rawCommand: HostCommand): void {

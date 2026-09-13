@@ -16,6 +16,9 @@ import { encryptedCatalogSchema } from '../src/security/encrypted-bridge-protoco
 import type { AgentCallbacks } from '../src/runtime/agent';
 import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 import { SecureAttachments } from '../src/web/secure-attachments';
+import { SecureMcp } from '../src/web/secure-mcp';
+import { MCP_FEATURE } from '../src/mcp-protocol';
+import { SECURE_TURN_AUTHORITY_FEATURE } from '../src/task-protocol';
 import { syntheticCapabilities } from './support/agent-capabilities';
 import { LoroDoc, decode, delta, mirror } from '../src/model';
 
@@ -174,6 +177,7 @@ async function fixture(t: TestContext, uuid?: () => string) {
     before?: (input: DesktopSecureRequest) => Promise<void>;
     wrongAuthority?: boolean;
     omitPermissionFeature?: boolean;
+    omitSecureTurnAuthorityFeature?: boolean;
     losePermissionBefore?: boolean;
     transformRead?: (value: unknown) => unknown;
   } = {};
@@ -208,14 +212,17 @@ async function fixture(t: TestContext, uuid?: () => string) {
           catalogVersion: 2,
           machineId: host.workspace.machineId,
           workspaces: [
-            fault.omitPermissionFeature
-              ? {
-                  ...host.workspace,
-                  features: host.workspace.features?.filter(
-                    (feature) => feature !== PERMISSION_REVIEW_FEATURE,
+            {
+              ...host.workspace,
+              features: host.workspace.features?.filter(
+                (feature) =>
+                  !(fault.omitPermissionFeature && feature === PERMISSION_REVIEW_FEATURE) &&
+                  !(
+                    fault.omitSecureTurnAuthorityFeature &&
+                    feature === SECURE_TURN_AUTHORITY_FEATURE
                   ),
-                }
-              : host.workspace,
+              ),
+            },
           ],
           products: fault.wrongAuthority
             ? { ...products, authority: { ...products.authority, accountId: 'other' } }
@@ -317,6 +324,16 @@ async function fixture(t: TestContext, uuid?: () => string) {
     products,
     ready,
     create,
+    registerMcp: () =>
+      host.mcpSettings.handle({
+        action: 'save',
+        expectedRevision: host.mcpSettings.read().revision,
+        name: 'Synthetic MCP',
+        description: 'A reviewed immutable version',
+        projectIds: [projectId],
+        enabled: true,
+        connection: { transport: 'http', url: 'https://mcp.synthetic.invalid/unused' },
+      }),
     started,
     update: (value: unknown) => callbacks.update(value),
     permission: (
@@ -448,6 +465,105 @@ test('a render-time send target cannot be moved to a later selected session', as
   const count = f.requests.length;
   await assert.rejects(f.controller.send('Synthetic old target prompt', shown), /发送目标/);
   assert.equal(f.requests.length, count);
+  assert.equal(f.prompts(), 0);
+});
+
+test('a saved MCP selection cannot send or stage when the Host lacks encrypted turn authority', async (t) => {
+  const f = await fixture(t);
+  f.fault.omitSecureTurnAuthorityFeature = true;
+  await f.registerMcp();
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    otherPage = new SecureMcp(f.store),
+    catalog = await f.controller.readMcpCatalog(target);
+  const draft = await otherPage.apply(
+    target,
+    await otherPage.read(target, () => {}),
+    catalog.servers,
+    { online: true, catalog },
+    () => {},
+  );
+  await f.controller.refreshOperations();
+  assert.equal(draft.review!.servers.length, 1);
+  const features = f.controller.state.catalog!.workspaces[0].features!;
+  assert(features.includes(MCP_FEATURE));
+  assert(!features.includes(SECURE_TURN_AUTHORITY_FEATURE));
+  const count = f.requests.length,
+    saved = structuredClone(f.memory.values);
+  await assert.rejects(
+    f.controller.send('Synthetic reviewed prompt', {
+      target,
+      attachments: [],
+      mcpDraft: draft,
+    }),
+    /完整的加密回合授权/,
+  );
+  assert.equal(f.requests.length, count, 'downgraded Host receives no new IPC');
+  assert.deepEqual(f.memory.values, saved, 'no upload or turn was staged');
+  assert.equal(f.prompts(), 0);
+});
+
+test('a rendered empty MCP selection cannot send a newer review loaded into controller state', async (t) => {
+  const f = await fixture(t);
+  await f.registerMcp();
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    shown = { target, attachments: [], mcpDraft: f.controller.state.mcpDraft },
+    otherPage = new SecureMcp(f.store),
+    catalog = await f.controller.readMcpCatalog(target);
+  await otherPage.apply(
+    target,
+    await otherPage.read(target, () => {}),
+    catalog.servers,
+    { online: true, catalog },
+    () => {},
+  );
+  await f.controller.refreshOperations();
+  assert.equal(shown.mcpDraft!.review, undefined);
+  assert.equal(f.controller.state.mcpDraft!.review!.servers.length, 1);
+  const count = f.requests.length,
+    saved = structuredClone(f.memory.values);
+  await assert.rejects(f.controller.send('Synthetic reviewed prompt', shown), /已审阅/);
+  assert.equal(f.requests.length, count, 'unseen review fails before any IPC');
+  assert.deepEqual(f.memory.values, saved);
+  assert.equal(f.prompts(), 0);
+});
+
+test('a rendered MCP review cannot send after another page changes persistence without refreshing controller state', async (t) => {
+  const f = await fixture(t);
+  await f.registerMcp();
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    otherPage = new SecureMcp(f.store),
+    catalog = await f.controller.readMcpCatalog(target);
+  const selected = await otherPage.apply(
+    target,
+    await otherPage.read(target, () => {}),
+    catalog.servers,
+    { online: true, catalog },
+    () => {},
+  );
+  await f.controller.refreshOperations();
+  const shown = { target, attachments: [], mcpDraft: f.controller.state.mcpDraft };
+  const changed = await otherPage.apply(target, selected, [], { online: false }, () => {});
+  assert.deepEqual(
+    f.controller.state.mcpDraft,
+    selected,
+    'controller still presents the old review',
+  );
+  assert.notEqual(changed.review!.reviewId, selected.review!.reviewId);
+  const count = f.requests.length,
+    saved = structuredClone(f.memory.values);
+  await assert.rejects(f.controller.send('Synthetic reviewed prompt', shown), /MCP 草稿已改变/);
+  assert.deepEqual(
+    f.requests.slice(count).map((input) => input.action === 'execute' && input.command.method),
+    ['session'],
+    'only the existing session read occurs; no MCP read, upload or turn dispatch follows',
+  );
+  assert.deepEqual(f.memory.values, saved, 'a stale review cannot stage an original turn');
   assert.equal(f.prompts(), 0);
 });
 
@@ -1120,3 +1236,72 @@ for (const action of ['inspect', 'retry', 'abandon'] as const)
       original,
     );
   });
+
+import { SecureSkillsController } from '../src/web/secure-skills';
+test('actual scoped Skills append uses latest persisted draft and keeps original target', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const path = join(f.project, '.agents/skills/synthetic');
+  mkdirSync(path, { recursive: true });
+  writeFileSync(
+    join(path, 'SKILL.md'),
+    '# Synthetic private full description\n\nBody stays local.',
+  );
+  const target = f.controller.contentContext.target!;
+  await f.controller.saveDraft('Initially saved');
+  const skills = new SecureSkillsController({
+    context: () => f.controller.contentContext,
+    request: (...args) => f.controller.contentRequest(...args),
+    appendInstruction: (...args) => f.controller.appendInstruction(...args),
+  });
+  t.after(() => skills.dispose());
+  await skills.open(target);
+  let panel = skills.state!;
+  await skills.select(panel.controller.list!.skills[0].id, panel.controller.list!, panel.review);
+  panel = skills.state!;
+  await f.store.saveDraft(target, 'Initially saved', 'Other page latest unsent draft', () => {});
+  await skills.add(panel.controller.detail!, panel.review);
+  const draft = await f.store.readDraft(target);
+  assert.match(draft, /^Other page latest unsent draft\n\n\[Skill 说明快照\]/);
+  assert.equal(f.controller.state.draft, draft);
+  assert.equal(f.prompts(), 0);
+});
+test('actual root append CAS is cancelled when the Skills panel closes', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const path = join(f.project, '.agents/skills/synthetic');
+  mkdirSync(path, { recursive: true });
+  writeFileSync(join(path, 'SKILL.md'), '# Synthetic full description');
+  const target = f.controller.contentContext.target!;
+  await f.controller.saveDraft('Preserve local draft');
+  const skills = new SecureSkillsController({
+    context: () => f.controller.contentContext,
+    request: (...args) => f.controller.contentRequest(...args),
+    appendInstruction: (...args) => f.controller.appendInstruction(...args),
+  });
+  t.after(() => skills.dispose());
+  await skills.open(target);
+  let panel = skills.state!;
+  await skills.select(panel.controller.list!.skills[0].id, panel.controller.list!, panel.review);
+  panel = skills.state!;
+  const entered = signal(),
+    release = signal();
+  const original = f.memory.compareAndSet.bind(f.memory);
+  f.memory.compareAndSet = async (key, expected, value, current) => {
+    if (key.includes('moor-secure-draft-v1')) {
+      entered.resolve();
+      await release.promise;
+    }
+    return original(key, expected, value, current);
+  };
+  const adding = skills.add(panel.controller.detail!, panel.review);
+  const rejection = assert.rejects(adding, /Skills 所属会话或连接已改变/);
+  await entered.promise;
+  skills.close();
+  release.resolve();
+  await rejection;
+  assert.equal(await f.store.readDraft(target), 'Preserve local draft');
+  assert.equal(f.prompts(), 0);
+});

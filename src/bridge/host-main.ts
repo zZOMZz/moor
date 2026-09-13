@@ -1281,10 +1281,17 @@ if (secureEndpoint) {
       runtime: runtimeCatalog,
     });
     products.synchronize();
+    const invalidateAuthorizations = () => {
+      for (const host of workspaces.values()) {
+        host.taskManager.invalidateUnavailable();
+        host.invalidateMcp();
+      }
+    };
     secureTransport = new EncryptedHostTransport({
       endpoint: secureEndpoint,
       dispatcher: commands,
       products,
+      invalidated: invalidateAuthorizations,
       catalog: () => {
         return {
           ...runtimeCatalog(),
@@ -1293,11 +1300,8 @@ if (secureEndpoint) {
         };
       },
       closed: () => {
-        for (const host of workspaces.values()) {
-          host.previewManager.invalidate();
-          host.taskManager.invalidateUnavailable();
-          host.invalidateMcp();
-        }
+        for (const host of workspaces.values()) host.previewManager.invalidate();
+        invalidateAuthorizations();
         try {
           secureEndpoint.current();
         } catch {

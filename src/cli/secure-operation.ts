@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { id, mutationSchema } from '../protocol';
 import { attachmentReceiptSchema } from '../attachment-protocol';
+import { MCP_LIMITS, mcpServerIdsSchema, mcpServerViewSchema } from '../mcp-protocol';
 import {
   encryptedProductTargetSchema,
   encryptedProductAuthoritySchema,
@@ -30,6 +31,14 @@ export const secureTargetSchema = z
   })
   .strict();
 export type SecureCliTarget = z.infer<typeof secureTargetSchema>;
+export const secureMcpReviewSchema = z
+  .object({ reviewId: id, servers: z.array(mcpServerViewSchema).max(MCP_LIMITS.selected) })
+  .strict()
+  .superRefine((review, context) => {
+    if (!mcpServerIdsSchema.safeParse(review.servers.map((server) => server.id)).success)
+      context.addIssue({ code: 'custom', message: 'Invalid immutable MCP review' });
+  });
+export type SecureMcpReview = z.infer<typeof secureMcpReviewSchema>;
 export const secureOperationSchema = z
   .object({
     operationId: id,
@@ -48,6 +57,8 @@ export const secureOperationSchema = z
     state: z.enum(['pending', 'ending', 'accepted', 'abandoned', 'rejected']),
     createdAt: z.string().datetime(),
     receipt: z.unknown().optional(),
+    mcpReview: secureMcpReviewSchema.optional(),
+    userTurnId: id.optional(),
   })
   .strict()
   .superRefine((operation, context) => {
@@ -55,6 +66,8 @@ export const secureOperationSchema = z
       const raw = JSON.parse(operation.body),
         command = hostCommandSchema.parse(raw),
         target = operation.target;
+      if ((operation.mcpReview || operation.userTurnId !== undefined) && operation.kind !== 'turn')
+        throw Error();
       const expected =
         operation.kind === 'turn' || operation.kind === 'permission'
           ? 'mutate'
@@ -136,6 +149,28 @@ export const secureOperationSchema = z
     }
   });
 export type SecureCliOperation = z.infer<typeof secureOperationSchema>;
+/** Keep historical digests byte-compatible while binding new, explicitly reviewed MCP metadata. */
+export function secureOperationDigestSource(
+  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'userTurnId'>,
+) {
+  const target = secureTargetSchema.parse(value.target);
+  if (value.userTurnId !== undefined)
+    return JSON.stringify([
+      'bound-user-turn-command-v1',
+      target,
+      value.body,
+      value.mcpReview === undefined ? null : secureMcpReviewSchema.parse(value.mcpReview),
+      id.parse(value.userTurnId),
+    ]);
+  if (value.mcpReview !== undefined)
+    return JSON.stringify([
+      'reviewed-mcp-command-v1',
+      target,
+      value.body,
+      secureMcpReviewSchema.parse(value.mcpReview),
+    ]);
+  return target.product ? JSON.stringify(['mapped-command', target, value.body]) : value.body;
+}
 export function secureOriginal(operation: SecureCliOperation): SessionOriginalOperation {
   const command = hostCommandSchema.parse(JSON.parse(operation.body));
   return sessionOriginalOperationSchema.parse({
