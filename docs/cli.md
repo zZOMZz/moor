@@ -106,19 +106,19 @@ node dist/cli.mjs secure catalog --endpoint /absolute/private/.moor-security/cli
   --host HOST_DEVICE_ID --json
 ```
 
-`hosts` 返回 `verified:false`，只是中转提供的在线提示；成功解密 `catalog` 后才确认对端持有已配对设备的密钥。目录包含实际运行工作区、项目和 Agent 的编号。当前 `secure` 使用运行工作区和本地项目，参数是 `--workspace` 与 `--project`；与普通 CLI 的产品工作区/副本选择分别处理，不继承 `targets use`。
+`hosts` 返回 `verified:false`，只是中转提供的在线提示；成功解密 `catalog` 后才确认对端持有已配对设备的密钥。新版目录 `catalogVersion:2` 同时包含实际运行工作区、项目和 Agent，以及由这台主机确认并持久化的 `products`：产品工作区、产品、执行副本和映射版本。选择 `--space PRODUCT_WORKSPACE_ID --replica REPLICA_ID` 后，CLI 将它唯一解析到实际运行项目；也可明确使用 `--workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID`，新版目录下仍必须唯一对应一个可用产品副本。两种选择不能混用，也不继承普通 CLI 的 `targets use`。旧 v1 目录仍可读取，并继续接受运行范围选择。
 
 ```sh
 node dist/cli.mjs secure create --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID \
+  --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID \
   --agent AGENT_CONFIG_ID --json
 node dist/cli.mjs secure send SESSION_ID --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID \
+  --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID \
   --stdin --json <<'PROMPT'
 检查当前项目，说明下一步待办。
 PROMPT
 node dist/cli.mjs secure read SESSION_ID --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID --json
+  --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID --json
 ```
 
 同样的明确目标参数支持 `list`、`mcp`、`stop`、`archive`、`restore`、`rename`、`pin`、`unpin`；`list` 不传会话。`rename` 从 `--stdin` 或 `--file` 读取标题，`stop --turn TURN_ID` 核对当前活动回合。`send` 可提供 `--model`、`--effort`、`--mode` 与 `--mcp-server-ids`，已有会话仍固定原 Agent 版本。当前没有审批回应、问题回答、附件上传、`--wait`、`--follow` 或通知子命令；使用手动 `read` 查看结果，需要人工回应的回合仍可精确停止。
@@ -132,7 +132,37 @@ node dist/cli.mjs secure retry OPERATION_ID --endpoint /absolute/private/.moor-s
 node dist/cli.mjs secure abandon OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
 ```
 
-`operations` 只读本机摘要，不含原正文；其余恢复命令从原记录选择主机与执行范围，不能另传目标。重试沿用原操作编号、正文和请求哈希，主机已接受时返回原结果。请求封存后保持 `ending`，在主机确认前不能重试执行；已接受操作不能借封存撤销。旧 `session retry` 无法读取加密操作，避免通过旧 HTTP 发送。这里的“加密操作表”指使用加密传输的私有操作记录，SQLite 正文本身没有磁盘加密。
+`operations` 只读本机摘要，不含原正文；其余恢复命令从原记录选择主机与执行范围，不能另传目标。重试沿用原操作编号、正文和请求哈希，新版目录下还冻结原产品工作区、产品、副本和映射版本；恢复时不会用新目录替换它们。映射变化后仍可提交原范围核查或封存，由主机核对历史绑定。升级后的主机上，旧的无产品映射待确认操作只能 `inspect` 或 `abandon`，不能推测新映射后重发。主机已接受时返回原结果。请求封存后保持 `ending`，在主机确认前不能重试执行；已接受操作不能借封存撤销。旧 `session retry` 无法读取加密操作，避免通过旧 HTTP 发送。这里的“加密操作表”指使用加密传输的私有操作记录，SQLite 正文本身没有磁盘加密。
+
+产品目录由每台主机独立保存，变更通过同一条加密链路提交。先读取 `secure catalog`，核对 `products.authority`、全局 `products.revision` 和目标副本版本；然后提供明确的动作和 `expectedRevision`。CLI 生成固定原操作编号，在独立的私有 `secure_catalog_outbox` 中保存完整动作后才发送：
+
+```sh
+node dist/cli.mjs secure organize --endpoint /absolute/private/.moor-security/client.json \
+  --host HOST_DEVICE_ID --stdin --json <<'ACTION'
+{"action":"create-workspace","expectedRevision":1,"id":"personal","name":"个人项目"}
+ACTION
+```
+
+示例中的 `expectedRevision:1` 必须换为刚核对的实际版本。输入必须为严格 JSON，不接受 `operationId`、`version` 或额外字段；编号和协议版本由 CLI 固定。
+
+| `action`           | 除 `expectedRevision` 外的动作字段                                |
+| ------------------ | ----------------------------------------------------------------- |
+| `create-workspace` | `id`、`name`                                                      |
+| `rename-workspace` | `workspaceId`、`name`                                             |
+| `create-project`   | `workspaceId`、`id`、`name`、`source`（与目录中项目来源结构相同） |
+| `assign-replica`   | `replicaId`、`projectId`、`expectedReplicaRevision`               |
+| `move-host`        | `runtimeWorkspaceId`、`targetWorkspaceId`                         |
+
+`move-host` 移动这台主机的指定运行工作区及其副本在产品目录中的归属；它不复制文件、会话历史或迁移到另一台物理主机。目录操作的明确恢复命令独立于会话操作：
+
+```sh
+node dist/cli.mjs secure catalog-operations --json
+node dist/cli.mjs secure catalog-inspect OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
+node dist/cli.mjs secure catalog-retry OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
+node dist/cli.mjs secure catalog-abandon OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
+```
+
+`catalog-operations` 离线读取本机摘要；其余命令只使用原记录中的账号、根、客户端、主机、完整动作和预期版本，不能换目标。响应未知时保留原字节和编号，重连不会自动执行。核查未找到不代表可以自动重发；封存先持久化 `ending` 并把完整原动作交给主机，以阻止迟到的同一操作执行。封存不能撤销已经接受的目录变更。
 
 此入口已加密目录、命令和主机响应；默认桌面、Web/PWA、普通远程 CLI、watch 和通知尚未迁入。完整范围和剩余限制见[端到端加密进展](end-to-end-encryption.md)。
 

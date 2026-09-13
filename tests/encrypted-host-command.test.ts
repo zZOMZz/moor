@@ -1,6 +1,18 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { base64url } from 'jose';
+import { DatabaseSync } from 'node:sqlite';
+import { HostProductCatalog } from '../src/bridge/host-product-catalog';
+import {
+  encryptedCatalogSchema,
+  type EncryptedCatalog,
+} from '../src/security/encrypted-bridge-protocol';
+import {
+  validateEncryptedProductReceipt,
+  validateEncryptedProductInspection,
+  type EncryptedProductAction,
+  type EncryptedProductTarget,
+} from '../src/security/encrypted-product-catalog';
 import {
   E2eeChannel,
   newChannelChallenge,
@@ -35,8 +47,8 @@ const resource: EncryptedResource = {
   workspaceId: scope.workspaceId,
   projectId: scope.localProjectId,
   sessionId: scope.sessionId,
-  catalogWorkspaceId: 'synthetic-catalog',
-  replicaId: 'synthetic-replica',
+  catalogWorkspaceId: null,
+  replicaId: null,
 };
 const projectResource: EncryptedResource = { ...resource, kind: 'project', sessionId: null };
 const catalogResource: EncryptedResource = {
@@ -282,6 +294,20 @@ test('only project-level sessions and agent-options may omit the session; sessio
     );
   }
   assert.equal(f.calls.length, 3);
+});
+
+test('an adapter without a product authority rejects nonempty product scope before dispatch', async (t) => {
+  const f = await fixture(t);
+  const forged: EncryptedResource = {
+    ...resource,
+    catalogWorkspaceId: 'unconfirmed-workspace',
+    replicaId: 'unconfirmed-replica',
+  };
+  assert.deepEqual(
+    (await f.read(await f.adapter.execute(await f.send(command(), forged)))).value,
+    invalid,
+  );
+  assert.equal(f.calls.length, 0);
 });
 
 test('authenticated but invalid JSON, UTF-8, outer schema or direct and nested scopes receive only a fixed encrypted 400', async (t) => {
@@ -542,3 +568,396 @@ test('Host admission stays bounded through slow commands and is shared across en
   assert.equal((await second.read(await resumed)).value.ok, true);
   assert.equal(f.calls.length, ENCRYPTED_HOST_COMMAND_LIMIT + 1);
 });
+
+/** Production adapter + persistent catalog; only the execution workspace is synthetic. */
+async function productFixture(t: TestContext, handle?: (call: Call) => unknown) {
+  const f = await fixture(t, handle),
+    db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  db.exec('CREATE TABLE operation(id TEXT PRIMARY KEY, fingerprint TEXT, phase TEXT, result TEXT)');
+  let runtime: EncryptedCatalog = {
+    catalogVersion: 1,
+    machineId: 'synthetic-machine',
+    workspaces: [
+      {
+        id: scope.workspaceId,
+        name: 'Synthetic runtime',
+        machineId: 'synthetic-machine',
+        userId: 'synthetic-user',
+        projects: [
+          { id: scope.localProjectId, name: 'Synthetic project', rootPath: '/synthetic/project' },
+        ],
+        agents: [],
+      },
+    ],
+  };
+  const { serverOrigin, accountId, rootKeyId, hostDeviceId } = f.host.binding,
+    authority = { serverOrigin, accountId, rootKeyId, hostDeviceId },
+    products = new HostProductCatalog({ db, authority, runtime: () => runtime });
+  const adapter = new EncryptedHostCommands({
+    channel: f.host,
+    dispatcher: f.dispatcher,
+    products,
+    catalog: () => ({ ...runtime, catalogVersion: 2, products: products.read() }),
+  });
+  const target = (): EncryptedProductTarget => {
+    const replica = products.read().replicas[0]!;
+    return {
+      catalogWorkspaceId: replica.catalogWorkspaceId,
+      projectId: replica.projectId,
+      replicaId: replica.id,
+      revision: replica.revision,
+    };
+  };
+  const mapped = (
+    value: unknown = command(),
+    selected = target(),
+    aad: EncryptedResource = resource,
+  ) => {
+    if (aad.kind === 'catalog')
+      throw Error('Synthetic business fixture requires a business resource');
+    return f.send(
+      { method: 'mapped-command', target: selected, command: value },
+      { ...aad, catalogWorkspaceId: selected.catalogWorkspaceId, replicaId: selected.replicaId },
+    );
+  };
+  const action = async (request: EncryptedProductAction) => {
+    const response = await f.read(
+      await adapter.execute(
+        await f.send({ method: 'catalog-action', params: request }, catalogResource),
+      ),
+    );
+    assert.equal(response.value.ok, true);
+    return validateEncryptedProductReceipt(response.value.result, authority, request);
+  };
+  const createSpace = (
+    operationId = 'create-space',
+    id = 'other-space',
+  ): EncryptedProductAction => ({
+    version: 1,
+    operationId,
+    action: 'create-workspace',
+    expectedRevision: products.read().revision,
+    id,
+    name: 'Synthetic private space',
+  });
+  const move = async () => {
+    await action(createSpace());
+    await action({
+      version: 1,
+      operationId: 'move-product',
+      expectedRevision: products.read().revision,
+      action: 'move-host',
+      runtimeWorkspaceId: scope.workspaceId,
+      targetWorkspaceId: 'other-space',
+    });
+  };
+  return {
+    ...f,
+    adapter,
+    db,
+    products,
+    authority,
+    target,
+    mapped,
+    action,
+    createSpace,
+    move,
+    get runtime() {
+      return runtime;
+    },
+    set runtime(value: EncryptedCatalog) {
+      runtime = value;
+    },
+  };
+}
+function productRecovery(original = mutation, action: 'inspect' | 'abandon' = 'inspect') {
+  return command('session-operations', {
+    ...scope,
+    userId: 'synthetic-user',
+    machineId: 'synthetic-machine',
+    controlVersion: 1,
+    action,
+    request: { kind: 'mutation', value: original },
+  });
+}
+
+test('real product catalog actions, inspection and abandonment remain inside authenticated catalog records', async (t) => {
+  const f = await productFixture(t),
+    request = await f.send({ method: 'catalog', params: {} }, catalogResource),
+    response = await f.adapter.execute(request),
+    decoded = await f.read(response);
+  assert.deepEqual(decoded.header.resource, catalogResource);
+  assert.equal(decoded.header.requestId, request.header.requestId);
+  assert.equal(JSON.stringify(response).includes('/synthetic/project'), false);
+  const catalog = encryptedCatalogSchema.parse(decoded.value.result);
+  assert.equal(catalog.catalogVersion, 2);
+  if (catalog.catalogVersion !== 2) throw Error();
+  assert.deepEqual(catalog.products.authority, f.authority);
+  assert.deepEqual(catalog.products, f.products.read());
+  const action = f.createSpace();
+  const accepted = await f.action(action);
+  assert.equal(accepted.status, 'accepted');
+  const inspect = await f.read(
+    await f.adapter.execute(
+      await f.send(
+        { method: 'catalog-operation', params: { action: 'inspect', request: action } },
+        catalogResource,
+      ),
+    ),
+  );
+  const inspection = validateEncryptedProductInspection(inspect.value.result, f.authority, action);
+  assert.equal(inspection.found, true);
+  if (inspection.found) assert.deepEqual(inspection.receipt, accepted);
+  const unseen = f.createSpace('unseen', 'never-created'),
+    before = f.products.read();
+  const abandon = await f.read(
+    await f.adapter.execute(
+      await f.send(
+        { method: 'catalog-operation', params: { action: 'abandon', request: unseen } },
+        catalogResource,
+      ),
+    ),
+  );
+  const sealed = validateEncryptedProductReceipt(abandon.value.result, f.authority, unseen);
+  assert.equal(sealed.status, 'abandoned');
+  assert.deepEqual(await f.action(unseen), sealed);
+  assert.deepEqual(f.products.read(), before);
+  assert.equal(f.calls.length, 0);
+});
+
+test('a product-enabled adapter refuses raw business and mismatched mapped target or AAD before dispatch or claiming an operation', async (t) => {
+  const f = await productFixture(t),
+    selected = f.target();
+  for (const value of [command(), command('sessions', {})]) {
+    const aad: EncryptedResource = value.method === 'sessions' ? projectResource : resource;
+    assert.deepEqual(
+      (await f.read(await f.adapter.execute(await f.send(value, aad)))).value,
+      invalid,
+    );
+  }
+  const wrapper = { method: 'mapped-command', target: selected, command: command() };
+  for (const [value, aad] of [
+    [wrapper, resource],
+    [wrapper, { ...resource, catalogWorkspaceId: 'other', replicaId: selected.replicaId }],
+    [wrapper, { ...resource, catalogWorkspaceId: selected.catalogWorkspaceId, replicaId: 'other' }],
+    [
+      wrapper,
+      {
+        ...resource,
+        catalogWorkspaceId: selected.catalogWorkspaceId,
+        replicaId: selected.replicaId,
+        sessionId: 'other',
+      },
+    ],
+    [wrapper, catalogResource],
+  ] as const) {
+    const output = (await f.read(await f.adapter.execute(await f.send(value, aad)))).value;
+    assert.deepEqual(output, invalid);
+  }
+  for (const changed of [{ projectId: 'wrong-product' }, { revision: selected.revision + 1 }]) {
+    const output = (
+      await f.read(await f.adapter.execute(await f.mapped(command(), { ...selected, ...changed })))
+    ).value;
+    assert.equal(output.ok, false);
+    assert.equal(output.error.status, 409);
+    assert.equal(output.error.rejected, false);
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal(
+    f.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!.count,
+    0,
+  );
+  const valid = await f.adapter.execute(await f.mapped());
+  assert.equal((await f.read(valid)).value.ok, true);
+  assert.equal(f.calls.length, 1);
+  assert.equal(
+    f.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!.count,
+    1,
+  );
+});
+
+test('authenticated product AAD tampering cannot consume a valid mapped request or execute it', async (t) => {
+  const f = await productFixture(t),
+    original = await f.mapped(),
+    changed = structuredClone(original);
+  changed.header.resource.replicaId = 'tampered';
+  await assert.rejects(f.adapter.execute(changed), safeFailure);
+  assert.equal(f.calls.length, 0);
+  const response = await f.adapter.execute(original),
+    decoded = await f.read(response);
+  assert.equal(decoded.value.ok, true);
+  assert.deepEqual(decoded.header.resource, original.header.resource);
+  assert.equal(f.calls.length, 1);
+});
+
+test('an active command lease rejects a catalog change until dispatch and response finish, without discarding the original action', async (t) => {
+  const entered = signal(),
+    release = signal();
+  t.after(() => release.resolve());
+  const f = await productFixture(t, async () => {
+    entered.resolve();
+    await release.promise;
+    return { marker: 'done' };
+  });
+  const before = f.products.read(),
+    action = f.createSpace(),
+    pending = f.adapter.execute(await f.mapped());
+  await entered.promise;
+  const blocked = await f.read(
+    await f.adapter.execute(
+      await f.send({ method: 'catalog-action', params: action }, catalogResource),
+    ),
+  );
+  assert.equal(blocked.value.ok, false);
+  assert.equal(blocked.value.error.status, 409);
+  assert.equal(blocked.value.error.rejected, false);
+  assert.deepEqual(f.products.read(), before);
+  assert.equal(f.products.inspect(action).found, false);
+  release.resolve();
+  assert.equal((await f.read(await pending)).value.ok, true);
+  assert.equal((await f.action(action)).status, 'accepted');
+  assert.equal(f.calls.length, 1);
+});
+
+for (const failure of [false, true])
+  test(`runtime invalidation suppresses a late ${failure ? 'error' : 'success'} and releases the original command lease`, async (t) => {
+    const entered = signal(),
+      release = signal();
+    t.after(() => release.resolve());
+    const f = await productFixture(t, async (call) => {
+      const lease = call.args[2] as TaskAuthorityLease;
+      lease.current();
+      entered.resolve();
+      await release.promise;
+      if (failure) throw Error('SYNTHETIC_PRIVATE_LATE_ERROR');
+      return { marker: 'SYNTHETIC_PRIVATE_LATE_SUCCESS' };
+    });
+    const originalTarget = f.target(),
+      pending = f.adapter.execute(await f.mapped());
+    await entered.promise;
+    f.runtime.workspaces[0]!.projects[0]!.rootPath = '/synthetic/replaced';
+    release.resolve();
+    await assert.rejects(pending, safeFailure);
+    assert.equal(f.calls.length, 1);
+    assert.throws(() => (f.calls[0]!.args[2] as TaskAuthorityLease).current());
+    assert.ok(f.target().revision > originalTarget.revision);
+    assert.equal((await f.action(f.createSpace())).status, 'accepted');
+  });
+
+test('historical mapped recovery uses a durable claim after organization moves and cannot migrate its original body or runtime', async (t) => {
+  const f = await productFixture(t),
+    originalTarget = f.target();
+  assert.equal((await f.read(await f.adapter.execute(await f.mapped()))).value.ok, true);
+  await f.move();
+  const currentTarget = f.target();
+  assert.notEqual(currentTarget.catalogWorkspaceId, originalTarget.catalogWorkspaceId);
+  for (const selected of [originalTarget, currentTarget]) {
+    const response = await f.read(await f.adapter.execute(await f.mapped(command(), selected)));
+    assert.equal(response.value.ok, false);
+  }
+  assert.equal(f.calls.length, 1);
+  for (const action of ['inspect', 'abandon'] as const) {
+    const result = await f.read(
+      await f.adapter.execute(await f.mapped(productRecovery(mutation, action), originalTarget)),
+    );
+    assert.equal(result.value.ok, true);
+  }
+  assert.equal(f.calls.length, 3);
+  assert.equal(f.calls[1]!.method, 'controlManager.recover');
+  assert.equal(f.calls[2]!.method, 'controlManager.recover');
+  const changed = productRecovery({ ...mutation, update: 'CHANGED_ORIGINAL_BYTES' });
+  assert.equal(
+    (await f.read(await f.adapter.execute(await f.mapped(changed, originalTarget)))).value.ok,
+    false,
+  );
+  assert.equal(
+    (await f.read(await f.adapter.execute(await f.send(productRecovery())))).value.ok,
+    false,
+  );
+  f.runtime.workspaces[0]!.projects[0]!.rootPath = '/synthetic/replacement';
+  assert.equal(
+    (await f.read(await f.adapter.execute(await f.mapped(productRecovery(), originalTarget)))).value
+      .ok,
+    false,
+  );
+  assert.equal(f.calls.length, 3);
+});
+
+test('an unknown inspection never creates a historical mapping claim; stale inspect and abandon remain rejected', async (t) => {
+  const f = await productFixture(t),
+    selected = f.target();
+  assert.equal(
+    (await f.read(await f.adapter.execute(await f.mapped(productRecovery())))).value.ok,
+    true,
+  );
+  assert.equal(
+    f.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!.count,
+    0,
+  );
+  await f.move();
+  for (const action of ['inspect', 'abandon'] as const) {
+    const response = await f.read(
+      await f.adapter.execute(await f.mapped(productRecovery(mutation, action), selected)),
+    );
+    assert.equal(response.value.ok, false);
+  }
+  assert.equal(f.calls.length, 1);
+  assert.equal(
+    f.db.prepare('SELECT COUNT(*) AS count FROM encrypted_product_operation').get()!.count,
+    0,
+  );
+});
+
+test('legacy recovery can inspect or seal the original without claiming a product target for execution', async (t) => {
+  const f = await productFixture(t),
+    selected = f.target();
+  f.db
+    .prepare('INSERT INTO operation VALUES(?,?,?,?)')
+    .run(mutation.operationId, 'legacy', 'accepted', '{}');
+  for (const action of ['inspect', 'abandon'] as const) {
+    const request = productRecovery(mutation, action);
+    assert.equal((await f.read(await f.adapter.execute(await f.send(request)))).value.ok, true);
+    assert.equal(
+      (await f.read(await f.adapter.execute(await f.mapped(request, selected)))).value.ok,
+      false,
+    );
+  }
+  assert.equal((await f.read(await f.adapter.execute(await f.mapped()))).value.ok, false);
+  assert.equal(f.calls.length, 2);
+});
+
+for (const invalidate of [false, true])
+  test(`product authority stays leased until response encryption finishes${invalidate ? ' and suppresses an already sealed obsolete response' : ''}`, async (t) => {
+    const f = await productFixture(t),
+      sealed = signal(),
+      release = signal(),
+      request = await f.mapped(),
+      originalSend = E2eeChannel.prototype.send;
+    t.after(() => release.resolve());
+    t.mock.method(
+      E2eeChannel.prototype,
+      'send',
+      async function (this: E2eeChannel, input: Parameters<typeof originalSend>[0]) {
+        const response = await originalSend.call(this, input);
+        if (this === f.host && input.requestId === request.header.requestId) {
+          sealed.resolve();
+          await release.promise;
+        }
+        return response;
+      },
+    );
+    const pending = f.adapter.execute(request);
+    await sealed.promise;
+    const action = f.createSpace();
+    assert.throws(() => f.products.action(action));
+    assert.equal(f.products.inspect(action).found, false);
+    if (invalidate)
+      f.runtime.workspaces[0]!.projects[0]!.rootPath = '/synthetic/replaced-after-sealing';
+    release.resolve();
+    if (invalidate) await assert.rejects(pending, safeFailure);
+    else assert.equal((await f.read(await pending)).value.ok, true);
+    const next = { ...action, expectedRevision: f.products.read().revision };
+    assert.equal(f.products.action(next).status, 'accepted');
+    assert.equal(f.calls.length, 1);
+  });

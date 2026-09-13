@@ -21,6 +21,7 @@ import {
   type EncryptedBridgeHostDescriptor,
 } from '../security/encrypted-bridge-protocol';
 import { HostCommandDispatcher } from './host-command';
+import type { HostProductCatalog } from './host-product-catalog';
 import { EncryptedHostCommands, type EncryptedHostCatalog } from './encrypted-host-command';
 
 export const ENCRYPTED_HOST_LIMITS = Object.freeze({
@@ -113,6 +114,7 @@ export class EncryptedHostTransport {
   readonly #endpoint: SecureHostEndpoint;
   readonly #dispatcher: HostCommandDispatcher;
   readonly #catalog: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
+  readonly #products?: HostProductCatalog;
   readonly #closedCallback?: () => void;
   readonly #hello;
   readonly #descriptor: EncryptedBridgeHostDescriptor;
@@ -131,6 +133,7 @@ export class EncryptedHostTransport {
     endpoint: SecureHostEndpoint;
     dispatcher: HostCommandDispatcher;
     catalog: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
+    products?: HostProductCatalog;
     closed?: () => void;
     /** Injectable deadline signal for deterministic transport tests. */
     deadline?: (ms: number) => AbortSignal;
@@ -138,6 +141,7 @@ export class EncryptedHostTransport {
     this.#endpoint = options.endpoint;
     this.#dispatcher = options.dispatcher;
     this.#catalog = options.catalog;
+    this.#products = options.products;
     this.#closedCallback = options.closed;
     this.#handshake = (options.deadline ?? AbortSignal.timeout)(
       ENCRYPTED_BRIDGE_LIMITS.handshakeMs,
@@ -274,7 +278,7 @@ export class EncryptedHostTransport {
           channel,
           dispatcher: this.#dispatcher,
           catalog: this.#catalog,
-          runtimeScopesOnly: true,
+          products: this.#products,
         });
       },
       () => {

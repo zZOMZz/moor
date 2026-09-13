@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import { agentSchema, id, localProjectSchema, runtimeWorkspaceSchema } from '../protocol';
-import { hostCommandSchema, type HostCommand } from '../bridge/host-command';
+import { hostCommandSchema } from '../bridge/host-command';
 import { E2EE_RECORD_LIMITS, encryptedRecordSchema } from './e2ee-channel';
 import { e2eeDigestSchema } from './e2ee-trust';
+import {
+  encryptedProductActionSchema,
+  encryptedProductCatalogSchema,
+  encryptedProductTargetSchema,
+} from './encrypted-product-catalog';
 
 export const ENCRYPTED_BRIDGE_PROTOCOL = 4;
 export const ENCRYPTED_BRIDGE_PATHS = Object.freeze({
@@ -136,13 +141,18 @@ const workspaceSchema = runtimeWorkspaceSchema
       });
   });
 /** Names, filesystem paths, Agent configuration and all execution catalogues stay inside ciphertext. */
-export const encryptedCatalogSchema = z
+const encryptedCatalogV1Schema = z
   .object({
     catalogVersion: z.literal(1),
     machineId: id,
     workspaces: z.array(workspaceSchema).max(20),
   })
-  .strict()
+  .strict();
+const encryptedCatalogV2Schema = encryptedCatalogV1Schema
+  .extend({ catalogVersion: z.literal(2), products: encryptedProductCatalogSchema })
+  .strict();
+export const encryptedCatalogSchema = z
+  .discriminatedUnion('catalogVersion', [encryptedCatalogV1Schema, encryptedCatalogV2Schema])
   .superRefine((catalog, context) => {
     if (
       new Set(catalog.workspaces.map((workspace) => workspace.id)).size !==
@@ -150,16 +160,56 @@ export const encryptedCatalogSchema = z
       catalog.workspaces.some((workspace) => workspace.machineId !== catalog.machineId)
     )
       context.addIssue({ code: 'custom', message: 'Invalid catalogue identity' });
+    if (catalog.catalogVersion !== 2) return;
+    const workspaces = new Map(catalog.workspaces.map((workspace) => [workspace.id, workspace]));
+    const counts = new Map<string, number>();
+    for (const replica of catalog.products.replicas) {
+      if (!replica.available) continue;
+      const workspace = workspaces.get(replica.runtimeWorkspaceId);
+      if (
+        !workspace ||
+        workspace.userId !== replica.userId ||
+        workspace.machineId !== replica.machineId ||
+        !workspace.projects.some((project) => project.id === replica.localProjectId)
+      )
+        context.addIssue({ code: 'custom', message: 'Invalid available product replica' });
+      const key = JSON.stringify([replica.runtimeWorkspaceId, replica.localProjectId]);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const workspace of catalog.workspaces)
+      for (const project of workspace.projects)
+        if (counts.get(JSON.stringify([workspace.id, project.id])) !== 1)
+          context.addIssue({ code: 'custom', message: 'Missing unique product replica' });
   });
 export type EncryptedCatalog = z.infer<typeof encryptedCatalogSchema>;
 export const encryptedCatalogRequestSchema = z
   .object({ method: z.literal('catalog'), params: z.object({}).strict() })
   .strict();
+export const encryptedMappedCommandSchema = z
+  .object({
+    method: z.literal('mapped-command'),
+    target: encryptedProductTargetSchema,
+    command: hostCommandSchema,
+  })
+  .strict();
+export const encryptedCatalogActionRequestSchema = z
+  .object({ method: z.literal('catalog-action'), params: encryptedProductActionSchema })
+  .strict();
+export const encryptedCatalogOperationSchema = z
+  .object({ action: z.enum(['inspect', 'abandon']), request: encryptedProductActionSchema })
+  .strict();
+export type EncryptedCatalogOperation = z.infer<typeof encryptedCatalogOperationSchema>;
+export const encryptedCatalogOperationRequestSchema = z
+  .object({ method: z.literal('catalog-operation'), params: encryptedCatalogOperationSchema })
+  .strict();
 export const encryptedHostRequestSchema = z.union([
   encryptedCatalogRequestSchema,
+  encryptedMappedCommandSchema,
+  encryptedCatalogActionRequestSchema,
+  encryptedCatalogOperationRequestSchema,
   hostCommandSchema,
 ]);
-export type EncryptedHostRequest = z.infer<typeof encryptedCatalogRequestSchema> | HostCommand;
+export type EncryptedHostRequest = z.infer<typeof encryptedHostRequestSchema>;
 export const encryptedHostResponseSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), result: z.unknown() }).strict(),
   z

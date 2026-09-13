@@ -6,6 +6,7 @@ import {
   EncryptedBridgeClient,
   EncryptedHostError,
   encryptedCommandResource,
+  encryptedCommandTarget,
   type EncryptedClientOptions,
 } from '../src/security/encrypted-bridge-client';
 import {
@@ -32,6 +33,10 @@ import {
   type EncryptedCatalog,
 } from '../src/security/encrypted-bridge-protocol';
 import { hostCommandSchema } from '../src/bridge/host-command';
+import {
+  type EncryptedProductAction,
+  type EncryptedProductReceipt,
+} from '../src/security/encrypted-product-catalog';
 
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const decode = (value: Uint8Array) =>
@@ -1096,4 +1101,654 @@ test('connect keeps its original socket, device identity and lease when caller o
   assert.equal(socket.sent.length, 1);
   assert.equal(replacement.sent.length, 0);
   assert.equal(timers.entries.size, 0);
+});
+
+async function productCatalog(): Promise<Extract<EncryptedCatalog, { catalogVersion: 2 }>> {
+  const { pin } = await material;
+  return {
+    ...structuredClone(catalog),
+    catalogVersion: 2,
+    products: {
+      version: 1,
+      authority: { ...pin, hostDeviceId: 'host' },
+      revision: 7,
+      workspaces: [{ id: 'catalog-workspace', name: 'SYNTHETIC_PRIVATE_PRODUCT_WORKSPACE' }],
+      projects: [
+        {
+          id: 'logical-project',
+          workspaceId: 'catalog-workspace',
+          name: 'SYNTHETIC_PRIVATE_LOGICAL_PROJECT',
+          source: { kind: 'local' },
+        },
+      ],
+      replicas: [
+        {
+          id: 'replica',
+          catalogWorkspaceId: 'catalog-workspace',
+          projectId: 'logical-project',
+          revision: 3,
+          runtimeWorkspaceId: 'runtime',
+          localProjectId: 'project',
+          machineId: 'machine',
+          userId: 'local-owner',
+          available: true,
+        },
+      ],
+    },
+  };
+}
+const productAction: EncryptedProductAction = {
+  version: 1,
+  operationId: 'catalog-original-operation',
+  expectedRevision: 7,
+  action: 'rename-workspace',
+  workspaceId: 'catalog-workspace',
+  name: 'SYNTHETIC_PRIVATE_RENAME',
+};
+async function productReceipt(
+  status: 'accepted' | 'abandoned' = 'accepted',
+): Promise<EncryptedProductReceipt> {
+  return {
+    version: 1,
+    authority: (await productCatalog()).products.authority,
+    confirmed: true,
+    operationId: productAction.operationId,
+    request: structuredClone(productAction),
+    status,
+    revision: status === 'accepted' ? 8 : 7,
+  };
+}
+
+test('v2 catalogs bind a frozen product target inside ciphertext and the exact runtime and replica in AAD', async (t) => {
+  const f = await fixture(t),
+    source = await productCatalog();
+  const verified = await f.readCatalog(source);
+  assert.equal(verified.catalogVersion, 2);
+  if (verified.catalogVersion !== 2) throw Error('fixture');
+  assert(Object.isFrozen(verified.products));
+  assert(Object.isFrozen(verified.products.replicas[0]));
+  const target = encryptedCommandTarget(verified, mutation);
+  assert(Object.isFrozen(target));
+  assert.deepEqual(target, {
+    catalogWorkspaceId: 'catalog-workspace',
+    projectId: 'logical-project',
+    replicaId: 'replica',
+    revision: 3,
+  });
+  const callerTarget = structuredClone(target),
+    callerCommand = structuredClone(mutation);
+  const pending = f.client.execute('host', callerCommand, callerTarget);
+  callerTarget.projectId = 'changed-after-dispatch';
+  callerCommand.workspaceId = 'changed-after-dispatch';
+  const request = await f.next();
+  assert.deepEqual(request.body, { method: 'mapped-command', target, command: mutation });
+  assert.deepEqual(request.record.header.resource, {
+    kind: 'session',
+    workspaceId: 'runtime',
+    projectId: 'project',
+    sessionId: 'session',
+    catalogWorkspaceId: 'catalog-workspace',
+    replicaId: 'replica',
+  });
+  assert(!JSON.stringify(request.record.header).includes('logical-project'));
+  assert(!JSON.stringify(request.record.header).includes('revision'));
+  await f.answer(request, { ok: true, result: receipt });
+  assert.deepEqual(await pending, receipt);
+  for (const privateValue of [
+    'SYNTHETIC_PRIVATE_',
+    'logical-project',
+    'catalogVersion',
+    'mapped-command',
+    'catalog-original-operation',
+    'local-owner',
+  ])
+    assert(!f.socket.sent.join('\n').includes(privateValue));
+  assert(!JSON.stringify(f.client.hosts()).includes('products'));
+});
+
+test('v2 catalogs require channel authority and exact available runtime identity while retaining unavailable history', async (t) => {
+  const valid = await productCatalog();
+  const historical = structuredClone(valid);
+  historical.products.replicas.push({
+    ...valid.products.replicas[0]!,
+    id: 'old-replica',
+    runtimeWorkspaceId: 'removed-runtime',
+    localProjectId: 'removed-project',
+    machineId: 'historical-machine',
+    userId: 'historical-owner',
+    available: false,
+  });
+  const good = await fixture(t);
+  assert.deepEqual(await good.readCatalog(historical), historical);
+  for (const alter of [
+    (value: typeof valid) => {
+      value.products.authority.accountId = 'other-account';
+    },
+    (value: typeof valid) => {
+      value.products.authority.serverOrigin = 'https://another.invalid';
+    },
+    (value: typeof valid) => {
+      value.products.authority.rootKeyId = newChannelChallenge();
+    },
+    (value: typeof valid) => {
+      value.products.authority.hostDeviceId = 'another-host';
+    },
+    (value: typeof valid) => {
+      value.products.replicas[0]!.machineId = 'another-machine';
+    },
+    (value: typeof valid) => {
+      value.products.replicas[0]!.userId = 'another-user';
+    },
+    (value: typeof valid) => {
+      value.products.replicas[0]!.runtimeWorkspaceId = 'another-runtime';
+    },
+    (value: typeof valid) => {
+      value.products.replicas[0]!.localProjectId = 'another-local-project';
+    },
+    (value: typeof valid) => {
+      value.products.replicas[0]!.available = false;
+    },
+    (value: typeof valid) => {
+      value.products.replicas = [];
+    },
+    (value: typeof valid) => {
+      value.products.replicas.push({ ...value.products.replicas[0]!, id: 'duplicate-mapping' });
+    },
+  ]) {
+    const f = await fixture(t),
+      invalid = structuredClone(valid);
+    alter(invalid);
+    await assert.rejects(f.readCatalog(invalid), unknown);
+    assert.equal(f.socket.readyState, 3);
+  }
+  await assert.rejects(
+    good.client.execute('host', {
+      ...sessions,
+      workspaceId: 'removed-runtime',
+      localProjectId: 'removed-project',
+    }),
+    unknown,
+  );
+});
+
+test('v2 mapped command results retain shared Host response validation and exact AAD correlation', async (t) => {
+  for (const mode of ['wrong-operation', 'wrong-owner', 'workspace-aad', 'replica-aad'] as const) {
+    const f = await fixture(t);
+    await f.readCatalog(await productCatalog());
+    const command = mode === 'wrong-owner' ? sessions : mutation;
+    const pending = f.client.execute('host', command);
+    void pending.catch(() => {});
+    const request = await f.next();
+    await f.answer(
+      request,
+      {
+        ok: true,
+        result:
+          mode === 'wrong-owner'
+            ? [{ ...meta, userId: 'another-owner' }]
+            : mode === 'wrong-operation'
+              ? { ...receipt, operationId: 'other' }
+              : receipt,
+      },
+      mode === 'workspace-aad' || mode === 'replica-aad'
+        ? {
+            resource: {
+              ...request.record.header.resource,
+              ...(mode === 'workspace-aad'
+                ? { catalogWorkspaceId: 'another-catalog' }
+                : { replicaId: 'another-replica' }),
+            } as EncryptedResource,
+          }
+        : {},
+    );
+    await assert.rejects(pending, unknown);
+    assert.equal(f.socket.readyState, 3);
+  }
+});
+
+test('explicit target mismatches never send ordinary work and only explicit recovery may preserve historical or legacy bindings', async (t) => {
+  const f = await fixture(t),
+    original = await productCatalog();
+  await f.readCatalog(original);
+  const target = encryptedCommandTarget(original, sessions);
+  const moved = structuredClone(original);
+  moved.products.revision++;
+  moved.products.replicas[0]!.revision++;
+  moved.workspaces[0]!.features!.push('session-control-v1');
+  await f.readCatalog(moved);
+  const before = f.socket.sent.length;
+  for (const command of [sessions, mutation])
+    await assert.rejects(f.client.execute('host', command, target), unknown);
+  await assert.rejects(f.client.executeLegacyOperation('host', mutation), unknown);
+  assert.equal(f.socket.sent.length, before);
+  const operation = hostCommandSchema.parse({
+    method: 'session-operations',
+    workspaceId: 'runtime',
+    localProjectId: 'project',
+    params: {
+      ...scope,
+      controlVersion: 1,
+      userId: 'local-owner',
+      machineId: 'machine',
+      action: 'inspect',
+      request: { kind: 'mutation', value: mutation.params },
+    },
+  });
+  const result = {
+    ...scope,
+    controlVersion: 1,
+    userId: 'local-owner',
+    machineId: 'machine',
+    confirmed: true,
+    action: 'inspect',
+    operationId: 'original-operation',
+    found: false,
+  };
+  const historical = f.client.execute('host', operation, target),
+    request = await f.next();
+  assert.deepEqual(request.body, { method: 'mapped-command', target, command: operation });
+  await f.answer(request, { ok: true, result });
+  assert.deepEqual(await historical, result);
+  const legacy = f.client.executeLegacyOperation('host', operation),
+    legacyRequest = await f.next();
+  assert.deepEqual(legacyRequest.body, operation);
+  assert.equal(legacyRequest.record.header.resource.catalogWorkspaceId, null);
+  assert.equal(legacyRequest.record.header.resource.replicaId, null);
+  await f.answer(legacyRequest, { ok: true, result });
+  assert.deepEqual(await legacy, result);
+  const resumed = f.client.execute('host', sessions),
+    resumedRequest = await f.next();
+  assert.equal(resumedRequest.body.method, 'mapped-command');
+  if (resumedRequest.body.method !== 'mapped-command') throw Error('fixture');
+  assert.equal(resumedRequest.body.target.revision, 4);
+  await f.answer(resumedRequest, { ok: true, result: [meta] });
+  assert.deepEqual(await resumed, [meta]);
+  const v1 = await fixture(t);
+  await v1.readCatalog();
+  const v1Sent = v1.socket.sent.length;
+  await assert.rejects(v1.client.execute('host', mutation, target), unknown);
+  await assert.rejects(v1.client.catalogAction('host', productAction), unknown);
+  await assert.rejects(
+    v1.client.catalogOperation('host', { action: 'inspect', request: productAction }),
+    unknown,
+  );
+  assert.equal(v1.socket.sent.length, v1Sent);
+});
+
+test('catalog actions and explicit original-operation inspection and abandon use authenticated catalog scope without automatic refresh', async (t) => {
+  const f = await fixture(t),
+    initial = await productCatalog();
+  await f.readCatalog(initial);
+  for (const status of ['accepted', 'abandoned'] as const) {
+    const callerAction = structuredClone(productAction),
+      pending = f.client.catalogAction('host', callerAction);
+    if (callerAction.action !== 'rename-workspace') throw Error('fixture');
+    callerAction.name = 'changed-after-dispatch';
+    const request = await f.next();
+    assert.deepEqual(request.body, { method: 'catalog-action', params: productAction });
+    assert.deepEqual(request.record.header.resource, {
+      kind: 'catalog',
+      workspaceId: null,
+      projectId: null,
+      sessionId: null,
+      catalogWorkspaceId: null,
+      replicaId: null,
+    });
+    const result = await productReceipt(status);
+    await f.answer(request, { ok: true, result });
+    const actual = await pending;
+    assert.deepEqual(actual, result);
+    assert(Object.isFrozen(actual));
+    assert(Object.isFrozen(actual.request));
+  }
+  for (const found of [false, true]) {
+    const pending = f.client.catalogOperation('host', {
+        action: 'inspect',
+        request: productAction,
+      }),
+      request = await f.next();
+    assert.deepEqual(request.body, {
+      method: 'catalog-operation',
+      params: { action: 'inspect', request: productAction },
+    });
+    const result: unknown = {
+      version: 1,
+      authority: initial.products.authority,
+      confirmed: true,
+      request: productAction,
+      found,
+      ...(found ? { receipt: await productReceipt() } : {}),
+    };
+    await f.answer(request, { ok: true, result });
+    assert.deepEqual(await pending, result);
+  }
+  const abandon = f.client.catalogOperation('host', { action: 'abandon', request: productAction }),
+    request = await f.next();
+  const abandoned = await productReceipt('abandoned');
+  await f.answer(request, { ok: true, result: abandoned });
+  assert.deepEqual(await abandon, abandoned);
+  assert.equal(f.socket.records.values.length, 0);
+  const command = f.client.execute('host', sessions),
+    originalTarget = await f.next();
+  assert.equal(originalTarget.body.method, 'mapped-command');
+  if (originalTarget.body.method !== 'mapped-command') throw Error('fixture');
+  assert.deepEqual(originalTarget.body.target, encryptedCommandTarget(initial, sessions));
+  await f.answer(originalTarget, { ok: true, result: [meta] });
+  await command;
+  assert.equal(f.timers.entries.size, 0);
+  assert(!f.socket.sent.join('\n').includes(productAction.operationId));
+  assert(!f.socket.sent.join('\n').includes('SYNTHETIC_PRIVATE_RENAME'));
+});
+
+test('catalog action receipts and inspection require exact original action and authority instead of only an operation id', async (t) => {
+  const valid = await productReceipt();
+  const badReceipts = [
+    { ...valid, operationId: 'other-operation' },
+    { ...valid, authority: { ...valid.authority, accountId: 'other-account' } },
+    { ...valid, request: { ...productAction, name: 'different-reviewed-name' } },
+    { ...valid, request: { ...productAction, workspaceId: 'different-workspace' } },
+    { ...valid, revision: 9 },
+    { ...valid, extra: 'private' },
+    { ...valid, confirmed: false },
+  ];
+  for (const result of badReceipts) {
+    const f = await fixture(t);
+    await f.readCatalog(await productCatalog());
+    const pending = f.client.catalogAction('host', productAction);
+    void pending.catch(() => {});
+    const request = await f.next();
+    await f.answer(request, { ok: true, result });
+    await assert.rejects(pending, unknown);
+    assert.equal(f.socket.readyState, 3);
+  }
+  for (const result of [
+    {
+      version: 1,
+      authority: valid.authority,
+      confirmed: true,
+      request: { ...productAction, name: 'other-name' },
+      found: false,
+    },
+    {
+      version: 1,
+      authority: { ...valid.authority, hostDeviceId: 'other-host' },
+      confirmed: true,
+      request: productAction,
+      found: false,
+    },
+    {
+      version: 1,
+      authority: valid.authority,
+      confirmed: true,
+      request: productAction,
+      found: true,
+      receipt: { ...valid, request: { ...productAction, name: 'other-name' } },
+    },
+    {
+      version: 1,
+      authority: valid.authority,
+      confirmed: true,
+      request: productAction,
+      found: false,
+      receipt: valid,
+    },
+  ]) {
+    const f = await fixture(t);
+    await f.readCatalog(await productCatalog());
+    const pending = f.client.catalogOperation('host', {
+      action: 'inspect',
+      request: productAction,
+    });
+    void pending.catch(() => {});
+    await f.answer(await f.next(), { ok: true, result });
+    await assert.rejects(pending, unknown);
+    assert.equal(f.socket.readyState, 3);
+  }
+});
+
+test('a v2 host cannot remove product binding or roll its acknowledged catalog revision backwards', async (t) => {
+  for (const mode of ['legacy', 'revision'] as const) {
+    const f = await fixture(t),
+      current = await productCatalog();
+    await f.readCatalog(current);
+    const prior = structuredClone(current);
+    prior.products.revision--;
+    await assert.rejects(f.readCatalog(mode === 'legacy' ? catalog : prior), unknown);
+    assert.equal(f.socket.readyState, 3);
+  }
+});
+
+test('a refreshed v2 snapshot invalidates late mapped and catalog successes and typed Host errors', async (t) => {
+  for (const method of ['command', 'action', 'inspect'] as const) {
+    for (const ok of [true, false]) {
+      const f = await fixture(t),
+        initial = await productCatalog();
+      await f.readCatalog(initial);
+      const pending =
+        method === 'command'
+          ? f.client.execute('host', mutation)
+          : method === 'action'
+            ? f.client.catalogAction('host', productAction)
+            : f.client.catalogOperation('host', { action: 'inspect', request: productAction });
+      void pending.catch(() => {});
+      const request = await f.next(),
+        changed = structuredClone(initial);
+      changed.products.revision++;
+      changed.products.replicas[0]!.revision++;
+      await f.readCatalog(changed);
+      const result =
+        method === 'command'
+          ? receipt
+          : method === 'action'
+            ? await productReceipt()
+            : {
+                version: 1,
+                authority: initial.products.authority,
+                confirmed: true,
+                request: productAction,
+                found: false,
+              };
+      await f.answer(
+        request,
+        ok
+          ? { ok: true, result }
+          : { ok: false, error: { status: 409, message: 'Stale host rejection', rejected: true } },
+      );
+      await assert.rejects(pending, unknown);
+      assert.equal(f.socket.readyState, 3);
+    }
+  }
+});
+
+test('an asynchronous encryption wait cannot send a mapped command after its reviewed catalog has been replaced', async (t) => {
+  const f = await fixture(t),
+    initial = await productCatalog();
+  await f.readCatalog(initial);
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const originalSend = E2eeChannel.prototype.send;
+  t.mock.method(
+    E2eeChannel.prototype,
+    'send',
+    async function (this: E2eeChannel, input: Parameters<E2eeChannel['send']>[0]) {
+      if (input.kind === 'request' && input.resource.kind === 'session') {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalSend.call(this, input);
+    },
+  );
+  t.after(() => release.resolve());
+  const pending = f.client.execute('host', mutation);
+  void pending.catch(() => {});
+  await entered.promise;
+  const changed = structuredClone(initial);
+  changed.products.revision++;
+  changed.products.replicas[0]!.revision++;
+  await f.readCatalog(changed);
+  const sent = f.socket.sent.length;
+  release.resolve();
+  await assert.rejects(pending, unknown);
+  assert.equal(f.socket.sent.length, sent);
+  assert.equal(f.socket.records.values.length, 0);
+  assert.equal(f.socket.readyState, 3);
+});
+
+test('encrypted product request wrappers are strict and cannot nest execution in catalog recovery', async () => {
+  const value = await productCatalog(),
+    target = encryptedCommandTarget(value, sessions);
+  for (const malformed of [
+    {
+      method: 'mapped-command',
+      target: { ...target, runtimeWorkspaceId: 'runtime' },
+      command: sessions,
+    },
+    { method: 'mapped-command', target, command: sessions, params: {} },
+    { method: 'mapped-command', target: { ...target, revision: 0 }, command: sessions },
+    { method: 'catalog-action', params: { ...productAction, command: mutation } },
+    { method: 'catalog-operation', params: { action: 'retry', request: productAction } },
+    {
+      method: 'catalog-operation',
+      params: { action: 'inspect', request: productAction, execute: mutation },
+    },
+    {
+      method: 'catalog-operation',
+      params: { action: 'abandon', operationId: productAction.operationId },
+    },
+  ])
+    assert.throws(() => encryptedHostRequestSchema.parse(malformed));
+});
+
+test('concurrent older catalog success and Host rejection cannot replace or outlive an authenticated refresh', async (t) => {
+  for (const initialized of [false, true]) {
+    for (const ok of [false, true]) {
+      const f = await fixture(t),
+        initial = await productCatalog();
+      if (initialized) await f.readCatalog(initial);
+      const older = f.client.catalog('host');
+      void older.catch(() => {});
+      const request = await f.next();
+      const changed = structuredClone(initial);
+      changed.products.revision++;
+      assert.deepEqual(await f.readCatalog(changed), changed);
+      await f.answer(
+        request,
+        ok
+          ? { ok: true, result: initial }
+          : { ok: false, error: { status: 409, message: 'Old catalog rejection', rejected: true } },
+      );
+      await assert.rejects(older, unknown);
+      assert.equal(f.socket.readyState, 3);
+    }
+  }
+});
+
+test('historical recovery preserves explicit original targets for every original-request wrapper, excluding task references', async (t) => {
+  const f = await fixture(t),
+    initial = await productCatalog();
+  await f.readCatalog(initial);
+  const target = encryptedCommandTarget(initial, sessions),
+    changed = structuredClone(initial);
+  changed.products.revision++;
+  changed.products.replicas[0]!.revision++;
+  await f.readCatalog(changed);
+  const version = 'sha256:' + 'a'.repeat(64);
+  const write = {
+    ...scope,
+    githubWriteVersion: 1,
+    operationId: 'write-operation',
+    confirmed: true,
+    action: 'push',
+    repositoryId: 1,
+    configVersion: version,
+    expectedBindingRevision: 0,
+    branch: 'main',
+    headOid: 'a'.repeat(40),
+    expectedRemoteOid: null,
+    executionRevision: 0,
+  };
+  const preview = {
+    ...scope,
+    previewVersion: 1,
+    operationId: 'preview-operation',
+    confirmed: true,
+    action: 'open',
+    clientId: 'client',
+    serviceId: 'service',
+    serviceVersion: version,
+    executionRevision: 0,
+    viewport: { width: 640, height: 480 },
+  };
+  const role = {
+    ...scope,
+    rolesVersion: 1,
+    operationId: 'role-operation',
+    expectedRevision: 0,
+    action: 'remove',
+    id: 'role',
+  };
+  const github = {
+    ...scope,
+    githubVersion: 1,
+    operationId: 'github-operation',
+    expectedRevision: 0,
+    action: 'unbind',
+  };
+  for (const body of [
+    { method: 'github-write-inspect', params: { request: write, page: 1 } },
+    { method: 'github-write-abandon', params: { request: write } },
+    { method: 'preview-inspect', params: { request: preview } },
+    { method: 'preview-close', params: { request: preview } },
+    { method: 'github-abandon', params: github },
+    { method: 'roles-action', params: { action: 'inspect', request: role } },
+    { method: 'roles-action', params: { action: 'abandon', request: role } },
+  ]) {
+    const command = hostCommandSchema.parse({
+      ...body,
+      workspaceId: 'runtime',
+      localProjectId: 'project',
+    });
+    const pending = f.client.execute('host', command, target);
+    void pending.catch(() => {});
+    const request = await f.next();
+    assert.deepEqual(request.body, { method: 'mapped-command', target, command });
+    assert.equal(request.record.header.resource.sessionId, 'session');
+    assert.equal(request.record.header.resource.catalogWorkspaceId, target.catalogWorkspaceId);
+    // The client permits only original recovery; the Host must prove the persisted
+    // original claim and can still reject an unavailable historical operation.
+    await f.answer(request, {
+      ok: false,
+      error: { status: 409, message: 'Original Host claim unavailable', rejected: false },
+    });
+    await assert.rejects(
+      pending,
+      (error) => error instanceof EncryptedHostError && error.status === 409 && !error.rejected,
+    );
+  }
+  const sent = f.socket.sent.length;
+  for (const body of [
+    { method: 'github-write-action', params: write },
+    { method: 'preview-action', params: preview },
+    { method: 'github-action', params: github },
+    { method: 'roles-action', params: role },
+    ...(['inspect', 'abandon'] as const).map((action) => ({
+      method: 'tasks-action',
+      params: {
+        ...scope,
+        taskVersion: 1,
+        grantId: 'grant',
+        operationId: 'task-operation',
+        action,
+      },
+    })),
+  ]) {
+    const command = hostCommandSchema.parse({
+      ...body,
+      workspaceId: 'runtime',
+      localProjectId: 'project',
+    });
+    await assert.rejects(f.client.execute('host', command, target), unknown);
+  }
+  assert.equal(f.socket.sent.length, sent);
+  assert.equal(f.socket.readyState, 1);
 });

@@ -284,7 +284,9 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
           stateDirectory,
           'secure',
           ...args,
-          ...(args[0] === 'operations' ? [] : ['--endpoint', clientFile]),
+          ...(['operations', 'catalog-operations'].includes(args[0])
+            ? []
+            : ['--endpoint', clientFile]),
         ],
         input,
       );
@@ -310,6 +312,9 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
     assert.equal(hosts.hosts.length, 1);
     const discovered = await run(['catalog', '--host', 'synthetic-secure-host']);
     const catalog = discovered.catalog ?? discovered;
+    assert.equal(catalog.catalogVersion, 2);
+    assert.equal(catalog.products.authority.hostDeviceId, 'synthetic-secure-host');
+    assert.equal(catalog.products.authority.accountId, owner);
     assert.equal(catalog.workspaces.length, 1);
     const workspace = catalog.workspaces[0],
       projectId = workspace.projects[0].id,
@@ -325,12 +330,30 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
       '--project',
       projectId,
     ];
+    const replica = catalog.products.replicas[0];
+    assert.equal(replica.runtimeWorkspaceId, workspace.id);
+    assert.equal(replica.localProjectId, projectId);
+    const productTarget = [
+      '--host',
+      'synthetic-secure-host',
+      '--space',
+      replica.catalogWorkspaceId,
+      '--replica',
+      replica.id,
+    ];
     assert.equal((await run(['list', ...target])).sessions.length, 0);
+    assert.equal((await run(['list', ...productTarget])).sessions.length, 0);
     const created = await run(
       ['create', ...target, '--agent', agentId, '--stdin'],
       'SYNTHETIC_PRIVATE_SESSION_TITLE',
     );
     assert.equal(created.state, 'accepted');
+    assert.deepEqual(created.target.product, {
+      catalogWorkspaceId: replica.catalogWorkspaceId,
+      projectId: replica.projectId,
+      replicaId: replica.id,
+      revision: replica.revision,
+    });
     const sessionId = created.target.sessionId;
     const read = () => run(['read', sessionId, ...target]);
     const empty = await read();
@@ -534,6 +557,159 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
     assert(
       !readFileSync(aggregateFile, 'utf8').includes('SYNTHETIC_PRIVATE_NEVER_EXECUTED_PROMPT'),
     );
+    const getCatalog = async () =>
+      (await run(['catalog', '--host', 'synthetic-secure-host'])).catalog;
+    const organize = (action: unknown, expectedCode = 0) =>
+      run(
+        ['organize', '--host', 'synthetic-secure-host', '--stdin'],
+        JSON.stringify(action),
+        expectedCode,
+      );
+    // Select a fault only after the CLI has privately persisted the exact action.
+    let lostCatalogOriginal: any;
+    onRecord = (message) => {
+      const privateState = new CliState(stateDirectory);
+      try {
+        const pending = privateState
+          .secureCatalogOperationSummaries()
+          .operations.find((operation: any) => operation.state === 'pending');
+        if (!pending) return;
+        assert.equal(message.record.header.resource.kind, 'catalog');
+        lostCatalogOriginal = privateState.secureCatalogOperation(pending.operationId);
+        dropRequestId = message.record.header.requestId;
+        onRecord = undefined;
+      } finally {
+        privateState.close();
+      }
+    };
+    const beforeOrganization = await getCatalog();
+    const lostCatalog = await organize(
+      {
+        action: 'create-workspace',
+        expectedRevision: beforeOrganization.products.revision,
+        id: 'synthetic-extra-space',
+        name: 'SYNTHETIC_PRIVATE_EXTRA_SPACE',
+      },
+      6,
+    );
+    assert.equal(lostCatalog.operationId, lostCatalogOriginal.operationId);
+    assert.equal(dropped, 2);
+    currentHost.child.kill('SIGTERM');
+    assert.equal((await currentHost.closed)[0], 0, currentHost.output().stderr);
+    hostReady = new Promise<void>((resolve) => {
+      hostReadyResolve = resolve;
+    });
+    currentHost = child('host', hostArguments);
+    await Promise.race([
+      hostReady,
+      currentHost.closed.then(() => {
+        throw Error(currentHost.output().stderr);
+      }),
+    ]);
+    assert.equal((await run(['catalog-retry', lostCatalog.operationId])).state, 'accepted');
+    const inspectedCatalog = await run(['catalog-inspect', lostCatalog.operationId]);
+    assert.equal(inspectedCatalog.inspection.receipt.status, 'accepted');
+    assert.deepEqual(inspectedCatalog.inspection.request, JSON.parse(lostCatalogOriginal.body));
+    let organized = await getCatalog();
+    assert.equal(organized.products.revision, beforeOrganization.products.revision + 1);
+    assert.equal(
+      organized.products.workspaces.filter((space: any) => space.id === 'synthetic-extra-space')
+        .length,
+      1,
+    );
+    const catalogState = new CliState(stateDirectory);
+    try {
+      assert.equal(
+        catalogState.secureCatalogOperation(lostCatalog.operationId)?.body,
+        lostCatalogOriginal.body,
+      );
+      assert.equal(
+        catalogState.secureCatalogOperation(lostCatalog.operationId)?.requestVersion,
+        lostCatalogOriginal.requestVersion,
+      );
+    } finally {
+      catalogState.close();
+    }
+    assert.equal(
+      (
+        await organize({
+          action: 'move-host',
+          expectedRevision: organized.products.revision,
+          runtimeWorkspaceId: workspace.id,
+          targetWorkspaceId: 'synthetic-extra-space',
+        })
+      ).state,
+      'accepted',
+    );
+    organized = await getCatalog();
+    const moved = organized.products.replicas.find((entry: any) => entry.id === replica.id);
+    assert.equal(moved.catalogWorkspaceId, 'synthetic-extra-space');
+    assert(moved.revision > replica.revision);
+    // Original execution claims survive organization changes and still refer to
+    // the exact old target; inspecting them must not execute another prompt.
+    const originalInspection = await run(['inspect', first.operationId]);
+    assert.equal(originalInspection.inspection.receipt.status, 'accepted');
+    assert.deepEqual(originalInspection.target.product, first.target.product);
+    assert.equal(
+      (
+        await run([
+          'list',
+          '--host',
+          'synthetic-secure-host',
+          '--space',
+          'synthetic-extra-space',
+          '--replica',
+          replica.id,
+        ])
+      ).sessions.length,
+      1,
+    );
+    assert.equal((await read()).history.filter((item: any) => item.role === 'user').length, 3);
+    // A never-delivered catalog action can be sealed without creating its space.
+    let undispatchedCatalogId: string | undefined;
+    onRecord = (message, socket) => {
+      const privateState = new CliState(stateDirectory);
+      try {
+        const pending = privateState
+          .secureCatalogOperationSummaries()
+          .operations.find((operation: any) => operation.state === 'pending');
+        if (!pending) return;
+        assert.equal(message.record.header.resource.kind, 'catalog');
+        undispatchedCatalogId = pending.operationId;
+        onRecord = undefined;
+        socket.terminate();
+      } finally {
+        privateState.close();
+      }
+    };
+    const undispatchedCatalog = await organize(
+      {
+        action: 'create-workspace',
+        expectedRevision: organized.products.revision,
+        id: 'synthetic-never-created-space',
+        name: 'SYNTHETIC_PRIVATE_NEVER_CREATED_SPACE',
+      },
+      6,
+    );
+    assert.equal(undispatchedCatalog.operationId, undispatchedCatalogId);
+    assert.equal(
+      (await run(['catalog-abandon', undispatchedCatalog.operationId])).state,
+      'abandoned',
+    );
+    assert.equal(
+      (await run(['catalog-retry', undispatchedCatalog.operationId])).state,
+      'abandoned',
+    );
+    assert.equal(
+      (await run(['catalog-inspect', undispatchedCatalog.operationId])).inspection.receipt.status,
+      'abandoned',
+    );
+    assert(
+      !(await getCatalog()).products.workspaces.some(
+        (space: any) => space.id === 'synthetic-never-created-space',
+      ),
+    );
+    assert.equal((await run(['catalog-operations'])).operations.length, 3);
     const wire = JSON.stringify(captured);
     const database = JSON.stringify(
       store.db

@@ -121,6 +121,7 @@ function fixture(t: TestContext) {
       return execute(command);
     },
   };
+  Object.assign(transport, { executeLegacyOperation: transport.execute });
   const revision = state.settingsRevision();
   const current = () => {
     if (state.settingsRevision() !== revision) throw Error('Synthetic auth lease changed');
@@ -387,6 +388,7 @@ async function runFixture(t: TestContext, endpointInsideProject = false) {
     assertCurrent() {},
     close() {},
   };
+  Object.assign(transport, { executeLegacyOperation: transport.execute });
   t.mock.method(EncryptedBridgeClient, 'connect', async (options: any) => {
     options.socket.on('error', () => {});
     options.socket.terminate();

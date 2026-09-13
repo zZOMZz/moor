@@ -38,6 +38,11 @@ const commands: Record<string, readonly string[]> = {
   secure: [
     'hosts',
     'catalog',
+    'organize',
+    'catalog-operations',
+    'catalog-inspect',
+    'catalog-retry',
+    'catalog-abandon',
     'list',
     'create',
     'read',
@@ -61,6 +66,7 @@ const values = new Set([
   'connection',
   'server',
   'workspace',
+  'space',
   'replica',
   'session',
   'agent',
@@ -127,33 +133,48 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     throw new CliError('usage', '--follow/--wait 仅用于会话读取、发送或停止后的等待。');
   const allowed = new Set(['json', 'state-dir']);
   if (group === 'secure') {
-    const recovery = ['inspect', 'retry', 'abandon'].includes(command),
-      business = !['hosts', 'catalog', 'operations', 'inspect', 'retry', 'abandon'].includes(
-        command,
-      );
-    if (command !== 'operations') {
+    const recovery = [
+        'inspect',
+        'retry',
+        'abandon',
+        'catalog-inspect',
+        'catalog-retry',
+        'catalog-abandon',
+      ].includes(command),
+      listing = ['operations', 'catalog-operations'].includes(command),
+      organization = command === 'organize',
+      business = !['hosts', 'catalog', 'organize'].includes(command) && !listing && !recovery;
+    if (!listing) {
       allowed.add('endpoint');
       if (!flags.endpoint) throw new CliError('usage', '加密命令需要明确 --endpoint 私有文件。');
     }
-    if (command === 'catalog' || business) {
+    if (command === 'catalog' || business || organization) {
       allowed.add('host');
       if (!flags.host) throw new CliError('usage', '请明确选择 --host 设备编号。');
     }
-    if (business) for (const key of ['workspace', 'project', 'session']) allowed.add(key);
-    if (['create', 'send', 'rename'].includes(command))
+    if (business)
+      for (const key of ['workspace', 'project', 'space', 'replica', 'session']) allowed.add(key);
+    if (['create', 'send', 'rename', 'organize'].includes(command))
       for (const key of ['stdin', 'file']) allowed.add(key);
     if (['create', 'send'].includes(command)) allowed.add('agent');
     if (command === 'send')
       for (const key of ['model', 'effort', 'mode', 'mcp-server-ids']) allowed.add(key);
     if (command === 'stop') allowed.add('turn');
+    const runtimeSelection = !!flags.workspace && !!flags.project && !flags.space && !flags.replica,
+      productSelection = !!flags.space && !!flags.replica && !flags.workspace && !flags.project;
     if (
       Object.keys(flags).some((key) => !allowed.has(key)) ||
-      (business && (!flags.workspace || !flags.project))
+      (business && !runtimeSelection && !productSelection) ||
+      (organization && !flags.stdin && !flags.file)
     )
-      throw new CliError('usage', '加密命令选项无效，业务命令需要明确 --workspace 和 --project。');
+      throw new CliError(
+        'usage',
+        '业务命令需要 --space/--replica 或 --workspace/--project；目录变更需要 --stdin 或 --file。',
+      );
     if (
       (recovery && !positional) ||
-      (positional && ['hosts', 'catalog', 'list', 'create', 'operations'].includes(command)) ||
+      (positional &&
+        (['hosts', 'catalog', 'organize', 'list', 'create'].includes(command) || listing)) ||
       (positional && flags.session)
     )
       throw new CliError('usage', '请明确且只指定一次原操作或会话编号。');
@@ -225,10 +246,13 @@ export const cliHelp = `Moor CLI (cliVersion 1)
   operation list | operation inspect|retry|abandon ID
   config show
   secure hosts --endpoint PATH                   读取公开在线提示（须解密目录才确认主机）
-  secure catalog --endpoint PATH --host ID       读取已认证的加密运行目录
+  secure catalog --endpoint PATH --host ID       读取已认证的加密运行和产品目录
   secure list|create|read|send|stop|mcp|rename|archive|restore|pin|unpin [ID]
-    --endpoint PATH --host ID --workspace ID --project ID
+    --endpoint PATH --host ID --space ID --replica ID
+    或明确使用 --workspace ID --project ID 选择对应运行项目
   secure operations | secure inspect|retry|abandon ID --endpoint PATH
+  secure organize --endpoint PATH --host ID --stdin | --file PATH
+  secure catalog-operations | secure catalog-inspect|catalog-retry|catalog-abandon ID --endpoint PATH
 通用：--json、--state-dir PATH、--connection PATH
 默认不会发送恢复的请求；重试与结束只作用于原编号。等待超时或 Ctrl-C 不停止 Agent。
 `;

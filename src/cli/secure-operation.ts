@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import { id } from '../protocol';
+import {
+  encryptedProductTargetSchema,
+  encryptedProductAuthoritySchema,
+  encryptedProductActionSchema,
+} from '../security/encrypted-product-catalog';
 import { hostCommandSchema } from '../bridge/host-command';
 import { e2eeDigestSchema, e2eeOriginSchema } from '../security/e2ee-trust';
 import {
@@ -19,6 +24,7 @@ export const secureTargetSchema = z
     userId: z.string().min(1).max(160),
     machineId: id,
     sessionId: id,
+    product: encryptedProductTargetSchema.optional(),
   })
   .strict();
 export type SecureCliTarget = z.infer<typeof secureTargetSchema>;
@@ -90,4 +96,33 @@ export function secureOriginal(operation: SecureCliOperation): SessionOriginalOp
           : 'control',
     value: command.params,
   });
+}
+
+/** Catalog mutations stay separate from session recovery and preserve their complete original action. */
+export const secureCatalogTargetSchema = encryptedProductAuthoritySchema
+  .extend({ clientDeviceId: id })
+  .strict();
+export const secureCatalogOperationSchema = z
+  .object({
+    operationId: id,
+    target: secureCatalogTargetSchema,
+    body: z.string().max(64 * 1024),
+    requestVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    state: z.enum(['pending', 'ending', 'accepted', 'abandoned', 'rejected']),
+    createdAt: z.string().datetime(),
+    receipt: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((operation, context) => {
+    try {
+      const action = encryptedProductActionSchema.parse(JSON.parse(operation.body));
+      if (action.operationId !== operation.operationId) throw Error();
+    } catch {
+      context.addIssue({ code: 'custom', message: 'Invalid original encrypted catalog operation' });
+    }
+  });
+export type SecureCatalogTarget = z.infer<typeof secureCatalogTargetSchema>;
+export type SecureCatalogOperation = z.infer<typeof secureCatalogOperationSchema>;
+export function secureCatalogOriginal(operation: SecureCatalogOperation) {
+  return encryptedProductActionSchema.parse(JSON.parse(operation.body));
 }

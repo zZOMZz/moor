@@ -31,6 +31,8 @@ import {
   type AttentionContext,
 } from '../attention';
 import { EncryptedHostTransport, openSecureHostEndpoint } from './encrypted-host';
+import { HostProductCatalog } from './host-product-catalog';
+import { encryptedHostCatalogSchema } from './encrypted-host-command';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
 import { GitHubConfig } from '../runtime/github-config';
 import { PreviewConfig, type PreviewLocalTarget } from '../runtime/preview-config';
@@ -1249,26 +1251,45 @@ const notificationTimer = setInterval(() => notifications.drain(), 2000);
 for (const target of targets) void connect(target);
 if (secureEndpoint) {
   await refresh();
-  if (ready)
+  if (ready) {
+    const runtimeCatalog = () => {
+      assert(ready && !stopped, 503, '加密主机暂不可用');
+      secureEndpoint.current();
+      return encryptedHostCatalogSchema.parse({
+        catalogVersion: 1,
+        machineId,
+        workspaces: [...workspaces.values()]
+          .filter((host) => !host.closed)
+          .map((host) => ({
+            ...host.workspace,
+            // Workbench Actor proof and its seven methods still need explicit
+            // encrypted protocol support before advertising these capabilities.
+            features: host.workspace.features?.filter(
+              (feature) => ![ATTENTION_FEATURE, ACTOR_FEATURE, FOLLOWUP_FEATURE].includes(feature),
+            ),
+          })),
+      });
+    };
+    const products = new HostProductCatalog({
+      db: journal.db,
+      authority: {
+        serverOrigin: secureEndpoint.connection.origin,
+        accountId: secureEndpoint.connection.owner,
+        rootKeyId: secureEndpoint.current().checkpoint.rootKeyId,
+        hostDeviceId: secureEndpoint.deviceId,
+      },
+      runtime: runtimeCatalog,
+    });
+    products.synchronize();
     secureTransport = new EncryptedHostTransport({
       endpoint: secureEndpoint,
       dispatcher: commands,
+      products,
       catalog: () => {
-        assert(ready && !stopped, 503, '加密主机暂不可用');
         return {
-          catalogVersion: 1,
-          machineId,
-          workspaces: [...workspaces.values()]
-            .filter((host) => !host.closed)
-            .map((host) => ({
-              ...host.workspace,
-              // Encrypted commands do not yet carry the product replica map
-              // and actor proof required by legacy attention operations.
-              features: host.workspace.features?.filter(
-                (feature) =>
-                  ![ATTENTION_FEATURE, ACTOR_FEATURE, FOLLOWUP_FEATURE].includes(feature),
-              ),
-            })),
+          ...runtimeCatalog(),
+          catalogVersion: 2,
+          products: products.read(),
         };
       },
       closed: () => {
@@ -1285,6 +1306,7 @@ if (secureEndpoint) {
         reportHealth();
       },
     });
+  }
 }
 async function stop() {
   if (stopped) return;

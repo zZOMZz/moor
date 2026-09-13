@@ -6,8 +6,11 @@ import {
   type EncryptedResource,
 } from '../security/e2ee-channel';
 import { taskAuthoritySchema } from '../task-protocol';
+import { AppError } from '../protocol';
+import type { HostProductCatalog } from './host-product-catalog';
+import { validateEncryptedProductCatalog } from '../security/encrypted-product-catalog';
 import {
-  encryptedCatalogRequestSchema as catalogCommandSchema,
+  encryptedHostRequestSchema,
   encryptedCatalogSchema as encryptedHostCatalogSchema,
   type EncryptedCatalog as EncryptedHostCatalog,
 } from '../security/encrypted-bridge-protocol';
@@ -62,17 +65,17 @@ export class EncryptedHostCommands {
   private readonly dispatcher: HostCommandDispatcher;
   private readonly admission: { active: number };
   private readonly catalog?: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
-  private readonly runtimeScopesOnly: boolean;
+  private readonly products?: HostProductCatalog;
   constructor(options: {
     channel: E2eeChannel;
     dispatcher: HostCommandDispatcher;
     catalog?: () => EncryptedHostCatalog | Promise<EncryptedHostCatalog>;
-    runtimeScopesOnly?: boolean;
+    products?: HostProductCatalog;
   }) {
     this.channel = options.channel;
     this.dispatcher = options.dispatcher;
     this.catalog = options.catalog;
-    this.runtimeScopesOnly = options.runtimeScopesOnly ?? false;
+    this.products = options.products;
     let admission = admissions.get(options.dispatcher);
     if (!admission) {
       admission = { active: 0 };
@@ -97,83 +100,159 @@ export class EncryptedHostCommands {
     }
   }
   private async executeCurrent(record: unknown): Promise<EncryptedRecord> {
-    const { channel, dispatcher } = this;
+    const { channel, dispatcher, products } = this;
     const received = await channel.receive(record);
     if (received.header.direction !== 'client-to-host' || received.header.kind !== 'request')
       throw new Error(E2EE_CRYPTO_FAILED);
     const { header } = received;
-    const respond = (plaintext: Uint8Array) => {
+    let lease: ReturnType<HostProductCatalog['acquire']> | undefined;
+    const current = () => {
       channel.assertCurrent();
-      return channel.send({
+      lease?.current();
+    };
+    const respond = async (plaintext: Uint8Array) => {
+      current();
+      const response = await channel.send({
         kind: 'response',
         requestId: header.requestId,
         resource: header.resource,
         plaintext,
       });
+      current();
+      return response;
     };
-    let command: HostCommand;
-    try {
-      const input: unknown = JSON.parse(decoder.decode(received.plaintext));
-      if (header.resource.kind === 'catalog') {
-        catalogCommandSchema.parse(input);
-        if (!this.catalog) throw new Error(ENCRYPTED_HOST_COMMAND_REJECTED);
-        channel.assertCurrent();
-        const result = encryptedHostCatalogSchema.parse(await this.catalog());
-        return respond(encoder.encode(JSON.stringify({ ok: true, result })));
-      }
-      // Logical workspace replicas need a separate Host-confirmed mapping. This
-      // transport currently authorizes only the exact runtime/project identity.
-      if (
-        this.runtimeScopesOnly &&
-        (header.resource.catalogWorkspaceId !== null || header.resource.replicaId !== null)
-      )
-        throw new Error(ENCRYPTED_HOST_COMMAND_REJECTED);
-      command = hostCommandSchema.parse(input);
-      if (!matchesResource(command, header.resource))
-        throw new Error(ENCRYPTED_HOST_COMMAND_REJECTED);
-    } catch {
-      return respond(
-        encoder.encode(
-          JSON.stringify({
-            ok: false,
-            error: {
-              status: 400,
-              message: ENCRYPTED_HOST_COMMAND_REJECTED,
-              rejected: true,
-            },
-          }),
-        ),
-      );
-    }
+    const failure = (status: number, message: string, rejected: boolean) =>
+      respond(encoder.encode(JSON.stringify({ ok: false, error: { status, message, rejected } })));
+    const invalid = () => failure(400, ENCRYPTED_HOST_COMMAND_REJECTED, true);
     const binding = channel.binding;
-    const authority = taskAuthoritySchema.parse({
+    const productAuthority = {
       serverOrigin: binding.serverOrigin,
-      ownerId: binding.accountId,
-      deviceId: binding.hostDeviceId,
-      secureChannel: {
-        version: 1,
-        clientDeviceId: binding.clientDeviceId,
-        clientKeyId: binding.clientKeyId,
-        rootKeyId: binding.rootKeyId,
-        trustEpoch: binding.trustEpoch,
-        trustDigest: binding.trustDigest,
-        hostChallenge: binding.hostChallenge,
-        clientChallenge: binding.clientChallenge,
-      },
-    });
-    let plaintext: Uint8Array;
+      accountId: binding.accountId,
+      rootKeyId: binding.rootKeyId,
+      hostDeviceId: binding.hostDeviceId,
+    };
     try {
-      channel.assertCurrent();
-      const result = await dispatcher.execute(command, {
-        current: () => channel.assertCurrent(),
-        authority: { ...authority, current: () => channel.assertCurrent() },
+      let request;
+      try {
+        request = encryptedHostRequestSchema.parse(JSON.parse(decoder.decode(received.plaintext)));
+      } catch {
+        return await invalid();
+      }
+      if (header.resource.kind === 'catalog') {
+        if (request.method === 'catalog') {
+          try {
+            if (!this.catalog) return await invalid();
+            current();
+            const result = encryptedHostCatalogSchema.parse(await this.catalog());
+            if (result.catalogVersion === 2)
+              validateEncryptedProductCatalog(result.products, productAuthority);
+            return await respond(encoder.encode(JSON.stringify({ ok: true, result })));
+          } catch {
+            return await invalid();
+          }
+        }
+        if (!products || !['catalog-action', 'catalog-operation'].includes(request.method))
+          return await invalid();
+        try {
+          current();
+          validateEncryptedProductCatalog(products.read(), productAuthority);
+          const result =
+            request.method === 'catalog-action'
+              ? products.action(request.params)
+              : request.method === 'catalog-operation'
+                ? request.params.action === 'inspect'
+                  ? products.inspect(request.params.request)
+                  : products.abandon(request.params.request)
+                : undefined;
+          return await respond(encoder.encode(JSON.stringify({ ok: true, result })));
+        } catch (error) {
+          // A store/commit failure cannot certify that a previous operation did
+          // not commit. Its durable original action remains available to inspect.
+          return await failure(
+            error instanceof AppError ? error.status : 502,
+            error instanceof AppError ? error.message : ENCRYPTED_HOST_COMMAND_REJECTED,
+            false,
+          );
+        }
+      }
+      let command: HostCommand;
+      if (request.method === 'mapped-command') {
+        if (
+          !products ||
+          !matchesResource(request.command, header.resource) ||
+          header.resource.catalogWorkspaceId !== request.target.catalogWorkspaceId ||
+          header.resource.replicaId !== request.target.replicaId
+        )
+          return await invalid();
+        command = request.command;
+        try {
+          validateEncryptedProductCatalog(products.read(), productAuthority);
+          lease = products.acquire(request.target, command, header.resource);
+          current();
+          products.bindOperation(request.target, command);
+        } catch (error) {
+          return await failure(
+            error instanceof AppError ? error.status : 409,
+            ENCRYPTED_HOST_COMMAND_REJECTED,
+            false,
+          );
+        }
+      } else {
+        if (['catalog', 'catalog-action', 'catalog-operation'].includes(request.method))
+          return await invalid();
+        command = hostCommandSchema.parse(request);
+        // Missing a product authority is never permission to trust nonempty AAD.
+        if (
+          header.resource.catalogWorkspaceId !== null ||
+          header.resource.replicaId !== null ||
+          !matchesResource(command, header.resource) ||
+          (products && command.method !== 'session-operations')
+        )
+          return await invalid();
+        if (products) {
+          try {
+            validateEncryptedProductCatalog(products.read(), productAuthority);
+            products.bindOperation(null, command);
+          } catch (error) {
+            return await failure(
+              error instanceof AppError ? error.status : 409,
+              ENCRYPTED_HOST_COMMAND_REJECTED,
+              false,
+            );
+          }
+        }
+      }
+      const authority = taskAuthoritySchema.parse({
+        serverOrigin: binding.serverOrigin,
+        ownerId: binding.accountId,
+        deviceId: binding.hostDeviceId,
+        secureChannel: {
+          version: 1,
+          clientDeviceId: binding.clientDeviceId,
+          clientKeyId: binding.clientKeyId,
+          rootKeyId: binding.rootKeyId,
+          trustEpoch: binding.trustEpoch,
+          trustDigest: binding.trustDigest,
+          hostChallenge: binding.hostChallenge,
+          clientChallenge: binding.clientChallenge,
+        },
       });
-      plaintext = encoder.encode(JSON.stringify({ ok: true, result }));
-    } catch (error) {
-      plaintext = encoder.encode(
-        JSON.stringify({ ok: false, error: dispatcher.error(command, error) }),
-      );
+      let plaintext: Uint8Array;
+      try {
+        current();
+        const result = await dispatcher.execute(command, {
+          current,
+          authority: { ...authority, current },
+        });
+        plaintext = encoder.encode(JSON.stringify({ ok: true, result }));
+      } catch (error) {
+        plaintext = encoder.encode(
+          JSON.stringify({ ok: false, error: dispatcher.error(command, error) }),
+        );
+      }
+      return await respond(plaintext);
+    } finally {
+      lease?.release();
     }
-    return respond(plaintext);
   }
 }

@@ -9,15 +9,29 @@ import {
 } from './e2ee-channel';
 import { VerifiedTrust } from './e2ee-trust';
 import {
+  encryptedProductActionSchema,
+  encryptedProductTargetSchema,
+  validateEncryptedProductCatalog,
+  validateEncryptedProductReceipt,
+  validateEncryptedProductInspection,
+  type EncryptedProductAction,
+  type EncryptedProductAuthority,
+  type EncryptedProductInspection,
+  type EncryptedProductReceipt,
+  type EncryptedProductTarget,
+} from './encrypted-product-catalog';
+import {
   ENCRYPTED_BRIDGE_FAILED,
   ENCRYPTED_BRIDGE_LIMITS,
   encryptedBridgeClientMessageSchema,
   encryptedBridgeHelloSchema,
   encryptedCatalogSchema,
+  encryptedCatalogOperationSchema,
   encryptedHostResponseSchema,
   parseEncryptedBridgeMessage,
   type EncryptedBridgeHostDescriptor,
   type EncryptedCatalog,
+  type EncryptedCatalogOperation,
   type EncryptedHostRequest,
 } from './encrypted-bridge-protocol';
 
@@ -71,7 +85,10 @@ export class EncryptedHostError extends Error {
     super(message);
   }
 }
-export function encryptedCommandResource(command: HostCommand): EncryptedResource {
+export function encryptedCommandResource(
+  command: HostCommand,
+  target?: EncryptedProductTarget,
+): EncryptedResource {
   if (!command.localProjectId) fail();
   const params = command.params as Record<string, unknown>,
     request = params.request as Record<string, unknown> | undefined;
@@ -81,13 +98,61 @@ export function encryptedCommandResource(command: HostCommand): EncryptedResourc
   const scope = {
     workspaceId: command.workspaceId,
     projectId: command.localProjectId,
-    catalogWorkspaceId: null,
-    replicaId: null,
+    catalogWorkspaceId: target?.catalogWorkspaceId ?? null,
+    replicaId: target?.replicaId ?? null,
   };
   return encryptedResourceSchema.parse(
     sessionId === undefined
       ? { kind: 'project', ...scope, sessionId: null }
       : { kind: 'session', ...scope, sessionId },
+  );
+}
+/** Resolve a reviewed runtime project to the exact Host-confirmed product revision. */
+export function encryptedCommandTarget(
+  catalog: EncryptedCatalog,
+  command: HostCommand,
+): EncryptedProductTarget {
+  if (catalog.catalogVersion !== 2) fail();
+  const matches = catalog.products.replicas.filter(
+    (replica) =>
+      replica.available &&
+      replica.runtimeWorkspaceId === command.workspaceId &&
+      replica.localProjectId === command.localProjectId,
+  );
+  if (matches.length !== 1) fail();
+  const replica = matches[0]!;
+  return snapshot(
+    encryptedProductTargetSchema.parse({
+      catalogWorkspaceId: replica.catalogWorkspaceId,
+      projectId: replica.projectId,
+      replicaId: replica.id,
+      revision: replica.revision,
+    }),
+  );
+}
+const catalogResource: EncryptedResource = Object.freeze({
+  kind: 'catalog',
+  workspaceId: null,
+  projectId: null,
+  sessionId: null,
+  catalogWorkspaceId: null,
+  replicaId: null,
+});
+function productAuthority(channel: E2eeChannel): EncryptedProductAuthority {
+  const { serverOrigin, accountId, rootKeyId, hostDeviceId } = channel.binding;
+  return { serverOrigin, accountId, rootKeyId, hostDeviceId };
+}
+function carriesOriginalRecovery(command: HostCommand): boolean {
+  return (
+    [
+      'session-operations',
+      'github-write-inspect',
+      'github-write-abandon',
+      'preview-inspect',
+      'preview-close',
+      'github-abandon',
+    ].includes(command.method) ||
+    (command.method === 'roles-action' && 'request' in command.params)
   );
 }
 type Pending = {
@@ -96,6 +161,7 @@ type Pending = {
   request: EncryptedHostRequest;
   hostId: string;
   catalog?: EncryptedCatalog;
+  catalogGeneration: number;
   bytes: number;
   timer: unknown;
   resolving: boolean;
@@ -110,6 +176,7 @@ export class EncryptedBridgeClient {
   readonly #hosts = new Map<string, Readonly<EncryptedBridgeHostDescriptor>>();
   readonly #channels = new Map<string, Promise<E2eeChannel>>();
   readonly #catalogs = new Map<string, EncryptedCatalog>();
+  readonly #catalogGenerations = new Map<string, number>();
   readonly #pending = new Map<string, Pending>();
   #bytes = 0;
   #closed = false;
@@ -290,6 +357,7 @@ export class EncryptedBridgeClient {
       pending.channel.assertCurrent();
       if (
         this.#pending.get(record.header.requestId) !== pending ||
+        (this.#catalogGenerations.get(pending.hostId) ?? 0) !== pending.catalogGeneration ||
         (pending.catalog && this.#catalogs.get(pending.hostId) !== pending.catalog)
       )
         fail();
@@ -314,11 +382,45 @@ export class EncryptedBridgeClient {
     }
     let result: unknown;
     if (pending.request.method === 'catalog') {
-      result = snapshot(encryptedCatalogSchema.parse(response.result));
+      const catalog = encryptedCatalogSchema.parse(response.result);
+      if (catalog.catalogVersion === 2)
+        validateEncryptedProductCatalog(catalog.products, productAuthority(pending.channel));
+      // Once this authenticated Host advertised product authority, a legacy response cannot
+      // silently remove its operation binding on this connection.
+      const previous = this.#catalogs.get(pending.hostId);
+      if (
+        previous?.catalogVersion === 2 &&
+        (catalog.catalogVersion !== 2 || catalog.products.revision < previous.products.revision)
+      )
+        fail();
+      result = snapshot(catalog);
       current();
       this.#catalogs.set(pending.hostId, result as EncryptedCatalog);
+      this.#catalogGenerations.set(pending.hostId, pending.catalogGeneration + 1);
+    } else if (pending.request.method === 'catalog-action') {
+      result = snapshot(
+        validateEncryptedProductReceipt(
+          response.result,
+          productAuthority(pending.channel),
+          pending.request.params,
+        ),
+      );
+      current();
+    } else if (pending.request.method === 'catalog-operation') {
+      const { action, request } = pending.request.params;
+      result = snapshot(
+        (action === 'inspect'
+          ? validateEncryptedProductInspection
+          : validateEncryptedProductReceipt)(
+          response.result,
+          productAuthority(pending.channel),
+          request,
+        ),
+      );
+      current();
     } else {
-      const command = pending.request;
+      const command =
+        pending.request.method === 'mapped-command' ? pending.request.command : pending.request;
       const workspace = pending.catalog?.workspaces.find(
         (workspace) => workspace.id === command.workspaceId,
       );
@@ -395,6 +497,7 @@ export class EncryptedBridgeClient {
         resource,
         hostId,
         catalog,
+        catalogGeneration: this.#catalogGenerations.get(hostId) ?? 0,
         bytes: plaintext.byteLength,
         timer: undefined,
         resolving: false,
@@ -408,11 +511,19 @@ export class EncryptedBridgeClient {
     entry.timer = this.#timers.set(() => this.close(), ENCRYPTED_BRIDGE_LIMITS.requestMs);
     void (async () => {
       entry.channel = await this.#channel(hostId);
-      this.assertCurrent();
-      if (this.#pending.get(requestId) !== entry) fail();
+      const current = () => {
+        this.assertCurrent();
+        entry.channel.assertCurrent();
+        if (
+          this.#pending.get(requestId) !== entry ||
+          (this.#catalogGenerations.get(hostId) ?? 0) !== entry.catalogGeneration ||
+          (catalog && this.#catalogs.get(hostId) !== catalog)
+        )
+          fail();
+      };
+      current();
       const record = await entry.channel.send({ kind: 'request', requestId, resource, plaintext });
-      this.assertCurrent();
-      if (this.#pending.get(requestId) !== entry) fail();
+      current();
       const text = JSON.stringify({ protocol: 4, type: 'record', record });
       if (encoder.encode(text).byteLength > ENCRYPTED_BRIDGE_LIMITS.wireBytes) fail();
       this.#send(text);
@@ -423,24 +534,79 @@ export class EncryptedBridgeClient {
     return (await this.#request(
       hostId,
       { method: 'catalog', params: {} },
-      {
-        kind: 'catalog',
-        workspaceId: null,
-        projectId: null,
-        sessionId: null,
-        catalogWorkspaceId: null,
-        replicaId: null,
-      },
+      catalogResource,
     )) as EncryptedCatalog;
   }
-  async execute(hostId: string, input: HostCommand): Promise<unknown> {
+  async execute(
+    hostId: string,
+    input: HostCommand,
+    inputTarget?: EncryptedProductTarget,
+  ): Promise<unknown> {
     const command = hostCommandSchema.parse(structuredClone(input)),
       catalog = this.#catalogs.get(hostId);
     if (!catalog) fail();
     const workspace = catalog.workspaces.find((workspace) => workspace.id === command.workspaceId);
     if (!workspace || !workspace.projects.some((project) => project.id === command.localProjectId))
       fail();
+    if (catalog.catalogVersion === 1) {
+      if (inputTarget !== undefined) fail();
+      return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);
+    }
+    const target =
+      inputTarget === undefined
+        ? encryptedCommandTarget(catalog, command)
+        : encryptedProductTargetSchema.parse(structuredClone(inputTarget));
+    // Recovery reads/abandons the original operation. Its historical product binding is
+    // authenticated by the Host receipt store, even after the current mapping has changed.
+    if (
+      !carriesOriginalRecovery(command) &&
+      !same(target, encryptedCommandTarget(catalog, command))
+    )
+      fail();
+    return this.#request(
+      hostId,
+      snapshot({ method: 'mapped-command', target, command }),
+      encryptedCommandResource(command, target),
+      catalog,
+    );
+  }
+  /** Explicit recovery for an older outbox that predates product binding; never execution. */
+  async executeLegacyOperation(hostId: string, input: HostCommand): Promise<unknown> {
+    const command = hostCommandSchema.parse(structuredClone(input)),
+      catalog = this.#catalogs.get(hostId);
+    if (!catalog || command.method !== 'session-operations') fail();
+    const workspace = catalog.workspaces.find((workspace) => workspace.id === command.workspaceId);
+    if (!workspace || !workspace.projects.some((project) => project.id === command.localProjectId))
+      fail();
     return this.#request(hostId, snapshot(command), encryptedCommandResource(command), catalog);
+  }
+  async catalogAction(
+    hostId: string,
+    input: EncryptedProductAction,
+  ): Promise<EncryptedProductReceipt> {
+    const action = snapshot(encryptedProductActionSchema.parse(structuredClone(input))),
+      catalog = this.#catalogs.get(hostId);
+    if (catalog?.catalogVersion !== 2) fail();
+    return (await this.#request(
+      hostId,
+      { method: 'catalog-action', params: action },
+      catalogResource,
+      catalog,
+    )) as EncryptedProductReceipt;
+  }
+  async catalogOperation(
+    hostId: string,
+    input: EncryptedCatalogOperation,
+  ): Promise<EncryptedProductInspection | EncryptedProductReceipt> {
+    const operation = snapshot(encryptedCatalogOperationSchema.parse(structuredClone(input))),
+      catalog = this.#catalogs.get(hostId);
+    if (catalog?.catalogVersion !== 2) fail();
+    return (await this.#request(
+      hostId,
+      { method: 'catalog-operation', params: operation },
+      catalogResource,
+      catalog,
+    )) as EncryptedProductInspection | EncryptedProductReceipt;
   }
   close() {
     if (this.#closed) return;
@@ -456,6 +622,7 @@ export class EncryptedBridgeClient {
     this.#pending.clear();
     this.#bytes = 0;
     this.#catalogs.clear();
+    this.#catalogGenerations.clear();
     for (const channel of this.#channels.values())
       void channel.then(
         (value) => value.close(),
