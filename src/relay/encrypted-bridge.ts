@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { isDeepStrictEqual } from 'node:util';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import type { Store } from './accounts';
+import { EncryptedIngressBudget, EncryptedIngressSocket } from './encrypted-ingress';
 import { newChannelChallenge, type EncryptedRecordHeader } from '../security/e2ee-channel';
 import {
   encryptedBridgeHelloSchema,
@@ -40,6 +41,7 @@ type Connection = {
   hello?: EncryptedBridgeHello;
   handshakeTimer?: unknown;
   alive: boolean;
+  sending: Set<() => void>;
 };
 type Pending = {
   client: Connection;
@@ -79,12 +81,16 @@ export class EncryptedBridgeRelay {
     noServer: true,
     maxPayload: ENCRYPTED_BRIDGE_LIMITS.wireBytes,
     perMessageDeflate: false,
+    allowSynchronousEvents: true,
+    autoPong: false,
   });
+  readonly #ingress = new EncryptedIngressBudget(ENCRYPTED_BRIDGE_LIMITS.ingressBytes);
   readonly #connections = new Map<WebSocket, Connection>();
   readonly #clients = new Map<string, Connection>();
   readonly #hosts = new Map<string, Connection>();
   readonly #pending = new Map<string, Pending>();
   #pendingBytes = 0;
+  #queuedFrames = 0;
   #generation = 0;
   #closed = false;
   #heartbeat: unknown;
@@ -138,7 +144,22 @@ export class EncryptedBridgeRelay {
         (side === 'host' ? ENCRYPTED_BRIDGE_LIMITS.hosts : ENCRYPTED_BRIDGE_LIMITS.clients)
       )
         throw new Error('unavailable');
-      this.#wss.handleUpgrade(request, socket, head, (ws) => {
+      let active: Connection | undefined;
+      const admitted = new EncryptedIngressSocket(socket, {
+        budget: this.#ingress,
+        messageBytes: () =>
+          active?.hello
+            ? ENCRYPTED_BRIDGE_LIMITS.wireBytes
+            : ENCRYPTED_BRIDGE_LIMITS.handshakeBytes,
+        timers: this.#timers,
+        maxFragments: ENCRYPTED_BRIDGE_LIMITS.ingressFragments,
+        messageMs: ENCRYPTED_BRIDGE_LIMITS.ingressMessageMs,
+      });
+      admitted.on('error', () => {
+        if (active) this.#drop(active);
+      });
+      // Upgrade bytes also pass the gate, after ws and application listeners exist.
+      this.#wss.handleUpgrade(request, admitted, Buffer.alloc(0), (ws) => {
         const connection: Connection = {
           socket: ws,
           id: newChannelChallenge(),
@@ -148,19 +169,29 @@ export class EncryptedBridgeRelay {
           generation,
           side,
           alive: true,
+          sending: new Set(),
         };
+        active = connection;
         this.#connections.set(ws, connection);
         ws.on('error', () => this.#drop(connection));
         ws.on('close', () => this.#drop(connection));
         ws.on('pong', () => {
           if (this.#current(connection)) connection.alive = true;
         });
-        ws.on('message', (raw, binary) => this.#message(connection, raw, binary));
+        ws.on('ping', (bytes) => this.#control(connection, 'pong', bytes));
+        ws.on('message', (raw, binary) => {
+          try {
+            this.#message(connection, raw, binary);
+          } finally {
+            admitted.completeMessage();
+          }
+        });
         connection.handshakeTimer = this.#timers.set(() => {
           if (!connection.hello) this.#drop(connection);
         }, ENCRYPTED_BRIDGE_LIMITS.handshakeMs);
         if (!this.#current(connection)) this.#drop(connection);
       });
+      if (active) admitted.start(head);
     } catch {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       socket.destroy();
@@ -395,29 +426,64 @@ export class EncryptedBridgeRelay {
     }
     const text = JSON.stringify(value),
       bytes = Buffer.byteLength(text);
-    if (
-      bytes > limit ||
-      connection.socket.bufferedAmount + bytes > ENCRYPTED_BRIDGE_LIMITS.wireBytes ||
-      [...this.#connections.keys()].reduce((size, ws) => size + ws.bufferedAmount, bytes) >
-        ENCRYPTED_BRIDGE_LIMITS.pendingBytes
-    ) {
+    const release = bytes <= limit ? this.#reserveSend(connection, bytes + 14) : undefined;
+    if (!release) {
       this.#drop(connection);
       return false;
     }
     try {
       connection.socket.send(text, (error) => {
+        release();
         if (error) this.#drop(connection);
       });
       return true;
     } catch {
+      release();
       this.#drop(connection);
       return false;
+    }
+  }
+
+  #reserveSend(connection: Connection, bytes: number): (() => void) | undefined {
+    if (
+      !this.#current(connection) ||
+      connection.sending.size >= ENCRYPTED_BRIDGE_LIMITS.queuedFramesPerSocket ||
+      this.#queuedFrames >= ENCRYPTED_BRIDGE_LIMITS.queuedFrames ||
+      connection.socket.bufferedAmount + bytes > ENCRYPTED_BRIDGE_LIMITS.wireBytes ||
+      [...this.#connections.keys()].reduce((size, ws) => size + ws.bufferedAmount, bytes) >
+        ENCRYPTED_BRIDGE_LIMITS.pendingBytes
+    )
+      return undefined;
+    const release = () => {
+      if (connection.sending.delete(release)) this.#queuedFrames--;
+    };
+    connection.sending.add(release);
+    this.#queuedFrames++;
+    return release;
+  }
+
+  #control(connection: Connection, kind: 'ping' | 'pong', bytes: Buffer = Buffer.alloc(0)): void {
+    const release =
+      bytes.length <= 125 ? this.#reserveSend(connection, bytes.length + 2) : undefined;
+    if (!release) {
+      this.#drop(connection);
+      return;
+    }
+    try {
+      connection.socket[kind](bytes, false, (error?: Error) => {
+        release();
+        if (error) this.#drop(connection);
+      });
+    } catch {
+      release();
+      this.#drop(connection);
     }
   }
 
   #drop(connection: Connection): void {
     if (this.#connections.get(connection.socket) !== connection) return;
     this.#connections.delete(connection.socket);
+    for (const release of connection.sending) release();
     this.#timers.clear(connection.handshakeTimer);
     this.#clients.delete(connection.id);
     if (connection.hello?.side === 'host') {
@@ -449,7 +515,7 @@ export class EncryptedBridgeRelay {
           continue;
         }
         connection.alive = false;
-        connection.socket.ping();
+        this.#control(connection, 'ping');
       }
       this.#scheduleHeartbeat();
     }, ENCRYPTED_BRIDGE_LIMITS.heartbeatMs);

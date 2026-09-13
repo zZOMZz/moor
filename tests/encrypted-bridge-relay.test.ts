@@ -667,16 +667,78 @@ test('heartbeat uses deterministic signals to release disconnected and expired p
   const f = await fixture(t);
   const client = await f.connect('client');
   await client.next();
+  let ping = once(client.socket, 'ping');
   f.timers.fire(ENCRYPTED_BRIDGE_LIMITS.heartbeatMs);
-  // Auto-pong is observed through a peer ping barrier, without a wall-clock sleep.
+  // Await the server ping first: ws queues its automatic pong before emitting ping.
+  // The later peer ping is then a causal barrier for that pong reaching the relay.
+  await ping;
   await client.barrier();
+  ping = once(client.socket, 'ping');
   f.timers.fire(ENCRYPTED_BRIDGE_LIMITS.heartbeatMs);
+  await ping;
   await client.barrier();
   assert.equal(client.socket.readyState, WebSocket.OPEN);
   f.expire();
   f.timers.fire(ENCRYPTED_BRIDGE_LIMITS.heartbeatMs);
   await client.closed;
 });
+
+for (const limit of ['connection', 'global'] as const)
+  test(`pending control writes obey the ${limit} frame budget and release on closure`, async (t) => {
+    const f = await fixture(t);
+    const count =
+      limit === 'connection'
+        ? 1
+        : ENCRYPTED_BRIDGE_LIMITS.queuedFrames / ENCRYPTED_BRIDGE_LIMITS.queuedFramesPerSocket;
+    const clients: Awaited<ReturnType<typeof f.connect>>[] = [];
+    for (let index = 0; index <= count; index++) {
+      const client = await f.connect('client', { secret: index % 2 ? f.otherSecret : f.secret });
+      await client.next();
+      clients.push(client);
+    }
+    // Model a slow network at the public ws write-completion boundary. No large
+    // buffers, kernel queue timing, sleeps, or private receiver fields are needed.
+    const callbacks: ((error?: Error) => void)[] = [];
+    let admitted: (() => void) | undefined;
+    t.mock.method(
+      WebSocket.prototype,
+      'pong',
+      function (_bytes: unknown, masked?: boolean, callback?: (error?: Error) => void) {
+        assert.equal(masked, false);
+        assert.equal(typeof callback, 'function');
+        callbacks.push(callback!);
+        admitted?.();
+        admitted = undefined;
+      },
+    );
+    async function ping(client: (typeof clients)[number]) {
+      const accepted = new Promise<void>((resolve) => {
+        admitted = resolve;
+      });
+      client.socket.ping();
+      await accepted;
+    }
+    for (const client of clients.slice(0, count))
+      for (let index = 0; index < ENCRYPTED_BRIDGE_LIMITS.queuedFramesPerSocket; index++)
+        await ping(client);
+    const held = callbacks.length;
+    const rejected = limit === 'connection' ? clients[0] : clients[count];
+    rejected.socket.ping();
+    await rejected.closed;
+    assert.equal(callbacks.length, held, 'no excess control frame was queued');
+    for (const client of clients) client.socket.terminate();
+    await Promise.all(clients.map((client) => client.closed));
+    for (const callback of callbacks) callback(new Error('synthetic late write completion'));
+
+    const next = await f.connect('client');
+    await next.next();
+    for (let index = 0; index < ENCRYPTED_BRIDGE_LIMITS.queuedFramesPerSocket; index++)
+      await ping(next);
+    next.socket.ping();
+    await next.closed;
+    assert.equal(callbacks.length, held + ENCRYPTED_BRIDGE_LIMITS.queuedFramesPerSocket);
+    for (const callback of callbacks.slice(held)) callback();
+  });
 
 test('v4 public discovery returns all 64 connected hosts without catalog names or paths', async (t) => {
   const f = await fixture(t);
