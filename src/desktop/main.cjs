@@ -28,6 +28,7 @@ const { DesktopSkillsSettings } = require('./skills-settings.cjs');
 const { DesktopAgentSettings } = require('./agent-settings.cjs');
 const { DesktopMcpSettings } = require('./mcp-settings.cjs');
 const { DesktopGoogleAuth } = require('./google-auth.cjs');
+const { DesktopSecureBridge } = require('./secure-client.cjs');
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
@@ -95,6 +96,21 @@ const write = (file, value) => {
   }
 };
 const contentWindows = new Map();
+const secureClient = new DesktopSecureBridge({
+  registry: contentWindows,
+  remoteWindow: () => remoteWindow,
+  origin: () => settings.server,
+  endpointPath: () => {
+    const directory = path.join(data, '.moor-security');
+    try {
+      fs.mkdirSync(directory, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+    return path.join(directory, 'desktop-client.json');
+  },
+  loadRuntime: () => import(pathToFileURL(path.join(contentRoot, 'desktop-client.mjs')).href),
+});
 const googleAuth = new DesktopGoogleAuth({
   registry: contentWindows,
   remoteWindow: () => remoteWindow,
@@ -154,11 +170,13 @@ function lockedWindow(origin, partition) {
     if (mainFrame) {
       attachmentSaver.invalidate(contents);
       googleAuth.invalidate(contents);
+      secureClient.invalidate(contents);
     }
   });
   window.on('closed', () => {
     googleAuth.invalidate(contents);
     attachmentSaver.invalidate(contents);
+    secureClient.invalidate(contents);
     contentWindows.delete(contents);
   });
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -175,6 +193,7 @@ function openPage(window, origin) {
   if (registered && registered.origin !== new URL(origin).origin) {
     googleAuth.invalidate(window.webContents);
     attachmentSaver.invalidate(window.webContents);
+    secureClient.invalidate(window.webContents);
     contentWindows.set(window.webContents, { window, origin: new URL(origin).origin });
   }
   loadPage(window, origin, () => {
@@ -637,7 +656,10 @@ ipcMain.handle('personal:save', async (event, value) => {
     write(bridgeFile, { server, ...result });
   }
   const changed = settings.server !== server;
-  if (changed) googleAuth.invalidate();
+  if (changed) {
+    googleAuth.invalidate();
+    secureClient.invalidate();
+  }
   settings = {
     server,
     name,
@@ -670,6 +692,7 @@ ipcMain.handle('moor:save-attachment', (event, value) => attachmentSaver.save(ev
 ipcMain.handle('moor:google-auth-begin', (event, value) => googleAuth.begin(event, value));
 ipcMain.handle('moor:google-auth-complete', (event, value) => googleAuth.complete(event, value));
 ipcMain.handle('moor:google-auth-cancel', (event, value) => googleAuth.cancel(event, value));
+ipcMain.handle('moor:secure-client', (event, value) => secureClient.request(event, value));
 ipcMain.handle('moor:cancel-attachment-save', (event) => attachmentSaver.cancel(event));
 ipcMain.handle('personal:open', async (event, mode) => {
   trusted(event);
@@ -728,6 +751,7 @@ else {
     agentSettings.close();
     mcpSettings.close();
     googleAuth.close();
+    secureClient.close();
     clearTimeout(restart);
     hostRecovery.stop();
   });

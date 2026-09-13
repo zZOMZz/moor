@@ -41,6 +41,11 @@ const securityBuild = await build({
   entryPoints: ['src/security/main.ts'],
   outfile: 'dist/security.mjs',
 });
+const desktopClientBuild = await build({
+  ...nodeOptions,
+  entryPoints: ['src/security/desktop-client.ts'],
+  outfile: 'dist/desktop-client.mjs',
+});
 await cp('src/desktop/preview-renderer.cjs', 'dist/preview-renderer.cjs');
 await writeFile(
   'dist/THIRD_PARTY_NOTICES.txt',
@@ -50,6 +55,7 @@ await writeFile(
       ...hostBuild.metafile.inputs,
       ...cliBuild.metafile.inputs,
       ...securityBuild.metafile.inputs,
+      ...desktopClientBuild.metafile.inputs,
     },
     'host, relay and local CLIs',
   ),

@@ -9,6 +9,7 @@ import {
   startResult,
   sessionCookie,
 } from '../src/desktop/google-auth.cjs';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../src/desktop/client-assets.cjs';
 
 const relay = 'https://relay.synthetic.invalid';
 const token = (number: number) => Buffer.alloc(32, number).toString('base64url');
@@ -26,7 +27,7 @@ function gate() {
   return { enter, release, entered, waiting };
 }
 type Call = { path: string; input: any; options: RequestInit; url: string };
-function fixture(t: TestContext, initialCookie = '') {
+function fixture(t: TestContext, initialCookie = '', trustedClient = false) {
   const calls: Call[] = [],
     launches: string[] = [],
     confirmations: any[] = [],
@@ -100,7 +101,10 @@ function fixture(t: TestContext, initialCookie = '') {
     },
   });
   const contents = {
-    mainFrame: { url: relay + '/login' },
+    mainFrame: {
+      url: trustedClient ? CLIENT_URL : relay + '/login',
+      origin: trustedClient ? CLIENT_ORIGIN : relay,
+    },
     session: { cookies },
     destroyed: false,
     isDestroyed() {
@@ -115,7 +119,7 @@ function fixture(t: TestContext, initialCookie = '') {
     },
   };
   let remoteWindow = window;
-  const registry = new Map([[contents, { window, origin: relay }]]);
+  const registry = new Map([[contents, { window, origin: relay, trustedClient }]]);
   const defaultResponse = async (call: Call) => {
     if (call.path.endsWith('/start')) {
       const flowId = token(++flowCounter);
@@ -383,6 +387,158 @@ test('desktop Google rejects noncanonical service origins before dispatch', asyn
   assert.equal(f.calls.length, 0);
 });
 
+test('trusted desktop Google uses the configured HTTPS account service while keeping all handoff credentials outside the client document', async (t) => {
+  for (const mode of ['login', 'setup', 'link'] as const) {
+    const f = fixture(t, mode === 'link' ? token(9) : '', true);
+    const started = await f.auth.begin(f.event(), {
+      mode,
+      ...(mode === 'setup' ? { setupToken: 'synthetic-setup-secret' } : {}),
+    });
+    assert.deepEqual(started, { flowId: token(1), code: 'ABCD-1234' });
+    assert.deepEqual(f.launches, [relay + '/auth/google/start?flow=' + token(1)]);
+    const finished = await f.auth.complete(f.event());
+    assert.deepEqual(finished, { completed: true });
+    assert.equal(f.confirmations.length, 1);
+    assert.ok(f.confirmations[0].detail.includes('服务：' + relay));
+    assert.ok(f.calls.every((call) => new URL(call.url).origin === relay));
+    assert.ok(f.calls.every((call) => (call.options.headers as any).Origin === relay));
+    assert.equal(f.contents.mainFrame.url, CLIENT_URL);
+    assert.equal(f.cookie, mode === 'link' ? token(9) : token(200));
+    assert.equal(f.writes.length, mode === 'link' ? 0 : 1);
+    assert.ok(f.writes.every((cookie) => cookie.url === relay));
+    assert.doesNotMatch(JSON.stringify({ started, finished }), /secret|cookie|personal=/);
+  }
+});
+
+test('trusted desktop Google refuses HTTP documents, custom URL aliases, opaque origins and subframes before starting any flow', async (t) => {
+  const f = fixture(t, '', true);
+  for (const url of [
+    relay + '/login',
+    'moor-client://app/',
+    'moor-client://app/remote',
+    'moor-client://app/remote/?',
+    'moor-client://app/remote/#',
+    'moor-client://app/remote/?flow=synthetic-secret',
+    'moor-client://app/remote/../remote/',
+    'moor-client://app/%72emote/',
+    'moor-client://APP/remote/',
+    'moor-client://app:443/remote/',
+    'moor-client://user:secret@app/remote/',
+    'moor-client://other/remote/',
+    'about:blank',
+    'data:text/html,synthetic',
+    'file:///remote/',
+  ]) {
+    f.contents.mainFrame.url = url;
+    await assert.rejects(f.auth.begin(f.event(), { mode: 'login' }), { message: safeError });
+  }
+  f.contents.mainFrame.url = CLIENT_URL;
+  for (const origin of ['null', relay, 'moor-client://other']) {
+    f.contents.mainFrame.origin = origin;
+    await assert.rejects(f.auth.begin(f.event(), { mode: 'login' }), { message: safeError });
+  }
+  f.contents.mainFrame.origin = CLIENT_ORIGIN;
+  await assert.rejects(
+    f.auth.begin(
+      { sender: f.contents, senderFrame: { ...f.contents.mainFrame } },
+      { mode: 'login' },
+    ),
+    { message: safeError },
+  );
+  f.registry.get(f.contents)!.trustedClient = false;
+  await assert.rejects(f.auth.begin(f.event(), { mode: 'login' }), { message: safeError });
+  f.registry.get(f.contents)!.trustedClient = true;
+  f.registry.get(f.contents)!.origin = 'null';
+  await assert.rejects(f.auth.begin(f.event(), { mode: 'login' }), { message: safeError });
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.launches.length, 0);
+});
+
+test('trusted desktop Google rejects an old confirmation after a reload at the same canonical URL', async (t) => {
+  for (const invalidate of [
+    (f: ReturnType<typeof fixture>) => f.auth.invalidate(f.contents),
+    (f: ReturnType<typeof fixture>) => {
+      f.contents.mainFrame = { ...f.contents.mainFrame };
+    },
+    (f: ReturnType<typeof fixture>) => {
+      f.registry.set(f.contents, { ...f.registry.get(f.contents)! });
+    },
+  ]) {
+    const f = fixture(t, '', true),
+      hold = gate();
+    f.state.confirm = async () => {
+      hold.enter();
+      await hold.waiting;
+      return { response: 0 };
+    };
+    await f.auth.begin(f.event(), { mode: 'login' });
+    const failed = assert.rejects(f.auth.complete(f.event()), { message: safeError });
+    await hold.entered;
+    invalidate(f);
+    hold.release();
+    await failed;
+    assert.equal(f.contents.mainFrame.url, CLIENT_URL);
+    assert.equal(f.calls.filter((call) => call.path.endsWith('/finish')).length, 0);
+    assert.equal(f.writes.length, 0);
+  }
+});
+
+test('trusted desktop Google never restores a late observed login into a reloaded client document', async (t) => {
+  for (const invalidate of [
+    (f: ReturnType<typeof fixture>) => f.auth.invalidate(f.contents),
+    (f: ReturnType<typeof fixture>) => {
+      f.contents.mainFrame = { ...f.contents.mainFrame };
+    },
+    (f: ReturnType<typeof fixture>) => {
+      f.contents.mainFrame.url = 'moor-client://app/';
+      f.auth.invalidate(f.contents);
+      f.contents.mainFrame.url = CLIENT_URL;
+    },
+  ]) {
+    const f = fixture(t, '', true),
+      hold = gate();
+    f.state.write = async () => {
+      hold.enter();
+      await hold.waiting;
+    };
+    await f.auth.begin(f.event(), { mode: 'login' });
+    const failed = assert.rejects(f.auth.complete(f.event()), { message: safeError });
+    await hold.entered;
+    f.setCookie(token(201));
+    invalidate(f);
+    hold.release();
+    await failed;
+    assert.equal(f.cookie, '');
+    assert.equal(f.writes.length, 1);
+    assert.deepEqual(f.removals, [relay]);
+    assert.equal(f.cookies.listenerCount('changed'), 0);
+  }
+});
+
+test('trusted desktop Google invalidates an already pending cookie recovery write on navigation', async (t) => {
+  const f = fixture(t, '', true),
+    original = gate(),
+    recovery = gate();
+  f.state.write = async () => {
+    const holding = f.writes.length === 1 ? original : recovery;
+    holding.enter();
+    await holding.waiting;
+  };
+  await f.auth.begin(f.event(), { mode: 'login' });
+  const failed = assert.rejects(f.auth.complete(f.event()), { message: safeError });
+  await original.entered;
+  f.setCookie(token(201));
+  original.release();
+  await recovery.entered;
+  f.auth.invalidate(f.contents);
+  recovery.release();
+  await failed;
+  assert.equal(f.cookie, '');
+  assert.equal(f.writes.length, 2);
+  assert.deepEqual(f.removals, [relay]);
+  assert.equal(f.cookies.listenerCount('changed'), 0);
+});
+
 test('desktop Google strictly validates private start responses and never follows a relay-supplied arbitrary URL', async (t) => {
   const base = {
     flowId: token(1),
@@ -568,7 +724,7 @@ test('desktop Google prevents duplicate completion and invalidates native confir
   const failed = assert.rejects(completing, { message: safeError });
   await hold.entered;
   await assert.rejects(f.auth.complete(f.event()), { message: safeError });
-  f.contents.mainFrame = { url: relay + '/new-document' };
+  f.contents.mainFrame = { url: relay + '/new-document', origin: relay };
   hold.release();
   await failed;
   assert.equal(f.calls.filter((call) => call.path.endsWith('/finish')).length, 0);

@@ -1,4 +1,5 @@
 const { timingSafeEqual } = require('node:crypto');
+const { isCurrentContentDocument } = require('./content-authority.cjs');
 
 const message = 'Google 登录尚未完成，请重新发起登录。';
 const object = (v) => v && typeof v === 'object' && !Array.isArray(v);
@@ -192,11 +193,7 @@ class DesktopGoogleAuth {
         !this.closed &&
           registered &&
           registered.window === this.remoteWindow() &&
-          !registered.window.isDestroyed() &&
-          registered.window.webContents === contents &&
-          !contents.isDestroyed() &&
-          frame === contents.mainFrame &&
-          new URL(frame.url).origin === target &&
+          isCurrentContentDocument(registered, contents, frame) &&
           registered.origin === target,
       );
       return {
@@ -205,6 +202,8 @@ class DesktopGoogleAuth {
         window: registered.window,
         session: contents.session,
         origin: target,
+        registered,
+        documentUrl: frame.url,
       };
     } catch {
       throw new Error(message);
@@ -218,6 +217,8 @@ class DesktopGoogleAuth {
         attempt.generation === this.generation &&
         ctx.origin === attempt.ctx.origin &&
         ctx.session === attempt.ctx.session &&
+        ctx.registered === attempt.ctx.registered &&
+        ctx.documentUrl === attempt.ctx.documentUrl &&
         (!attempt.flow || this.now() < attempt.flow.expiresAt)
       );
     } catch {
@@ -250,13 +251,13 @@ class DesktopGoogleAuth {
         !this.closed &&
         attempt.recoveryAllowed &&
         origin(this.getOrigin()) === attempt.ctx.origin &&
+        registered === attempt.ctx.registered &&
         registered?.origin === attempt.ctx.origin &&
         registered.window === attempt.ctx.window &&
         registered.window === this.remoteWindow() &&
-        !registered.window.isDestroyed() &&
-        !contents.isDestroyed() &&
+        isCurrentContentDocument(registered, contents, attempt.ctx.frame) &&
         contents.session === attempt.ctx.session &&
-        new URL(contents.mainFrame.url).origin === attempt.ctx.origin
+        attempt.ctx.frame.url === attempt.ctx.documentUrl
       );
     } catch {
       return false;
@@ -538,8 +539,10 @@ class DesktopGoogleAuth {
       this.stop(attempt);
   }
   invalidate(contents) {
-    // An unscoped invalidation is a service reconfiguration or application exit.
-    if (!contents && this.writing) this.writing.recoveryAllowed = false;
+    // Service changes and navigation permanently prevent a pending write from
+    // restoring an observed login into a replacement document at the same URL.
+    if (this.writing && (!contents || this.writing.ctx.contents === contents))
+      this.writing.recoveryAllowed = false;
     if (this.active && (!contents || this.active.ctx.contents === contents)) this.stop(this.active);
   }
   close() {

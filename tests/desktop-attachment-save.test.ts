@@ -10,6 +10,8 @@ import {
   createAttachmentSaver,
   writeChosenFile,
 } from '../src/desktop/attachment-save.cjs';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../src/desktop/client-assets.cjs';
+import { isCurrentContentDocument } from '../src/desktop/content-authority.cjs';
 const bytes = Buffer.from('Synthetic attachment bytes');
 const payload = {
   scope: {
@@ -31,11 +33,16 @@ const payload = {
   },
   data: bytes.toString('base64'),
 };
-function fixture() {
-  const frame = { url: 'https://moor.invalid/', origin: 'https://moor.invalid' },
+function fixture(trustedClient = false) {
+  const frame = {
+      url: trustedClient ? CLIENT_URL : 'https://moor.invalid/',
+      origin: trustedClient ? CLIENT_ORIGIN : 'https://moor.invalid',
+    },
     sender = { mainFrame: frame, isDestroyed: () => false },
-    window = { isDestroyed: () => false };
-  const registry = new Map<any, any>([[sender, { window, origin: 'https://moor.invalid' }]]),
+    window = { webContents: sender, isDestroyed: () => false };
+  const registry = new Map<any, any>([
+      [sender, { window, origin: 'https://moor.invalid', trustedClient }],
+    ]),
     event = { sender, senderFrame: frame };
   const dialogs: any[] = [],
     writes: any[] = [];
@@ -104,6 +111,114 @@ test('foreign senders, subframes, changed origins, changed target and concurrent
   f.release({ canceled: false, filePath: '/synthetic/result.txt' });
   await assert.rejects(next, /保存来源/);
   assert.equal(f.writes.length, 0);
+});
+
+test('current content authority requires the live registered window and frame before checking either document mode', () => {
+  for (const trustedClient of [false, true]) {
+    const f = fixture(trustedClient),
+      entry = f.registry.get(f.sender);
+    assert.equal(isCurrentContentDocument(entry, f.sender, f.frame), true);
+    for (const [registered, contents, frame] of [
+      [undefined, f.sender, f.frame],
+      [entry, undefined, f.frame],
+      [entry, f.sender, undefined],
+      [entry, f.sender, { ...f.frame }],
+      [entry, { ...f.sender }, f.frame],
+      [{ ...entry, window: { ...f.window, isDestroyed: () => true } }, f.sender, f.frame],
+      [{ ...entry, window: { ...f.window, webContents: {} } }, f.sender, f.frame],
+      [{ ...entry, origin: 'null' }, f.sender, f.frame],
+      [{ ...entry, origin: CLIENT_ORIGIN }, f.sender, f.frame],
+      [{ ...entry, origin: 'https://moor.invalid/' }, f.sender, f.frame],
+      [{ ...entry, origin: 'https://user:secret@moor.invalid' }, f.sender, f.frame],
+    ])
+      assert.equal(isCurrentContentDocument(registered, contents, frame), false);
+    f.sender.isDestroyed = () => true;
+    assert.equal(isCurrentContentDocument(entry, f.sender, f.frame), false);
+    assert.equal(
+      isCurrentContentDocument(
+        {
+          ...entry,
+          window: {
+            get isDestroyed() {
+              throw Error('destroyed');
+            },
+          },
+        },
+        f.sender,
+        f.frame,
+      ),
+      false,
+    );
+  }
+});
+
+test('trusted attachment source accepts only the explicitly registered canonical client document', async () => {
+  const f = fixture(true),
+    entry = f.registry.get(f.sender);
+  for (const url of [
+    'https://moor.invalid/',
+    'moor-client://app/',
+    'moor-client://app/remote',
+    'moor-client://app/remote/?',
+    'moor-client://app/remote/#',
+    'moor-client://app/remote/../remote/',
+    'moor-client://app/%72emote/',
+    'moor-client://APP/remote/',
+    'moor-client://app:443/remote/',
+    'moor-client://user:secret@app/remote/',
+    'moor-client://other/remote/',
+    'about:blank',
+    'file:///remote/',
+  ]) {
+    f.frame.url = url;
+    await assert.rejects(f.saver.save(f.event, payload), /保存来源/);
+  }
+  f.frame.url = CLIENT_URL;
+  for (const origin of ['null', 'https://moor.invalid', 'moor-client://other']) {
+    f.frame.origin = origin;
+    await assert.rejects(f.saver.save(f.event, payload), /保存来源/);
+  }
+  f.frame.origin = CLIENT_ORIGIN;
+  for (const trustedClient of [false, undefined, 'true', 1]) {
+    entry.trustedClient = trustedClient;
+    await assert.rejects(f.saver.save(f.event, payload), /保存来源/);
+  }
+  assert.equal(f.dialogs.length, 0);
+  assert.equal(f.writes.length, 0);
+  entry.trustedClient = true;
+  const accepted = f.saver.save(f.event, payload);
+  f.release({ canceled: false, filePath: '/synthetic/chosen/result.txt' });
+  assert.deepEqual(await accepted, { status: 'saved' });
+  assert.deepEqual(f.writes, [{ path: '/synthetic/chosen/result.txt', data: bytes }]);
+});
+
+test('a pending trusted attachment save cannot survive reload, changed account registration or frame replacement', async () => {
+  for (const change of [
+    (f: ReturnType<typeof fixture>) => f.saver.invalidate(f.sender),
+    (f: ReturnType<typeof fixture>) => {
+      f.sender.mainFrame = { ...f.frame };
+    },
+    (f: ReturnType<typeof fixture>) => {
+      f.registry.get(f.sender).origin = 'https://another-account.invalid';
+    },
+    (f: ReturnType<typeof fixture>) => {
+      f.registry.set(f.sender, { ...f.registry.get(f.sender) });
+    },
+    (f: ReturnType<typeof fixture>) => {
+      f.frame.url = 'moor-client://app/';
+      f.saver.invalidate(f.sender);
+      f.frame.url = CLIENT_URL;
+    },
+  ]) {
+    const f = fixture(true),
+      result = f.saver.save(f.event, payload),
+      rejected = assert.rejects(result, /保存来源|会话目标或页面已改变/);
+    assert.equal(f.dialogs.length, 1);
+    change(f);
+    f.release({ canceled: false, filePath: '/synthetic/chosen/result.txt' });
+    await rejected;
+    assert.equal(f.writes.length, 0);
+  }
 });
 test('scope, canonical base64, size, digest, filename and unexpected URL/path properties are bounded before any dialog', async () => {
   const f = fixture();

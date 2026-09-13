@@ -530,6 +530,23 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     'version',
   ]);
   assert.equal(webBridge.has('personal'), false);
+  assert.equal(webBridge.has('moorSecure'), false);
+  for (const senderFrame of [
+    reopened.webContents.mainFrame,
+    { ...reopened.webContents.mainFrame },
+  ]) {
+    const secure = await invoke(
+      'moor:secure-client',
+      { action: 'connect' },
+      {
+        sender: reopened.webContents,
+        senderFrame,
+      },
+    );
+    assert.equal(secure.ok, false);
+    assert.equal(secure.error.rejected, false);
+    assert.equal(secure.error.code, 'unavailable');
+  }
   await t.test(
     'Google handoff IPC rejects local content and unregistered sender frames',
     async () => {

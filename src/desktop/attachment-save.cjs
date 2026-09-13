@@ -1,6 +1,7 @@
 const { createHash, randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { isCurrentContentDocument } = require('./content-authority.cjs');
 const LIMIT = 8 * 1024 * 1024;
 const id = (value) => typeof value === 'string' && /^[A-Za-z0-9_:-]{1,160}$/.test(value);
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -58,22 +59,7 @@ function attachmentPayload(input) {
 function trustedContent(event, registry) {
   const entry = registry.get(event?.sender),
     frame = event?.senderFrame;
-  if (
-    !entry ||
-    entry.window.isDestroyed() ||
-    event.sender.isDestroyed() ||
-    frame !== event.sender.mainFrame ||
-    !frame
-  )
-    throw new Error('无效的附件保存来源');
-  let origin;
-  try {
-    origin = new URL(frame.url).origin;
-  } catch {
-    throw new Error('无效的附件保存来源');
-  }
-  if (origin !== entry.origin || frame.origin !== entry.origin)
-    throw new Error('附件保存来源已改变');
+  if (!isCurrentContentDocument(entry, event?.sender, frame)) throw new Error('无效的附件保存来源');
   return entry;
 }
 /** Write only a path chosen in the native save dialog, never a renderer path. */
@@ -129,10 +115,19 @@ function createAttachmentSaver({
     },
     async save(event, input) {
       const entry = trustedContent(event, registry),
-        epoch = epochs.get(event.sender) ?? 0;
+        epoch = epochs.get(event.sender) ?? 0,
+        documentUrl = event.senderFrame.url,
+        origin = entry.origin,
+        trustedClient = entry.trustedClient;
       const payload = attachmentPayload(input);
       const assertCurrent = () => {
-        if ((epochs.get(event.sender) ?? 0) !== epoch || trustedContent(event, registry) !== entry)
+        if (
+          (epochs.get(event.sender) ?? 0) !== epoch ||
+          trustedContent(event, registry) !== entry ||
+          event.senderFrame.url !== documentUrl ||
+          entry.origin !== origin ||
+          entry.trustedClient !== trustedClient
+        )
           throw new Error('保存期间会话目标或页面已改变，请重新下载。');
       };
       if (busy) throw new Error('请先完成当前附件保存对话框。');
