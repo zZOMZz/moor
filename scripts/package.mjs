@@ -29,6 +29,7 @@ const desktopFiles = [
   'skills-settings.cjs',
   'recovery.cjs',
   'agent-settings.cjs',
+  'device-metadata.cjs',
   'mcp-settings.cjs',
   'google-auth.cjs',
   'page-loader.cjs',

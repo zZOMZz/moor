@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deviceMetadataSchema } from '../device-metadata';
 import { agentSchema, id, localProjectSchema, runtimeWorkspaceSchema } from '../protocol';
 import { hostCommandSchema } from '../bridge/host-command';
 import { E2EE_RECORD_LIMITS, encryptedRecordSchema } from './e2ee-channel';
@@ -145,6 +146,7 @@ const encryptedCatalogV1Schema = z
   .object({
     catalogVersion: z.literal(1),
     machineId: id,
+    deviceMetadata: deviceMetadataSchema.optional(),
     workspaces: z.array(workspaceSchema).max(20),
   })
   .strict();

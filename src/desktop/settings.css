@@ -274,3 +274,7 @@ button:disabled {
     flex-wrap: wrap;
   }
 }
+#agent-program-status {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

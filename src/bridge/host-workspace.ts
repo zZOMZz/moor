@@ -6,6 +6,8 @@ import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '../model';
 import {
   AppError,
   AGENT_VERSIONS_FEATURE,
+  AGENT_MODEL_OPTIONS_FEATURE,
+  capabilityContextSchema,
   assert,
   sessionActionSchema,
   type Mutation,
@@ -22,6 +24,8 @@ import {
   type PermissionOutcome,
 } from '../runtime/agent';
 import { runCapabilitiesSchema } from '../run-config';
+import { agentProgramFingerprint } from '../runtime/agent-program';
+import { publicAgentFailure } from '../agent-errors';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
@@ -329,6 +333,7 @@ export class HostWorkspace {
       SKILLS_FEATURE,
       ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
+      AGENT_MODEL_OPTIONS_FEATURE,
       SESSION_CONTROL_FEATURE,
       ATTACHMENT_OPERATIONS_FEATURE,
       SESSION_TASKS_FEATURE,
@@ -413,8 +418,51 @@ export class HostWorkspace {
       }
     }
   }
-  agentDescriptor(a: AgentConfig) {
-    const options = runCapabilitiesSchema.safeParse(this.machine.get(['capabilities', a.id]));
+  private capabilityScope(a: AgentConfig, localProjectId: string, sessionId?: string) {
+    const project = this.workspace.projects.find((p) => p.id === localProjectId);
+    assert(project, 404, '能力检查的项目不可用');
+    const scope = {
+      workspaceId: this.workspace.id,
+      userId: this.workspace.userId,
+      machineId: this.workspace.machineId,
+      localProjectId,
+      ...(sessionId ? { sessionId } : {}),
+    };
+    const cwd = sessionId
+      ? this.executionLease({ ...scope, sessionId }, localProjectId).rootPath
+      : project.rootPath;
+    const path = realpathSync(cwd),
+      stat = lstatSync(path, { bigint: true });
+    assert(stat.isDirectory(), 409, '能力检查的执行目录不可用');
+    return {
+      ...scope,
+      programFingerprint: agentProgramFingerprint(a),
+      directoryFingerprint: createHash('sha256')
+        .update(JSON.stringify([path, String(stat.dev), String(stat.ino)]))
+        .digest('hex'),
+    };
+  }
+  agentDescriptor(a: AgentConfig, localProjectId?: string, sessionId?: string) {
+    let cached: any;
+    if (localProjectId) {
+      try {
+        const saved: any = this.machine.get([
+          'capabilityObservations',
+          a.id,
+          localProjectId,
+          sessionId ?? '',
+        ]);
+        const parsed = capabilityContextSchema.safeParse(saved?.context);
+        if (parsed.success) {
+          const { observedAt: _time, ...scope } = parsed.data;
+          if (isDeepStrictEqual(scope, this.capabilityScope(a, localProjectId, sessionId)))
+            cached = saved;
+        }
+      } catch {
+        /* Unavailable or replaced directories must not reuse old options. */
+      }
+    }
+    const options = runCapabilitiesSchema.safeParse(cached?.runConfig);
     const input = promptInputCapabilitiesSchema.safeParse(
       this.machine.get(['inputCapabilities', a.id]),
     );
@@ -424,6 +472,7 @@ export class HostWorkspace {
       cliType: a.cliType,
       agentType: a.agentType,
       runConfig: options.success ? options.data : undefined,
+      ...(options.success ? { capabilityContext: cached.context } : {}),
       inputCapabilities: input.success ? input.data : undefined,
     };
   }
@@ -441,7 +490,12 @@ export class HostWorkspace {
     );
     return agent;
   }
-  async refreshAgentOptions(agentId: string, localProjectId?: string, sessionId?: string) {
+  async refreshAgentOptions(
+    agentId: string,
+    localProjectId?: string,
+    sessionId?: string,
+    modelId?: string,
+  ) {
     return this.serial('capabilities/' + agentId, async () => {
       this.ensureConnected();
       const selectedProject =
@@ -478,6 +532,7 @@ export class HostWorkspace {
         }
       };
       const directory = directoryIdentity();
+      const capabilityScope = this.capabilityScope(agent, project.id, sessionId);
       const current = () => {
         this.ensureConnected();
         assert(
@@ -494,6 +549,11 @@ export class HostWorkspace {
           '能力检查的执行范围已变化',
         );
         assert(isDeepStrictEqual(directory, directoryIdentity()), 409, '能力检查的执行目录已变化');
+        assert(
+          isDeepStrictEqual(capabilityScope, this.capabilityScope(agent, project.id, sessionId)),
+          409,
+          '能力检查的程序或执行范围已变化，请重新读取',
+        );
         if (execution) {
           this.checkExecutionLease(execution);
           this.store.agents.assertCurrent(scope, agent);
@@ -507,28 +567,53 @@ export class HostWorkspace {
       current();
       let session: AgentSession;
       try {
-        session = await this.driver.open(agent, cwd, undefined, {
-          update: () => {},
-          permission: async () => ({ outcome: { outcome: 'cancelled' } }),
-        });
+        session = await this.driver.open(
+          agent,
+          cwd,
+          undefined,
+          { update: () => {}, permission: async () => ({ outcome: { outcome: 'cancelled' } }) },
+          { assertCurrent: current },
+        );
       } catch (error) {
         current();
         if (error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED) throw error;
-        throw new AppError(502, 'Agent 能力检查失败，请在执行电脑检查本机配置');
+        throw new AppError(
+          502,
+          publicAgentFailure(error, 'Agent 能力检查失败，请在执行电脑检查本机配置'),
+        );
       }
       try {
         current();
+        if (modelId && session.capabilities.models.some((m) => m.id === modelId)) {
+          assert(session.configureModel, 409, '此 Agent 尚不支持模型配置探测');
+          try {
+            await session.configureModel(modelId);
+          } catch (error) {
+            current();
+            throw new AppError(
+              502,
+              publicAgentFailure(error, 'Agent 模型配置检查失败，请刷新选项或检查执行电脑'),
+            );
+          }
+          current();
+        }
       } finally {
         try {
           await session.close();
         } catch {}
         current();
       }
-      this.machine.set(['capabilities', agentId], session.capabilities as never);
+      const runConfig = runCapabilitiesSchema.parse(session.capabilities);
+      this.machine.set(['capabilityObservations', agentId, project.id, sessionId ?? ''], {
+        context: { ...capabilityScope, observedAt: Date.now() },
+        runConfig,
+        ...(session.inputCapabilities ? { inputCapabilities: session.inputCapabilities } : {}),
+      } as never);
+      this.machine.set(['capabilities', agentId], runConfig as never);
       this.machine.set(['inputCapabilities', agentId], session.inputCapabilities as never);
       this.store.saveMachine();
       this.updateCatalogue();
-      return this.agentDescriptor(agent);
+      return this.agentDescriptor(agent, project.id, sessionId);
     });
   }
   async watch(sessionId: string, on: boolean) {
@@ -579,7 +664,7 @@ export class HostWorkspace {
       agent.id === metadata.agentConfigId &&
       agent.cliType === metadata.cliType &&
       agent.agentType === metadata.agentType
-        ? { agent: this.agentDescriptor(agent) }
+        ? { agent: this.agentDescriptor(agent, scope.localProjectId, sessionId) }
         : {}),
       meta: metas(this.meta)['session-' + sessionId],
       metaBundle: {
@@ -1600,7 +1685,17 @@ export class HostWorkspace {
     const validationWorkspace = boundAgent
       ? { ...this.workspace, agents: [this.agentDescriptor(boundAgent)] }
       : this.workspace;
-    const validated = validateMutation(original, this.meta, validationWorkspace, m);
+    const validated = validateMutation(
+      original,
+      this.meta,
+      validationWorkspace,
+      m,
+      (agentId, projectId, boundSessionId) => {
+        const config = boundAgent ?? this.store.agents.get(agentId);
+        assert(config?.id === agentId, 409, 'Agent 配置版本不可用');
+        return this.agentDescriptor(config, projectId, boundSessionId).runConfig;
+      },
+    );
     const meta = metas(validated.flock)['session-' + m.sessionId];
     if (!metas(this.meta)['session-' + m.sessionId])
       putMeta(validated.flock, 'session-' + m.sessionId, {
@@ -2063,7 +2158,10 @@ export class HostWorkspace {
                 [MCP_UNSUPPORTED_TRANSPORT, MCP_AUTHORIZATION_EXPIRED].includes(error.message)))
           )
             throw error;
-          throw new AppError(502, 'Agent 启动或恢复失败，请在执行电脑检查本机配置');
+          throw new AppError(
+            502,
+            publicAgentFailure(error, 'Agent 启动或恢复失败，请在执行电脑检查本机配置'),
+          );
         });
       run.session = session;
       if (run.stopped || this.closed) {

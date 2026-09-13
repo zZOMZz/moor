@@ -200,6 +200,7 @@ test('actual app keeps an existing session on its fixed Agent version, validates
     omitOldProjection = false,
     omitCurrentProjection = false,
     invalidOptions = false,
+    invalidOptionsScope = false,
     lost = true;
   let wrongProject: { kind: string; localProjectId?: string } | undefined;
   const receipts = new Map<string, unknown>();
@@ -258,6 +259,26 @@ test('actual app keeps an existing session on its fixed Agent version, validates
       } else if (url.pathname.endsWith('/agent-options')) {
         const agent = body.agentId === old.id ? old : current;
         result = { ...(invalidOptions ? current : agent), name: 'Refreshed ' + agent.name };
+        if (runtime.features.includes('agent-model-options-v1'))
+          result = {
+            ...result,
+            runConfig: {
+              ...agent.runConfig,
+              sessionKind: 'new',
+              defaultModelId: 'model-a',
+              currentModelId: body.modelId ?? 'model-a',
+            },
+            capabilityContext: {
+              workspaceId: runtime.id,
+              userId: runtime.userId,
+              machineId: runtime.machineId,
+              localProjectId: invalidOptionsScope ? 'other-project' : 'local-project',
+              ...(body.sessionId ? { sessionId: body.sessionId } : {}),
+              programFingerprint: 'a'.repeat(64),
+              directoryFingerprint: 'b'.repeat(64),
+              observedAt: 1000,
+            },
+          };
         await waitOptions?.();
       } else if (url.pathname.endsWith('/mutations')) {
         assert.deepEqual(storage.get(cacheKey + '/pending'), body);
@@ -551,6 +572,61 @@ test('actual app keeps an existing session on its fixed Agent version, validates
     assert.equal(field().value, '');
     await act(() => app.openSession(''));
     assert.equal(app.currentAgent().id, current.id);
+
+    // A current host refreshes known cached models on entry and on picker open,
+    // while the original-operation recovery above remains a manual action.
+    runtime.features = ['agent-versions-v1', 'agent-model-options-v1'];
+    await act(() => app.loadDevices());
+    const beforeProbe = options().length,
+      beforeMutations = mutations().length;
+    const automatic = signal();
+    waitOptions = async () => {
+      automatic.resolve();
+    };
+    await act(async () => {
+      await app.openSession('current-session', 'replica');
+      await automatic.promise;
+    });
+    waitOptions = undefined;
+    assert.equal(
+      options().length,
+      beforeProbe + 1,
+      'known options are refreshed on first modern entry',
+    );
+    assert.equal(
+      mutations().length,
+      beforeMutations,
+      'capability discovery never replays a user turn',
+    );
+    await type('Keep the model selection draft');
+    await click('模型');
+    assert.equal(
+      options().length,
+      beforeProbe + 2,
+      'opening the picker checks the actual program again',
+    );
+    const modelB = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (option) => option.textContent === 'Synthetic Model B',
+    );
+    assert.ok(modelB, 'model options stay visible while refreshed');
+    await act(async () => modelB.click());
+    assert.deepEqual(options().at(-1)!.body, {
+      agentId: current.id,
+      sessionId: 'current-session',
+      modelId: 'model-b',
+    });
+    assert.equal(field().value, 'Keep the model selection draft');
+    invalidOptionsScope = true;
+    await act(async () => {
+      await assert.rejects(app.refreshRunOptions(), /当前项目和会话/);
+    });
+    assert.equal(app.currentAgent().capabilityContext.localProjectId, 'local-project');
+    assert.equal(document.querySelector<HTMLButtonElement>('#send')!.disabled, true);
+    await act(async () => {
+      await assert.rejects(app.sendTurn(), /模型选项读取失败/);
+    });
+    assert.equal(field().value, 'Keep the model selection draft');
+    assert.equal(mutations().length, beforeMutations);
   } finally {
     await act(() => app.disposeUI());
     dom.window.close();

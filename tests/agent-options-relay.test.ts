@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { PROTOCOL } from '../src/protocol';
+import { PROTOCOL, AGENT_MODEL_OPTIONS_FEATURE } from '../src/protocol';
+import { agentModelFailures } from '../src/agent-errors';
 import type { Workspace } from '../src/catalog';
 import { syntheticRelay } from './support/synthetic-relay';
 import { syntheticCapabilities } from './support/agent-capabilities';
@@ -138,6 +139,44 @@ test('Agent options verifies reply ID, agent kind and bounded capability shapes'
     const response = await f.api(f.path, { agentId: 'agent' });
     assert.equal(response.status, 502);
     assert.doesNotMatch(JSON.stringify(await response.json()), /private invalid shape/);
+  }
+});
+
+test('model probes negotiate support, preserve scope, reject misplaced observations and retain fixed error guidance', async (t) => {
+  const f = await fixture();
+  t.after(f.close);
+  const input = { ...f.old, modelId: 'synthetic-model' };
+  assert.equal((await f.api(f.path, input)).status, 409);
+  assert.equal(f.peer.messages.filter((message) => message.method === 'agent-options').length, 0);
+  f.peer.runtime.features = [...(f.peer.runtime.features ?? []), AGENT_MODEL_OPTIONS_FEATURE];
+  await hello(f.peer);
+  assert.equal((await f.api(f.path, input)).status, 502, 'modern observations require scope');
+  const context = {
+    workspaceId: f.peer.runtime.id,
+    userId: f.peer.runtime.userId,
+    machineId: f.peer.runtime.machineId,
+    localProjectId: f.replica.localProjectId,
+    sessionId: f.old.sessionId,
+    programFingerprint: 'a'.repeat(64),
+    directoryFingerprint: 'b'.repeat(64),
+    observedAt: 1,
+  };
+  f.controls.transform = (value) => ({ ...value, capabilityContext: context });
+  assert.equal((await f.api(f.path, input)).status, 200);
+  assert.deepEqual(
+    f.peer.messages.filter((m) => m.method === 'agent-options').at(-1)!.params,
+    input,
+  );
+  for (const key of ['workspaceId', 'userId', 'machineId', 'localProjectId', 'sessionId']) {
+    f.controls.transform = (value) => ({
+      ...value,
+      capabilityContext: { ...context, [key]: 'another' },
+    });
+    assert.equal((await f.api(f.path, input)).status, 502);
+  }
+  for (const message of Object.values(agentModelFailures)) {
+    f.controls.error = { status: 502, message };
+    assert.match(JSON.stringify(await (await f.api(f.path, input)).json()), /Codex/);
   }
 });
 

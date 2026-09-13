@@ -39,7 +39,7 @@ export class Catalog {
     this.db.prepare('UPDATE workspace SET name=? WHERE id=?').run(name, id);
   }
   discover(owner: string, deviceId: string, workspaces: RuntimeWorkspace[]) {
-    this.db.exec('BEGIN IMMEDIATE');
+    this.db.exec('SAVEPOINT catalog_discover');
     try {
       const preferred = this.db
         .prepare('SELECT workspace_id FROM device WHERE id=? AND owner=?')
@@ -69,9 +69,9 @@ export class Catalog {
             .run(replicaId, projectId, hostId, local.id);
         }
       }
-      this.db.exec('COMMIT');
+      this.db.exec('RELEASE catalog_discover');
     } catch (e) {
-      this.db.exec('ROLLBACK');
+      this.db.exec('ROLLBACK TO catalog_discover; RELEASE catalog_discover');
       throw e;
     }
   }

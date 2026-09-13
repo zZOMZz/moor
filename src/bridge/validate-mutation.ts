@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { resolveRunSelection, selectionFromInput } from '../run-config';
+import { resolveRunSelection, selectionFromInput, type RunCapabilities } from '../run-config';
 import { assert, type Mutation, type RuntimeWorkspace } from '../protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '../model';
 import { promptAttachmentsSchema } from '../attachment-protocol';
@@ -17,6 +17,11 @@ export function validateMutation(
   originalFlock: Flock,
   ws: RuntimeWorkspace,
   m: Mutation,
+  runOptions?: (
+    agentId: string,
+    localProjectId: string,
+    sessionId?: string,
+  ) => RunCapabilities | undefined,
 ) {
   assert(m.kind === 'permission' || !m.permissionReview, 400, '审批审阅信息不能用于发送新指令');
   const name = 'session-' + m.sessionId,
@@ -163,10 +168,15 @@ export function validateMutation(
       '不允许远程注入启动配置',
     );
     let selectedConfig: ReturnType<typeof resolveRunSelection>;
+    // Resolve host-owned observations only after validating the metadata scope.
+    // A global catalogue entry cannot authorize another project's model choices.
+    const runConfig = runOptions
+      ? runOptions(agent.id, project.localProjectId, old ? m.sessionId : undefined)
+      : agent.runConfig;
     try {
       selectedConfig = resolveRunSelection(
-        selectionFromInput(turn.inputConfig, agent.runConfig),
-        agent.runConfig,
+        selectionFromInput(turn.inputConfig, runConfig),
+        runConfig,
       );
     } catch (e) {
       assert(false, 400, (e as Error).message);

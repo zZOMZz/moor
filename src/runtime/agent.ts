@@ -1,4 +1,5 @@
 import type { RunCapabilities } from '../run-config';
+import type { AgentProgramCheck } from './agent-program';
 import type { PromptInputCapabilities } from '../attachment-protocol';
 import type { QuestionAnswer, QuestionRequest } from '../interaction-protocol';
 import type { RuntimeFeatureReport, SessionEvent, SessionEventState } from './session-events';
@@ -77,6 +78,8 @@ export type AgentOpenOptions = {
 export type AgentSession = {
   id: string;
   capabilities: RunCapabilities;
+  /** Temporary capability probes only; changes configuration without sending a prompt. */
+  configureModel?(modelId: string): Promise<RunCapabilities>;
   inputCapabilities?: PromptInputCapabilities;
   // Protocol observations are distinct from implemented, safe driver actions.
   runtimeFeatures?: RuntimeFeatureReport;
@@ -90,6 +93,7 @@ export type AgentSession = {
   close(): void | Promise<void>;
 };
 export type AgentDriver = {
+  diagnose?(config: AgentConfig, cwd: string): Promise<AgentProgramCheck>;
   fork?(config: AgentConfig, input: AgentForkInput): Promise<AgentForkResult>;
   open(
     config: AgentConfig,

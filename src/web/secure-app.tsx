@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleStart } from './google-login';
+import { RunControls } from './ui';
+import { resolveRunSelection } from '../run-config';
+import { AGENT_MODEL_OPTIONS_FEATURE } from '../protocol';
 import {
   SecureWorkspaceController,
   type SecureWorkspaceState,
@@ -95,7 +98,8 @@ export type SecureUiController = Pick<
   | 'removePreviewSelection'
   | 'close'
   | 'invalidate'
->;
+> &
+  Partial<Pick<SecureWorkspaceController, 'saveRunSelection'>>;
 const failure = (value: unknown) =>
   value instanceof Error ? value.message : '操作尚未确认，请核对后手动继续。';
 const phaseLabels = {
@@ -780,7 +784,16 @@ function Composer({
           item.status === 'pending' ||
           !!secureAttachmentInputReason(item.reference, session.agent?.inputCapabilities),
       ));
+  const runSelection = state.runOptions?.selection ?? {};
+  let modelValidation = '';
+  try {
+    resolveRunSelection(runSelection, session.agent?.runConfig);
+  } catch (error) {
+    modelValidation = failure(error);
+  }
   const unavailable =
+    !!modelValidation ||
+    !!state.modelOptionsError ||
     !shownTarget ||
     !state.status?.connection ||
     state.busy ||
@@ -812,6 +825,7 @@ function Composer({
       return;
     const review = {
       target: structuredClone(shownTarget),
+      ...(state.runOptions ? { runOptions: structuredClone(state.runOptions) } : {}),
       attachments: structuredClone(state.attachmentDraft),
       mcpDraft: structuredClone(state.mcpDraft),
       previewAnnotations: structuredClone(
@@ -978,10 +992,58 @@ function Composer({
             run(() => controller.refreshAgentOptions(reviewedTarget));
           }}
         >
-          检查附件输入能力
+          刷新模型与附件能力
         </button>
         <span className="secure-muted">只检查此会话固定 Agent 的能力，不发送指令。</span>
       </div>
+      <RunControls
+        idPrefix="secure-"
+        capabilities={session.agent?.runConfig}
+        selection={runSelection}
+        agentType={session.agent?.agentType}
+        disabled={
+          !shownTarget ||
+          !state.runOptions ||
+          !controller.saveRunSelection ||
+          state.busy ||
+          running ||
+          blocked
+        }
+        loading={false}
+        canRefresh={!!shownTarget && !!state.status?.connection && !running && !blocked}
+        validation={modelValidation}
+        status={state.modelOptionsError}
+        existing={true}
+        onChange={(property, value) => {
+          if (!shownTarget || !controller.saveRunSelection) return;
+          const target = structuredClone(shownTarget);
+          const selection = {
+            ...runSelection,
+            [property]: value || undefined,
+            ...(property === 'modelId' ? { reasoningEffort: undefined } : {}),
+          };
+          run(async () => {
+            await controller.saveRunSelection!(target, selection);
+            if (
+              property === 'modelId' &&
+              state.status?.connection &&
+              workspace?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
+            )
+              await controller.refreshAgentOptions(target);
+          });
+        }}
+        onRefresh={() =>
+          shownTarget && run(() => controller.refreshAgentOptions(structuredClone(shownTarget)))
+        }
+        onOpenModels={() => {
+          if (
+            shownTarget &&
+            state.status?.connection &&
+            workspace?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
+          )
+            run(() => controller.refreshAgentOptions(structuredClone(shownTarget)));
+        }}
+      />
       <SecureAttachmentControls
         items={state.attachmentDraft}
         busy={state.busy}
@@ -1277,7 +1339,9 @@ export function SecureApp({
                     <option value="">选择并核对主机</option>
                     {connection.hosts.map((host) => (
                       <option key={host.deviceId} value={host.deviceId}>
-                        {host.deviceId}
+                        {host.deviceId === state.hostId && catalog?.deviceMetadata
+                          ? `${catalog.deviceMetadata.name} · ${host.deviceId}`
+                          : host.deviceId}
                       </option>
                     ))}
                   </select>
@@ -1288,7 +1352,10 @@ export function SecureApp({
               )}
               {catalog && (
                 <>
-                  <p className="secure-confirmed">已核对执行主机目录</p>
+                  <p className="secure-confirmed">
+                    已核对执行主机目录
+                    {catalog.deviceMetadata ? ` · ${catalog.deviceMetadata.name}` : ''}
+                  </p>
                   <label>
                     项目副本
                     <select

@@ -1,5 +1,11 @@
 import type { HostCommand, HostCommandMethod } from './bridge/host-command';
-import { AppError, agentSchema, runtimeWorkspaceSchema, type RuntimeWorkspace } from './protocol';
+import {
+  AppError,
+  agentSchema,
+  runtimeWorkspaceSchema,
+  AGENT_MODEL_OPTIONS_FEATURE,
+  type RuntimeWorkspace,
+} from './protocol';
 import {
   SESSION_RESPONSE_LIMITS,
   sessionListSchema,
@@ -280,11 +286,25 @@ export async function validateHostResponse(
           const result = agentSchema.parse(raw),
             selected = workspace.agents.find((a) => a.id === command.params.agentId);
           requireValue(
+            !workspace.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) ||
+              (result.capabilityContext && result.runConfig),
+          );
+          requireValue(
             (command.params.sessionId || selected) &&
               result.id === command.params.agentId &&
               (!selected ||
                 (result.cliType === selected.cliType && result.agentType === selected.agentType)),
           );
+          if (result.capabilityContext) {
+            const observed = result.capabilityContext;
+            requireValue(
+              observed.workspaceId === workspace.id &&
+                observed.userId === workspace.userId &&
+                observed.machineId === workspace.machineId &&
+                observed.localProjectId === command.localProjectId &&
+                observed.sessionId === command.params.sessionId,
+            );
+          }
           return result;
         }
         case 'mutate': {

@@ -4,6 +4,7 @@ import { SecureScopedStorage, secureGitTarget } from '../src/web/secure-scoped-s
 import { SecureStore, type SecureStorageBackend } from '../src/web/secure-store';
 import { gitWorkspaceKey } from '../src/web/git-workspace';
 import type { SecureCliTarget } from '../src/cli/secure-operation';
+import { SecureRunOptionsStore } from '../src/web/secure-run-options';
 
 const target: SecureCliTarget = {
   origin: 'https://synthetic.invalid',
@@ -71,6 +72,33 @@ function fixture() {
     store = new SecureScopedStorage(new SecureStore(memory));
   return { memory, store };
 }
+
+test('model drafts isolate full identity, preserve obsolete choices and reject stale writes', async () => {
+  const { store } = fixture(),
+    options = new SecureRunOptionsStore(store);
+  const initial = await options.read(target, 'turn', { modelId: 'old-model' }, current);
+  assert.equal(initial.inherited, true);
+  const saved = await options.save(
+    target,
+    initial,
+    { modelId: 'obsolete-model', reasoningEffort: 'legacy' },
+    current,
+  );
+  assert.equal(saved.inherited, false);
+  assert.deepEqual((await options.read(target, 'turn', {}, current)).selection, saved.selection);
+  await assert.rejects(options.save(target, initial, {}, current), /另一页面/);
+  for (const changed of [
+    { ...target, hostDeviceId: 'other-host' },
+    { ...target, sessionId: 'other-session' },
+    { ...target, localProjectId: 'other-project' },
+    { ...target, owner: 'other-account' },
+  ]) {
+    assert.deepEqual((await options.read(changed, 'turn', {}, current)).selection, {});
+  }
+  const nextTurn = await options.read(target, 'next-turn', { modelId: 'from-history' }, current);
+  assert.equal(nextTurn.inherited, true);
+  assert.deepEqual(nextTurn.selection, { modelId: 'from-history' });
+});
 
 test('extension records are isolated from legacy cache and all complete target dimensions', async () => {
   const { memory, store } = fixture();

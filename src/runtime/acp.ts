@@ -11,7 +11,9 @@ import {
   PROTOCOL_VERSION,
   type CreateElicitationResponse,
 } from '@agentclientprotocol/sdk';
-import { capabilities } from './capabilities';
+import { AcpConfiguration } from './capabilities';
+import { agentAdapterEntry, inspectAgentProgram } from './agent-program';
+import { identifyAgentModelFailure } from '../agent-errors';
 import {
   LOCAL_CODEX_NOT_INSTALLED,
   type AgentDriver,
@@ -123,6 +125,7 @@ const launchAcp = (command: string, args: string[], options: SpawnOptionsWithout
 // Injection changes only the owned child process. Protocol handling remains real.
 export function createAcpDriver(launch = launchAcp): AgentDriver {
   const driver: AgentDriver = {
+    diagnose: (config, cwd) => inspectAgentProgram(config, cwd),
     async fork(config, input) {
       validateForkInput(config, input);
       let source;
@@ -310,6 +313,8 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         }
       };
       const safeError = (error: unknown, message: string): unknown => {
+        const modelFailure = identifyAgentModelFailure(error);
+        if (modelFailure) return modelFailure;
         if (!mcp) return error;
         if (
           error instanceof AppError &&
@@ -380,6 +385,8 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         }
         if (!usable) throw new AppError(409, LOCAL_CODEX_NOT_INSTALLED);
       }
+      const entry = agentAdapterEntry(config);
+      if (!custom && !entry) throw new Error('不支持的 Agent');
       let child: ReturnType<typeof launch>;
       try {
         currentTaskTools();
@@ -393,7 +400,9 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               // sessions. Shell-inherited Git overrides must not redirect it.
               ...Object.fromEntries(
                 Object.entries(process.env).filter(
-                  ([key]) => !key.toUpperCase().startsWith('GIT_'),
+                  ([key]) =>
+                    !key.toUpperCase().startsWith('GIT_') &&
+                    (custom || config.agentType !== 'codex' || key !== 'CODEX_PATH'),
                 ),
               ),
               ...(configuredCodexPath ? { CODEX_PATH: configuredCodexPath } : {}),
@@ -422,10 +431,15 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         forkAnchor: ForkAnchorObservation;
       };
       let activeRun: Run | undefined,
+        configuring = false,
+        steeringPending = false,
         forking = false,
         eventState: SessionEventState | undefined,
         observedQuestion = false;
       const startupCommands = new Map<string, SessionEvent>();
+      const startupConfigurations = new Map<string, unknown>();
+      let configuration: AcpConfiguration | undefined,
+        configurationFault = false;
       const cancelQuestions = (run?: Run) => {
         for (const cancel of run?.questions.values() ?? []) cancel();
         run?.questions.clear();
@@ -489,6 +503,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             if (stopped || !currentCallback()) return;
             const normalized = normalizeSessionEvent(value.update);
             if (!activeSessionId) {
+              if (value.update.sessionUpdate === 'config_option_update') {
+                if (startupConfigurations.size >= 4 && !startupConfigurations.has(value.sessionId))
+                  startupConfigurations.delete(startupConfigurations.keys().next().value!);
+                startupConfigurations.set(value.sessionId, value.update.configOptions);
+              }
               // Session creation can emit command choices before its response. Keep
               // bounded snapshots and bind them only after the actual ID is known.
               if (normalized.status === 'accepted' && normalized.event.kind === 'commands') {
@@ -499,6 +518,14 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               return;
             }
             if (value.sessionId !== activeSessionId) return;
+            try {
+              if (value.update.sessionUpdate === 'config_option_update')
+                configuration?.replace(value.update.configOptions);
+              if (value.update.sessionUpdate === 'current_mode_update')
+                configuration?.mode(value.update.currentModeId);
+            } catch {
+              configurationFault = true;
+            }
             if (!acceptingUpdates || !activeRun || activeRun.cancelled) {
               if (normalized.status === 'accepted' && normalized.event.kind === 'commands')
                 observe(normalized.event);
@@ -595,7 +622,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
           return result;
         } catch (error) {
           currentTaskTools();
-          throw error;
+          throw identifyAgentModelFailure(error) ?? error;
         }
       }
       async function bounded<T>(work: () => Promise<T>, guard = true): Promise<T> {
@@ -662,7 +689,32 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         const initialCommands = startupCommands.get(id);
         if (initialCommands) observe(initialCommands);
         startupCommands.clear();
-        const choices = capabilities(response);
+        configuration = new AcpConfiguration(response, nativeId ? 'loaded' : 'new');
+        if (startupConfigurations.has(id)) configuration.replace(startupConfigurations.get(id));
+        startupConfigurations.clear();
+        const currentConfiguration = () => {
+          currentTaskTools();
+          assert(!configurationFault && !stopped, 409, 'Agent 当前配置不可验证，请重新读取能力');
+          return configuration!;
+        };
+        const applyModel = async (modelId: string) => {
+          resolveRunSelection({ modelId }, currentConfiguration().capabilities);
+          const result = await bounded(() =>
+            conn.setSessionConfigOption({
+              sessionId: id,
+              configId: currentConfiguration().modelConfigId,
+              value: modelId,
+            }),
+          );
+          currentConfiguration().replace(result.configOptions);
+          const observed = currentConfiguration().capabilities;
+          resolveRunSelection({ modelId }, observed);
+          assert(
+            !observed.currentModelId || observed.currentModelId === modelId,
+            409,
+            'Agent 未确认所选模型，请刷新模型选项',
+          );
+        };
         const inputCapabilities = {
           image: init.agentCapabilities?.promptCapabilities?.image === true,
           audio: init.agentCapabilities?.promptCapabilities?.audio === true,
@@ -677,7 +729,24 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         const nativeForkCapabilities = forkCapabilities(config, init);
         return {
           id,
-          capabilities: cleanTaskValue(choices),
+          get capabilities() {
+            assert(!configurationFault, 409, 'Agent 当前配置不可验证，请重新读取能力');
+            return cleanTaskValue(configuration!.capabilities);
+          },
+          async configureModel(modelId) {
+            assert(
+              !activeRun && !steeringPending && !forking && !configuring,
+              409,
+              'Agent 正在处理其他请求，无法检查模型配置',
+            );
+            configuring = true;
+            try {
+              await applyModel(modelId);
+              return cleanTaskValue(currentConfiguration().capabilities);
+            } finally {
+              configuring = false;
+            }
+          },
           inputCapabilities,
           interactionCapabilities,
           forkCapabilities: nativeForkCapabilities,
@@ -694,6 +763,8 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             if (
               stopped ||
               activeRun ||
+              configuring ||
+              steeringPending ||
               forking ||
               input.sourceNativeId !== id ||
               input.sourceCwd !== cwd ||
@@ -736,10 +807,14 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
           async prompt(input, binding) {
             currentTaskTools();
             assert(!stopped, 409, 'Agent 已停止');
-            assert(!activeRun, 409, 'Agent 已有活动回合');
+            assert(!activeRun && !steeringPending, 409, 'Agent 已有活动回合或待确认追加指令');
+            assert(!configuring, 409, 'Agent 有待确认的模型配置');
             assert(!forking, 409, 'Agent 的原生 Fork 尚未确认');
             const content = promptContent(input, inputCapabilities);
-            resolveRunSelection(selectionFromInput(input, choices), choices);
+            resolveRunSelection(
+              { modelId: input.modelId, modeId: input.modeId },
+              currentConfiguration().capabilities,
+            );
             const run: Run = {
               binding: binding ? runBindingSchema.parse(binding) : undefined,
               cancelled: false,
@@ -748,28 +823,32 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             };
             activeRun = run;
             try {
-              if (input.modelId)
-                await bounded(() =>
-                  conn.setSessionConfigOption({
-                    sessionId: id,
-                    configId:
-                      (response as any).configOptions?.find(
-                        (o: any) => o.category === 'model' || o.id === 'model',
-                      )?.id ?? 'model',
-                    value: input.modelId,
-                  }),
-                );
+              if (input.modelId) await applyModel(input.modelId);
               currentTaskTools();
+              const choices = currentConfiguration().capabilities;
+              currentConfiguration().validateValues(input.configOptionValues ?? {});
+              resolveRunSelection(selectionFromInput(input, choices), choices);
               if (input.modeId)
                 await bounded(() => conn.setSessionMode({ sessionId: id, modeId: input.modeId }));
               currentTaskTools();
               for (const [configId, value] of Object.entries(input.configOptionValues ?? {})) {
-                await bounded(() =>
+                currentConfiguration().validateValues({ [configId]: value });
+                const result = await bounded(() =>
                   conn.setSessionConfigOption({ sessionId: id, configId, value: String(value) }),
                 );
+                currentConfiguration().replace(result.configOptions);
                 currentTaskTools();
               }
               currentTaskTools();
+              const confirmed = currentConfiguration().capabilities;
+              currentConfiguration().validateValues(input.configOptionValues ?? {}, true);
+              assert(
+                !input.modelId ||
+                  !confirmed.currentModelId ||
+                  input.modelId === confirmed.currentModelId,
+                409,
+                'Agent 当前模型已变化，请重新选择',
+              );
               assert(!run.cancelled && !stopped, 409, '回合在发送前已取消');
               if (taskTools) {
                 try {

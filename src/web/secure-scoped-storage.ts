@@ -14,6 +14,7 @@ const prefixes = [
   'github-write-v1/',
   'project-preview-v1/',
   'preview-annotations-v1/',
+  'run-options-v1/',
 ] as const;
 const namespaces = [
   'git',
@@ -23,6 +24,7 @@ const namespaces = [
   'preview',
   'preview-annotations',
   'execution',
+  'run-options',
 ] as const;
 type Namespace = (typeof namespaces)[number];
 const recordSchema = z

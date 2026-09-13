@@ -6,9 +6,22 @@ export const runCapabilitiesSchema = z.object({
     .array(z.object({ id: value, name: value, description: z.string().max(4000).optional() }))
     .max(100),
   effortConfigId: value.optional(),
+  currentModelId: value.optional(),
+  currentModeId: value.optional(),
+  currentReasoningEffort: value.optional(),
+  // The initial model observed on a new session, not a guessed catalogue default.
+  defaultModelId: value.optional(),
+  sessionKind: z.enum(['new', 'loaded']).optional(),
 });
 export type RunCapabilities = z.infer<typeof runCapabilitiesSchema>;
-export type RunSelection = { modelId?: string; reasoningEffort?: string; modeId?: string };
+export const runSelectionSchema = z
+  .object({
+    modelId: value.optional(),
+    reasoningEffort: value.optional(),
+    modeId: value.optional(),
+  })
+  .strict();
+export type RunSelection = z.infer<typeof runSelectionSchema>;
 export function resolveRunSelection(selection: RunSelection, capabilities?: RunCapabilities) {
   const { modelId, reasoningEffort, modeId } = selection;
   const model = capabilities?.models.find((m) => m.id === modelId);

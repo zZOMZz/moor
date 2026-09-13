@@ -19,6 +19,14 @@ import {
 } from './agent';
 import type { RuntimeStore } from './store';
 import { localCodexPath, withLocalCodex } from '../bridge/local-codex';
+import {
+  localAgentProgram,
+  agentProgramCheckSchema,
+  agentProgramFingerprint,
+  type LocalAgentProgram,
+  type AgentProgramCheck,
+} from './agent-program';
+import { publicAgentFailure } from '../agent-errors';
 
 const revision = z
   .number()
@@ -59,6 +67,7 @@ export type AgentCheck = {
   runConfig?: RunCapabilities;
   inputCapabilities?: PromptInputCapabilities;
   error?: string;
+  program?: AgentProgramCheck;
 };
 export type AgentPreset = {
   id: string;
@@ -72,6 +81,7 @@ export type AgentPreset = {
   runConfig?: RunCapabilities;
   inputCapabilities?: PromptInputCapabilities;
   checked?: AgentCheck;
+  program?: LocalAgentProgram;
 };
 export type AgentSettingsState = { revision: number; presets: AgentPreset[] };
 const identitySchema = z
@@ -84,6 +94,7 @@ const checkedSchema = z
     runConfig: runCapabilitiesSchema.optional(),
     inputCapabilities: promptInputCapabilitiesSchema.optional(),
     error: z.string().max(200).optional(),
+    program: agentProgramCheckSchema.optional(),
   })
   .strict();
 const presetSchema = z
@@ -231,6 +242,10 @@ export class AgentSettings {
         const inputs = promptInputCapabilitiesSchema.safeParse(
           this.store.machine.get(['inputCapabilities', config.id]),
         );
+        let program: LocalAgentProgram | undefined;
+        try {
+          program = localAgentProgram(config);
+        } catch {}
         return {
           id: p.id,
           name: config.name,
@@ -238,6 +253,7 @@ export class AgentSettings {
           cliType: config.cliType,
           agentType: config.agentType,
           enabled: p.enabled,
+          ...(program ? { program } : {}),
           ...(config.customAcp
             ? { command: config.customAcp.command, args: [...config.customAcp.args] }
             : {}),
@@ -416,14 +432,38 @@ export class AgentSettings {
     let directory: string | undefined, session: AgentSession | undefined;
     let runConfig: RunCapabilities | undefined,
       inputs: PromptInputCapabilities | undefined,
-      ok = false,
-      checkError: string | undefined;
+      program: AgentProgramCheck | undefined,
+      errorMessage = failure,
+      ok = false;
     try {
       directory = realpathSync(mkdtempSync(join(tmpdir(), 'moor-agent-check-')));
-      session = await this.driver.open(config, directory, undefined, {
-        update: () => {},
-        permission: async () => ({ outcome: { outcome: 'cancelled' } }),
-      });
+      const current = () => {
+        this.expected(action.expectedRevision);
+        const pointer = this.store.machine.get(['agentPreset', preset.id]);
+        assert(
+          pointer === preset.versionId || (pointer === undefined && preset.id === preset.versionId),
+          409,
+          'Agent 版本已改变',
+        );
+        assert(
+          !program || program.fingerprint === agentProgramFingerprint(config),
+          409,
+          '诊断期间程序已变化，请重新检查',
+        );
+      };
+      if (this.driver.diagnose)
+        program = agentProgramCheckSchema.parse(await this.driver.diagnose(config, directory));
+      current();
+      session = await this.driver.open(
+        config,
+        directory,
+        undefined,
+        {
+          update: () => {},
+          permission: async () => ({ outcome: { outcome: 'cancelled' } }),
+        },
+        { assertCurrent: current },
+      );
       this.expected(action.expectedRevision);
       runConfig = runCapabilitiesSchema.parse(session.capabilities);
       inputs =
@@ -432,9 +472,10 @@ export class AgentSettings {
           : promptInputCapabilitiesSchema.parse(session.inputCapabilities);
       ok = true;
     } catch (error) {
+      errorMessage = publicAgentFailure(error, failure);
       ok = false;
       if (error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED)
-        checkError = error.message;
+        errorMessage = error.message;
     } finally {
       try {
         await session?.close();
@@ -443,6 +484,10 @@ export class AgentSettings {
       }
       if (directory) rmSync(directory, { recursive: true, force: true });
       this.checks.delete(preset.id);
+    }
+    if (program && program.fingerprint !== agentProgramFingerprint(config)) {
+      ok = false;
+      errorMessage = '诊断期间程序已变化，请重新检查；旧版本信息仅供对照';
     }
     // Settings edits, logout/replacement and shutdown invalidate any late check.
     return this.update(action.expectedRevision, (next) => {
@@ -455,9 +500,10 @@ export class AgentSettings {
       target.checked = {
         versionId: action.versionId,
         ok,
+        ...(program ? { program } : {}),
         ...(ok
           ? { runConfig, ...(inputs ? { inputCapabilities: inputs } : {}) }
-          : { error: checkError ?? failure }),
+          : { error: errorMessage }),
       };
       if (ok) {
         this.store.machine.set(['capabilities', action.versionId], runConfig as never);

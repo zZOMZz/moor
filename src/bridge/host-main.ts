@@ -40,6 +40,12 @@ import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
 import { McpSettings } from '../runtime/mcp-settings';
 import { AgentSettings } from '../runtime/agent-settings';
+import { HostDeviceMetadata } from '../runtime/device-metadata';
+import {
+  deviceMetadataSchema,
+  type DeviceMetadata,
+  type DeviceMetadataState,
+} from '../device-metadata';
 import { taskAuthoritySchema } from '../task-protocol';
 import {
   assertLocalCliConnectionPath,
@@ -451,6 +457,7 @@ type Target = {
   watches: Map<string, { workspaceId: string; sessionId: string }>;
   revoked: boolean;
   attentionReady?: boolean;
+  nameAcknowledged?: DeviceMetadata | null;
 };
 const targets: Target[] = [];
 let stopped = false,
@@ -458,6 +465,34 @@ let stopped = false,
   ready = false,
   refreshing = false,
   projectsRegistered = false;
+const deviceMetadata = new HostDeviceMetadata(runtime, values.name ?? hostname());
+// A standalone --name is an explicit operator edit. Desktop flags are a legacy
+// settings cache and must never overwrite the host's durable name on restart.
+if (!values.desktop && values.name && values.name.trim() !== deviceMetadata.read().name)
+  deviceMetadata.handle({
+    action: 'rename',
+    name: values.name,
+    expectedRevision: deviceMetadata.read().revision,
+  });
+function deviceMetadataState(): DeviceMetadataState {
+  const metadata = deviceMetadata.read(),
+    remote = targets.find((target) => !target.local);
+  const ack = remote?.nameAcknowledged;
+  const sync = !remote
+    ? 'unpaired'
+    : remote.revoked
+      ? 'revoked'
+      : remote.socket?.readyState !== WebSocket.OPEN
+        ? 'pending'
+        : ack === null
+          ? 'unsupported'
+          : !ack || ack.revision < metadata.revision
+            ? 'pending'
+            : ack.revision === metadata.revision && ack.name === metadata.name
+              ? 'synced'
+              : 'conflict';
+  return { metadata, sync };
+}
 const send = (ws: WebSocket | undefined, v: unknown) => {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(v));
 };
@@ -466,6 +501,7 @@ function reportHealth() {
   const remote = targets.find((t) => !t.local);
   process.send({
     type: 'health',
+    deviceMetadata: deviceMetadataState(),
     local: ready && workspaces.size > 0 ? 'ready' : 'unavailable',
     relay: secureEndpoint
       ? secureTransport?.ready
@@ -499,6 +535,7 @@ function hello() {
         type: 'hello',
         protocol: PROTOCOL,
         machineId,
+        deviceMetadata: deviceMetadata.read(),
         workspaces: [...workspaces.values()].filter((w) => !w.closed).map((w) => w.workspace),
         ...(target.config.actor ? { attentionActor: target.config.actor } : {}),
       });
@@ -647,6 +684,7 @@ async function connect(target: Target) {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(url, { headers: { Authorization: 'Bearer ' + target.config.token } });
   target.socket = ws;
+  target.nameAcknowledged = undefined;
   ws.on('open', () => {
     console.log('中转连接已建立');
     reportHealth();
@@ -665,6 +703,9 @@ async function connect(target: Target) {
       if (stopped || target.socket !== ws || target.revoked) return;
       const m = JSON.parse(raw.toString());
       if (m.type === 'ready') {
+        target.nameAcknowledged =
+          m.deviceMetadata === undefined ? null : deviceMetadataSchema.parse(m.deviceMetadata);
+        reportHealth();
         target.attentionReady = false;
         if (m.actor !== undefined && target.config.actor) {
           const actor = actorSchema.parse(m.actor);
@@ -975,7 +1016,7 @@ if (values.desktop || values.local) {
       ? localStore.createLogin('local-desktop')
       : await localStore.setup('local@localhost.invalid', token(), 'local-desktop');
     const owner = localStore.owner(secret),
-      device = localStore.localDevice(owner, values.name ?? hostname());
+      device = localStore.localDevice(owner, deviceMetadata.read().name);
     let cliProofSecret: string | undefined;
     localApp = createApp(localStore, {
       origin: 'http://127.0.0.1:0',
@@ -1075,6 +1116,38 @@ if (values.desktop) {
     return true;
   });
   process.on('message', (message) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      message.type === 'device-metadata'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+        stopped ||
+        !process.connected
+      )
+        return;
+      try {
+        const before = deviceMetadata.read();
+        const metadata = deviceMetadata.handle(request.action);
+        if (metadata.revision !== before.revision) {
+          hello();
+          reportHealth();
+        }
+        process.send?.({
+          type: 'device-metadata-result',
+          requestId: request.requestId,
+          ok: true,
+          state: deviceMetadataState(),
+        });
+      } catch {
+        process.send?.({ type: 'device-metadata-result', requestId: request.requestId, ok: false });
+      }
+      return;
+    }
     if (
       message &&
       typeof message === 'object' &&
@@ -1263,6 +1336,7 @@ if (secureEndpoint) {
       return encryptedHostCatalogSchema.parse({
         catalogVersion: 1,
         machineId,
+        deviceMetadata: deviceMetadata.read(),
         workspaces: [...workspaces.values()]
           .filter((host) => !host.closed)
           .map((host) => ({

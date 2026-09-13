@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { runCapabilitiesSchema } from './run-config';
 import { PERMISSION_REVIEW_MAX_BYTES } from './permission-review';
+import { deviceMetadataSchema } from './device-metadata';
 
 export const PROTOCOL = 3;
 export const AGENT_VERSIONS_FEATURE = 'agent-versions-v1';
+export const AGENT_MODEL_OPTIONS_FEATURE = 'agent-model-options-v1';
 export const id = z
   .string()
   .min(1)
@@ -14,12 +16,32 @@ export const localProjectSchema = z.object({
   name: z.string().max(200),
   rootPath: z.string().max(4096),
 });
+export const agentOptionsRequestSchema = z
+  .object({
+    agentId: id,
+    sessionId: id.optional(),
+    modelId: z.string().min(1).max(300).optional(),
+  })
+  .strict();
+export const capabilityContextSchema = z
+  .object({
+    workspaceId: id,
+    userId: z.string().min(1).max(200),
+    machineId: id,
+    localProjectId: id,
+    sessionId: id.optional(),
+    programFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    directoryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    observedAt: z.number().int().nonnegative(),
+  })
+  .strict();
 export const agentSchema = z.object({
   id,
   name: z.string().max(200),
   cliType: z.string(),
   agentType: z.string(),
   runConfig: runCapabilitiesSchema.optional(),
+  capabilityContext: capabilityContextSchema.optional(),
   inputCapabilities: z
     .object({ image: z.boolean(), audio: z.boolean(), embeddedContext: z.boolean() })
     .strict()
@@ -40,6 +62,7 @@ export const helloSchema = z.object({
   type: z.literal('hello'),
   protocol: z.literal(PROTOCOL),
   machineId: id,
+  deviceMetadata: deviceMetadataSchema.optional(),
   workspaces: z.array(runtimeWorkspaceSchema).max(20),
 });
 export const mutationSchema = z.object({

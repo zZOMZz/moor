@@ -16,6 +16,7 @@ import { AgentSettings } from '../src/runtime/agent-settings';
 import { RuntimeStore } from '../src/runtime/store';
 import type { AgentDriver, AgentSession } from '../src/runtime/agent';
 import { AppError } from '../src/protocol';
+import { inspectAgentProgram } from '../src/runtime/agent-program';
 
 const caps = { models: [{ id: 'synthetic', name: 'Synthetic', efforts: [] }], modes: [] };
 function signal<T = void>() {
@@ -67,6 +68,87 @@ function fixture(
   return { root, file, command, store, service, save, counts: () => ({ opens, changes }) };
 }
 const conflict = (e: unknown) => e instanceof AppError && e.status === 409;
+
+test('local Codex registration pins the discovered runtime and rejects source replacement', async (t) => {
+  const f = fixture(t),
+    savedPath = process.env.MOOR_CODEX_PATH;
+  process.env.MOOR_CODEX_PATH = f.command;
+  t.after(() => {
+    if (savedPath === undefined) delete process.env.MOOR_CODEX_PATH;
+    else process.env.MOOR_CODEX_PATH = savedPath;
+  });
+  let state = await f.service.handle({
+    action: 'builtin',
+    expectedRevision: 0,
+    agentType: 'codex',
+  });
+  const old = state.presets[0],
+    original = f.store.agents.get(old.versionId)!;
+  const scope = {
+    workspaceId: f.store.workspace.id,
+    userId: f.store.workspace.userId,
+    machineId: f.store.workspace.machineId,
+    localProjectId: 'project',
+    sessionId: 'saved-session',
+  };
+  f.store.agents.bind(scope, original);
+  assert.equal(state.presets[0].program?.source, 'local');
+  assert.equal(state.presets[0].program?.path, f.command);
+  await assert.rejects(
+    f.service.handle({
+      action: 'codex-source',
+      expectedRevision: state.revision,
+      id: old.id,
+      versionId: old.versionId,
+      source: 'bundled',
+    }),
+    (error: unknown) => error instanceof AppError && error.status === 400,
+  );
+  state = f.service.read();
+  assert.equal(state.presets[0].versionId, old.versionId);
+  assert.deepEqual(f.store.agents.binding(scope), original);
+  assert.equal(f.counts().opens, 0);
+});
+
+test('connection check records sanitized executable version even when ACP startup fails', async (t) => {
+  const f = fixture(t),
+    savedPath = process.env.MOOR_CODEX_PATH;
+  process.env.MOOR_CODEX_PATH = f.command;
+  t.after(() => {
+    if (savedPath === undefined) delete process.env.MOOR_CODEX_PATH;
+    else process.env.MOOR_CODEX_PATH = savedPath;
+  });
+  const service = new AgentSettings(f.store, {
+    diagnose: (config, cwd) =>
+      inspectAgentProgram(
+        config,
+        cwd,
+        async () => 'codex-cli 9.8.7',
+        () => 123,
+      ),
+    async open() {
+      throw new Error('private startup logs');
+    },
+  });
+  t.after(() => service.close());
+  const state = await service.handle({
+    action: 'builtin',
+    expectedRevision: 0,
+    agentType: 'codex',
+  });
+  const result = await service.handle({
+    action: 'check',
+    expectedRevision: state.revision,
+    id: state.presets[0].id,
+    versionId: state.presets[0].versionId,
+  });
+  assert.equal(result.presets[0].checked?.ok, false);
+  assert.equal(result.presets[0].checked?.program?.version, '9.8.7');
+  assert.doesNotMatch(JSON.stringify(result), /private startup logs/);
+  writeFileSync(f.command, 'synthetic newer program');
+  const observed = service.read().presets[0];
+  assert.notEqual(observed.program?.fingerprint, observed.checked?.program?.fingerprint);
+});
 
 test('local Agent settings save disabled without execution and edits preserve old session snapshots across restart', async (t) => {
   const f = fixture(t);

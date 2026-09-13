@@ -4,6 +4,7 @@ import { isDeepStrictEqual, promisify } from 'node:util';
 import { z } from 'zod';
 import { assert, type RuntimeWorkspace } from '../protocol';
 import { Catalog } from './catalog';
+import { deviceMetadataSchema, type DeviceMetadata } from '../device-metadata';
 import type { GoogleIdentity } from './google-oidc';
 const derive = promisify(scrypt);
 export const token = () => randomBytes(32).toString('base64url');
@@ -15,6 +16,7 @@ export type Device = {
   revoked: number;
   machine_id: string | null;
   catalog: string;
+  name_revision?: number;
 };
 type Account = {
   id: string;
@@ -93,6 +95,13 @@ export class Store {
           .some((c) => c.name === 'workspace_id')
       )
         this.db.exec(`ALTER TABLE ${table} ADD COLUMN workspace_id TEXT`);
+    if (
+      !this.db
+        .prepare('PRAGMA table_info(device)')
+        .all()
+        .some((c) => c.name === 'name_revision')
+    )
+      this.db.exec('ALTER TABLE device ADD COLUMN name_revision INTEGER NOT NULL DEFAULT 0');
   }
   close() {
     this.db.close();
@@ -312,19 +321,43 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO device(id,owner,name,token) VALUES(?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,token=excluded.token,revoked=0 WHERE device.owner=excluded.owner`,
+      ON CONFLICT(id) DO UPDATE SET token=excluded.token,revoked=0 WHERE device.owner=excluded.owner`,
       )
       .run(id, owner, name, hash(secret));
     return { id, token: secret };
   }
-  bind(d: Device, machineId: string, workspaces: RuntimeWorkspace[]) {
-    assert(!d.machine_id || d.machine_id === machineId, 409, '该配对已绑定另一台机器');
-    assert(
-      workspaces.every((w) => w.machineId === machineId),
-      400,
-      '工作区执行机器不匹配',
-    );
-    this.db.prepare('UPDATE device SET machine_id=? WHERE id=?').run(machineId, d.id);
-    this.catalog.discover(d.owner, d.id, workspaces);
+  bind(d: Device, machineId: string, workspaces: RuntimeWorkspace[], metadata?: DeviceMetadata) {
+    const incoming = metadata === undefined ? undefined : deviceMetadataSchema.parse(metadata);
+    return this.transaction(() => {
+      const current = this.device(d.owner, d.id);
+      assert(
+        !current.machine_id || current.machine_id === machineId,
+        409,
+        '该配对已绑定另一台机器',
+      );
+      assert(
+        workspaces.every((w) => w.machineId === machineId),
+        400,
+        '工作区执行机器不匹配',
+      );
+      const revision = Number(current.name_revision ?? 0);
+      if (incoming?.revision === revision)
+        assert(incoming.name === current.name, 409, '同一电脑名称版本的内容不一致');
+      // Old snapshots can restore presence but cannot roll back display metadata.
+      if (incoming && incoming.revision > revision)
+        this.db
+          .prepare('UPDATE device SET name=?,name_revision=? WHERE id=?')
+          .run(incoming.name, incoming.revision, d.id);
+      this.db.prepare('UPDATE device SET machine_id=? WHERE id=?').run(machineId, d.id);
+      this.catalog.discover(d.owner, d.id, workspaces);
+      const saved = this.device(d.owner, d.id);
+      return saved.name_revision
+        ? deviceMetadataSchema.parse({
+            version: 1,
+            name: saved.name,
+            revision: saved.name_revision,
+          })
+        : undefined;
+    });
   }
 }

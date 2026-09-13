@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { syntheticCapabilities } from './support/agent-capabilities';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import type { SecureAccountApi, SecureUiController } from '../src/web/secure-app';
@@ -298,6 +299,7 @@ function fake(initial = seed()) {
     'openSession',
     'refreshSession',
     'refreshAgentOptions',
+    'saveRunSelection',
     'createSession',
     'send',
     'respondPermission',
@@ -1723,12 +1725,12 @@ test('checking attachment input capability binds the shown session and never upl
   try {
     const shownTarget = structuredClone(view.controller.contentContext.target!);
     assert.equal(view.button('发送').disabled, true);
-    assert.equal(view.button('检查附件输入能力').disabled, false);
+    assert.equal(view.button('刷新模型与附件能力').disabled, false);
     assert.equal(
       view.calls.some((call) => call.name === 'refreshAgentOptions'),
       false,
     );
-    await view.click('检查附件输入能力');
+    await view.click('刷新模型与附件能力');
     assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [shownTarget] });
     assert.equal(
       view.calls.some(
@@ -1751,8 +1753,65 @@ test('checking attachment input capability binds the shown session and never upl
       if (variation === 'busy') next.busy = true;
       if (variation === 'running') next.session!.meta.status = { type: 'working' };
       await view.act(async () => view.update(next));
-      assert.equal(view.button('检查附件输入能力').disabled, true, variation);
+      assert.equal(view.button('刷新模型与附件能力').disabled, true, variation);
     }
+  } finally {
+    await view.cleanup();
+  }
+});
+
+test('encrypted model controls probe the displayed target, save selections, and keep obsolete choices visible', async () => {
+  const state = attachmentState();
+  state.attachmentDraft = [];
+  state.catalog!.workspaces[0].features!.push('agent-model-options-v1');
+  state.session!.agent!.runConfig = {
+    ...syntheticCapabilities,
+    sessionKind: 'new',
+    defaultModelId: 'model-a',
+  };
+  state.runOptions = { cacheRevision: 0, baseTurnId: '', selection: {}, inherited: true };
+  state.draft = 'Preserve encrypted model draft';
+  const view = await mount(state);
+  try {
+    const target = structuredClone(view.controller.contentContext.target!);
+    const picker = view.document.querySelector<HTMLButtonElement>('#secure-model')!;
+    assert.equal(picker.disabled, false);
+    assert.match(picker.textContent!, /发送时确认/);
+    await view.act(async () => picker.click());
+    assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [target] });
+    const model = [...view.document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (option) => option.textContent === 'Synthetic Model B',
+    );
+    assert.ok(model);
+    await view.act(async () => model.click());
+    const saving = view.calls.find((call) => call.name === 'saveRunSelection')!;
+    assert.deepEqual(saving.args[0], target);
+    assert.equal((saving.args[1] as any).modelId, 'model-b');
+    assert.equal(
+      view.calls.some((call) => call.name === 'send' || call.name === 'recover'),
+      false,
+    );
+    assert.equal(
+      view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!.value,
+      state.draft,
+    );
+    const stale = structuredClone(state);
+    stale.runOptions = {
+      cacheRevision: 1,
+      baseTurnId: '',
+      selection: { modelId: 'obsolete-model' },
+      inherited: false,
+    };
+    await view.act(async () => view.update(stale));
+    assert.match(
+      view.document.querySelector('#secure-model')!.textContent!,
+      /obsolete-model.*不可用/,
+    );
+    assert.equal(view.button('发送').disabled, true);
+    assert.equal(
+      view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!.value,
+      state.draft,
+    );
   } finally {
     await view.cleanup();
   }

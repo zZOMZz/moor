@@ -8,6 +8,7 @@ import { JSDOM } from 'jsdom';
 import { DesktopAgentSettings } from '../src/desktop/agent-settings.cjs';
 import { RuntimeStore } from '../src/runtime/store';
 import { AgentSettings } from '../src/runtime/agent-settings';
+import { inspectAgentProgram } from '../src/runtime/agent-program';
 import { syntheticCapabilities } from './support/agent-capabilities';
 
 function transport() {
@@ -213,6 +214,13 @@ test('actual Agent settings create, check, edit, enable and remove versions with
   const settings = new AgentSettings(
     store,
     {
+      diagnose: (config, cwd) =>
+        inspectAgentProgram(
+          config,
+          cwd,
+          async () => 'codex-cli 9.8.7',
+          () => 123,
+        ),
       async open(config, cwd, nativeId, callbacks) {
         opens++;
         launch.push(structuredClone(config));
@@ -387,6 +395,9 @@ test('actual Agent settings create, check, edit, enable and remove versions with
   assert.match(element('codex-runtime-status').textContent!, /本机 Codex 已登记，但连接检查失败/);
   assert.equal(opens, 2);
   assert.equal(prompts, 0);
+  assert.match(element('agent-program-status').textContent!, /9\.8\.7/);
+  assert.ok(element('agent-program-status').textContent!.includes(process.execPath));
+  assert.match(element('agent-program-status').textContent!, /ACP 适配器/);
   hold = true;
   const reading = click('agent-refresh');
   await Promise.resolve();

@@ -19,7 +19,8 @@ import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 import { SecureAttachments } from '../src/web/secure-attachments';
 import { SecureMcp } from '../src/web/secure-mcp';
 import { SecureGithubController } from '../src/web/secure-github';
-import { secureGitTarget } from '../src/web/secure-scoped-storage';
+import { secureGitTarget, SecureScopedStorage } from '../src/web/secure-scoped-storage';
+import { SecureRunOptionsStore } from '../src/web/secure-run-options';
 import { githubKey } from '../src/web/github';
 import { githubWriteKey } from '../src/web/github-write';
 import {
@@ -100,15 +101,20 @@ async function fixture(t: TestContext, uuid?: () => string) {
   let prompts = 0,
     cancels = 0;
   let callbacks!: AgentCallbacks;
+  const inputs: any[] = [];
   const host = new HostWorkspace(
     runtime,
     {
       open: async (_agent, _cwd, _nativeId, cb) => {
-        callbacks = cb;
+        let active = false;
         return {
           id: 'synthetic-native',
           capabilities: syntheticCapabilities,
-          prompt: async () => {
+          configureModel: async () => syntheticCapabilities,
+          prompt: async (input) => {
+            inputs.push(structuredClone(input));
+            active = true;
+            callbacks = cb;
             prompts++;
             started.resolve();
             await completion.promise;
@@ -117,7 +123,9 @@ async function fixture(t: TestContext, uuid?: () => string) {
             cancels++;
             completion.resolve();
           },
-          close: () => completion.resolve(),
+          close: () => {
+            if (active) completion.resolve();
+          },
         };
       },
     },
@@ -365,6 +373,7 @@ async function fixture(t: TestContext, uuid?: () => string) {
         ],
       }),
     prompts: () => prompts,
+    inputs,
     cancels: () => cancels,
     account: (value: typeof account) => {
       account = value;
@@ -604,6 +613,65 @@ test('explicit desktop workflow uses actual Host receipts and CRDT for create, r
   assert.equal(JSON.parse(stop.body).params.turnId, shown.id);
   assert.equal((stop.receipt as { confirmed: boolean }).confirmed, true);
   assert.equal(f.cancels(), 1);
+});
+
+test('encrypted model selection persists with its scope, refreshes capabilities, and is frozen in the original turn', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!;
+  assert.ok(
+    f.requests.some(
+      (request) => request.action === 'execute' && request.command.method === 'agent-options',
+    ),
+  );
+  assert.equal(f.prompts(), 0);
+  const selection = { modelId: 'model-b', reasoningEffort: 'medium', modeId: 'agent' };
+  await f.controller.saveRunSelection(target, selection);
+  await f.controller.refreshAgentOptions(target);
+  const check = f.requests.findLast(
+    (request) => request.action === 'execute' && request.command.method === 'agent-options',
+  );
+  assert.ok(check?.action === 'execute' && check.command.method === 'agent-options');
+  assert.equal(check.command.params.modelId, 'model-b');
+  await f.controller.refreshSession();
+  assert.deepEqual(f.controller.state.runOptions?.selection, selection);
+  await f.controller.saveDraft('Synthetic model choice');
+  f.fault.loseMutation = true;
+  await f.controller.send('Synthetic model choice');
+  await f.started.promise;
+  assert.equal(f.inputs[0].modelId, 'model-b');
+  assert.deepEqual(f.inputs[0].configOptionValues, { reasoning_effort: 'medium' });
+  const original = f.controller.state.operations.find((operation) => operation.kind === 'turn')!;
+  assert.equal(original.state, 'pending');
+  await f.controller.refreshSession();
+  assert.equal(f.prompts(), 1, 'reopening and probing never replay a pending turn');
+  assert.equal(
+    f.controller.state.operations.find(
+      (operation) => operation.operationId === original.operationId,
+    )?.body,
+    original.body,
+  );
+  assert.equal(f.controller.state.draft, 'Synthetic model choice');
+});
+
+test('a second page cannot silently replace the encrypted model choice used for sending', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!;
+  await f.controller.saveRunSelection(target, { modelId: 'model-a' });
+  const shown = f.controller.state.runOptions!;
+  const other = new SecureRunOptionsStore(new SecureScopedStorage(f.store));
+  await other.save(target, shown, { modelId: 'model-b' }, () => {});
+  await f.controller.saveDraft('Preserve this model draft');
+  const before = f.requests.length;
+  await assert.rejects(f.controller.send('Preserve this model draft'), /模型草稿.*另一页面/);
+  assert.equal(f.requests.length, before);
+  assert.equal(f.prompts(), 0);
+  assert.equal(f.controller.state.draft, 'Preserve this model draft');
+  await f.controller.refreshSession();
+  assert.deepEqual(f.controller.state.runOptions?.selection, { modelId: 'model-b' });
 });
 
 test('lost reply stays pending across controller restart; explicit inspect confirms original once without replay', async (t) => {

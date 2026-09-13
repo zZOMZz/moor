@@ -338,6 +338,7 @@ export function Picker({
   disabled,
   placeholder,
   onChange,
+  onOpen,
   allowEmpty = true,
   variant = 'compact',
 }: {
@@ -349,6 +350,7 @@ export function Picker({
   disabled?: boolean;
   placeholder: string;
   onChange: (value: string) => void;
+  onOpen?: () => void;
   allowEmpty?: boolean;
   variant?: 'compact' | 'context';
 }) {
@@ -361,6 +363,9 @@ export function Picker({
   ];
   return (
     <Select.Root
+      onOpenChange={(open) => {
+        if (open) onOpen?.();
+      }}
       value={allowEmpty ? (value ?? '') : value || null}
       onValueChange={(v) => {
         if (allowEmpty || v) onChange(v ?? '');
@@ -984,9 +989,11 @@ export type RunControlsProps = {
   loading: boolean;
   canRefresh: boolean;
   validation: string;
+  status?: string;
   existing: boolean;
   onChange: (key: keyof RunSelection, value: string) => void;
   onRefresh: () => void;
+  onOpenModels?: () => void;
 };
 export function RunControls(p: RunControlsProps) {
   const models = p.capabilities?.models ?? [];
@@ -1002,6 +1009,15 @@ export function RunControls(p: RunControlsProps) {
         }
       : {};
   const mode = modes.find((m) => m.id === p.selection.modeId);
+  const implicitModel = p.existing
+    ? p.capabilities?.sessionKind === 'loaded'
+      ? p.capabilities.currentModelId
+      : undefined
+    : p.capabilities?.defaultModelId;
+  const implicitName = models.find((m) => m.id === implicitModel)?.name ?? implicitModel;
+  const defaultLabel = p.existing
+    ? `沿用会话模型${implicitName ? ` · ${implicitName}` : '（发送时确认）'}`
+    : `Agent 默认${implicitName ? ` · ${implicitName}` : '（未确认）'}`;
   return (
     <>
       <div className="run-controls">
@@ -1012,7 +1028,8 @@ export function RunControls(p: RunControlsProps) {
           value={p.selection.modelId}
           items={models}
           disabled={p.disabled}
-          placeholder="Agent 默认"
+          placeholder={defaultLabel}
+          onOpen={p.onOpenModels}
           onChange={(v) => p.onChange('modelId', v)}
         />
         <Popover.Root>
@@ -1080,12 +1097,13 @@ export function RunControls(p: RunControlsProps) {
           </Popover.Portal>
         </Popover.Root>
       </div>
-      {(p.validation || p.loading || !p.capabilities) && (
+      {(p.validation || p.status || p.loading || !p.capabilities) && (
         <p
           className={`run-description ${p.validation ? 'invalid' : ''}`}
           role={p.validation ? 'alert' : 'status'}
         >
           {p.validation ||
+            p.status ||
             (p.loading
               ? '正在读取模型与权限选项…'
               : '暂未获取选项，可在运行设置中刷新；留空沿用 Agent 设置。')}

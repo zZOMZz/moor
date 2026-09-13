@@ -28,6 +28,10 @@ const { DesktopPreviewSettings } = require('./preview-settings.cjs');
 const { DesktopSkillsSettings } = require('./skills-settings.cjs');
 const { DesktopAgentSettings } = require('./agent-settings.cjs');
 const { DesktopMcpSettings } = require('./mcp-settings.cjs');
+const {
+  DesktopDeviceMetadata,
+  publicState: deviceMetadataState,
+} = require('./device-metadata.cjs');
 const { DesktopGoogleAuth } = require('./google-auth.cjs');
 const { DesktopSecureBridge } = require('./secure-client.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
@@ -86,6 +90,8 @@ const previewSettings = new DesktopPreviewSettings({ bridge: () => bridge });
 const skillsSettings = new DesktopSkillsSettings({ bridge: () => bridge });
 const agentSettings = new DesktopAgentSettings({ bridge: () => bridge });
 const mcpSettings = new DesktopMcpSettings({ bridge: () => bridge });
+const deviceMetadata = new DesktopDeviceMetadata({ bridge: () => bridge });
+let deviceNameState;
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -351,6 +357,7 @@ function showSettings() {
     previewSettings.invalidate();
     skillsSettings.invalidate();
     agentSettings.invalidate();
+    deviceMetadata.invalidate();
     mcpSettings.invalidate();
   });
   void settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
@@ -386,6 +393,7 @@ function health() {
     },
     recovering,
     notifications: nativeNotifications.state(),
+    ...(deviceNameState ? { deviceMetadata: deviceNameState } : {}),
     ...(cliUnavailable
       ? {
           cli: {
@@ -436,6 +444,7 @@ function startBridge() {
     if (skillsSettings.receive(child, message)) return;
     if (agentSettings.receive(child, message)) return;
     if (mcpSettings.receive(child, message)) return;
+    if (deviceMetadata.receive(child, message)) return;
     if (message?.type === 'notification') {
       let status = 'failed';
       try {
@@ -456,6 +465,9 @@ function startBridge() {
       return;
     }
     if (message?.type === 'health') {
+      try {
+        deviceNameState = deviceMetadataState(message.deviceMetadata);
+      } catch {}
       if (
         ['ready', 'unavailable'].includes(message.local) &&
         ['unpaired', 'connected', 'reconnecting', 'revoked'].includes(message.relay)
@@ -520,6 +532,8 @@ function startBridge() {
     previewSettings.disconnect(child);
     skillsSettings.disconnect(child);
     agentSettings.disconnect(child);
+    deviceMetadata.disconnect(child);
+    if (deviceNameState) deviceNameState = { ...deviceNameState, sync: 'pending' };
     mcpSettings.disconnect(child);
     if (bridge !== child) return;
     bridge = null;
@@ -555,6 +569,8 @@ async function restartBridgeOnce() {
   if (old) previewSettings.disconnect(old);
   if (old) skillsSettings.disconnect(old);
   if (old) agentSettings.disconnect(old);
+  if (old) deviceMetadata.disconnect(old);
+  if (deviceNameState) deviceNameState = { ...deviceNameState, sync: 'pending' };
   if (old) mcpSettings.disconnect(old);
   bridge = null;
   if (old && old.exitCode === null && old.signalCode === null) {
@@ -574,6 +590,9 @@ ipcMain.handle('personal:settings', (event) => {
   trusted(event);
   return {
     ...settings,
+    name: deviceNameState?.metadata.name ?? settings.name,
+    projects: [...settings.projects],
+    agents: [...settings.agents],
     status: hostStatus.message,
     health: health(),
     paired: fs.existsSync(bridgeFile),
@@ -587,6 +606,22 @@ ipcMain.handle('personal:health', (event) => {
   trusted(event);
   return health();
 });
+async function changeDeviceMetadata(event, action) {
+  trusted(event);
+  const sender = event.sender,
+    frame = event.senderFrame;
+  const state = await deviceMetadata.request(action, () => {
+    try {
+      trusted({ sender, senderFrame: frame });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  deviceNameState = state;
+  return state;
+}
+ipcMain.handle('personal:device-metadata', (event, action) => changeDeviceMetadata(event, action));
 ipcMain.handle('personal:github-config', (event, value) => {
   trusted(event);
   const sender = event.sender,
@@ -711,7 +746,8 @@ ipcMain.handle('personal:save', async (event, value) => {
   trusted(event);
   const server = endpoint(String(value.server ?? '').trim()),
     name = String(value.name ?? '').trim();
-  if (!name || name.length > 100) throw new Error('请输入电脑名称');
+  if (!name || name.length > 100 || /[\u0000-\u001f\u007f]/.test(name))
+    throw new Error('请输入有效的电脑名称');
   if (
     !Array.isArray(value.projects) ||
     value.projects.length > 100 ||
@@ -737,6 +773,20 @@ ipcMain.handle('personal:save', async (event, value) => {
     write(bridgeFile, { server, ...result });
   }
   const changed = settings.server !== server;
+  const restartRequired =
+    changed ||
+    !!code ||
+    JSON.stringify([...new Set(value.projects)].sort()) !==
+      JSON.stringify([...settings.projects].sort()) ||
+    JSON.stringify([...new Set(agents)].sort()) !== JSON.stringify([...settings.agents].sort());
+  // Connection/project recovery must remain available while the host is down.
+  // Only an actual rename needs a reviewed host revision and live private IPC.
+  if (name !== (deviceNameState?.metadata.name ?? settings.name))
+    await changeDeviceMetadata(event, {
+      action: 'rename',
+      name,
+      expectedRevision: value.nameRevision,
+    });
   if (changed) {
     googleAuth.invalidate();
     secureClient.invalidate();
@@ -759,8 +809,8 @@ ipcMain.handle('personal:save', async (event, value) => {
     secureWindow.close();
     secureWindow = null;
   }
-  await restartBridge();
-  return { ok: true, paired: Boolean(code) };
+  if (restartRequired) await restartBridge();
+  return { ok: true, paired: Boolean(code), deviceMetadata: deviceNameState };
 });
 ipcMain.handle('personal:notification-settings', (event, value) => {
   trusted(event);
@@ -845,6 +895,7 @@ else {
     previewSettings.close();
     skillsSettings.close();
     agentSettings.close();
+    deviceMetadata.close();
     mcpSettings.close();
     googleAuth.close();
     secureClient.close();

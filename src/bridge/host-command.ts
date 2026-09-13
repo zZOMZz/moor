@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AppError, assert, id, mutationSchema, sessionActionSchema } from '../protocol';
+import { agentOptionsRequestSchema } from '../protocol';
 import type { HostWorkspace } from './host-workspace';
 import { sessionBase64Schema, sessionCancelSchema } from '../session-responses';
 import { projectFileReadSchema } from '../content-protocol';
@@ -80,7 +81,7 @@ export const HOST_COMMAND_METHODS = [
 export type HostCommandMethod = (typeof HOST_COMMAND_METHODS)[number];
 export const hostCommandSchemas = {
   sessions: z.object({}).strict(),
-  'agent-options': z.object({ agentId: id, sessionId: id.optional() }).strict(),
+  'agent-options': agentOptionsRequestSchema,
   session: z
     .object({
       sessionId: id,
@@ -248,6 +249,7 @@ export class HostCommandDispatcher {
         command.params.agentId,
         command.localProjectId,
         command.params.sessionId,
+        command.params.modelId,
       );
     else if (command.method === 'session')
       result = await workspace.read(

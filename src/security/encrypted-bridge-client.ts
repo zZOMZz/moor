@@ -422,6 +422,14 @@ export class EncryptedBridgeClient {
       // silently remove its operation binding on this connection.
       const previous = this.#catalogs.get(pending.hostId);
       if (
+        previous?.deviceMetadata &&
+        (!catalog.deviceMetadata ||
+          catalog.deviceMetadata.revision < previous.deviceMetadata.revision ||
+          (catalog.deviceMetadata.revision === previous.deviceMetadata.revision &&
+            catalog.deviceMetadata.name !== previous.deviceMetadata.name))
+      )
+        fail();
+      if (
         previous?.catalogVersion === 2 &&
         (catalog.catalogVersion !== 2 || catalog.products.revision < previous.products.revision)
       )

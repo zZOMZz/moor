@@ -271,6 +271,51 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       'personal:mcp-config',
     ])
       assert.throws(() => invoke(method, { action: 'read' }, event), /无效的本机设置请求/);
+  await t.test(
+    'saving only the reviewed computer name preserves the running desktop host',
+    async () => {
+      const reading = invoke('personal:device-metadata', { action: 'read' });
+      const request = children[0].sent.at(-1);
+      children[0].emit('message', {
+        type: 'device-metadata-result',
+        requestId: request.requestId,
+        ok: true,
+        state: {
+          metadata: { version: 1, name: 'Synthetic desktop', revision: 1 },
+          sync: 'unpaired',
+        },
+      });
+      assert.equal((await reading).metadata.revision, 1);
+      const count = children.length;
+      const saving = invoke('personal:save', {
+        server: '',
+        name: 'Renamed desktop',
+        nameRevision: 1,
+        projects: [],
+        agents: [],
+        code: '',
+      });
+      const rename = children[0].sent.at(-1);
+      assert.equal(rename.type, 'device-metadata');
+      assert.equal(rename.action.name, 'Renamed desktop');
+      children[0].emit('message', {
+        type: 'device-metadata-result',
+        requestId: rename.requestId,
+        ok: true,
+        state: { metadata: { version: 1, name: 'Renamed desktop', revision: 2 }, sync: 'pending' },
+      });
+      assert.equal((await saving).deviceMetadata.metadata.revision, 2);
+      assert.equal(children.length, count, 'name-only save cannot restart execution');
+      assert.equal(
+        JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).name,
+        'Renamed desktop',
+      );
+      await assert.rejects(
+        invoke('personal:device-metadata', { action: 'read' }, { sender: {}, senderFrame: {} }),
+        /无效的本机设置请求/,
+      );
+    },
+  );
   const previewReading = invoke('personal:preview-config', { action: 'read' });
   const previewRequest = children[0].sent.at(-1);
   assert.equal(previewRequest.type, 'preview-config');
@@ -469,6 +514,16 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   });
   dom.window.eval(await readFile(resolve('src/desktop/settings.js'), 'utf8'));
   await Promise.resolve();
+  await Promise.resolve();
+  const initialNameRead = children[0].sent.findLast(
+    (message: any) => message.type === 'device-metadata',
+  );
+  children[0].emit('message', {
+    type: 'device-metadata-result',
+    requestId: initialNameRead.requestId,
+    ok: true,
+    state: { metadata: { version: 1, name: 'Renamed desktop', revision: 2 }, sync: 'unpaired' },
+  });
   await Promise.resolve();
   assert.equal(notices.length, 0);
   const enable = dom.window.document.querySelector<HTMLButtonElement>('#notifications-enable')!;

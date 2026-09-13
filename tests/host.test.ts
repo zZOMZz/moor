@@ -421,6 +421,13 @@ test('unsupported models, efforts, permission modes and launch settings fail bef
     strict.equal(f.journal.has(m.operationId), false);
   }
   strict.equal(f.dispatches(), 0);
+  // The global legacy cache still contains valid choices, but it cannot replace
+  // the missing project observation when accepting an explicit model selection.
+  f.store.machine.set(['capabilityObservations', 'agent-a', 'project-a', ''], undefined as never);
+  const withoutScope = request(f, 'unscoped-model', { modelId: 'model-a' });
+  await strict.rejects(f.host.mutate(withoutScope), /模型/);
+  strict.equal(f.journal.has(withoutScope.operationId), false);
+  strict.equal(f.dispatches(), 0);
 });
 
 function sessionAction(

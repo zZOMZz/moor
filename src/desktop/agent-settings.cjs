@@ -91,9 +91,26 @@ function capabilities(value) {
   });
   if (value.effortConfigId !== undefined && !string(value.effortConfigId, 300))
     throw new Error('Agent effort 不可验证');
+  const observed = {};
+  for (const field of [
+    'currentModelId',
+    'currentModeId',
+    'currentReasoningEffort',
+    'defaultModelId',
+  ]) {
+    if (value[field] === undefined) continue;
+    if (!string(value[field], 300)) throw new Error('Agent 当前配置不可验证');
+    observed[field] = value[field];
+  }
+  if (value.sessionKind !== undefined) {
+    if (!['new', 'loaded'].includes(value.sessionKind))
+      throw new Error('Agent 会话能力来源不可验证');
+    observed.sessionKind = value.sessionKind;
+  }
   return {
     models,
     modes,
+    ...observed,
     ...(value.effortConfigId === undefined ? {} : { effortConfigId: value.effortConfigId }),
   };
 }
@@ -123,11 +140,55 @@ function publicState(value) {
       launch = { command: preset.command, args: [...preset.args] };
     }
     let checked;
+    let program;
+    const fingerprint = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+    const version = (value) =>
+      string(value, 100) && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(value);
+    if (preset.program !== undefined) {
+      const p = preset.program;
+      if (
+        !object(p) ||
+        !['custom', 'local', 'bundled', 'adapter'].includes(p.source) ||
+        !string(p.path, 4096) ||
+        !isAbsolute(p.path) ||
+        !fingerprint(p.fingerprint) ||
+        (p.adapterName !== undefined && !string(p.adapterName, 200)) ||
+        (p.adapterVersion !== undefined && !version(p.adapterVersion))
+      )
+        throw new Error('Agent 程序诊断不可验证');
+      program = {
+        source: p.source,
+        path: p.path,
+        fingerprint: p.fingerprint,
+        ...(p.adapterName === undefined ? {} : { adapterName: p.adapterName }),
+        ...(p.adapterVersion === undefined ? {} : { adapterVersion: p.adapterVersion }),
+      };
+    }
     if (preset.checked !== undefined) {
       const value = preset.checked;
       if (!object(value) || value.versionId !== preset.versionId || typeof value.ok !== 'boolean')
         throw new Error('Agent 检查版本不可验证');
       let inputCapabilities;
+      let programCheck;
+      if (value.program !== undefined) {
+        const p = value.program;
+        if (
+          !object(p) ||
+          !fingerprint(p.fingerprint) ||
+          !Number.isSafeInteger(p.observedAt) ||
+          p.observedAt < 0 ||
+          !['reported', 'unavailable', 'not-applicable'].includes(p.versionStatus) ||
+          (p.version !== undefined && !version(p.version)) ||
+          (p.versionStatus === 'reported') !== (p.version !== undefined)
+        )
+          throw new Error('Agent 程序检查结果不可验证');
+        programCheck = {
+          fingerprint: p.fingerprint,
+          observedAt: p.observedAt,
+          versionStatus: p.versionStatus,
+          ...(p.version === undefined ? {} : { version: p.version }),
+        };
+      }
       if (value.inputCapabilities !== undefined) {
         if (
           !object(value.inputCapabilities) ||
@@ -143,6 +204,7 @@ function publicState(value) {
       checked = {
         versionId: value.versionId,
         ok: value.ok,
+        ...(programCheck ? { program: programCheck } : {}),
         ...(value.runConfig === undefined ? {} : { runConfig: capabilities(value.runConfig) }),
         ...(inputCapabilities ? { inputCapabilities } : {}),
         ...(!value.ok
@@ -163,6 +225,7 @@ function publicState(value) {
       agentType: preset.agentType,
       enabled: preset.enabled,
       ...launch,
+      ...(program ? { program } : {}),
       ...(checked ? { checked } : {}),
     };
   });

@@ -265,6 +265,7 @@
         >
         <label class="check"><input id="agent-enabled" type="checkbox" />用于新会话</label>
         <p id="agent-version"></p>
+        <p id="agent-program-status" role="status"></p>
         <p id="agent-check-status" role="status"></p>
         <div class="actions">
           <button type="button" id="agent-save">登记自定义 ACP</button>
@@ -393,8 +394,13 @@
       </fieldset>
     </details>
     <form id="settings">
-      <label>电脑名称<input id="name" maxlength="100" required /></label
-      ><label
+      <label>电脑名称<input id="name" maxlength="100" required /></label>
+      <div class="actions">
+        <button type="button" id="name-save" disabled>保存电脑名称</button>
+        <button type="button" id="name-refresh">重新读取名称</button>
+      </div>
+      <p id="name-status" role="status">正在读取电脑名称…</p>
+      <label
         >个人服务地址<input id="server" type="url" placeholder="https://moor.example.com" /></label
       ><label
         >配对码<input id="code" autocomplete="off" placeholder="在 Web 的“添加电脑”中获取" /></label

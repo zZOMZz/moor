@@ -450,6 +450,36 @@ test('the finite client exchanges actual WebSocket HPKE records and keeps catalo
   assert.equal(timers.entries.size, 0);
 });
 
+test('authenticated device names remain encrypted and reject rollback, omission and conflicting same revisions', async (t) => {
+  for (const next of [
+    undefined,
+    { version: 1, name: 'Old', revision: 1 },
+    { version: 1, name: 'Conflict', revision: 2 },
+  ]) {
+    const f = await fixture(t);
+    const named: EncryptedCatalog = {
+      ...structuredClone(catalog),
+      deviceMetadata: { version: 1 as const, name: 'SYNTHETIC_PRIVATE_DEVICE', revision: 2 },
+    };
+    const read = await f.readCatalog(named);
+    assert.ok(named.deviceMetadata);
+    assert.equal(read.deviceMetadata?.name, named.deviceMetadata.name);
+    assert.ok(!JSON.stringify(f.socket.sent).includes(named.deviceMetadata.name));
+    const refreshing = f.client.catalog('host');
+    const rejected = assert.rejects(refreshing);
+    const request = await f.next();
+    f.socket.deliver({
+      protocol: 4,
+      type: 'record',
+      record: await f.response(request, {
+        ok: true,
+        result: { ...catalog, ...(next ? { deviceMetadata: next } : {}) },
+      }),
+    });
+    await rejected;
+  }
+});
+
 test('readiness is an untrusted discovery hint; valid ciphertext is required before any catalog or command result', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.client.hosts(), [f.descriptor]);

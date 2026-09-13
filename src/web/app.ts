@@ -136,6 +136,7 @@ import {
 import { Flock, LoroDoc, decode, encode, delta, vv, mirror, putMeta, metas } from '../model';
 import {
   AGENT_VERSIONS_FEATURE,
+  AGENT_MODEL_OPTIONS_FEATURE,
   agentSchema,
   type Mutation,
   type RuntimeWorkspace,
@@ -150,6 +151,7 @@ import {
   type PendingSessionAction,
 } from './session-actions';
 import { resolveRunSelection, selectionFromInput, type RunSelection } from '../run-config';
+import { publicAgentFailure } from '../agent-errors';
 import type { Workspace, ProjectReplica } from '../catalog';
 import * as cache from './cache';
 import { esc, renderItem, renderFileChanges } from './content';
@@ -3860,6 +3862,7 @@ function connect() {
   ws.onopen = () => {
     if (events !== ws) return;
     connected = true;
+    capabilityAttempts.clear();
     clearRecoveredNotice();
     renderNavigation();
     renderTarget();
@@ -3877,6 +3880,8 @@ function connect() {
   ws.onclose = () => {
     if (events !== ws || !owner) return;
     connected = false;
+    runOptionsGeneration++;
+    runOptionsLoading = false;
     currentMcp()?.invalidate('执行电脑连接已关闭；原 MCP 选择保留，请手动重新读取。');
     currentTasks()?.invalidate('执行电脑连接已关闭，请手动重新读取任务状态。');
     invalidateRoles('执行电脑连接已关闭，请手动重新读取角色。');
@@ -3960,6 +3965,7 @@ function connect() {
 async function loadDevices() {
   if (!authenticated) return;
   const requestedOwner = owner;
+  const wasSelectedOffline = selected?.online === false;
   const [fresh, spaces]: [Device[], Workspace[]] = await Promise.all([
     api('/api/devices'),
     api('/api/workspaces'),
@@ -3988,6 +3994,11 @@ async function loadDevices() {
   ]);
   if (selected) {
     selected = devices.find((d) => d.id === selected!.id);
+    if (wasSelectedOffline && selected?.online) {
+      capabilityAttempts.clear();
+      runOptionsGeneration++;
+      runOptionsLoading = false;
+    }
     workspace = selected?.workspaces.find((w) => w.id === workspace?.id);
     if (
       !selected ||
@@ -4024,6 +4035,8 @@ async function loadDevices() {
     !selectionLoading
   )
     await selectDevice(selected.id);
+  if (wasSelectedOffline && selected?.online && workspace && !sessionId && !selectionLoading)
+    await restoreRunOptions();
   updateComposer();
 }
 function watch() {
@@ -4097,7 +4110,7 @@ function renderNewSessionControls() {
     }
     selectReplica();
     if (field === 'project') void loadAttachmentDraft().catch(error);
-    if (field === 'agent') void restoreRunOptions().catch(error);
+    void restoreRunOptions().catch(error);
     void cache.write(key('options'), { project: newProjectId, agent: newAgentId }).catch(error);
   };
   showNewSessionControls({
@@ -5024,7 +5037,16 @@ let runSelection: RunSelection = {},
   runOptionsReady = false;
 let runOptionsGeneration = 0;
 let runSelectionTouched = false;
-const capabilityAttempts = new Set<string>();
+let runOptionsError = '';
+const capabilityAttempts = new Map<string, number>();
+function runOptionsScopeKey() {
+  return [runOptionsKey(), replica?.localProjectId, sessionId || 'new', supportsModelProbe()].join(
+    '/',
+  );
+}
+function supportsModelProbe() {
+  return workspace?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) === true;
+}
 function currentAgent() {
   if (sessionAgentError) return;
   if (sessionId && sessionAgent?.id === meta?.agentConfigId) return sessionAgent;
@@ -5052,6 +5074,7 @@ async function restoreRunOptions() {
     session = sessionGeneration;
   runOptionsReady = false;
   runOptionsLoading = false;
+  runOptionsError = '';
   updateComposer();
   const current = currentRunInput();
   const saved = await cache.read<{ base: string; selection: RunSelection }>(runOptionsKey());
@@ -5063,17 +5086,16 @@ async function restoreRunOptions() {
       : selectionFromInput(current.input, currentAgent()?.runConfig);
   runOptionsReady = true;
   updateComposer();
-  const attempt = [owner, selected?.id, workspace?.id, currentAgent()?.id].join('/');
+  const attempt = runOptionsScopeKey();
   if (
-    !currentAgent()?.runConfig &&
-    currentAgent()?.cliType === 'builtin' &&
+    (supportsModelProbe() ||
+      (!currentAgent()?.runConfig && currentAgent()?.cliType === 'builtin')) &&
     connected &&
     selected?.online &&
     replica?.available &&
     !pending &&
-    !capabilityAttempts.has(attempt)
+    (!capabilityAttempts.has(attempt) || Date.now() - capabilityAttempts.get(attempt)! >= 60_000)
   ) {
-    capabilityAttempts.add(attempt);
     void refreshRunOptions().catch(error);
   }
 }
@@ -5081,13 +5103,18 @@ async function refreshRunOptions() {
   const agent = currentAgent();
   if (!agent || runOptionsLoading || pending || sending) return;
   const generation = runOptionsGeneration,
-    session = sessionGeneration;
+    session = sessionGeneration,
+    scopeKey = runOptionsScopeKey();
+  if (capabilityAttempts.size >= 500) capabilityAttempts.clear();
+  capabilityAttempts.set(scopeKey, Date.now());
   runOptionsLoading = true;
+  runOptionsError = '';
   updateComposer();
   try {
     const updated = agentSchema.parse(
       await api(prefix() + '/agent-options', {
         agentId: agent.id,
+        ...(supportsModelProbe() && runSelection.modelId ? { modelId: runSelection.modelId } : {}),
         ...(sessionId && workspace?.features?.includes(AGENT_VERSIONS_FEATURE)
           ? { sessionId }
           : {}),
@@ -5096,6 +5123,7 @@ async function refreshRunOptions() {
     if (
       generation !== runOptionsGeneration ||
       session !== sessionGeneration ||
+      scopeKey !== runOptionsScopeKey() ||
       currentAgent()?.id !== agent.id
     )
       return;
@@ -5105,6 +5133,19 @@ async function refreshRunOptions() {
       updated.agentType !== agent.agentType
     )
       throw new Error('模型选项不属于当前会话的 Agent 版本。');
+    if (supportsModelProbe() && (!updated.capabilityContext || !updated.runConfig))
+      throw new Error('模型选项未包含已确认的执行范围。');
+    if (updated.capabilityContext) {
+      const observed = updated.capabilityContext;
+      if (
+        observed.workspaceId !== workspace?.id ||
+        observed.userId !== workspace.userId ||
+        observed.machineId !== workspace.machineId ||
+        observed.localProjectId !== replica?.localProjectId ||
+        observed.sessionId !== (sessionId || undefined)
+      )
+        throw new Error('模型选项不属于当前项目和会话。');
+    }
     Object.assign(currentAgent()!, updated);
     // Recover an effort field from the saved native turn when capabilities were initially unavailable.
     if (!runSelectionTouched && !pending && !runSelection.reasoningEffort) {
@@ -5112,6 +5153,18 @@ async function refreshRunOptions() {
       if (inherited.modelId === runSelection.modelId)
         runSelection.reasoningEffort = inherited.reasoningEffort;
     }
+  } catch (cause) {
+    if (
+      generation !== runOptionsGeneration ||
+      session !== sessionGeneration ||
+      scopeKey !== runOptionsScopeKey()
+    )
+      return;
+    runOptionsError = publicAgentFailure(
+      cause,
+      '模型选项读取失败；保留原选择，请刷新或检查执行电脑。',
+    );
+    throw cause;
   } finally {
     if (generation === runOptionsGeneration && session === sessionGeneration) {
       runOptionsLoading = false;
@@ -5141,6 +5194,7 @@ function renderRunOptions() {
     loading: runOptionsLoading,
     canRefresh: connected && !!selected?.online && !!replica?.available,
     validation,
+    status: runOptionsError,
     existing: !!sessionId,
     onChange: (property, value) => {
       if (roleApplying) roleDraftAbort?.abort();
@@ -5158,10 +5212,15 @@ function renderRunOptions() {
         selection: { ...runSelection },
       }).catch(error);
       updateComposer();
+      if (property === 'modelId' && supportsModelProbe()) void refreshRunOptions().catch(error);
     },
     onRefresh: () => run(refreshRunOptions),
+    onOpenModels: () => {
+      if (supportsModelProbe() && connected && selected?.online && replica?.available)
+        void refreshRunOptions().catch(error);
+    },
   });
-  return !!validation;
+  return !!validation || !!runOptionsError;
 }
 
 function updateComposer() {
@@ -5418,6 +5477,8 @@ async function sendTurn() {
     await submit(pending);
     return;
   }
+  if (runOptionsError) throw new Error(runOptionsError);
+  if (runOptionsLoading) throw new Error('请等待模型选项读取完成。');
   if (tasksSendReason()) throw new Error(tasksSendReason());
   if (mcpSendReason()) throw new Error(mcpSendReason());
   if (sessionPersistenceError) throw new Error(sessionPersistenceError);

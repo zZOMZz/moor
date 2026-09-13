@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -18,7 +18,7 @@ function signal() {
   });
   return { promise, resolve };
 }
-function fixture(t: { after(fn: () => unknown): void }) {
+function fixture(t: { after(fn: () => unknown): void }, realProgram = false) {
   const root = mkdtempSync(join(tmpdir(), 'moor-agent-binding-'));
   const store = new RuntimeStore(':memory:');
   const project = store.registerProject(root);
@@ -28,8 +28,12 @@ function fixture(t: { after(fn: () => unknown): void }) {
     cliType: 'custom',
     agentType: 'synthetic',
     machineId: store.workspace.machineId,
-    customAcp: { command: '/synthetic/agent-v1', args: ['--synthetic-secret-v1'] },
+    customAcp: {
+      command: realProgram ? join(root, 'synthetic-cli') : '/synthetic/agent-v1',
+      args: ['--synthetic-secret-v1'],
+    },
   };
+  if (realProgram) writeFileSync(config.customAcp!.command, 'synthetic version 1');
   store.registerAgent('synthetic-preset', config);
   const opened: { config: AgentConfig; cwd: string; nativeId?: string }[] = [];
   const prompts: unknown[] = [];
@@ -426,6 +430,67 @@ test('capability refresh rejects a missing cwd before opening the Agent', async 
   rmSync(f.root, { recursive: true });
   await assert.rejects(f.host.refreshAgentOptions(f.config.id, f.project), /执行目录.*不可用/);
   assert.equal(f.opened.length, 0);
+});
+
+test('model observations are isolated by project and session and invalidated by program replacement', async (t) => {
+  const f = fixture(t, true);
+  const first = await f.host.refreshAgentOptions(f.config.id, f.project);
+  assert.deepEqual(first.runConfig, syntheticCapabilities);
+  assert.equal(first.capabilityContext.localProjectId, f.project);
+  assert.equal(first.capabilityContext.sessionId, undefined);
+  assert.equal(JSON.stringify(first).includes(f.root), false, 'paths remain on the execution host');
+  assert.equal(JSON.stringify(first).includes('synthetic-secret'), false);
+  assert.equal(
+    f.host.agentDescriptor(f.config).runConfig,
+    undefined,
+    'global catalogue does not claim project options',
+  );
+  assert.deepEqual(f.host.agentDescriptor(f.config, f.project).runConfig, syntheticCapabilities);
+  const otherRoot = join(f.root, 'other');
+  mkdirSync(otherRoot);
+  const other = f.store.registerProject(otherRoot);
+  f.host.updateCatalogue();
+  assert.equal(f.host.agentDescriptor(f.config, other).runConfig, undefined);
+  const second = await f.host.refreshAgentOptions(f.config.id, other);
+  assert.notEqual(
+    second.capabilityContext.directoryFingerprint,
+    first.capabilityContext.directoryFingerprint,
+  );
+  await f.host.mutate(f.request(), f.project);
+  await f.settle();
+  assert.equal((await f.host.read('session', undefined, f.project)).agent?.runConfig, undefined);
+  await f.host.refreshAgentOptions(f.config.id, f.project, 'session');
+  assert.deepEqual(
+    (await f.host.read('session', undefined, f.project)).agent?.runConfig,
+    syntheticCapabilities,
+  );
+  writeFileSync(f.config.customAcp!.command, 'synthetic version 2 with new model discovery');
+  assert.equal(f.host.agentDescriptor(f.config, f.project).runConfig, undefined);
+  assert.equal((await f.host.read('session', undefined, f.project)).agent?.runConfig, undefined);
+  const updated = await f.host.refreshAgentOptions(f.config.id, f.project);
+  assert.notEqual(
+    updated.capabilityContext.programFingerprint,
+    first.capabilityContext.programFingerprint,
+  );
+});
+
+test('an in-place program upgrade during a held capability probe rejects the late observation', async (t) => {
+  const f = fixture(t, true),
+    held = signal(),
+    release = signal();
+  f.opening(async () => {
+    held.resolve();
+    await release.promise;
+  });
+  t.after(release.resolve);
+  const rejected = assert.rejects(f.host.refreshAgentOptions(f.config.id, f.project), /程序.*变化/);
+  await held.promise;
+  writeFileSync(f.config.customAcp!.command, 'synthetic replacement with different metadata');
+  release.resolve();
+  await rejected;
+  assert.equal(f.host.agentDescriptor(f.config, f.project).runConfig, undefined);
+  assert.equal(f.closes(), 1);
+  assert.equal(f.prompts.length, 0);
 });
 
 test('an Agent launch error never persists private executable paths or arguments', async (t) => {

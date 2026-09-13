@@ -31,6 +31,17 @@ test('host resolves installed Codex without running a shell or consulting remote
   );
   assert.throws(() => localCodexPath({ MOOR_CODEX_PATH: 'codex' }, () => true));
   assert.throws(() => localCodexPath({ MOOR_CODEX_PATH: '/missing' }, () => false));
+  assert.equal(
+    localCodexPath(
+      { PATH: 'relative::/synthetic/cli:/synthetic/other' },
+      (path) => path === '/synthetic/cli/codex',
+    ),
+    '/synthetic/cli/codex',
+  );
+  assert.equal(
+    localCodexPath({ PATH: 'relative:.' }, () => true),
+    join(homedir(), '.local', 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex'),
+  );
 });
 
 test('existing personal agent gains local runtime override without changing identity or manual overrides', () => {

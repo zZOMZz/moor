@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { AGENT_MODEL_OPTIONS_FEATURE } from '../protocol';
+import { selectionFromInput, runSelectionSchema, type RunSelection } from '../run-config';
+import { publicAgentFailure } from '../agent-errors';
+import { SecureRunOptionsStore, type SecureRunOptions } from './secure-run-options';
 import { hostCommandSchema, type HostCommand } from '../bridge/host-command';
 import {
   desktopSecureRequestSchema,
@@ -146,6 +150,7 @@ export type SecureSendReview = {
   attachments: SecureAttachmentDraft[];
   mcpDraft?: SecureMcpDraft | null;
   previewAnnotations?: PreviewAnnotation[];
+  runOptions?: SecureRunOptions;
 };
 const contentReadMethods: ReadonlySet<string> = new Set<SecureContentReadMethod>([
   'read-project-tree',
@@ -174,6 +179,8 @@ export type SecureWorkspaceState = {
   permissionReviews: SecurePermissionReview[];
   notice: string | null;
   busy: boolean;
+  runOptions?: SecureRunOptions;
+  modelOptionsError?: string;
 };
 type DeviceRequest = Extract<
   DesktopSecureRequest,
@@ -233,6 +240,7 @@ export class SecureWorkspaceController {
   #attachments: SecureAttachments;
   #mcp: SecureMcp;
   readonly extensionStorage: SecureScopedStorage;
+  #runOptions: SecureRunOptionsStore;
   readonly previewAnnotations: SecurePreviewAnnotations;
   #uuid: () => string;
   #now: () => string;
@@ -249,6 +257,7 @@ export class SecureWorkspaceController {
     this.#attachments = new SecureAttachments(this.#store);
     this.#mcp = new SecureMcp(this.#store);
     this.extensionStorage = new SecureScopedStorage(this.#store);
+    this.#runOptions = new SecureRunOptionsStore(this.extensionStorage);
     this.previewAnnotations = new SecurePreviewAnnotations(this.#store, this.extensionStorage);
     this.#uuid = options.uuid ?? (() => crypto.randomUUID());
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -969,6 +978,8 @@ export class SecureWorkspaceController {
     this.#state.session = null;
     this.#state.permissionReviews = [];
     this.#state.draft = '';
+    this.#state.runOptions = undefined;
+    this.#state.modelOptionsError = undefined;
     this.#state.attachmentDraft = [];
     this.#state.mcpDraft = null;
     this.#state.previewAnnotations = [];
@@ -985,6 +996,21 @@ export class SecureWorkspaceController {
       const mcpDraft = await this.#mcp.read(target, current);
       const annotations = await this.previewAnnotations.read(target, current);
       const block = await this.#executionBlock(target, current);
+      const lastInput = read.history.findLast((turn) => turn.role === 'user');
+      const parsedInput = z
+        .object({
+          modelId: z.string().optional(),
+          modeId: z.string().optional(),
+          configOptionValues: z.unknown().optional(),
+        })
+        .safeParse(lastInput?.inputConfig ?? {});
+      if (!parsedInput.success) throw Error('历史模型设置无法读取，请核对会话。');
+      const runOptions = await this.#runOptions.read(
+        target,
+        lastInput?.id ?? '',
+        selectionFromInput(parsedInput.data, read.agent?.runConfig),
+        current,
+      );
       current();
       this.#state.session = read;
       const reviews = sessionPermissionReviews(read, scope(target));
@@ -999,6 +1025,22 @@ export class SecureWorkspaceController {
       this.#state.mcpDraft = mcpDraft;
       this.#state.previewAnnotations = annotations;
       this.#state.extensionBlock = block;
+      this.#state.runOptions = runOptions;
+      if (
+        this.#state.catalog?.workspaces
+          .find((w) => w.id === target.workspaceId)
+          ?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
+      ) {
+        try {
+          await this.#refreshAgentOptions(target, current, false);
+        } catch (error) {
+          current();
+          this.#state.modelOptionsError = publicAgentFailure(
+            error,
+            '模型选项暂不可读取；原选择保留，请刷新选项或检查执行电脑。',
+          );
+        }
+      }
     });
   }
   async refreshSession() {
@@ -1188,25 +1230,73 @@ export class SecureWorkspaceController {
   }
   async refreshAgentOptions(inputTarget: SecureCliTarget) {
     const shown = secureTargetSchema.parse(structuredClone(inputTarget));
+    if (!same(shown, this.contentContext.target))
+      throw Error('能力检查目标已改变，请重新核对当前会话。');
     return this.#run(async (current) => {
-      const target = this.#attachmentTarget(),
-        lease = this.#lease(),
-        read = this.#state.session!;
-      if (!same(target, shown) || !same(target, this.#target(target.sessionId)))
-        throw Error('能力检查目标已改变，请重新核对当前会话。');
-      const workspace = this.#state.catalog!.workspaces.find(
-        (entry) => entry.id === target.workspaceId,
-      )!;
-      const command = this.#command(target, 'agent-options', {
-        agentId: read.meta.agentConfigId,
-        sessionId: target.sessionId,
-      });
-      const raw = await this.#execute(lease, target, command);
-      const updated = await validateHostResponse(raw, { command, workspace, current });
-      current();
-      this.#state.session = { ...read, agent: agentSchema.parse(updated) };
-      this.#state.notice = '已读取此会话固定 Agent 的能力，未发送指令。';
+      try {
+        await this.#refreshAgentOptions(shown, current);
+      } catch (error) {
+        current();
+        this.#state.modelOptionsError = publicAgentFailure(
+          error,
+          '模型选项暂不可读取；原选择保留，请刷新选项或检查执行电脑。',
+        );
+        throw error;
+      }
     });
+  }
+  async saveRunSelection(inputTarget: SecureCliTarget, selection: RunSelection) {
+    const shown = secureTargetSchema.parse(structuredClone(inputTarget)),
+      selected = runSelectionSchema.parse(selection);
+    return this.#run(async (current) => {
+      if (!same(shown, this.#attachmentTarget()) || !this.#state.runOptions)
+        throw Error('模型设置目标已改变，请重新读取会话。');
+      this.#state.runOptions = await this.#runOptions.save(
+        shown,
+        this.#state.runOptions,
+        selected,
+        current,
+      );
+      current();
+    });
+  }
+  async #refreshAgentOptions(shown: SecureCliTarget, current: () => void, announce = true) {
+    const target = this.#attachmentTarget(),
+      lease = this.#lease(),
+      read = this.#state.session!;
+    if (!same(target, shown) || !same(target, this.#target(target.sessionId)))
+      throw Error('能力检查目标已改变，请重新核对当前会话。');
+    const workspace = this.#state.catalog!.workspaces.find(
+      (entry) => entry.id === target.workspaceId,
+    )!;
+    const command = this.#command(target, 'agent-options', {
+      agentId: read.meta.agentConfigId,
+      sessionId: target.sessionId,
+      ...(workspace.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) &&
+      this.#state.runOptions?.selection.modelId
+        ? { modelId: this.#state.runOptions.selection.modelId }
+        : {}),
+    });
+    const raw = await this.#execute(lease, target, command);
+    const updated = await validateHostResponse(raw, { command, workspace, current });
+    current();
+    this.#state.session = { ...read, agent: agentSchema.parse(updated) };
+    if (this.#state.runOptions?.inherited) {
+      const last = read.history.findLast((turn) => turn.role === 'user');
+      const input = z
+        .object({
+          modelId: z.string().optional(),
+          modeId: z.string().optional(),
+          configOptionValues: z.unknown().optional(),
+        })
+        .safeParse(last?.inputConfig ?? {});
+      if (input.success)
+        this.#state.runOptions.selection = JSON.parse(
+          JSON.stringify(selectionFromInput(input.data, this.#state.session.agent?.runConfig)),
+        );
+    }
+    this.#state.modelOptionsError = undefined;
+    if (announce) this.#state.notice = '已读取此会话固定 Agent 的能力，未发送指令。';
   }
   async #write(task: (current: () => void) => Promise<void>) {
     if (this.#mutation) throw Error('已有原操作正在处理，请等待或手动核查。');
@@ -1331,7 +1421,12 @@ export class SecureWorkspaceController {
       const lease = this.#lease(),
         prior = this.#state.session;
       if (!prior) throw Error('请先读取会话。');
+      if (this.#state.modelOptionsError) throw Error(this.#state.modelOptionsError);
       const target = this.#target(prior.meta.id);
+      const shownRunOptions = shown?.runOptions ?? this.#state.runOptions;
+      if (!same(shownRunOptions ?? null, this.#state.runOptions ?? null))
+        throw Error('模型草稿已改变，请重新核对后发送。');
+      if (shownRunOptions) await this.#runOptions.verify(target, shownRunOptions, current);
       const shownAttachments = shown?.attachments ?? [];
       const shownMcp = shown?.mcpDraft ?? { target };
       const shownAnnotations = shown?.previewAnnotations ?? [];
@@ -1358,6 +1453,12 @@ export class SecureWorkspaceController {
       );
       current();
       if (!read.agent) throw Error('主机未提供此会话的固定 Agent 版本。');
+      if (
+        shownRunOptions &&
+        shownRunOptions.baseTurnId !==
+          (read.history.findLast((turn) => turn.role === 'user')?.id ?? '')
+      )
+        throw Error('会话已更新，请重新读取并核对模型选择。');
       const currentAttachments = await this.#attachments.read(target, current);
       current();
       if (!same(shownAttachments, currentAttachments))
@@ -1379,6 +1480,7 @@ export class SecureWorkspaceController {
         scope: scope(target),
         read,
         agent: read.agent,
+        ...(shownRunOptions ? { selection: shownRunOptions.selection } : {}),
         prompt: composedPrompt,
         attachments: references,
         operationId: this.#uuid(),
@@ -1422,6 +1524,7 @@ export class SecureWorkspaceController {
         async (value) => {
           const blocked = await this.#executionBlock(target, current);
           if (blocked) throw Error(blocked);
+          if (shownRunOptions) await this.#runOptions.verify(target, shownRunOptions, current);
           return this.#mcp.stageTurn(
             target,
             shownMcp,

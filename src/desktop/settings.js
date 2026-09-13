@@ -1,6 +1,50 @@
 const $ = (id) => document.getElementById(id);
 let projects = [],
   bootstrapAgents = [];
+let nameRevision;
+const nameSyncLabels = {
+  unpaired: '本机已保存，尚未配对其他电脑',
+  pending: '本机已保存，等待远端确认；恢复连接后同步名称',
+  synced: '远端已确认同步，其他电脑可读取最新名称',
+  unsupported: '本机已保存，中转尚不支持名称同步，请更新中转',
+  conflict: '远端名称版本与本机冲突，请检查主机数据恢复状态',
+  revoked: '本机已保存，设备授权已撤销，需要重新配对',
+};
+function renderNameState(state) {
+  if (!state?.metadata || !nameSyncLabels[state.sync]) return;
+  $('name-status').textContent =
+    `已保存名称：${state.metadata.name} · ${nameSyncLabels[state.sync]}`;
+}
+function acceptNameState(state) {
+  nameRevision = state.metadata.revision;
+  $('name').value = state.metadata.name;
+  $('name-save').disabled = false;
+  renderNameState(state);
+}
+async function readName() {
+  try {
+    acceptNameState(await window.personal.deviceMetadata({ action: 'read' }));
+  } catch {
+    $('name-status').textContent = '暂时无法读取电脑名称，请在执行组件就绪后重新读取。';
+  }
+}
+$('name-refresh').onclick = readName;
+$('name-save').onclick = async () => {
+  $('name-save').disabled = true;
+  try {
+    acceptNameState(
+      await window.personal.deviceMetadata({
+        action: 'rename',
+        name: $('name').value.trim(),
+        expectedRevision: nameRevision,
+      }),
+    );
+  } catch (e) {
+    $('name-status').textContent = e.message;
+  } finally {
+    $('name-save').disabled = nameRevision === undefined;
+  }
+};
 let notificationsEnabled = false,
   notificationsSupported = false,
   notificationsBusy = false;
@@ -32,6 +76,7 @@ window.personal
     bootstrapAgents = s.agents.filter((agent) => agent === 'codex');
     render();
     renderHealth(s.health);
+    void readName();
   })
   .catch((e) => status(e.message));
 $('add').onclick = async () => {
@@ -53,11 +98,13 @@ $('settings').onsubmit = async (e) => {
     const r = await window.personal.save({
       server: $('server').value,
       name: $('name').value,
+      nameRevision,
       code: $('code').value,
       projects,
       agents: bootstrapAgents,
     });
     $('code').value = '';
+    if (r.deviceMetadata) acceptNameState(r.deviceMetadata);
     status(r.paired ? '设备已配对。可以打开“我的所有电脑”。' : '设置已保存。本机任务会继续运行。');
   } catch (e) {
     status(e.message);
@@ -70,6 +117,7 @@ $('remote').onclick = () => window.personal.open('remote');
 $('secure').onclick = () => window.personal.open('secure');
 
 function renderHealth(value) {
+  if (value.deviceMetadata) renderNameState(value.deviceMetadata);
   if (value.notifications && !notificationsBusy) renderNotifications(value.notifications);
   const cards = $('health-cards');
   const labels = { host: '执行组件', local: '本机工作区', relay: '中转服务', cli: '本机 CLI' };
@@ -638,13 +686,37 @@ function renderAgentPreset() {
     ? `当前版本：${preset.versionId}${builtin ? ' · 内置适配器，启动配置由 Moor 管理' : ''}`
     : '新配置默认不用于新会话。登记后可检查连接，再明确启用。';
   const checked = preset?.checked;
+  const program = preset?.program,
+    diagnostic = checked?.program;
+  const stale = diagnostic && diagnostic.fingerprint !== program?.fingerprint;
+  const sources = {
+    custom: '自定义 ACP',
+    local: '本机 Codex',
+    bundled: 'Moor 附带 Codex',
+    adapter: '内置适配器',
+  };
+  $('agent-program-status').textContent = program
+    ? [
+        `实际来源：${sources[program.source]}\n程序路径：${program.path}`,
+        program.adapterName
+          ? `ACP 适配器：${program.adapterName} ${program.adapterVersion ?? '版本未确认'}`
+          : '',
+        diagnostic
+          ? `程序版本：${diagnostic.version ?? (diagnostic.versionStatus === 'not-applicable' ? '此 Agent 未提供独立版本查询' : '未能确认')}\n检查时间：${new Date(diagnostic.observedAt).toLocaleString()}${stale ? '（程序文件已变化，此结果已过期）' : ''}`
+          : '尚未检查实际程序版本。使用“检查已保存的连接”读取。',
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : '';
   $('agent-check-status').textContent = !preset
     ? ''
-    : !checked
-      ? '此版本尚未检查连接。'
-      : !checked.ok
-        ? checked.error
-        : `此版本已连接；报告 ${checked.runConfig?.models.length ?? 0} 个模型、${checked.runConfig?.modes.length ?? 0} 个审批模式。实际项目中的选项可能不同。`;
+    : stale
+      ? '程序已更新，请重新检查连接和模型能力。'
+      : !checked
+        ? '此版本尚未检查连接。'
+        : !checked.ok
+          ? checked.error
+          : `此版本已连接；报告 ${checked.runConfig?.models.length ?? 0} 个模型、${checked.runConfig?.modes.length ?? 0} 个审批模式。实际项目中的选项可能不同。`;
   renderCodexRuntime();
 }
 function renderAgents(value, action) {
@@ -758,7 +830,7 @@ $('agent-remove').onclick = () => {
   const preset = selectedAgentPreset();
   if (preset) return editAgent({ action: 'remove', id: preset.id });
 };
-$('agent-choose').onclick = async () => {
+async function chooseAgentExecutable(field) {
   if (agentClosed || agentBusy || !agentState) return;
   agentBusy = true;
   const generation = ++agentGeneration;
@@ -767,7 +839,7 @@ $('agent-choose').onclick = async () => {
   try {
     const command = await window.personal.agentExecutable();
     if (command && !agentClosed && generation === agentGeneration) {
-      $('agent-command').value = command;
+      $(field).value = command;
       markAgentEdited();
     }
   } catch (error) {
@@ -780,7 +852,8 @@ $('agent-choose').onclick = async () => {
       $('agent-refresh').disabled = false;
     }
   }
-};
+}
+$('agent-choose').onclick = () => chooseAgentExecutable('agent-command');
 window.addEventListener('beforeunload', () => {
   agentClosed = true;
   agentGeneration++;

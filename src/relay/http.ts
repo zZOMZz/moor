@@ -23,12 +23,15 @@ import {
   AppError,
   assert,
   agentSchema,
+  agentOptionsRequestSchema,
+  AGENT_MODEL_OPTIONS_FEATURE,
   helloSchema,
   id,
   mutationSchema,
   sessionActionSchema,
 } from '../protocol';
 import type { RuntimeWorkspace } from '../protocol';
+import { publicAgentFailure } from '../agent-errors';
 import {
   SESSION_TASKS_FEATURE,
   TASK_LIMITS,
@@ -2072,11 +2075,13 @@ export function createApp(
             }
           }
           if (parts[5] === 'agent-options' && parts.length === 6 && req.method === 'POST') {
-            const input = z
-              .object({ agentId: id, sessionId: id.optional() })
-              .strict()
-              .parse(await body(req, 4096));
+            const input = agentOptionsRequestSchema.parse(await body(req, 4096));
             assert(runtime, 409, '执行电脑暂时不可用');
+            assert(
+              !input.modelId || runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE),
+              409,
+              '执行主机尚不支持模型配置探测，请升级主机',
+            );
             const selectedAgent = runtime.agents.find((agent) => agent.id === input.agentId);
             if (!input.sessionId) assert(selectedAgent, 404, 'Agent 配置不可用');
             const requestSocket = bridges.get(host.device_id)?.socket;
@@ -2126,7 +2131,13 @@ export function createApp(
                 [400, 403, 404, 409, 413, 429, 504].includes(failed.error.status)
                   ? failed.error.status
                   : 502;
-              throw new AppError(status, 'Agent 能力暂时不可读取，请重新读取会话或检查执行电脑');
+              throw new AppError(
+                status,
+                publicAgentFailure(
+                  failed.error,
+                  'Agent 能力暂时不可读取，请重新读取会话或检查执行电脑',
+                ),
+              );
             }
             assert(
               Buffer.byteLength(JSON.stringify(raw) ?? '') <= 16 * 1024 * 1024,
@@ -2138,6 +2149,24 @@ export function createApp(
             const parsed = agentSchema.safeParse(raw);
             assert(parsed.success, 502, '执行电脑返回的 Agent 能力不可验证');
             const result = parsed.data;
+            assert(
+              !runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) ||
+                (result.capabilityContext && result.runConfig),
+              502,
+              'Agent 能力响应缺少执行范围',
+            );
+            if (result.capabilityContext) {
+              const observed = result.capabilityContext;
+              assert(
+                observed.workspaceId === runtime.id &&
+                  observed.userId === runtime.userId &&
+                  observed.machineId === runtime.machineId &&
+                  observed.localProjectId === replica.local_id &&
+                  observed.sessionId === input.sessionId,
+                502,
+                'Agent 能力响应的执行范围不匹配',
+              );
+            }
             assert(
               result.id === input.agentId &&
                 [selectedAgent, currentAgent].every(
@@ -2807,7 +2836,12 @@ export function createApp(
                     workspace.features = workspace.features?.filter(
                       (feature) => !attentionFeatures.includes(feature),
                     );
-                store.bind(current, b.machineId, b.workspaces);
+                const deviceMetadata = store.bind(
+                  current,
+                  b.machineId,
+                  b.workspaces,
+                  b.deviceMetadata,
+                );
                 bridges.set(d.id, {
                   socket: ws,
                   ready: true,
@@ -2815,7 +2849,12 @@ export function createApp(
                   workspaces: b.workspaces,
                 });
                 changed(d.owner, d.id);
-                send(ws, { type: 'ready', actor: actor(current.owner), attentionFeatures });
+                send(ws, {
+                  type: 'ready',
+                  actor: actor(current.owner),
+                  attentionFeatures,
+                  ...(deviceMetadata ? { deviceMetadata } : {}),
+                });
                 for (const v of viewers.values())
                   if (v.watch?.deviceId === d.id) send(ws, { type: 'watch', ...v.watch });
               } else if (message.type === 'unavailable') {

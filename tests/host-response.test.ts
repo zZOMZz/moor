@@ -783,6 +783,26 @@ test('metadata bundles cannot smuggle another session or overwrite immutable ide
   assert.deepEqual(result, agent);
 });
 
+test('capability observations must match the authenticated host, project and requested session', async () => {
+  const context = {
+    workspaceId: workspace.id,
+    userId: workspace.userId,
+    machineId: workspace.machineId,
+    localProjectId: scope.localProjectId,
+    programFingerprint: 'a'.repeat(64),
+    directoryFingerprint: 'b'.repeat(64),
+    observedAt: 1,
+  };
+  const response = { ...agent, capabilityContext: context };
+  assert.deepEqual(await valid('agent-options', response), response);
+  for (const field of ['workspaceId', 'userId', 'machineId', 'localProjectId', 'sessionId']) {
+    await assert.rejects(
+      valid('agent-options', { ...agent, capabilityContext: { ...context, [field]: 'other' } }),
+      failure,
+    );
+  }
+});
+
 test('file and attachment content requires actual byte digests, canonical encoding and bound conditional versions', async () => {
   await assert.rejects(
     valid('file-content', { ...fixtures['file-content'].result, content: { ...content, version } }),

@@ -91,7 +91,7 @@ const cases: {
 } = {
   sessions: { params: {}, call: 'list' },
   'agent-options': {
-    params: { agentId: 'agent', sessionId: 'session' },
+    params: { agentId: 'agent', sessionId: 'session', modelId: 'synthetic-model' },
     call: 'refreshAgentOptions',
   },
   session: { params: { sessionId: 'session', version: 'YQ==' }, call: 'read' },
@@ -305,7 +305,7 @@ test('all 40 commands preserve the exact delegate, parsed payload, project and a
       method === 'sessions'
         ? [scope.localProjectId]
         : method === 'agent-options'
-          ? ['agent', scope.localProjectId, 'session']
+          ? ['agent', scope.localProjectId, 'session', 'synthetic-model']
           : method === 'session'
             ? ['session', 'YQ==', scope.localProjectId]
             : method === 'cancel'
