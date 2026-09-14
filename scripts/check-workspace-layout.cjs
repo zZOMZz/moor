@@ -1,5 +1,5 @@
 // Isolated real Chromium layout check. Synthetic in-memory UI only, no login or Agent.
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, nativeTheme } = require('electron');
 const fs = require('node:fs'),
   path = require('node:path'),
   os = require('node:os'),
@@ -45,15 +45,31 @@ app
       loader: { '.wasm': 'file' },
       publicPath: '/',
     });
+    await build({
+      entryPoints: [path.join(root, 'tests/support/secure-layout-fixture.tsx')],
+      outfile: path.join(output, 'secure-fixture.js'),
+      bundle: true,
+      platform: 'browser',
+      format: 'esm',
+      target: 'chrome120',
+      alias: { 'loro-crdt': 'loro-crdt/bundler' },
+      plugins: [browserWasm()],
+      loader: { '.wasm': 'file' },
+      publicPath: '/',
+    });
     const css = baseline
       ? execFileSync('git', ['show', baseline + ':src/web/public/style.css'], { cwd: root })
-      : fs.readFileSync(path.join(root, 'src/web/public/style.css'));
+      : fs.readFileSync(path.join(root, 'src/web/public/style.css'), 'utf8') +
+        '\n' +
+        fs.readFileSync(path.join(root, 'src/web/secure-style.css'), 'utf8');
     server = http.createServer((req, res) => {
       const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
-      if (pathname === '/') {
+      if (pathname === '/' || pathname === '/secure') {
         res.setHeader('content-type', 'text/html');
         res.end(
-          '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"></head><body><div id="app"></div><script type="module" src="/fixture.js"></script></body></html>',
+          '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"></head><body><div id="app"></div><script type="module" src="/' +
+            (pathname === '/secure' ? 'secure-fixture.js' : 'fixture.js') +
+            '"></script></body></html>',
         );
         return;
       }
@@ -98,38 +114,97 @@ app
       win.webContents.executeJavaScript(
         `new Promise(resolve=>{const ready=()=>{if(document.querySelector(${JSON.stringify(selector)})){observer.disconnect();requestAnimationFrame(()=>requestAnimationFrame(resolve));}};const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true,attributes:true});ready();})`,
       );
-    const shot = async (name) =>
+    const shot = async (name) => {
+      await win.webContents.executeJavaScript(
+        'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+      );
       fs.writeFileSync(
         path.join(output, name + '.png'),
         (await win.webContents.capturePage()).toPNG(),
       );
+    };
     await win.loadURL(url);
-    await wait('.workspace-session-list li');
+    await wait('.workspace-pinned li');
     const metrics = await win.webContents.executeJavaScript(`(()=>{
-    const list=document.querySelector('.workspace-session-list ul');
-    let top=0,bottom=innerHeight;
-    for(let node=list;node;node=node.parentElement){const style=getComputedStyle(node);if(/auto|scroll|hidden/.test(style.overflowY)){const r=node.getBoundingClientRect();top=Math.max(top,r.top);bottom=Math.min(bottom,r.bottom);}}
-    const rect=list.getBoundingClientRect();top=Math.max(top,rect.top);bottom=Math.min(bottom,rect.bottom);
-    return{viewport:innerHeight,listHeight:Math.max(0,bottom-top),visibleSessions:[...list.querySelectorAll('li')].filter(node=>{const r=node.getBoundingClientRect();return r.top>=top&&r.bottom<=bottom;}).length,overflow:document.documentElement.scrollWidth>innerWidth};
-  })()`);
+      const nav=document.querySelector('.workspace-projects'), rect=nav.getBoundingClientRect();
+      return { viewport: innerHeight, listHeight: rect.height, visibleSessions: [...nav.querySelectorAll('li')].filter(node=>{const r=node.getBoundingClientRect();return r.height>0&&r.top>=rect.top&&r.bottom<=rect.bottom;}).length, overflow: document.documentElement.scrollWidth>innerWidth };
+    })()`);
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="设置"]').click()`,
+    );
+    await wait('.appearance-settings');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('input[name="appearance"][value="light"]').click()`,
+    );
+    await wait('html[data-theme="light"]');
+    await shot('settings-light');
+    assert.equal(
+      await win.webContents.executeJavaScript('getComputedStyle(document.body).backgroundColor'),
+      'rgb(255, 255, 255)',
+    );
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="关闭设置"]').click()`,
+    );
     await shot('desktop-light');
-    await win.webContents.executeJavaScript("document.documentElement.dataset.theme='dark'");
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="设置"]').click()`,
+    );
+    await wait('.appearance-settings');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('input[name="appearance"][value="dark"]').click()`,
+    );
+    await wait('html[data-theme="dark"]');
+    await shot('settings-dark');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="关闭设置"]').click()`,
+    );
     await shot('desktop-dark');
+    await win.reload();
+    await wait('html[data-theme="dark"] .workspace-history');
+    assert.equal(
+      await win.webContents.executeJavaScript("localStorage.getItem('moor-appearance')"),
+      'dark',
+    );
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="设置"]').click()`,
+    );
+    await wait('.appearance-settings');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('input[value="system"]').click()`,
+    );
+    await wait('html[data-theme="system"]');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="关闭设置"]').click()`,
+    );
+    for (const [theme, expected] of [
+      ['light', 'rgb(255, 255, 255)'],
+      ['dark', 'rgb(25, 25, 25)'],
+    ]) {
+      nativeTheme.themeSource = theme;
+      await win.webContents.executeJavaScript(
+        `new Promise(resolve => {const media=matchMedia('(prefers-color-scheme: dark)'); const check=()=>{if(media.matches===${theme === 'dark'}){media.removeEventListener('change',check);requestAnimationFrame(()=>resolve());}};media.addEventListener('change',check);check();})`,
+      );
+      assert.equal(
+        await win.webContents.executeJavaScript('getComputedStyle(document.body).backgroundColor'),
+        expected,
+      );
+    }
+
     if (!baseline) {
       assert.equal(metrics.overflow, false);
-      assert(metrics.visibleSessions >= 12);
+      assert(metrics.visibleSessions >= 4, JSON.stringify(metrics));
       await win.webContents.executeJavaScript(
-        "document.querySelector('.session-information > summary').click()",
+        "document.querySelector('.workspace-header-tools .workspace-menu-session > summary').click();document.querySelector('.session-information > summary').click()",
       );
       await wait('.session-information[open]');
       await shot('information');
       await win.webContents.executeJavaScript(
-        "document.querySelector('.session-information').open=false;document.querySelector('.workspace-tool-menu > summary').click()",
+        "document.querySelector('.session-information').open=false;document.querySelector('.workspace-header-tools .workspace-menu-environment > summary').click()",
       );
       await wait('.workspace-tool-menu[open]');
       await shot('tools');
       await win.webContents.executeJavaScript(
-        `document.querySelector('.workspace-tool-menu').open=false;const sizer=document.querySelector('[aria-label="调整侧栏宽度"]');sizer.focus();sizer.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`,
+        `document.querySelectorAll('.workspace-tool-menu').forEach(menu=>menu.open=false);const sizer=document.querySelector('[aria-label="调整侧栏宽度"]');sizer.focus();sizer.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`,
       );
       await wait('[aria-label="调整侧栏宽度"][aria-valuenow="276"]');
       await win.reload();
@@ -139,6 +214,15 @@ app
       );
       await wait('[aria-label="调整侧栏宽度"][aria-valuenow="260"]');
     }
+    await win.webContents.executeJavaScript('window.__moorFixture.newConversation()');
+    await wait('.workspace-welcome');
+    assert.equal(
+      await win.webContents.executeJavaScript(
+        "document.querySelector('.workspace-menu-environment').hidden",
+      ),
+      true,
+    );
+    await shot('new-conversation');
     win.setContentSize(390, 760);
     await win.loadURL(url);
     await wait('.workspace-history');
@@ -169,6 +253,26 @@ app
         'create',
       ]);
     }
+    win.setContentSize(1200, 800);
+    await win.loadURL(url + '/secure');
+    await wait('#secure-prompt');
+    await shot('secure-desktop');
+    assert.equal(
+      await win.webContents.executeJavaScript('document.documentElement.scrollWidth>innerWidth'),
+      false,
+    );
+    win.setContentSize(390, 760);
+    await shot('secure-narrow');
+    assert(
+      await win.webContents.executeJavaScript(
+        "innerHeight-document.querySelector('.secure-composer').getBoundingClientRect().bottom < 30",
+      ),
+      'composer stays at the bottom of the encrypted conversation',
+    );
+    assert.equal(
+      await win.webContents.executeJavaScript('document.documentElement.scrollWidth>innerWidth'),
+      false,
+    );
     fs.writeFileSync(
       path.join(output, 'metrics.json'),
       JSON.stringify({ baseline: baseline ?? null, ...metrics, narrowOverflow, errors }, null, 2),

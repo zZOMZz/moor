@@ -24,7 +24,7 @@ const desktopFiles = [
   'secure-input.cjs',
   'content-authority.cjs',
   'client-assets.cjs',
-  'preview-settings.cjs',
+  'appearance.cjs',
   'preview-renderer.cjs',
   'notifications.cjs',
   'github-settings.cjs',

@@ -1,5 +1,7 @@
 // Synthetic presentation fixture. Every action stays in memory; there is no Agent or account.
 import { createRoot } from 'react-dom/client';
+import { applyAppearance } from '../../src/web/appearance';
+applyAppearance(localStorage.getItem('moor-appearance') ?? 'system');
 import { WorkspaceApp } from '../../src/web/workspace-app';
 const target = {
   serverKey: 'local:machine',
@@ -160,6 +162,12 @@ const controller: any = {
     emit();
   },
   async refreshAgentOptions() {},
+  async readGitContext() {
+    return { execution: { branch: 'codex/ui' }, repository: { branch: 'main' } };
+  },
+  async listProjectSessions(_source: string, target: any) {
+    return target.localProjectId === 'project' ? sessions : [];
+  },
   async refreshSessions() {
     emit();
   },
@@ -230,6 +238,10 @@ const fixture = {
       sessions: [],
       offline: false,
     };
+    emit();
+  },
+  newConversation() {
+    state = { ...state, session: { ...state.session, history: [] } };
     emit();
   },
   conversation() {

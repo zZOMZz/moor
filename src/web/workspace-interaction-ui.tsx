@@ -79,6 +79,7 @@ export function WorkspaceInteractionUI({
   return (
     <section className="workspace-interactions" aria-label="会话问答与追加">
       <button
+        hidden={!snapshot.activeId && !saved.steerDraft && !saved.pending}
         type="button"
         disabled={busy}
         onClick={() => setPanel({ steer: snapshot.activeId ?? '' })}

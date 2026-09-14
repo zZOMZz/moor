@@ -21,6 +21,14 @@ contextBridge.exposeInMainWorld('moorSecure', {
 });
 contextBridge.exposeInMainWorld('moorDesktop', {
   version: 1,
+  platform: process.platform,
+  appearance: (value) => ipcRenderer.invoke('moor:appearance', value),
+  onAppearance: (listener) => {
+    if (typeof listener !== 'function') throw new TypeError('Expected appearance listener');
+    const receive = (_event, value) => listener(value);
+    ipcRenderer.on('moor:appearance-changed', receive);
+    return () => ipcRenderer.removeListener('moor:appearance-changed', receive);
+  },
   openSettings: () => ipcRenderer.invoke('moor:open-settings'),
   googleAuth: {
     begin: (value) => ipcRenderer.invoke('moor:google-auth-begin', value),

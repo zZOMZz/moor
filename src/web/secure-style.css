@@ -268,20 +268,49 @@
 }
 .secure-workspace {
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: auto;
-  padding: 28px clamp(20px, 4vw, 70px);
+  padding: 0;
 }
 .secure-workspace > * {
-  max-width: 850px;
-  margin-left: auto;
-  margin-right: auto;
+  max-width: none;
 }
 .secure-session-header {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 20px;
-  padding-bottom: 20px;
+  min-height: 48px;
+  width: 100%;
+  flex-shrink: 0;
+  padding: 8px 18px 8px 50px;
+  align-items: center;
+}
+.secure-session-header h1 {
+  font-size: 13px;
+  font-weight: 500;
+}
+.secure-session-header > div:first-child {
+  min-width: 0;
+}
+.secure-session-header .workspace-tool-menu-items {
+  text-align: left;
+}
+.secure-session-header .session-information > summary {
+  font-size: 12px;
+}
+.secure-session-header .secure-actions {
+  gap: 4px;
+}
+.secure-session-header .secure-session-settings {
+  padding: 8px;
+  border: 0;
+}
+.secure-session-header .secure-session-settings form {
+  grid-template-columns: minmax(0, 1fr);
+}
+.secure-workspace > .secure-card,
+.secure-workspace > details {
+  margin: 0 24px 8px;
+  font-size: 12px;
 }
 .secure-eyebrow {
   color: var(--muted);
@@ -300,8 +329,13 @@
   align-items: end;
 }
 .secure-history {
-  padding: 26px 0 16px;
-  min-height: 180px;
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  padding: 28px max(24px, calc((100% - 790px) / 2));
+}
+.secure-workspace:has(.workspace-welcome) .secure-history {
+  display: none;
 }
 .secure-turn {
   margin-bottom: 24px;
@@ -309,7 +343,13 @@
 .secure-turn-user {
   background: var(--surface-muted);
   border-radius: 14px;
-  padding: 16px 20px;
+  padding: 10px 16px;
+  width: fit-content;
+  max-width: 85%;
+  margin-left: auto;
+}
+.secure-turn-user .secure-turn-label {
+  display: none;
 }
 .secure-turn-label {
   font-size: 11px;
@@ -331,18 +371,66 @@
   margin-top: 10px;
   margin-bottom: 0;
 }
-.secure-composer {
-  padding-top: 12px;
-  margin-bottom: 28px;
+.secure-app .secure-composer {
+  display: block;
+  flex-shrink: 0;
+  margin: 0 auto;
+  padding: 12px 24px 18px;
 }
-.secure-composer textarea {
-  min-height: 110px;
+.secure-app .secure-composer[data-empty='true'] {
+  margin-bottom: auto;
+}
+.secure-app .workspace-input-box textarea {
+  min-height: 54px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  font-size: 14px;
+  outline: none;
+}
+.secure-app .workspace-composer-context label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.secure-app .workspace-composer-context select {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  width: auto;
+}
+.secure-app .workspace-tool-menu .workspace-attach-trigger {
+  display: flex;
+}
+.secure-app .workspace-tool-menu .workspace-attach-trigger input {
+  padding: 0;
 }
 .secure-composer-bottom {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 8px;
+}
+.secure-composer-bottom > .secure-actions {
+  margin-left: auto;
+}
+.secure-composer-bottom .secure-actions > button:last-child {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--ink);
+  color: var(--surface);
+}
+.secure-composer-bottom .secure-muted {
+  font-size: 10px;
+}
+.secure-composer .secure-attachment-controls:has(.secure-attachment-select[hidden]):not(:has(ul)) {
+  display: none;
 }
 .secure-empty-state {
   min-height: 48vh;
@@ -615,4 +703,35 @@
     SFMono-Regular,
     Menlo,
     monospace;
+}
+
+@media (max-width: 760px) {
+  .secure-app-embedded {
+    height: 100%;
+    min-height: 0;
+  }
+  .secure-app-embedded .secure-workspace {
+    flex: 1;
+    overflow: hidden;
+    padding: 0;
+  }
+  .secure-app-embedded .secure-session-header {
+    flex-direction: row;
+    padding: 10px 16px 10px 50px;
+  }
+  .secure-app-embedded .secure-history {
+    padding: 24px 16px;
+  }
+  .secure-app-embedded .secure-composer {
+    padding: 10px 12px 14px;
+  }
+  .secure-app .secure-composer-bottom {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+.secure-session-header .secure-operations {
+  margin: 0;
+  border: 0;
+  padding: 8px;
 }

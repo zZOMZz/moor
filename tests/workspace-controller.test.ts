@@ -34,7 +34,8 @@ import type { AgentCallbacks, AgentOpenOptions } from '../src/runtime/agent';
 import { workspaceInteractionSnapshot } from '../src/web/workspace-interactions';
 import type { QuestionRequest } from '../src/interaction-protocol';
 import type { AgentForkInput } from '../src/runtime/agent-fork';
-import { syntheticTaskPlan } from './support/task-plan';
+import { syntheticTaskPlan, syntheticTaskGrant } from './support/task-plan';
+import { workspaceFeatureTarget } from '../src/web/workspace-mcp';
 import { type PreviewAnnotationSnapshot } from '../src/web/project-preview';
 import type { SessionPreviewOptions } from '../src/runtime/session-preview';
 import {
@@ -361,6 +362,53 @@ async function fixture(
     openOptions: () => openOptions,
   };
 }
+
+test('sidebar reads stay in the requested project without changing the active draft and discard replaced catalogs', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create();
+  await f.controller.saveDraft('Keep the active input', {});
+  const before = f.controller.state;
+  const list = await f.controller.listProjectSessions('local', f.catalog.targets[0]!.target);
+  assert(list.some((item) => item.id === sessionId));
+  assert.deepEqual(f.controller.state, before);
+  await assert.rejects(
+    f.controller.listProjectSessions('local', { ...f.catalog.targets[0]!.target, owner: 'other' }),
+    /项目/,
+  );
+  const entered = signal(),
+    release = signal();
+  f.fault.after = async (request) => {
+    if (request.action === 'execute' && request.command.method === 'sessions') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const pending = f.controller.listProjectSessions('local', f.catalog.targets[0]!.target);
+  const rejected = assert.rejects(pending, /项目列表已改变/);
+  await entered.promise;
+  await f.controller.refreshCatalog('local');
+  release.resolve();
+  await rejected;
+  assert.equal(f.controller.state.draft?.text, 'Keep the active input');
+  assert.equal(f.prompts(), 0);
+});
+
+test('removed composer tools have no callable entry points and plain turns carry no optional authorization', async (t) => {
+  const f = await fixture(t);
+  await f.create();
+  for (const method of ['openMcp', 'openRoles', 'openTasks', 'openPreview'])
+    assert.equal(method in f.controller, false);
+  await f.controller.saveDraft('Synthetic plain task', {});
+  await f.controller.send();
+  await f.started.promise;
+  const operation = f.controller.state.ledger!.operations.find(
+    (entry) => entry.original.kind === 'mutation',
+  )!;
+  assert.equal(operation.mcpReview, undefined);
+  assert.equal(operation.taskReview, undefined);
+  assert.equal(operation.annotations, undefined);
+  assert.equal(f.prompts(), 1);
+});
 
 test('retired recovery copies are deleted atomically while current drafts and original operations remain usable', async (t) => {
   const f = await fixture(t),
@@ -804,148 +852,6 @@ test('a failed Fork save never invokes the native agent and closing a panel canc
   release.resolve();
   await rejected;
   assert.equal(f.forks.length, 0);
-});
-
-async function mcp(f: Awaited<ReturnType<typeof fixture>>, choose = true) {
-  await f.create();
-  await f.host.mcpSettings.handle({
-    action: 'save',
-    expectedRevision: 0,
-    name: 'Synthetic MCP',
-    description: 'Synthetic tools',
-    projectIds: [f.catalog.targets[0]!.target.localProjectId],
-    enabled: true,
-    connection: {
-      transport: 'http',
-      url: 'https://synthetic.invalid/mcp',
-      headers: { Authorization: 'Bearer SYNTHETIC_PRIVATE_MCP_TOKEN' },
-    },
-  });
-  const panel = await f.controller.openMcp();
-  await panel.controller.refresh();
-  const server = panel.controller.list!.servers[0]!;
-  assert(server);
-  if (choose) await panel.controller.apply([server]);
-  return { panel, server };
-}
-
-test('workspace MCP reads and selection stay local until manual delivery with the exact version', async (t) => {
-  const f = await fixture(t),
-    { server } = await mcp(f);
-  assert.equal(f.prompts(), 0);
-  await f.controller.saveDraft('Use reviewed tools', {});
-  await f.controller.send();
-  await f.started.promise;
-  assert.equal(f.openOptions()?.mcp?.servers.length, 1);
-  assert.equal(f.prompts(), 1);
-  const ledger = f.controller.state.ledger!,
-    saved = ledger.mcp![f.controller.state.sessionId!]!;
-  assert.equal(saved.review, undefined);
-  assert.equal(saved.delivery, undefined);
-  assert.deepEqual(
-    ledger.operations.find((item) => item.original.kind === 'mutation')!.mcpReview!.servers,
-    [server],
-  );
-  assert.doesNotMatch(
-    JSON.stringify(ledger),
-    /SYNTHETIC_PRIVATE_MCP_TOKEN|Authorization|synthetic.invalid/,
-  );
-});
-
-test('lost MCP receipt retains the original authorization and a newer selection survives explicit retry', async (t) => {
-  const f = await fixture(t);
-  await mcp(f);
-  await f.controller.saveDraft('Original tools', {});
-  f.fault.loseMutation = true;
-  await assert.rejects(f.controller.send(), /执行电脑暂不可用/);
-  await f.started.promise;
-  const id = f.controller.state.sessionId!,
-    original = f.controller.state.ledger!.operations.find(
-      (item) => item.original.kind === 'mutation',
-    )!;
-  await f.controller.openSession(id);
-  assert.equal(f.prompts(), 1);
-  const panel = await f.controller.openMcp();
-  await panel.controller.apply([]);
-  const newer = f.controller.state.ledger!.mcp![id]!.review;
-  f.fault.loseMutation = false;
-  await f.controller.retry(original.original.value.operationId);
-  assert.equal(f.prompts(), 1);
-  const calls = f.calls.filter(
-    (input) => input.action === 'execute' && input.command.method === 'mutate',
-  );
-  assert.deepEqual(calls[0], calls[1]);
-  assert.deepEqual(f.controller.state.ledger!.mcp![id]!.review, newer);
-  assert.equal(f.controller.state.ledger!.mcp![id]!.delivery, undefined);
-});
-
-test('a concurrent MCP selection change refuses submission instead of using unseen authorization', async (t) => {
-  const f = await fixture(t);
-  await mcp(f);
-  await f.controller.saveDraft('Keep reviewed text', {});
-  const arrived = signal(),
-    release = signal();
-  f.fault.after = async (input) => {
-    if (input.action === 'execute' && input.command.method === 'mcp-read') {
-      arrived.resolve();
-      await release.promise;
-    }
-  };
-  const rejection = assert.rejects(f.controller.send(), /MCP 草稿已改变/);
-  await arrived.promise;
-  const state = f.controller.state,
-    saved = state.ledger!.mcp![state.sessionId!]!;
-  await f.store.saveMcp(
-    state.scope!,
-    state.sessionId!,
-    saved.cacheRevision,
-    {
-      ...saved,
-      cacheRevision: saved.cacheRevision + 1,
-      review: { reviewId: 'newer-review', servers: [] },
-    },
-    () => {},
-  );
-  release.resolve();
-  await rejection;
-  assert.equal(f.prompts(), 0);
-  await f.controller.reloadDraft();
-  assert.equal(f.controller.state.draft!.text, 'Keep reviewed text');
-  assert.equal(f.controller.state.ledger!.mcp![state.sessionId!]!.delivery, undefined);
-});
-
-test('a removed MCP version preserves the original review and refuses a new turn', async (t) => {
-  const f = await fixture(t);
-  await mcp(f);
-  await f.controller.saveDraft('Keep this authorization', {});
-  const before = f.controller.state.ledger!.mcp![f.controller.state.sessionId!]!.review;
-  const settings = f.host.mcpSettings.read();
-  await f.host.mcpSettings.handle({
-    action: 'enabled',
-    expectedRevision: settings.revision,
-    id: settings.presets[0]!.id,
-    enabled: false,
-  });
-  await assert.rejects(f.controller.send(), /原版本|不可用|改变/);
-  assert.deepEqual(f.controller.state.ledger!.mcp![f.controller.state.sessionId!]!.review, before);
-  assert.equal(f.controller.state.draft!.text, 'Keep this authorization');
-  assert.equal(f.prompts(), 0);
-});
-
-test('failed atomic MCP staging leaves both the selection and instruction unsent', async (t) => {
-  const f = await fixture(t);
-  await mcp(f);
-  await f.controller.saveDraft('Save first', {});
-  f.fault.after = async (input) => {
-    if (input.action === 'execute' && input.command.method === 'mcp-read')
-      f.memory.failWrite = true;
-  };
-  await assert.rejects(f.controller.send(), /storage failure/);
-  f.memory.failWrite = false;
-  await f.controller.reloadDraft();
-  assert.equal(f.controller.state.draft!.text, 'Save first');
-  assert.equal(f.controller.state.ledger!.mcp![f.controller.state.sessionId!]!.delivery, undefined);
-  assert.equal(f.prompts(), 0);
 });
 
 async function skills(f: Awaited<ReturnType<typeof fixture>>) {
@@ -1650,338 +1556,12 @@ test('failed receipt persistence keeps the durable original recoverable', async 
   assert.equal(f.prompts(), 1);
 });
 
-async function taskSource(f: Awaited<ReturnType<typeof fixture>>) {
-  const { oid } = await gitProject(f),
-    id = f.controller.state.sessionId!;
-  const panel = await f.controller.openTasks();
-  const plan = syntheticTaskPlan();
-  plan.tasks[0]!.expectedOid = oid;
-  await panel.controller.edit(plan);
-  const reviewed = await panel.review();
-  await panel.enable(reviewed);
-  return { id, panel, plan };
-}
-
-test('unified task review stays local and a lost parent receipt retains its original authorization', async (t) => {
-  const f = await fixture(t),
-    { id, plan } = await taskSource(f);
-  assert.equal(f.prompts(), 0);
-  assert.equal(
-    f.calls.some((call) => call.action === 'execute' && call.command.method === 'tasks-action'),
-    false,
-  );
-  await f.controller.saveDraft('Coordinate reviewed tasks', {});
-  f.fault.loseMutation = true;
-  await assert.rejects(f.controller.send(), /暂不可用/);
-  await f.started.promise;
-  const pending = f.controller.state.ledger!.operations.find(
-    (entry) => entry.status === 'pending',
-  )!;
-  assert.deepEqual(pending.taskReview?.plan, plan);
-  assert(f.openOptions()?.taskTools);
-  const panel = await f.controller.openTasks();
-  await panel.controller.refresh();
-  assert.deepEqual(panel.controller.list!.grants[0]!.plan, plan);
-  assert.equal(f.prompts(), 1);
-  await panel.controller.edit({
-    ...plan,
-    tasks: [{ ...plan.tasks[0]!, instruction: 'Later draft' }],
-  });
-  f.fault.loseMutation = false;
-  await f.controller.inspect(pending.original.value.operationId);
-  const saved = f.controller.state.ledger!.tasks![id]!;
-  assert.equal(saved.delivery, undefined);
-  assert.equal(saved.enabled, undefined);
-  assert.equal(saved.draft.tasks[0]!.instruction, 'Later draft');
-  assert.equal(f.prompts(), 1);
-});
-
-test('task review rejects moved baselines and invalid model choices without altering the parent draft', async (t) => {
-  const f = await fixture(t),
-    { panel, plan } = await taskSource(f);
-  await panel.controller.disable();
-  await f.controller.saveDraft('Parent text', {});
-  writeFileSync(join(f.project, 'later.txt'), 'new baseline');
-  git(f.project, 'add', 'later.txt');
-  git(f.project, 'commit', '-m', 'synthetic later baseline');
-  await assert.rejects(panel.enable(plan), /基线分支或提交/);
-  assert.equal(panel.controller.enabled, undefined);
-  const oid = git(f.project, 'rev-parse', 'HEAD').trim();
-  await panel.controller.edit({
-    ...plan,
-    tasks: [{ ...plan.tasks[0]!, expectedOid: oid, selection: { modelId: 'obsolete' } }],
-  });
-  await assert.rejects(panel.review());
-  assert.equal(f.controller.state.draft!.text, 'Parent text');
-  assert.equal(f.prompts(), 0);
-});
-
-test('task authorization CAS rejects concurrent plan edits and failed storage before parent dispatch', async (t) => {
-  const f = await fixture(t),
-    { panel, plan } = await taskSource(f);
-  await f.controller.saveDraft('Parent text', {});
-  let edited = false;
-  f.fault.before = async (request) => {
-    if (!edited && request.action === 'execute' && request.command.method === 'agent-options') {
-      edited = true;
-      await panel.controller.edit({
-        ...plan,
-        tasks: [{ ...plan.tasks[0]!, instruction: 'Concurrent task' }],
-      });
-    }
-  };
-  await assert.rejects(f.controller.send(), /任务计划已改变/);
-  assert.equal(f.prompts(), 0);
-  f.fault.before = undefined;
-  const fresh = await panel.review();
-  await panel.enable(fresh);
-  f.fault.before = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'agent-options')
-      f.memory.failWrite = true;
-  };
-  await assert.rejects(f.controller.send(), /storage failure/);
-  f.memory.failWrite = false;
-  f.fault.before = undefined;
-  assert.equal(f.prompts(), 0);
-  assert.equal(f.controller.state.draft!.text, 'Parent text');
-  assert.equal(
-    (await f.store.read(f.controller.state.scope!, () => {})).tasks![f.controller.state.sessionId!]!
-      .delivery,
-    undefined,
-  );
-});
-
-test('task review cannot complete after its panel closes and an unconfirmed parent blocks enabling another plan', async (t) => {
-  const f = await fixture(t),
-    { panel, plan } = await taskSource(f);
-  await panel.controller.disable();
-  const entered = signal(),
-    release = signal();
-  f.fault.before = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'git-state') {
-      entered.resolve();
-      await release.promise;
-    }
-  };
-  const reviewing = panel.review();
-  await entered.promise;
-  panel.close();
-  release.resolve();
-  await assert.rejects(reviewing, /关闭|改变/);
-  f.fault.before = undefined;
-  await f.controller.saveDraft('Plain parent', {});
-  f.fault.loseMutation = true;
-  await assert.rejects(f.controller.send(), /暂不可用/);
-  const reopened = await f.controller.openTasks();
-  await assert.rejects(reopened.enable(plan), /原父指令/);
-  assert.equal(reopened.controller.enabled, undefined);
-});
-
 const syntheticRole = {
   name: 'Reviewer',
   agentId: 'agent',
   selection: { modelId: 'model-a', reasoningEffort: 'high', modeId: 'read-only' },
   instructions: 'SYNTHETIC_ROLE_BODY <script>not executable</script>',
 };
-async function roleSource(f: Awaited<ReturnType<typeof fixture>>) {
-  const id = await f.create(),
-    panel = await f.controller.openRoles();
-  await panel.refresh();
-  await panel.save(syntheticRole);
-  await panel.refresh();
-  return { id, panel, role: panel.controller.list!.roles[0]! };
-}
-
-test('unified roles save, apply and delete through the host without starting an Agent prompt', async (t) => {
-  const f = await fixture(t),
-    { id, panel, role } = await roleSource(f);
-  await f.controller.saveDraft('Keep original text', {});
-  await panel.apply(role);
-  assert.match(f.controller.state.draft!.text, /^Keep original text\n\n\[角色预设：Reviewer/);
-  assert.match(f.controller.state.draft!.text, /SYNTHETIC_ROLE_BODY/);
-  assert.deepEqual(f.controller.state.draft!.selection, syntheticRole.selection);
-  assert.equal(f.controller.state.ledger?.roleApplied?.[id]?.applied.length, 1);
-  const applied = f.controller.state.draft!.text;
-  await assert.rejects(panel.apply(role), /已应用/);
-  assert.equal(f.controller.state.draft!.text, applied);
-  const reopened = await f.controller.openRoles();
-  await reopened.refresh();
-  await assert.rejects(reopened.apply(role), /已应用/);
-  await reopened.remove(role.id);
-  await reopened.refresh();
-  assert.equal(reopened.controller.list!.roles.length, 0);
-  assert.equal(f.controller.state.draft!.text, applied);
-  assert.equal(f.prompts(), 0);
-});
-
-test('role receipt loss preserves the exact original and cross-page recovery cannot repeat a resolved save', async (t) => {
-  const f = await fixture(t),
-    id = await f.create(),
-    panel = await f.controller.openRoles();
-  await panel.refresh();
-  f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'roles-action')
-      throw Error('Synthetic lost role receipt');
-  };
-  await assert.rejects(panel.save(syntheticRole), /lost role receipt/);
-  const original = structuredClone(panel.controller.pending);
-  assert(original);
-  f.fault.after = undefined;
-  const other = await f.controller.openRoles();
-  assert.deepEqual(other.controller.pending, original);
-  const before = f.calls.length;
-  await other.inspect();
-  assert.equal(other.controller.pending, undefined);
-  await assert.rejects(panel.retry(), /原角色操作已改变/);
-  const recovery = f.calls
-    .slice(before)
-    .filter((call) => call.action === 'execute' && call.command.method === 'roles-action');
-  assert.equal(recovery.length, 1);
-  assert.equal((recovery[0] as any).command.params.action, 'inspect');
-  assert.deepEqual((recovery[0] as any).command.params.request, original);
-  assert.equal(f.controller.state.ledger?.roles?.[id]?.pending, undefined);
-  await other.refresh();
-  assert.equal(other.controller.list!.roles.length, 1);
-  assert.equal(f.prompts(), 0);
-});
-
-test('role drafts use atomic apply and reject changed role versions, stale model choices and concurrent edits', async (t) => {
-  const f = await fixture(t),
-    { panel, role } = await roleSource(f);
-  await f.controller.saveDraft('Original', {});
-  f.fault.before = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'agent-options')
-      f.memory.failWrite = true;
-  };
-  await assert.rejects(panel.apply(role), /storage failure/);
-  f.memory.failWrite = false;
-  f.fault.before = undefined;
-  assert.equal(f.controller.state.draft!.text, 'Original');
-  assert.equal(f.controller.state.ledger?.roleApplied, undefined);
-  const other = await f.controller.openRoles();
-  await other.refresh();
-  await other.save({ ...syntheticRole, id: role.id, instructions: 'New role version' });
-  await assert.rejects(panel.apply(role), /角色版本/);
-  await panel.refresh();
-  const updated = panel.controller.list!.roles[0]!;
-  let edited = false;
-  f.fault.before = async (request) => {
-    if (!edited && request.action === 'execute' && request.command.method === 'agent-options') {
-      edited = true;
-      await f.controller.saveDraft('Concurrent edit', {});
-    }
-  };
-  await assert.rejects(panel.apply(updated), /草稿或原操作/);
-  assert.equal(f.controller.state.draft!.text, 'Concurrent edit');
-  f.fault.before = undefined;
-  let changedDuringProbe = false;
-  f.fault.after = async (request) => {
-    if (
-      !changedDuringProbe &&
-      request.action === 'execute' &&
-      request.command.method === 'agent-options'
-    ) {
-      changedDuringProbe = true;
-      await other.refresh();
-      await other.save({
-        ...syntheticRole,
-        id: role.id,
-        instructions: 'Changed during model probe',
-      });
-    }
-  };
-  await assert.rejects(panel.apply(updated), /角色版本/);
-  assert.equal(f.controller.state.draft!.text, 'Concurrent edit');
-  f.fault.after = undefined;
-  await panel.save({ ...syntheticRole, id: role.id, selection: { modelId: 'obsolete' } });
-  await panel.refresh();
-  await assert.rejects(panel.apply(panel.controller.list!.roles[0]!));
-  assert.equal(f.controller.state.draft!.text, 'Concurrent edit');
-  assert.equal(f.prompts(), 0);
-});
-
-test('role save failure does not dispatch and an undelivered original is only abandoned explicitly', async (t) => {
-  const f = await fixture(t);
-  await f.create();
-  let panel = await f.controller.openRoles();
-  await panel.refresh();
-  f.memory.failWrite = true;
-  await assert.rejects(panel.save(syntheticRole), /storage failure/);
-  assert.equal(
-    f.calls.some((call) => call.action === 'execute' && call.command.method === 'roles-action'),
-    false,
-  );
-  f.memory.failWrite = false;
-  panel = await f.controller.openRoles();
-  await panel.refresh();
-  f.fault.before = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'roles-action')
-      throw Error('Synthetic before role dispatch');
-  };
-  await assert.rejects(panel.save(syntheticRole), /before role dispatch/);
-  f.fault.before = undefined;
-  const original = structuredClone(panel.controller.pending);
-  await panel.inspect();
-  assert.deepEqual(panel.controller.pending, original);
-  await panel.abandon();
-  assert.equal(panel.controller.receipt?.accepted, false);
-  await panel.refresh();
-  assert.equal(panel.controller.list!.roles.length, 0);
-  assert.equal(f.prompts(), 0);
-});
-
-test('role application is tied to the viewed panel and new-role sessions preserve the source draft', async (t) => {
-  const f = await fixture(t),
-    { id, panel, role } = await roleSource(f);
-  await f.controller.saveDraft('Source draft', {});
-  const entered = signal(),
-    release = signal();
-  f.fault.before = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'roles-read') {
-      entered.resolve();
-      await release.promise;
-    }
-  };
-  const applying = panel.apply(role);
-  await entered.promise;
-  panel.close();
-  release.resolve();
-  await assert.rejects(applying, /关闭|改变/);
-  f.fault.before = undefined;
-  const fresh = await f.controller.openRoles();
-  await fresh.refresh();
-  const child = await fresh.createFromRole(role);
-  assert.notEqual(child, id);
-  assert.equal(f.controller.state.sessionId, child);
-  assert.equal(f.controller.state.session!.history.length, 0);
-  assert.match(f.controller.state.draft!.text, /SYNTHETIC_ROLE_BODY/);
-  await f.controller.openSession(id);
-  assert.equal(f.controller.state.draft!.text, 'Source draft');
-  f.runtime.registerAgent('second-synthetic', {
-    id: 'second-agent',
-    name: 'Second synthetic',
-    machineId: f.runtime.workspace.machineId,
-    cliType: 'custom',
-    agentType: 'synthetic',
-    customAcp: { command: '/synthetic/second-never-run', args: [] },
-  });
-  f.host.updateCatalogue();
-  f.catalog.targets[0]!.runtime = f.host.workspace;
-  await f.controller.refreshCatalog('local');
-  await f.controller.openSession(id);
-  const another = await f.controller.openRoles();
-  await another.refresh();
-  await another.save({ ...syntheticRole, id: role.id, agentId: 'second-agent' });
-  await another.refresh();
-  const different = another.controller.list!.roles[0]!;
-  await assert.rejects(another.apply(different), /另一 Agent/);
-  const second = await another.createFromRole(different);
-  assert.equal(f.controller.state.session!.meta.agentConfigId, 'second-agent');
-  assert.equal(f.controller.state.sessionId, second);
-  await f.controller.openSession(id);
-  assert.equal(f.controller.state.draft!.text, 'Source draft');
-  assert.equal(f.prompts(), 0);
-});
 
 const annotationSnapshot: PreviewAnnotationSnapshot = {
   serviceId: 'service',
@@ -2066,170 +1646,6 @@ function syntheticPreview() {
   });
   return { options, actions, closed };
 }
-
-test('unified preview keeps lost page-action receipts and inspects without replay', async (t) => {
-  const preview = syntheticPreview(),
-    f = await fixture(t, { preview: preview.options });
-  const id = await f.create(),
-    panel = await f.controller.openPreview();
-  await panel.controller.refreshOptions();
-  assert.equal(panel.controller.options?.available, true);
-  await panel.controller.open('service', previewViewport);
-  await panel.controller.locate(20, 40);
-  const item = await panel.annotations.save(panel.controller.annotation('Move this button', true));
-  assert.equal(f.controller.state.ledger?.attachments?.[id]?.items.length ?? 0, 0);
-  await panel.addImage(item.id);
-  assert.equal(f.controller.state.ledger?.attachments?.[id]?.items.length, 1);
-  f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'preview-action')
-      throw Error('Synthetic preview receipt lost');
-  };
-  await assert.rejects(panel.controller.interact({ action: 'click' }), /receipt lost/);
-  assert.equal(panel.controller.pending?.action, 'click');
-  f.fault.after = undefined;
-  const reopened = await f.controller.openPreview();
-  assert.equal(reopened.controller.active, false);
-  assert.deepEqual(preview.actions, ['open', 'click']);
-  await reopened.controller.inspect();
-  assert.equal(reopened.controller.pending, undefined);
-  assert.deepEqual(preview.actions, ['open', 'click']);
-  assert.equal(f.controller.state.ledger?.previews?.[id]?.receipt?.frame, undefined);
-  await reopened.close();
-  assert.equal(preview.closed.length, 1);
-  assert.equal(f.controller.state.ledger?.previews?.[id]?.open, undefined);
-});
-
-test('active preview renews only by reading status and a late timer cannot act after navigation', async (t) => {
-  const timers = new Set<() => void>(),
-    preview = syntheticPreview();
-  const f = await fixture(t, {
-    preview: preview.options,
-    schedule: (ms, work) => {
-      assert.equal(ms, 12000);
-      timers.add(work);
-      return () => {
-        timers.delete(work);
-      };
-    },
-  });
-  await f.create();
-  let waiting = false;
-  const renewed = signal();
-  const panel = await f.controller.openPreview(() => {
-    if (waiting && !panel.controller.busy) renewed.resolve();
-  });
-  assert.equal(timers.size, 0);
-  await panel.controller.refreshOptions();
-  await panel.controller.open('service', previewViewport);
-  assert.equal(timers.size, 1);
-  const tick = [...timers][0]!;
-  timers.delete(tick);
-  waiting = true;
-  tick();
-  await renewed.promise;
-  assert(
-    f.calls.some(
-      (call) =>
-        call.action === 'execute' &&
-        call.command.method === 'preview-read' &&
-        call.command.params.view === 'status',
-    ),
-  );
-  assert.deepEqual(preview.actions, ['open']);
-  assert.equal(timers.size, 1);
-  waiting = false;
-  const late = [...timers][0]!;
-  await f.create();
-  const before = f.calls.length;
-  timers.delete(late);
-  late();
-  assert.equal(f.calls.length, before);
-  panel.dispose();
-  assert.equal(timers.size, 0);
-});
-
-test('preview writes precede page actions and stale panels cannot act for another session', async (t) => {
-  const preview = syntheticPreview(),
-    f = await fixture(t, { preview: preview.options });
-  await f.create();
-  const first = await f.controller.openPreview(),
-    second = await f.controller.openPreview();
-  await first.controller.refreshOptions();
-  await second.controller.refreshOptions();
-  f.memory.failWrite = true;
-  await assert.rejects(first.controller.open('service', previewViewport), /storage failure/);
-  assert.deepEqual(preview.actions, []);
-  f.memory.failWrite = false;
-  await second.controller.open('service', previewViewport);
-  const stale = await f.controller.openPreview();
-  await stale.controller.capture();
-  await second.controller.capture();
-  await second.controller.interact({ action: 'scroll', deltaX: 0, deltaY: 40 });
-  await assert.rejects(
-    stale.controller.interact({ action: 'scroll', deltaX: 0, deltaY: 80 }),
-    /改变/,
-  );
-  assert.deepEqual(preview.actions, ['open', 'scroll']);
-  await f.create();
-  await assert.rejects(second.controller.capture(), /变化/);
-});
-
-test('annotation-only sends persist selections with the original and preserve a later reselection', async (t) => {
-  const f = await fixture(t),
-    id = await f.create(),
-    panel = await f.controller.openPreview();
-  const item = await panel.annotations.save(annotationSnapshot);
-  await panel.annotations.select(item.id, true);
-  const selected = panel.annotations.items[0]!.selectionId;
-  f.fault.loseMutation = true;
-  await assert.rejects(f.controller.send(), /暂不可用/);
-  await f.started.promise;
-  const pending = f.controller.state.ledger!.operations.find(
-    (entry) => entry.status === 'pending',
-  )!;
-  assert.equal(pending.annotations?.selection[0]?.selectionId, selected);
-  assert.match(JSON.stringify(f.inputs[0]), /Increase button spacing/);
-  await panel.annotations.select(item.id, true);
-  const later = panel.annotations.items[0]!.selectionId;
-  assert.notEqual(later, selected);
-  f.fault.loseMutation = false;
-  await f.controller.inspect(pending.original.value.operationId);
-  assert.equal(f.controller.state.ledger?.annotations?.[id]?.annotations[0]?.selectionId, later);
-  assert.equal(f.prompts(), 1);
-});
-
-test('annotation storage failures, invalid snapshots and selection races never send an agent prompt', async (t) => {
-  const f = await fixture(t),
-    id = await f.create(),
-    panel = await f.controller.openPreview();
-  const png = previewPng(),
-    { data, ...content } = png;
-  await assert.rejects(
-    panel.annotations.save({
-      ...annotationSnapshot,
-      image: { data, content: { ...content, version: previewVersion } },
-    }),
-    /冻结版本/,
-  );
-  f.memory.failWrite = true;
-  await assert.rejects(panel.annotations.save(annotationSnapshot), /storage failure/);
-  f.memory.failWrite = false;
-  const fresh = await f.controller.openPreview(),
-    item = await fresh.annotations.save(annotationSnapshot);
-  await fresh.annotations.select(item.id, true);
-  const original = f.memory.exclusive.bind(f.memory);
-  let raced = false;
-  f.memory.exclusive = async (key, current, task) => {
-    if (!raced && key.includes('moor-desktop-ledger-v1')) {
-      raced = true;
-      await fresh.annotations.select(item.id, false);
-    }
-    return original(key, current, task);
-  };
-  await assert.rejects(f.controller.send(), /标注草稿已改变/);
-  assert.equal(f.controller.state.ledger?.annotations?.[id]?.annotations.length, 1);
-  assert.equal(f.prompts(), 0);
-});
 
 async function githubWorkspace(t: TestContext) {
   const repository = {
@@ -2951,4 +2367,69 @@ test('workspace content rejects late navigation results and labels failed cache 
   assert.equal(f.prompts(), 0);
   panel.dispose();
   uncached.dispose();
+});
+
+test('retired task recovery uses only the reviewed original, retains failed receipts and never creates a plan', async (t) => {
+  const f = await fixture(t),
+    id = await f.create(),
+    scope = f.controller.state.scope!;
+  const original = {
+    taskVersion: 1 as const,
+    workspaceId: scope.target.workspaceId,
+    localProjectId: scope.target.localProjectId,
+    sessionId: id,
+    grantId: 'grant',
+    operationId: 'old-revoke',
+    action: 'revoke' as const,
+  };
+  const saved = {
+    version: 1,
+    cacheRevision: 1,
+    target: workspaceFeatureTarget({ ...scope.target, sessionId: id }),
+    draft: syntheticTaskPlan(),
+    pending: original,
+  };
+  await f.store.saveTasks(scope, id, 0, saved, () => {});
+  const actions: unknown[] = [];
+  let lost = true;
+  const client = new WorkspaceController({
+    store: f.store,
+    schedule: () => () => {},
+    request: async (request) => {
+      if (request.action !== 'execute' || request.command.method !== 'tasks-action')
+        return f.request(request);
+      actions.push(structuredClone(request.command.params));
+      assert.deepEqual(request.target, { ...scope.target, sessionId: id });
+      if (lost) throw Error('Synthetic lost recovery receipt');
+      return {
+        ok: true,
+        value: {
+          ...(request.command.params as object),
+          confirmed: true,
+          grant: { ...syntheticTaskGrant(id), state: 'canceled' },
+        },
+      };
+    },
+  });
+  t.after(() => client.close());
+  await client.refreshCatalog('local');
+  await client.selectProject('local', scope.target);
+  await client.openSession(id);
+  assert.equal(actions.length, 0, 'reopening never replays an old request');
+  await assert.rejects(
+    client.recoverRetiredTask({ ...original, operationId: 'other' }, 'retry'),
+    /已改变/,
+  );
+  assert.equal(actions.length, 0);
+  await assert.rejects(client.recoverRetiredTask(original, 'retry'));
+  assert.deepEqual(actions, [original]);
+  assert.deepEqual((await f.store.read(scope, () => {})).tasks![id]!.pending, original);
+  lost = false;
+  await client.recoverRetiredTask(original, 'inspect');
+  assert.deepEqual(actions[1], { ...original, action: 'inspect' });
+  assert.equal((await f.store.read(scope, () => {})).tasks![id]!.pending, undefined);
+  assert.deepEqual((await f.store.read(scope, () => {})).tasks![id]!.draft, saved.draft);
+  assert.equal(f.prompts(), 0);
+  await assert.rejects(client.recoverRetiredTask(original, 'retry'), /已改变/);
+  assert.equal(actions.length, 2);
 });

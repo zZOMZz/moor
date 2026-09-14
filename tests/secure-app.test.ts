@@ -576,7 +576,7 @@ test('session controls are explicit and pass selected Agent and metadata action'
       { name: 'metadata', args: ['archive'] },
       { name: 'refreshSession', args: [] },
     ]);
-    assert.equal(view.button('停止回合').disabled, true);
+    assert.equal(view.document.querySelector('[aria-label="停止回合"]'), null);
   } finally {
     await view.cleanup();
   }
@@ -600,8 +600,6 @@ test('draft is saved before explicit send and unsaved edits prevent switching sc
           {
             target: view.controller.contentContext.target,
             attachments: [],
-            mcpDraft: null,
-            previewAnnotations: [],
           },
         ],
       },
@@ -897,7 +895,7 @@ test('conversation text stays text and pending approval never creates an unbound
       ),
       false,
     );
-    assert.equal(view.button('发送').disabled, true);
+    assert.equal(view.document.querySelector('.secure-composer button[type="submit"]'), null);
     assert.equal(view.button('停止回合').disabled, false);
     await view.click('停止回合');
     assert.deepEqual(view.calls.at(-1), { name: 'stop', args: [] });
@@ -1403,7 +1401,7 @@ test('attachment-only send freezes displayed scope and files before awaiting tex
     await view.act(async () => saved());
     assert.deepEqual(view.calls.at(-1), {
       name: 'send',
-      args: ['', { target, attachments: shown, mcpDraft: null, previewAnnotations: [] }],
+      args: ['', { target, attachments: shown }],
     });
   } finally {
     saved();
@@ -1727,12 +1725,12 @@ test('checking attachment input capability binds the shown session and never upl
   try {
     const shownTarget = structuredClone(view.controller.contentContext.target!);
     assert.equal(view.button('发送').disabled, true);
-    assert.equal(view.button('刷新模型与附件能力').disabled, false);
+    assert.equal(view.button('刷新可用选项').disabled, false);
     assert.equal(
       view.calls.some((call) => call.name === 'refreshAgentOptions'),
       false,
     );
-    await view.click('刷新模型与附件能力');
+    await view.click('刷新可用选项');
     assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [shownTarget] });
     assert.equal(
       view.calls.some(
@@ -1755,7 +1753,7 @@ test('checking attachment input capability binds the shown session and never upl
       if (variation === 'busy') next.busy = true;
       if (variation === 'running') next.session!.meta.status = { type: 'working' };
       await view.act(async () => view.update(next));
-      assert.equal(view.button('刷新模型与附件能力').disabled, true, variation);
+      assert.equal(view.button('刷新可用选项').disabled, true, variation);
     }
   } finally {
     await view.cleanup();
@@ -1778,7 +1776,7 @@ test('encrypted model controls probe the displayed target, save selections, and 
     const target = structuredClone(view.controller.contentContext.target!);
     const picker = view.document.querySelector<HTMLButtonElement>('#secure-model')!;
     assert.equal(picker.disabled, false);
-    assert.match(picker.textContent!, /发送时确认/);
+    assert.match(picker.textContent!, /沿用会话模型/);
     await view.act(async () => picker.click());
     assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [target] });
     const model = [...view.document.querySelectorAll<HTMLElement>('[role="option"]')].find(
@@ -1873,7 +1871,7 @@ test('Composer saves the visible unsaved text before opening Skills or issuing i
     await view.cleanup();
   }
 });
-test('Composer passes the rendered empty MCP review after another page updates selection during save', async () => {
+test('Composer never carries retired MCP drafts even when another page changes them during save', async () => {
   const initial = connected();
   const view = await mount(initial);
   let release!: () => void;
@@ -1907,10 +1905,7 @@ test('Composer passes the rendered empty MCP review after another page updates s
     await view.act(async () => view.update(changed));
     await view.act(async () => release());
     const sent = view.calls.find((call) => call.name === 'send')!;
-    assert.deepEqual(sent.args, [
-      'Reviewed text',
-      { target, attachments: [], mcpDraft: { target }, previewAnnotations: [] },
-    ]);
+    assert.deepEqual(sent.args, ['Reviewed text', { target, attachments: [] }]);
   } finally {
     release();
     await view.cleanup();

@@ -1,3 +1,4 @@
+import { taskActionSchema, validateTaskActionResult, type TaskAction } from '../task-protocol';
 import { ProjectContentController } from './project-content-controller';
 import { workspaceContentCache } from './workspace-content-cache';
 import { projectContentKey } from './project-content';
@@ -96,33 +97,8 @@ import {
 import { workspaceInteractionSnapshot } from './workspace-interactions';
 import { SkillsController } from './skills';
 import { SKILLS_FEATURE } from '../skills-protocol';
-import { McpController, mcpKey, type McpSaved } from './mcp';
-import { MCP_FEATURE } from '../mcp-protocol';
 import { workspaceFeatureTarget } from './workspace-mcp';
-import {
-  TasksController,
-  tasksKey,
-  validateTaskReview,
-  taskDraftSchema,
-  type TaskDraft,
-} from './tasks';
-import {
-  SESSION_TASKS_FEATURE,
-  taskPlanSchema,
-  type TaskPlan,
-  type TaskAction,
-} from '../task-protocol';
-import { gitStateResultSchema, type GitRepositoryState } from '../git-protocol';
-import { RolesController, rolesKey, roleSelection, type RoleEdit } from './roles';
-import { ROLE_FEATURE, roleViewSchema, type RoleView } from '../role-protocol';
-import {
-  ProjectPreviewController,
-  PreviewAnnotationStore,
-  projectPreviewKey,
-  previewAnnotationKey,
-} from './project-preview';
-import { PREVIEW_FEATURE } from '../preview-protocol';
-import { attachmentBytes } from './attachments';
+import { gitStateResultSchema } from '../git-protocol';
 import { SessionForkController, sessionForkKey, type ForkSaved } from './session-fork';
 import { workspaceForkPending } from './workspace-fork';
 import {
@@ -216,6 +192,9 @@ export class WorkspaceController {
   }
   #emit() {
     for (const listener of this.#listeners) listener();
+  }
+  get navigationRevision() {
+    return this.#catalogVersions.local + this.#catalogVersions.remote;
   }
   get contextRevision() {
     return this.#generation;
@@ -376,6 +355,53 @@ export class WorkspaceController {
       context.current();
       this.#emit();
     }
+  }
+  async listProjectSessions(source: DesktopWorkspaceSource, target: Project['target']) {
+    const catalog = this.#state.catalogs[source];
+    const project = catalog?.targets.find((entry) => same(entry.target, target));
+    if (!catalog || !project) throw Error('项目不属于当前电脑列表。');
+    const version = this.#catalogVersions[source];
+    const current = () => {
+      if (
+        this.#closed ||
+        version !== this.#catalogVersions[source] ||
+        this.#state.catalogs[source] !== catalog
+      )
+        throw Error('项目列表已改变，请重新读取。');
+    };
+    const scope = { source, target: structuredClone(project.target) };
+    const sessions = sessionListSchema.parse(
+      await this.#execute(
+        { scope, project, connectionId: catalog.connectionId, current },
+        this.#command(scope, 'sessions', {}),
+      ),
+    );
+    if (
+      sessions.some(
+        (item) =>
+          item.userId !== target.userId ||
+          item.machineId !== target.machineId ||
+          item.project.localProjectId !== target.localProjectId,
+      )
+    )
+      throw Error('会话列表执行范围不匹配。');
+    return sessions;
+  }
+  async readGitContext() {
+    const context = this.#context();
+    if (!context.sessionId || !context.project.runtime.features?.includes(GIT_WORKTREE_FEATURE))
+      return;
+    return gitStateResultSchema.parse(
+      await this.#execute(
+        context,
+        this.#command(context.scope, 'git-state', {
+          gitVersion: 1,
+          workspaceId: context.scope.target.workspaceId,
+          localProjectId: context.scope.target.localProjectId,
+          sessionId: context.sessionId,
+        }),
+      ),
+    );
   }
   async openSession(sessionId: string, turnId?: string) {
     this.#state.searchFocus = undefined;
@@ -1478,641 +1504,6 @@ export class WorkspaceController {
       detach: () => perform('detach'),
     };
   }
-  async #loadTasks(context: Context, changed: () => void = () => {}) {
-    if (!context.sessionId) throw Error('请先打开会话。');
-    const sessionId = context.sessionId,
-      target = workspaceFeatureTarget({ ...context.scope.target, sessionId }),
-      key = tasksKey(target);
-    const controller = new TasksController(target, {
-      uuid: () => this.#uuid(),
-      changed,
-      current: () => {
-        try {
-          context.current();
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      online: () =>
-        !this.#state.offline &&
-        !!this.#state.project?.runtime.features?.includes(SESSION_TASKS_FEATURE),
-      read: async (requested) => {
-        if (requested !== key) throw Error('任务草稿范围不匹配。');
-        return (await this.store.read(context.scope, context.current)).tasks?.[sessionId];
-      },
-      compareWrite: async (requested, revision, value, valid) => {
-        if (requested !== key) throw Error('任务草稿范围不匹配。');
-        const check = () => {
-          context.current();
-          if (!valid()) throw Error('任务面板已改变。');
-        };
-        await this.store.saveTasks(context.scope, sessionId, revision, value, check);
-        await this.#reloadLedger({ ...context, current: check });
-        return true;
-      },
-      compareSubmission: async () => {
-        throw Error('任务授权只能与父指令一起保存。');
-      },
-      request: (path, value) => {
-        const prefix = `/api/workspaces/${target.catalogWorkspaceId}/replicas/${target.replicaId}/tasks-`;
-        if (path === prefix + 'read')
-          return this.#execute(context, this.#command(context.scope, 'tasks-read', value));
-        if (path === prefix + 'action')
-          return this.#execute(context, this.#command(context.scope, 'tasks-action', value));
-        throw Error('任务请求不属于当前项目。');
-      },
-    });
-    await controller.load();
-    return controller;
-  }
-  async #taskBranches(context: Context) {
-    context.current();
-    const value = gitStateResultSchema.parse(
-      await this.#execute(
-        context,
-        this.#command(context.scope, 'git-state', {
-          gitVersion: 1,
-          workspaceId: context.scope.target.workspaceId,
-          localProjectId: context.scope.target.localProjectId,
-          sessionId: context.sessionId,
-        }),
-      ),
-    );
-    if (!value.repository.writeSupported || value.execution.status !== 'ready')
-      throw Error('当前目录不能准备独立任务工作目录。');
-    return value.repository;
-  }
-  async #taskAgent(context: Context, id: string, modelId?: string) {
-    context.current();
-    const original = this.#state.project?.runtime.agents.find((item) => item.id === id);
-    if (!original) throw Error('子任务 Agent 版本当前不可选择。');
-    const agent = agentSchema.parse(
-      await this.#execute(
-        context,
-        this.#command(context.scope, 'agent-options', {
-          agentId: id,
-          ...(modelId && context.project.runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
-            ? { modelId }
-            : {}),
-        }),
-      ),
-    );
-    if (
-      agent.id !== id ||
-      agent.cliType !== original.cliType ||
-      agent.agentType !== original.agentType
-    )
-      throw Error('模型选项不属于原任务 Agent。');
-    Object.assign(original, agent);
-    this.#emit();
-    return agent;
-  }
-  async #reviewTasks(context: Context, input: TaskDraft, parentAgentId: string) {
-    const draft = taskDraftSchema.parse(input);
-    context.current();
-    if (
-      !this.#state.session?.persisted ||
-      this.#state.session.persistenceError ||
-      this.#state.session.meta.isArchived
-    )
-      throw Error('请先读取可编辑的父会话。');
-    if (!this.#state.project?.runtime.features?.includes(SESSION_TASKS_FEATURE))
-      throw Error('此执行电脑尚未支持协作任务。');
-    if (
-      this.#state.session?.meta.taskOrigin ||
-      this.#state.session?.meta.agentConfigId !== parentAgentId
-    )
-      throw Error('父会话或 Agent 已变化，请重新审查任务计划。');
-    const repository = await this.#taskBranches(context);
-    // A task may review a different model of the same Agent; validate each against its own probe.
-    for (const task of draft.tasks) {
-      const agent = await this.#taskAgent(context, task.agentId, task.selection?.modelId);
-      validateTaskReview(
-        { ...draft, tasks: [task] },
-        { parentAgentId, child: false, agents: [agent], branches: repository.branches },
-      );
-    }
-    context.current();
-    return { plan: taskPlanSchema.parse(draft), repository };
-  }
-  async openTasks(changed: () => void = () => {}) {
-    await this.#draftWrites;
-    const original = this.#context();
-    if (!original.sessionId) throw Error('请先打开会话。');
-    const sessionId = original.sessionId;
-    let open = true;
-    const current = () => {
-      original.current();
-      if (!open) throw Error('任务面板已关闭。');
-    };
-    const context = { ...original, current };
-    const controller = await this.#loadTasks(context, changed);
-    let repository: GitRepositoryState | undefined;
-    const review = async () => {
-      await controller.flush();
-      current();
-      const draft = structuredClone(controller.draft),
-        parent = this.#state.session!.meta.agentConfigId;
-      await this.refreshSession();
-      current();
-      const result = await this.#reviewTasks(context, draft, parent);
-      if (!same(draft, controller.draft)) throw Error('任务草稿已改变，请重新审查。');
-      repository = result.repository;
-      changed();
-      return result.plan;
-    };
-    const action = async (
-      kind: TaskAction['action'] | 'retry',
-      grantId?: string,
-      operationId?: string,
-      cleanup?: { taskId: string; expectedExecutionRevision: number },
-    ) => {
-      await controller.flush();
-      current();
-      const pending = structuredClone(controller.pending);
-      return this.store.exclusiveOperation(
-        context.scope,
-        'tasks:' + sessionId,
-        current,
-        async () => {
-          const latest = (await this.store.read(context.scope, current)).tasks?.[sessionId];
-          if (!same(pending ?? null, latest?.pending ?? null))
-            throw Error('原任务操作已改变，请重新读取。');
-          await controller.load();
-          return kind === 'retry'
-            ? controller.retry()
-            : controller.action(kind, grantId!, operationId, cleanup);
-        },
-      );
-    };
-    return {
-      controller,
-      review,
-      action,
-      get repository() {
-        return repository;
-      },
-      close: () => {
-        open = false;
-        controller.dispose();
-      },
-      readBranches: async () => {
-        repository = await this.#taskBranches(context);
-        changed();
-      },
-      refreshAgent: (id: string) => this.#taskAgent(context, id),
-      enable: async (plan: TaskPlan) => {
-        const expected = taskPlanSchema.parse(plan),
-          fresh = await review();
-        if (!same(expected, fresh)) throw Error('任务审查内容已变化，请重新核对。');
-        await controller.enable(fresh, this.#state.session!.meta.agentConfigId);
-      },
-      openSession: async (id: string) => {
-        current();
-        await controller.refresh();
-        current();
-        if (
-          !controller.list?.grants.some((grant) =>
-            grant.tasks.some((task) => task.sessionCreated && task.childSessionId === id),
-          )
-        )
-          throw Error('此子任务会话尚未由主机确认。');
-        await this.openSession(id);
-      },
-    };
-  }
-  async openRoles(changed: () => void = () => {}) {
-    await this.#draftWrites;
-    const context = this.#context();
-    if (!context.sessionId) throw Error('请先打开会话。');
-    const sessionId = context.sessionId,
-      target = workspaceFeatureTarget({ ...context.scope.target, sessionId }),
-      key = rolesKey(target),
-      endpoint = `/api/workspaces/${target.catalogWorkspaceId}/replicas/${target.replicaId}/roles/`;
-    let open = true;
-    const current = () => {
-      context.current();
-      if (!open) throw Error('角色面板已关闭。');
-    };
-    const scoped = { ...context, current };
-    const controller = new RolesController(target, {
-      uuid: () => this.#uuid(),
-      changed,
-      current: () => {
-        try {
-          current();
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      online: () =>
-        !this.#state.offline && !!this.#state.project?.runtime.features?.includes(ROLE_FEATURE),
-      read: async (requested) => {
-        if (requested !== key) throw Error('角色缓存范围不匹配。');
-        return (await this.store.read(context.scope, current)).roles?.[sessionId];
-      },
-      compareWrite: async (requested, revision, value, valid) => {
-        if (requested !== key) throw Error('角色缓存范围不匹配。');
-        const check = () => {
-          current();
-          if (!valid()) throw Error('角色操作已改变。');
-        };
-        await this.store.saveRoles(context.scope, sessionId, revision, value, check);
-        await this.#reloadLedger({ ...context, current: check });
-        return true;
-      },
-      request: (path, value) => {
-        current();
-        if (path === endpoint + 'read')
-          return this.#execute(scoped, this.#command(context.scope, 'roles-read', value));
-        if (path === endpoint + 'action')
-          return this.#execute(scoped, this.#command(context.scope, 'roles-action', value));
-        throw Error('角色请求不属于当前项目。');
-      },
-    });
-    await controller.load();
-    const perform = async (
-      action: 'save' | 'remove' | 'retry' | 'inspect' | 'abandon',
-      edit?: RoleEdit,
-      id?: string,
-    ) => {
-      const original = structuredClone(controller.pending);
-      const ending = controller.ending;
-      return this.store.exclusiveOperation(
-        context.scope,
-        'roles:' + sessionId,
-        current,
-        async () => {
-          await controller.load();
-          if (
-            ['retry', 'inspect', 'abandon'].includes(action) &&
-            (!original ||
-              !same(original, controller.pending ?? null) ||
-              ending !== controller.ending)
-          )
-            throw Error('原角色操作已改变，请重新读取。');
-          if (action === 'save') return controller.saveRole(edit!);
-          if (action === 'remove') return controller.remove(id!);
-          return controller[action]();
-        },
-      );
-    };
-    const refreshAgent = async (id: string, modelId?: string) => {
-      current();
-      const agent =
-        this.#state.session?.agent?.id === id
-          ? this.#state.session.agent
-          : this.#state.project?.runtime.agents.find((item) => item.id === id);
-      if (!agent) throw Error('此角色的 Agent 版本当前不可选择。');
-      const updated = agentSchema.parse(
-        await this.#execute(
-          scoped,
-          this.#command(context.scope, 'agent-options', {
-            agentId: id,
-            ...(this.#state.session?.meta.agentConfigId === id ? { sessionId } : {}),
-            ...(modelId && context.project.runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
-              ? { modelId }
-              : {}),
-          }),
-        ),
-      );
-      if (
-        updated.id !== agent.id ||
-        updated.cliType !== agent.cliType ||
-        updated.agentType !== agent.agentType
-      )
-        throw Error('模型选项不属于所选角色的 Agent 版本。');
-      current();
-      const item = this.#state.project?.runtime.agents.find((item) => item.id === id);
-      if (item) Object.assign(item, updated);
-      if (this.#state.session?.agent?.id === id) this.#state.session.agent = updated;
-      this.#emit();
-      changed();
-      return updated;
-    };
-    const freshRole = async (input: RoleView) => {
-      const role = roleViewSchema.parse(input);
-      current();
-      if (controller.pending) throw Error('请先核查原角色操作。');
-      return controller.freshRole(role);
-    };
-    const apply = async (input: RoleView) => {
-      await this.#draftWrites;
-      current();
-      const draft = structuredClone(this.#state.draft);
-      if (!draft) throw Error('原会话草稿不可用。');
-      const role = await freshRole(input);
-      await this.refreshSession();
-      current();
-      const session = this.#state.session;
-      if (!session?.persisted || session.persistenceError || session.meta.isArchived)
-        throw Error('请先读取可编辑的原会话。');
-      if (session.meta.agentConfigId !== role.agentId)
-        throw Error('已有会话已固定另一 Agent，请明确创建新会话后应用此角色。');
-      const agent = await refreshAgent(role.agentId, role.selection.modelId);
-      const selection = roleSelection(role, draft.selection, agent.runConfig);
-      await freshRole(role);
-      const base = session.history.findLast((turn) => turn.role === 'user')?.id ?? '';
-      await this.store.applyRole(
-        context.scope,
-        sessionId,
-        draft.revision,
-        base,
-        role,
-        selection,
-        current,
-      );
-      await this.#reloadLedger(scoped);
-    };
-    return {
-      controller,
-      refreshAgent,
-      apply,
-      refresh: () => controller.refresh(),
-      save: (edit: RoleEdit) => perform('save', structuredClone(edit)),
-      remove: (id: string) => perform('remove', undefined, id),
-      retry: () => perform('retry'),
-      inspect: () => perform('inspect'),
-      abandon: () => perform('abandon'),
-      close: () => {
-        open = false;
-        controller.invalidate();
-      },
-      createFromRole: async (input: RoleView) => {
-        const role = await freshRole(input);
-        const agent = await refreshAgent(role.agentId, role.selection.modelId);
-        roleSelection(role, {}, agent.runConfig);
-        current();
-        const id = await this.createSession(role.agentId, role.name);
-        current();
-        await this.refreshSessions();
-        await this.openSession(id);
-        const next = await this.openRoles();
-        try {
-          await next.apply(role);
-        } finally {
-          next.close();
-        }
-        return id;
-      },
-    };
-  }
-  async #loadAnnotations(context: Context, changed: () => void = () => {}) {
-    if (!context.sessionId) throw Error('请先打开会话。');
-    const sessionId = context.sessionId,
-      target = workspaceFeatureTarget({ ...context.scope.target, sessionId }),
-      key = previewAnnotationKey(target);
-    const annotations = new PreviewAnnotationStore(target, {
-      uuid: () => this.#uuid(),
-      now: this.options.now,
-      changed,
-      current: () => {
-        try {
-          context.current();
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      read: async (requested) => {
-        if (requested !== key) throw Error('标注缓存范围不匹配。');
-        return (await this.store.read(context.scope, context.current)).annotations?.[sessionId];
-      },
-      compareWrite: async (requested, revision, value, valid) => {
-        if (requested !== key) throw Error('标注缓存范围不匹配。');
-        const check = () => {
-          context.current();
-          if (!valid()) throw Error('标注面板已改变。');
-        };
-        await this.store.saveAnnotations(context.scope, sessionId, revision, value, check);
-        await this.#reloadLedger({ ...context, current: check });
-        return true;
-      },
-    });
-    await annotations.load();
-    return annotations;
-  }
-  async openPreview(changed: () => void = () => {}) {
-    await this.#draftWrites;
-    const context = this.#context();
-    if (!context.sessionId) throw Error('请先打开会话。');
-    const sessionId = context.sessionId,
-      target = workspaceFeatureTarget({ ...context.scope.target, sessionId }),
-      key = projectPreviewKey(target),
-      endpoint = `/api/workspaces/${target.catalogWorkspaceId}/replicas/${target.replicaId}/preview/`;
-    let open = true;
-    const current = () => {
-      context.current();
-      if (!open) throw Error('预览面板已关闭。');
-    };
-    const scoped = { ...context, current };
-    const annotations = await this.#loadAnnotations(scoped, changed);
-    let heartbeat: (() => void) | undefined;
-    let heartbeatId = 0;
-    const stopHeartbeat = () => {
-      heartbeatId++;
-      heartbeat?.();
-      heartbeat = undefined;
-    };
-    const update = () => {
-      changed();
-      let valid = false;
-      try {
-        current();
-        valid = true;
-      } catch {
-        /* The old connection cannot renew its lease. */
-      }
-      if (
-        !valid ||
-        this.#state.offline ||
-        !controller.active ||
-        controller.busy ||
-        controller.pending ||
-        controller.closing ||
-        controller.error ||
-        controller.loadError
-      ) {
-        stopHeartbeat();
-        return;
-      }
-      if (heartbeat) return;
-      const id = ++heartbeatId;
-      const schedule =
-        this.options.schedule ??
-        ((ms: number, work: () => void) => {
-          const timer = setTimeout(work, ms);
-          return () => clearTimeout(timer);
-        });
-      heartbeat = schedule(12000, () => {
-        if (id !== heartbeatId) return;
-        heartbeat = undefined;
-        try {
-          current();
-        } catch {
-          return;
-        }
-        // Renew only an already active connection with a read. Never reopen or replay.
-        void controller.status().catch(() => {});
-      });
-    };
-    const controller = new ProjectPreviewController(target, {
-      uuid: () => this.#uuid(),
-      changed: update,
-      current: () => {
-        try {
-          current();
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      online: () =>
-        !this.#state.offline && !!this.#state.project?.runtime.features?.includes(PREVIEW_FEATURE),
-      read: async (requested) => {
-        if (requested !== key) throw Error('预览缓存范围不匹配。');
-        return (await this.store.read(context.scope, current)).previews?.[sessionId];
-      },
-      compareWrite: async (requested, revision, value, valid) => {
-        if (requested !== key) throw Error('预览缓存范围不匹配。');
-        const check = () => {
-          current();
-          if (!valid()) throw Error('预览连接已改变。');
-        };
-        await this.store.savePreview(context.scope, sessionId, revision, value, check);
-        await this.#reloadLedger({ ...context, current: check });
-        return true;
-      },
-      request: async (path, value) => {
-        current();
-        const methods = {
-          read: 'preview-read',
-          action: 'preview-action',
-          inspect: 'preview-inspect',
-          close: 'preview-close',
-        } as const;
-        const kind = Object.keys(methods).find((item) => path === endpoint + item) as
-          | keyof typeof methods
-          | undefined;
-        if (!kind) throw Error('预览请求不属于当前项目。');
-        return this.#execute(scoped, this.#command(context.scope, methods[kind], value));
-      },
-    });
-    await controller.load();
-    return {
-      controller,
-      annotations,
-      close: async () => {
-        stopHeartbeat();
-        try {
-          if (controller.openRequest) await controller.close();
-        } finally {
-          open = false;
-          controller.invalidate();
-        }
-      },
-      dispose: () => {
-        stopHeartbeat();
-        // Release only this captured connection. Navigation can invalidate its authority;
-        // in that case the host lease expires and the saved record requires manual close.
-        const release = controller.dispose();
-        open = false;
-        void release.catch(() => {});
-      },
-      addImage: async (id: string) => {
-        current();
-        await annotations.settled();
-        const fresh = await this.#loadAnnotations(scoped),
-          item = annotations.items.find((value) => value.id === id),
-          latest = fresh.items.find((value) => value.id === id);
-        if (!item?.snapshot.image || !latest || item.version !== latest.version)
-          throw Error('原截图已改变，请重新打开标注。');
-        const image = item.snapshot.image;
-        current();
-        await this.addAttachments(
-          [
-            new File([attachmentBytes(image.data)], `网页标注-${id.slice(0, 32)}.png`, {
-              type: 'image/png',
-            }),
-          ],
-          current,
-        );
-        current();
-      },
-    };
-  }
-  async #loadMcp(context: Context, changed: () => void = () => {}) {
-    if (!context.sessionId) throw Error('请先打开会话。');
-    const sessionId = context.sessionId,
-      target = workspaceFeatureTarget({ ...context.scope.target, sessionId }),
-      key = mcpKey(target);
-    const current = () => {
-      try {
-        context.current();
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    const controller = new McpController(target, {
-      uuid: () => this.#uuid(),
-      current,
-      changed,
-      online: () =>
-        !this.#state.offline && !!this.#state.project?.runtime.features?.includes(MCP_FEATURE),
-      read: async (requested) => {
-        if (requested !== key) throw Error('MCP 缓存范围不匹配。');
-        return (await this.store.read(context.scope, context.current)).mcp?.[sessionId];
-      },
-      compareWrite: async (requested, revision, value, valid) => {
-        if (requested !== key) throw Error('MCP 缓存范围不匹配。');
-        const check = () => {
-          context.current();
-          if (!valid()) throw Error('MCP 面板已改变。');
-        };
-        await this.store.saveMcp(context.scope, sessionId, revision, value as McpSaved, check);
-        await this.#reloadLedger({ ...context, current: check });
-        return true;
-      },
-      compareSubmission: async () => {
-        throw Error('MCP 授权只能与原指令一起保存。');
-      },
-      request: (path, value) => {
-        if (
-          path !==
-          `/api/workspaces/${target.catalogWorkspaceId}/replicas/${target.replicaId}/mcp/read`
-        )
-          throw Error('MCP 请求不属于当前项目。');
-        return this.#execute(context, this.#command(context.scope, 'mcp-read', value));
-      },
-    });
-    await controller.load();
-    return controller;
-  }
-  async openMcp(changed: () => void = () => {}) {
-    await this.#draftWrites;
-    const context = this.#context();
-    let open = true;
-    const controller = await this.#loadMcp(
-      {
-        ...context,
-        current: () => {
-          context.current();
-          if (!open) throw Error('MCP 面板已关闭。');
-        },
-      },
-      changed,
-    );
-    return {
-      controller,
-      close: () => {
-        open = false;
-        controller.dispose();
-      },
-    };
-  }
   openSkills(changed: () => void = () => {}) {
     const context = this.#context();
     if (!context.sessionId) throw Error('请先打开会话。');
@@ -2426,6 +1817,57 @@ export class WorkspaceController {
       );
     });
   }
+  // Recovery only: no task plans, grants, or new operation IDs can be created here.
+  async recoverRetiredTask(shown: TaskAction, mode: 'inspect' | 'retry') {
+    const original = taskActionSchema.parse(structuredClone(shown));
+    if (mode !== 'inspect' && mode !== 'retry') throw Error('仅支持核查或重试原操作。');
+    await this.#draftWrites;
+    const context = this.#context(),
+      sessionId = context.sessionId;
+    if (!sessionId) throw Error('请先打开原会话。');
+    return this.store.exclusiveOperation(
+      context.scope,
+      'tasks:' + sessionId,
+      context.current,
+      async () => {
+        const saved = (await this.store.read(context.scope, context.current)).tasks?.[sessionId];
+        if (!saved?.pending || !same(saved.pending, original))
+          throw Error('原任务操作已改变，请重新读取会话。');
+        const request =
+          mode === 'retry'
+            ? original
+            : taskActionSchema.parse({
+                taskVersion: original.taskVersion,
+                workspaceId: original.workspaceId,
+                localProjectId: original.localProjectId,
+                sessionId: original.sessionId,
+                grantId: original.grantId,
+                operationId: original.operationId,
+                action: 'inspect',
+              });
+        const result = validateTaskActionResult(
+          await this.#execute(context, this.#command(context.scope, 'tasks-action', request)),
+          request,
+        );
+        context.current();
+        if (
+          (result.operation &&
+            ['accepted', 'abandoned', 'rejected'].includes(result.operation.state)) ||
+          (original.action === 'revoke' && result.grant.state !== 'active')
+        ) {
+          await this.store.saveTasks(
+            context.scope,
+            sessionId,
+            saved.cacheRevision,
+            { ...saved, cacheRevision: saved.cacheRevision + 1, pending: undefined },
+            context.current,
+          );
+          await this.#reloadLedger(context);
+        }
+        return result;
+      },
+    );
+  }
   async send() {
     await this.#draftWrites;
     const context = this.#context(),
@@ -2453,27 +1895,17 @@ export class WorkspaceController {
       throw Error('请先确认 GitHub 原操作，再发送新指令。');
     if (ledger.git?.[sessionId]?.pending) throw Error('请先确认原 Git 操作，再发送新指令。');
     if (this.store.forkBlocked(ledger, sessionId)) throw Error('请先核查原 Fork，再发送新指令。');
-    const mcp = await this.#loadMcp(context);
-    const mcpReview = await mcp.prepareSend();
-    const annotations = await this.#loadAnnotations(context);
-    const composed = annotations.compose(draft.text);
-    const taskReview = ledger.tasks?.[sessionId]?.enabled;
-    if (taskReview)
-      await this.#reviewTasks(context, ledger.tasks![sessionId]!.draft, taskReview.parentAgentId);
-    context.current();
     const value = buildSessionTurn({
       scope: { ...context.scope.target, sessionId },
       read: this.#state.session,
       agent: this.#state.session!.agent!,
-      prompt: composed.prompt,
+      prompt: draft.text,
       selection: draft.selection,
       operationId: this.#uuid(),
       turnId: this.#uuid(),
       peerId: this.#uuid(),
       now: (this.options.now ?? (() => new Date().toISOString()))(),
       attachments: attachments.items.map((item) => item.reference),
-      mcpServerIds: mcpReview?.servers.map((server) => server.id),
-      taskPlan: taskReview?.plan,
     });
     await this.store.stage(
       context.scope,
@@ -2487,9 +1919,10 @@ export class WorkspaceController {
         annotationRevision,
       },
       context.current,
-      mcpReview,
-      composed.submission.selection.length ? composed.submission : undefined,
-      taskReview,
+      undefined,
+      undefined,
+      undefined,
+      true,
     );
     await this.#reloadLedger(context);
     await this.retry(value.operationId);

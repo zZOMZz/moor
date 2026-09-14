@@ -101,6 +101,7 @@ export function SecureAttachmentCard({
   );
 }
 export function SecureAttachmentControls({
+  hidePicker = false,
   items,
   disabled,
   busy,
@@ -114,6 +115,7 @@ export function SecureAttachmentControls({
   onPreview,
 }: {
   items: readonly SecureAttachmentDraft[];
+  hidePicker?: boolean;
   disabled?: boolean;
   busy?: boolean;
   online: boolean;
@@ -128,7 +130,7 @@ export function SecureAttachmentControls({
   const input = useRef<HTMLInputElement>(null);
   return (
     <div className="secure-attachment-controls">
-      <div className="secure-attachment-select">
+      <div className="secure-attachment-select" hidden={hidePicker}>
         <button
           type="button"
           disabled={disabled || busy || items.length >= MAX_TURN_ATTACHMENTS}

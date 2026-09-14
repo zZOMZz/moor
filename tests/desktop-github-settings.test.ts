@@ -253,6 +253,8 @@ test('the actual desktop settings UI and preload add, replace, verify and remove
         exposeInMainWorld: (key: string, value: unknown) => exposed.set(key, value),
       },
       ipcRenderer: {
+        on() {},
+        removeListener() {},
         invoke(name: string, value: unknown) {
           if (name === 'personal:github-config') return f.bridge.request(value, () => !closed);
           if (name === 'personal:health') return Promise.resolve(health);

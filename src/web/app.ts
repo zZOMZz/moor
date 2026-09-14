@@ -1,38 +1,12 @@
-import { SESSION_TASKS_FEATURE, taskOriginSchema } from '../task-protocol';
-import { MCP_FEATURE } from '../mcp-protocol';
-import { McpController, mcpKey, type McpReview } from './mcp';
-import { showMcpControl, showMcpPanel, showMcpCard } from './mcp-ui';
-import { TasksController, tasksKey, validateTaskReview } from './tasks';
-import { showTasksControl, showTasksPanel, showTaskPlanCard, showTaskOrigin } from './tasks-ui';
-import { ROLE_FEATURE, type RoleView } from '../role-protocol';
-import {
-  RolesController,
-  rolesKey,
-  roleAppliedKey,
-  roleAppliedSchema,
-  roleInstruction,
-  roleSelection,
-  type RoleApplied,
-} from './roles';
-import { showRolesControl, showRolesPanel } from './roles-ui';
 import { GITHUB_WRITE_FEATURE } from '../github-write-protocol';
-import { PREVIEW_FEATURE } from '../preview-protocol';
 import { SKILLS_FEATURE } from '../skills-protocol';
 import { SkillsController, skillsKey, agentCommandText } from './skills';
 import { showSkillsControl, showSkillsPanel } from './skills-ui';
 import {
-  ProjectPreviewController,
-  PreviewAnnotationStore,
   previewAnnotationKey,
-  previewAnnotationSubmissionSchema,
   pendingPreviewMutationSchema,
   type PreviewAnnotationSubmission,
 } from './project-preview';
-import {
-  showProjectPreviewControl,
-  showProjectPreviewPanel,
-  showPreviewAnnotationCards,
-} from './project-preview-ui';
 import { GithubWriteController, githubWriteKey } from './github-write';
 import { showGithubWritePanel } from './github-write-ui';
 import { GITHUB_FEATURE } from '../github-protocol';
@@ -598,7 +572,6 @@ async function fillAgentCommand(command: string) {
     sending ||
     pending ||
     skillsDraftAppending ||
-    roleApplying ||
     attachmentWorking ||
     sessionPersistenceError
   )
@@ -753,730 +726,6 @@ function persistComposerDraft(draftKey: string, value: string) {
   return writing;
 }
 
-let mcp: McpController | undefined;
-let mcpGeneration = 0,
-  mcpPanelOpen = false,
-  mcpLoading = false,
-  mcpLoadError = '';
-function currentMcp() {
-  const target = gitTarget();
-  return target && mcp && mcpKey(target) === mcpKey(mcp.target) ? mcp : undefined;
-}
-function mcpReason() {
-  return !authenticated ||
-    !connected ||
-    !selected?.online ||
-    !replica?.available ||
-    navigator.onLine === false
-    ? '执行电脑离线；MCP 选择只保存在草稿中，连接后请手动操作。'
-    : !workspace?.features?.includes(MCP_FEATURE)
-      ? '此执行电脑尚不支持额外 MCP，请升级 Moor。'
-      : '';
-}
-function mcpSendReason() {
-  return (
-    mcpLoadError ||
-    currentMcp()?.loadError ||
-    (mcpLoading || currentMcp()?.busy
-      ? '请等待 MCP 草稿恢复或保存。'
-      : currentMcp()?.selected.length
-        ? mcpReason()
-        : '')
-  );
-}
-function resetMcp() {
-  mcpGeneration++;
-  mcp?.dispose();
-  mcp = undefined;
-  mcpPanelOpen = false;
-  mcpLoading = false;
-  mcpLoadError = '';
-  showMcpPanel();
-  showMcpCard();
-}
-async function loadMcp() {
-  const target = gitTarget(),
-    generation = ++mcpGeneration;
-  mcp = undefined;
-  mcpLoading = true;
-  mcpLoadError = '';
-  try {
-    if (!target) return;
-    const controller: McpController = new McpController(target, {
-      read: cache.read,
-      compareWrite: cache.compareWrite,
-      compareSubmission: cache.compareTaskSubmission,
-      request: api,
-      current: () => generation === mcpGeneration && currentMcp() === controller,
-      online: () => !mcpReason(),
-      changed: () => {
-        if (generation === mcpGeneration) updateComposer();
-      },
-    });
-    mcp = controller;
-    await controller.load();
-  } catch (error) {
-    if (generation === mcpGeneration) mcpLoadError = 'MCP 草稿无法恢复，请重新打开原会话。';
-    throw error;
-  } finally {
-    if (generation === mcpGeneration) {
-      mcpLoading = false;
-      updateComposer();
-    }
-  }
-}
-function openMcp() {
-  mcpPanelOpen = true;
-  renderMcp();
-}
-function renderMcp() {
-  const controller = currentMcp(),
-    generation = mcpGeneration;
-  showMcpControl(
-    attentionVisible
-      ? undefined
-      : {
-          disabled: !gitTarget(),
-          count: controller?.selected.length ?? 0,
-          onOpen: openMcp,
-        },
-  );
-  showMcpCard(!attentionVisible && controller ? { controller, onOpen: openMcp } : undefined);
-  if (!mcpPanelOpen) return;
-  const current = () => generation === mcpGeneration && controller === currentMcp() && mcpPanelOpen;
-  showMcpPanel({
-    controller,
-    reason: mcpLoadError || mcpReason(),
-    sending,
-    onClose: () => {
-      if (current()) {
-        mcpPanelOpen = false;
-        showMcpPanel();
-      }
-    },
-    onRefresh: () =>
-      run(async () => {
-        if (current() && controller) await controller.refresh();
-      }),
-    onApply: async (servers) => {
-      if (!current() || !controller) throw new Error('MCP 面板或执行目标已改变。');
-      await controller.apply(servers);
-    },
-  });
-}
-
-let tasks: TasksController | undefined;
-let tasksGeneration = 0,
-  tasksPanelOpen = false,
-  tasksLoading = false,
-  tasksLoadError = '',
-  tasksReviewing = false;
-function currentTasks() {
-  const target = gitTarget();
-  return target && tasks && tasksKey(target) === tasksKey(tasks.target) ? tasks : undefined;
-}
-function tasksReason() {
-  return !authenticated ||
-    !connected ||
-    !selected?.online ||
-    !replica?.available ||
-    navigator.onLine === false
-    ? '执行电脑离线；任务草稿不会执行，请连接后手动操作。'
-    : !workspace?.features?.includes(SESSION_TASKS_FEATURE)
-      ? '此执行电脑尚不支持协作任务，请升级 Moor。'
-      : '';
-}
-function taskChildOrigin() {
-  const result = taskOriginSchema.safeParse(meta?.taskOrigin);
-  return result.success ? result.data : undefined;
-}
-function taskDraftReason() {
-  return meta?.taskOrigin
-    ? '子任务会话不能再次授权协作任务。'
-    : pending
-      ? '请先确认原父指令，再启用下一份任务计划。'
-      : meta?.isArchived
-        ? '请先恢复会话。'
-        : sessionPersistenceError || sessionAgentError || '';
-}
-function tasksSendReason() {
-  const c = currentTasks();
-  return (
-    tasksLoadError ||
-    c?.loadError ||
-    (tasksLoading || c?.saving || tasksReviewing
-      ? '请等待任务草稿恢复或保存。'
-      : c?.enabled && (taskChildOrigin() || c.enabled.parentAgentId !== currentAgent()?.id)
-        ? '父会话或 Agent 已变化，请重新审查任务计划。'
-        : c?.enabled
-          ? tasksReason()
-          : '')
-  );
-}
-function resetTasks() {
-  tasksGeneration++;
-  tasks?.dispose();
-  tasks = undefined;
-  tasksPanelOpen = false;
-  tasksLoading = false;
-  tasksLoadError = '';
-  tasksReviewing = false;
-  showTasksPanel();
-  showTaskPlanCard();
-  showTaskOrigin();
-}
-async function loadTasks() {
-  const target = gitTarget(),
-    generation = ++tasksGeneration;
-  tasks = undefined;
-  tasksLoading = true;
-  tasksLoadError = '';
-  try {
-    if (!target) return;
-    const controller: TasksController = new TasksController(target, {
-      read: cache.read,
-      compareWrite: cache.compareWrite,
-      compareSubmission: cache.compareTaskSubmission,
-      request: api,
-      current: () => generation === tasksGeneration && currentTasks() === controller,
-      online: () => !tasksReason(),
-      changed: () => {
-        if (generation === tasksGeneration) updateComposer();
-      },
-    });
-    tasks = controller;
-    await controller.load();
-  } catch (e) {
-    if (generation === tasksGeneration) tasksLoadError = '任务草稿无法恢复，请重新打开原会话。';
-    throw e;
-  } finally {
-    if (generation === tasksGeneration) {
-      tasksLoading = false;
-      updateComposer();
-    }
-  }
-}
-function openTasks() {
-  tasksPanelOpen = true;
-  renderTasks();
-}
-async function reviewTasks() {
-  const controller = currentTasks(),
-    git = currentGitWorkspace(),
-    agent = currentAgent(),
-    generation = tasksGeneration;
-  if (!controller || !git || !agent) throw new Error('任务执行目标尚未就绪。');
-  if (tasksReason() || taskDraftReason()) throw new Error(tasksReason() || taskDraftReason());
-  const expected = JSON.stringify(controller.draft),
-    parent = agent.id;
-  tasksReviewing = true;
-  updateComposer();
-  try {
-    await controller.flush();
-    await git.refresh();
-    if (
-      generation !== tasksGeneration ||
-      controller !== currentTasks() ||
-      !tasksPanelOpen ||
-      parent !== currentAgent()?.id ||
-      expected !== JSON.stringify(controller.draft) ||
-      tasksReason() ||
-      taskDraftReason()
-    )
-      throw new Error('任务草稿或执行范围已改变，请重新审查。');
-    if (
-      git.source !== 'host' ||
-      !git.state?.repository.writeSupported ||
-      git.execution?.status !== 'ready'
-    )
-      throw new Error('当前目录不能准备独立任务工作目录。');
-    return validateTaskReview(controller.draft, {
-      parentAgentId: parent,
-      child: !!meta?.taskOrigin,
-      agents: workspace?.agents ?? [],
-      branches: git.state.repository.branches,
-    });
-  } finally {
-    if (generation === tasksGeneration) {
-      tasksReviewing = false;
-      updateComposer();
-    }
-  }
-}
-async function refreshTaskAgent(id: string) {
-  const controller = currentTasks(),
-    generation = tasksGeneration,
-    agent = workspace?.agents.find((a) => a.id === id);
-  if (!controller || !agent || tasksReason() || pending || sending)
-    throw new Error('当前不能刷新子任务 Agent 选项。');
-  const updated = agentSchema.parse(await api(prefix() + '/agent-options', { agentId: id }));
-  if (
-    generation !== tasksGeneration ||
-    controller !== currentTasks() ||
-    !tasksPanelOpen ||
-    tasksReason()
-  )
-    return;
-  if (
-    updated.id !== id ||
-    updated.cliType !== agent.cliType ||
-    updated.agentType !== agent.agentType
-  )
-    throw new Error('模型选项不属于所选子任务 Agent。');
-  Object.assign(agent, updated);
-  updateComposer();
-}
-function renderTasks() {
-  const controller = currentTasks(),
-    generation = tasksGeneration,
-    origin = taskChildOrigin();
-  showTasksControl(attentionVisible ? undefined : { disabled: !gitTarget(), onOpen: openTasks });
-  showTaskOrigin(
-    !attentionVisible && origin
-      ? {
-          origin,
-          onOpen: () => {
-            if (generation === tasksGeneration) run(() => openSession(origin.parentSessionId));
-          },
-        }
-      : undefined,
-  );
-  const selectedPlan = controller?.delivery?.review ?? controller?.enabled;
-  showTaskPlanCard(
-    !attentionVisible && selectedPlan
-      ? {
-          count: selectedPlan.plan.tasks.length,
-          pending: !!controller?.delivery,
-          disabled: sending || !!controller?.busy,
-          onOpen: openTasks,
-          onRemove: () =>
-            run(async () => {
-              if (controller === currentTasks()) await controller?.disable();
-            }),
-        }
-      : undefined,
-  );
-  if (!tasksPanelOpen) return;
-  const operate = (work: (c: TasksController) => Promise<unknown>) =>
-    run(async () => {
-      if (generation !== tasksGeneration || !controller || controller !== currentTasks()) return;
-      try {
-        await work(controller);
-      } catch (e) {
-        if (generation === tasksGeneration && controller === currentTasks()) throw e;
-      }
-    });
-  const git = currentGitWorkspace();
-  showTasksPanel({
-    controller,
-    reason: tasksReason(),
-    draftReason: taskDraftReason(),
-    sending: sending || tasksReviewing,
-    existing: !!sessionId,
-    agents: workspace?.agents ?? [],
-    branches: git?.source === 'host' ? (git.state?.repository.branches ?? []) : [],
-    branchesPartial: !!git?.state?.repository.partial,
-    onClose: () => {
-      if (generation !== tasksGeneration || controller !== currentTasks()) return;
-      tasksPanelOpen = false;
-      controller?.invalidate();
-      showTasksPanel();
-    },
-    onEdit: (draft) => operate((c) => c.edit(draft)),
-    onReadBranches: () =>
-      operate(async () => {
-        if (tasksReason()) throw new Error(tasksReason());
-        await currentGitWorkspace()?.refresh();
-      }),
-    onRefreshAgent: (id) => operate(() => refreshTaskAgent(id)),
-    onReview: () => {
-      if (generation !== tasksGeneration || controller !== currentTasks() || !tasksPanelOpen)
-        throw new Error('任务审查所属会话已改变。');
-      return reviewTasks();
-    },
-    onEnable: (plan) =>
-      operate(async (c) => {
-        if (taskDraftReason() || tasksReason()) throw new Error(taskDraftReason() || tasksReason());
-        const fresh = await reviewTasks();
-        if (JSON.stringify(plan) !== JSON.stringify(fresh))
-          throw new Error('审查内容已变化，请重新核对。');
-        await c.enable(fresh, currentAgent()!.id);
-      }),
-    onDisable: () => operate((c) => c.disable()),
-    onRefresh: () => operate((c) => c.refresh()),
-    onAction: (action, grantId, operationId, cleanup) =>
-      operate((c) => c.action(action, grantId, operationId, cleanup)),
-    onRetry: () => operate((c) => c.retry()),
-    onOpenSession: (id) => {
-      if (generation === tasksGeneration) run(() => openSession(id));
-    },
-  });
-}
-
-let roles: RolesController | undefined;
-let rolesGeneration = 0,
-  rolesPanelOpen = false,
-  roleApplying = false,
-  roleDraftSaving = false;
-let roleDraftAbort: AbortController | undefined, roleApplied: RoleApplied | undefined;
-let roleApplyLoadError = '',
-  rolePanelSelection = '';
-let runOptionWrites: Promise<void> = Promise.resolve();
-function persistRunOptions(optionKey: string, value: unknown) {
-  const writing = runOptionWrites.catch(() => {}).then(() => cache.write(optionKey, value));
-  runOptionWrites = writing;
-  return writing;
-}
-function currentRoles() {
-  const target = gitTarget();
-  return target && roles && rolesKey(target) === rolesKey(roles.target) ? roles : undefined;
-}
-function rolesReason() {
-  return !authenticated ||
-    !connected ||
-    !selected?.online ||
-    !replica?.available ||
-    navigator.onLine === false
-    ? '执行电脑离线，请连接后手动读取角色。'
-    : !workspace?.features?.includes(ROLE_FEATURE)
-      ? '此执行电脑尚不支持角色预设，请升级 Moor。'
-      : '';
-}
-function resetRoles() {
-  rolesGeneration++;
-  roleDraftAbort?.abort();
-  roleDraftAbort = undefined;
-  rolesPanelOpen = false;
-  roles?.invalidate();
-  roles = undefined;
-  roleApplying = roleDraftSaving = false;
-  roleApplied = undefined;
-  roleApplyLoadError = '';
-  rolePanelSelection = '';
-  showRolesPanel();
-}
-function invalidateRoles(reason: string) {
-  roleDraftAbort?.abort();
-  roles?.invalidate(reason);
-}
-async function openRoles(selectedId = '') {
-  resetRoles();
-  const target = gitTarget();
-  if (!target) return;
-  rolesPanelOpen = true;
-  rolePanelSelection = selectedId;
-  const generation = rolesGeneration;
-  const controller: RolesController = new RolesController(target, {
-    read: cache.read,
-    compareWrite: cache.compareWrite,
-    request: api,
-    current: () =>
-      generation === rolesGeneration && currentRoles() === controller && rolesPanelOpen,
-    online: () => !rolesReason(),
-    changed: renderRoles,
-  });
-  roles = controller;
-  renderRoles();
-  await controller.load();
-  const saved = await cache.read(roleAppliedKey(target));
-  if (generation !== rolesGeneration || currentRoles() !== controller) return;
-  try {
-    if (saved !== undefined) {
-      const parsed = roleAppliedSchema.parse(saved);
-      if (roleAppliedKey(parsed.target) !== roleAppliedKey(target)) throw Error('wrong role scope');
-      roleApplied = parsed;
-    }
-  } catch {
-    roleApplyLoadError = '已应用角色的草稿记录无法读取，请重新打开原会话。';
-  }
-  if (!rolesReason()) await controller.refresh();
-  renderRoles();
-}
-function roleAgent(id: string) {
-  return sessionId
-    ? currentAgent()?.id === id
-      ? currentAgent()
-      : undefined
-    : workspace?.agents.find((agent) => agent.id === id);
-}
-function canApplyRole() {
-  return (
-    !attentionVisible &&
-    !sending &&
-    !pending &&
-    !attachmentWorking &&
-    !sessionPersistenceError &&
-    !sessionAgentError &&
-    !githubDraftAppending &&
-    !skillsDraftAppending &&
-    !currentGitWorkspace()?.pending &&
-    !gitBlocksComposer() &&
-    !forkBlocksComposer() &&
-    !githubBlocksComposer() &&
-    !currentGithubWrite()?.blocksExecution &&
-    !meta?.isArchived &&
-    runOptionsReady &&
-    !runOptionsLoading
-  );
-}
-function roleApplyReason(role: RoleView) {
-  if (roleApplyLoadError) return roleApplyLoadError;
-  if (!canApplyRole()) return '请先完成当前草稿或待确认操作，再应用角色。';
-  if (sessionId && currentAgent()?.id !== role.agentId)
-    return '已有会话已固定另一 Agent 版本；可明确创建新会话后应用此角色。';
-  const agent = roleAgent(role.agentId);
-  if (!agent) return '此角色的 Agent 版本当前不可选择。';
-  if (
-    roleApplied?.base === currentRunInput().base &&
-    roleApplied.applied.some((item) => item.roleId === role.id && item.revision === role.revision)
-  )
-    return '此角色版本已应用到当前草稿，刷新不会重复追加。';
-  try {
-    roleSelection(role, runSelection, agent.runConfig);
-  } catch (error) {
-    return (error as Error).message + '；当前草稿和运行选项保持不变，可手动读取模型选项后再试。';
-  }
-  return '';
-}
-async function refreshRoleAgent(id: string) {
-  const controller = currentRoles(),
-    generation = rolesGeneration,
-    optionsGeneration = runOptionsGeneration,
-    session = sessionGeneration,
-    agent = roleAgent(id);
-  if (
-    !controller ||
-    !agent ||
-    rolesReason() ||
-    roleApplying ||
-    controller.busy ||
-    runOptionsLoading ||
-    pending ||
-    sending
-  )
-    return;
-  runOptionsLoading = true;
-  updateComposer();
-  try {
-    const updated = agentSchema.parse(
-      await api(prefix() + '/agent-options', {
-        agentId: id,
-        ...(sessionId && workspace?.features?.includes(AGENT_VERSIONS_FEATURE)
-          ? { sessionId }
-          : {}),
-      }),
-    );
-    if (
-      generation !== rolesGeneration ||
-      controller !== currentRoles() ||
-      !rolesPanelOpen ||
-      rolesReason()
-    )
-      return;
-    if (
-      updated.id !== id ||
-      updated.cliType !== agent.cliType ||
-      updated.agentType !== agent.agentType
-    )
-      throw Error('模型选项不属于所选角色的 Agent 版本。');
-    Object.assign(agent, updated);
-  } finally {
-    if (optionsGeneration === runOptionsGeneration && session === sessionGeneration) {
-      runOptionsLoading = false;
-      updateComposer();
-    }
-  }
-}
-async function applyRoleDraft(selectedRole: RoleView) {
-  const controller = currentRoles(),
-    generation = rolesGeneration,
-    initialSelection = runSelection;
-  if (!controller || roleApplying || roleApplyReason(selectedRole) || rolesReason()) return;
-  const abort = new AbortController();
-  roleDraftAbort = abort;
-  roleApplying = true;
-  const current = () =>
-    !abort.signal.aborted &&
-    generation === rolesGeneration &&
-    controller === currentRoles() &&
-    rolesPanelOpen &&
-    !rolesReason() &&
-    canApplyRole() &&
-    runSelection === initialSelection;
-  updateComposer();
-  try {
-    const role = await controller.freshRole(selectedRole);
-    if (!current()) return;
-    const agent = roleAgent(role.agentId);
-    if (!agent) throw Error('角色 Agent 当前不可选择。');
-    const selection = roleSelection(role, initialSelection, agent.runConfig);
-    roleDraftSaving = true;
-    updateComposer();
-    for (;;) {
-      const textWriting = composerDraftWrites,
-        optionsWriting = runOptionWrites;
-      await Promise.all([textWriting, optionsWriting]);
-      if (!current()) return;
-      if (textWriting === composerDraftWrites && optionsWriting === runOptionWrites) break;
-    }
-    const field = $<HTMLTextAreaElement>('#prompt'),
-      original = field.value,
-      draftKey = key('draft'),
-      optionKey = key('run-options') + '/' + agent.id,
-      markerKey = roleAppliedKey(controller.target),
-      newOptionsKey = key('options'),
-      base = currentRunInput().base;
-    const [expected, oldRun, oldMarker, oldOptions, oldActorMarker] = await Promise.all([
-      cache.read<string>(draftKey),
-      cache.read(optionKey),
-      cache.read(markerKey),
-      sessionId ? Promise.resolve(undefined) : cache.read(newOptionsKey),
-      cache.read(draftKey + '/actor'),
-    ]);
-    if (!current() || field.value !== original) return;
-    if ((expected ?? '') !== original)
-      throw Error('草稿已在其他页面改变；当前输入已保留，请重新确认角色。');
-    const marker = oldMarker === undefined ? undefined : roleAppliedSchema.parse(oldMarker);
-    if (marker && roleAppliedKey(marker.target) !== markerKey)
-      throw Error('已应用角色的执行范围不匹配。');
-    const applied = marker?.base === base ? marker.applied : [];
-    if (applied.some((item) => item.roleId === role.id && item.revision === role.revision))
-      throw Error('此角色版本已应用到当前草稿，未重复追加。');
-    if (applied.length >= 50) throw Error('当前草稿已达到 50 个角色版本记录，请先完成此指令。');
-    const instruction = roleInstruction(role),
-      text = original + (instruction ? (original ? '\n\n' : '') + instruction : '');
-    const actor = attentionActor;
-    const actorMarker = actor ? { scope: draftActorScope(actor), text } : undefined;
-    if (text.length > 100000) throw Error('加入后的指令超过 100000 字符，请缩短草稿。');
-    const updated = roleAppliedSchema.parse({
-      version: 1,
-      target: controller.target,
-      base,
-      applied: [...applied, { roleId: role.id, revision: role.revision }],
-    });
-    const saved = await cache.compareDraftBundle(
-      [
-        { key: draftKey, expected, value: text },
-        { key: optionKey, expected: oldRun, value: { base, selection } },
-        { key: markerKey, expected: oldMarker, value: updated },
-        { key: draftKey + '/actor', expected: oldActorMarker, value: actorMarker },
-        ...(!sessionId
-          ? [
-              {
-                key: newOptionsKey,
-                expected: oldOptions,
-                value: { project: newProjectId, agent: agent.id },
-              },
-            ]
-          : []),
-      ],
-      () => current() && field.value === original,
-      abort.signal,
-    );
-    if (!current() || field.value !== original) return;
-    if (!saved) throw Error('草稿或运行选项已在其他页面改变；当前输入已保留，角色未应用。');
-    field.value = text;
-    runSelection = selection;
-    runSelectionTouched = true;
-    roleApplied = updated;
-    if (!sessionId) newAgentId = agent.id;
-    resizeComposer();
-  } catch (error) {
-    if (generation === rolesGeneration && controller === currentRoles()) throw error;
-  } finally {
-    if (generation === rolesGeneration) {
-      roleApplying = roleDraftSaving = false;
-      roleDraftAbort = undefined;
-      updateComposer();
-    }
-  }
-}
-function renderRoles() {
-  showRolesControl(
-    attentionVisible ? undefined : { disabled: !gitTarget(), onOpen: () => run(() => openRoles()) },
-  );
-  if (!rolesPanelOpen) return;
-  const controller = currentRoles(),
-    generation = rolesGeneration,
-    reason = rolesReason();
-  if (reason && (controller?.list || controller?.busy)) {
-    invalidateRoles(reason);
-    return;
-  }
-  const operate = (work: (value: RolesController) => Promise<unknown>) =>
-    run(async () => {
-      if (generation === rolesGeneration && controller && controller === currentRoles()) {
-        try {
-          await work(controller);
-        } catch (error) {
-          if (generation === rolesGeneration && controller === currentRoles()) throw error;
-        }
-      }
-    });
-  const agents = [...(workspace?.agents ?? [])];
-  const bound = currentAgent();
-  if (bound && !agents.some((agent) => agent.id === bound.id)) agents.push(bound);
-  showRolesPanel({
-    controller,
-    reason,
-    agents,
-    currentAgentId: currentAgent()?.id,
-    existing: !!sessionId,
-    selectedId: rolePanelSelection,
-    applying: roleApplying,
-    applyReason: roleApplyReason,
-    effective: (role) => roleSelection(role, runSelection, roleAgent(role.agentId)?.runConfig),
-    onClose: () => {
-      resetRoles();
-      updateComposer();
-    },
-    onRefresh: () => operate((value) => value.refresh()),
-    onSave: (edit) => operate((value) => value.saveRole(edit)),
-    onRemove: (id) => operate((value) => value.remove(id)),
-    onInspect: () => operate((value) => value.inspect()),
-    onRetry: () => operate((value) => value.retry()),
-    onAbandon: () => operate((value) => value.abandon()),
-    onApply: (role) => {
-      if (generation === rolesGeneration) run(() => applyRoleDraft(role));
-    },
-    onNew: (role) =>
-      run(async () => {
-        if (
-          generation !== rolesGeneration ||
-          !workspace?.agents.some((agent) => agent.id === role.agentId)
-        )
-          return;
-        const source = controller?.target;
-        if (!source) return;
-        const expectedSession = sessionGeneration + 1;
-        await openSession('');
-        const sameNewSession = () =>
-          sessionGeneration === expectedSession &&
-          !sessionId &&
-          owner === source.owner &&
-          selected?.id === source.deviceId &&
-          workspace?.id === source.workspaceId &&
-          workspace?.userId === source.userId &&
-          workspace?.machineId === source.machineId;
-        if (
-          !sameNewSession() ||
-          !workspace?.projects.some((project) => project.id === source.localProjectId)
-        )
-          return;
-        // The old new-session draft may have selected another project. Keep its text,
-        // but bind this explicit role flow back to the source project's own stable ID.
-        if (newProjectId !== source.localProjectId) {
-          newProjectId = source.localProjectId;
-          selectReplica(source.localProjectId);
-          await loadAttachmentDraft();
-        }
-        if (!sameNewSession() || gitTarget()?.localProjectId !== source.localProjectId) return;
-        await openRoles(role.id);
-      }),
-    onRefreshAgent: (id) => run(() => refreshRoleAgent(id)),
-  });
-}
-
 let skills: SkillsController | undefined;
 let skillsGeneration = 0,
   skillsPanelOpen = false,
@@ -1534,7 +783,6 @@ function canAppendSkill() {
     !attentionVisible &&
     !sending &&
     !pending &&
-    !roleApplying &&
     !attachmentWorking &&
     !sessionPersistenceError &&
     !githubDraftAppending
@@ -1776,287 +1024,6 @@ function renderGithubWrite() {
       }),
     onInspect: (page) => act((value) => value.inspect(page)),
     onAbandon: () => act((value) => value.abandon()),
-  });
-}
-
-let projectPreview: ProjectPreviewController | undefined,
-  previewAnnotations: PreviewAnnotationStore | undefined,
-  projectPreviewGeneration = 0,
-  projectPreviewPanelOpen = false,
-  previewHeartbeat: ReturnType<typeof setTimeout> | undefined;
-function currentProjectPreview() {
-  const target = gitTarget();
-  return target &&
-    projectPreview &&
-    previewAnnotationKey(target) === previewAnnotationKey(projectPreview.target)
-    ? projectPreview
-    : undefined;
-}
-function currentPreviewAnnotations() {
-  const target = gitTarget();
-  return target &&
-    previewAnnotations &&
-    previewAnnotationKey(target) === previewAnnotationKey(previewAnnotations.target)
-    ? previewAnnotations
-    : undefined;
-}
-function resetProjectPreview() {
-  const old = projectPreview;
-  projectPreviewGeneration++;
-  projectPreview = undefined;
-  previewAnnotations = undefined;
-  projectPreviewPanelOpen = false;
-  if (previewHeartbeat) clearTimeout(previewHeartbeat);
-  previewHeartbeat = undefined;
-  void old?.dispose();
-  showProjectPreviewPanel();
-  showProjectPreviewControl();
-  showPreviewAnnotationCards();
-}
-function projectPreviewReason() {
-  if (!authenticated || !connected || !navigator.onLine || !selected?.online || !replica?.available)
-    return '执行电脑离线，预览画面已清除。标注草稿仍保留，连接后请手动操作。';
-  if (!workspace?.features?.includes(PREVIEW_FEATURE))
-    return '执行电脑尚不支持网页预览，请更新 Moor。';
-  return sessionPersistenceError;
-}
-async function loadProjectPreview() {
-  const target = gitTarget(),
-    generation = ++projectPreviewGeneration;
-  projectPreview = undefined;
-  previewAnnotations = undefined;
-  if (!target) return;
-  const controller: ProjectPreviewController = new ProjectPreviewController(target, {
-    read: cache.read,
-    compareWrite: cache.compareWrite,
-    request: api,
-    online: () => !projectPreviewReason(),
-    current: () =>
-      generation === projectPreviewGeneration && currentProjectPreview() === controller,
-    changed: () => {
-      if (generation === projectPreviewGeneration) updateComposer();
-    },
-  });
-  const store: PreviewAnnotationStore = new PreviewAnnotationStore(target, {
-    read: cache.read,
-    compareWrite: cache.compareWrite,
-    current: () => generation === projectPreviewGeneration && currentPreviewAnnotations() === store,
-    changed: () => {
-      if (generation === projectPreviewGeneration) updateComposer();
-    },
-  });
-  projectPreview = controller;
-  previewAnnotations = store;
-  await Promise.all([controller.load(), store.load()]);
-  if (
-    pendingAnnotationDelivery &&
-    pending?.operationId === pendingAnnotationDelivery.operationId &&
-    previewAnnotationKey(pendingAnnotationDelivery.submission.target) !==
-      previewAnnotationKey(target)
-  ) {
-    store.loadError = '待确认指令的标注不属于此会话，请重新打开原执行目标。';
-    throw new Error(store.loadError);
-  }
-}
-async function previewOperation(
-  work: (
-    controller: ProjectPreviewController,
-    annotations: PreviewAnnotationStore,
-  ) => Promise<unknown>,
-) {
-  const controller = currentProjectPreview(),
-    store = currentPreviewAnnotations(),
-    generation = projectPreviewGeneration;
-  if (!controller || !store) throw new Error('网页预览与标注尚未恢复。');
-  try {
-    await work(controller, store);
-  } catch (cause) {
-    if (generation === projectPreviewGeneration && controller === currentProjectPreview())
-      throw cause;
-  }
-}
-async function openProjectPreview() {
-  projectPreviewPanelOpen = true;
-  if (!currentProjectPreview()) await loadProjectPreview();
-  renderProjectPreview();
-  if (!projectPreviewReason() && currentProjectPreview()?.loaded)
-    await previewOperation(async (controller) => {
-      await controller.refreshOptions();
-    });
-}
-function previewAnnotationLocked() {
-  return (
-    attentionVisible ||
-    sending ||
-    !!pending ||
-    attachmentWorking ||
-    !!currentAttachments()?.busyId ||
-    !!sessionPersistenceError
-  );
-}
-function previewScreenshotReason() {
-  if (!currentAgent()?.inputCapabilities?.image)
-    return '当前 Agent 不支持图片输入，可先只发送文字标注。';
-  if ((currentAttachments()?.items.length ?? 8) >= 8)
-    return '本次指令已有 8 个附件，请先移除一个。';
-  return '';
-}
-async function addPreviewScreenshot(id: string) {
-  const store = currentPreviewAnnotations(),
-    controller = currentAttachments(),
-    generation = projectPreviewGeneration;
-  if (!store || !controller || previewAnnotationLocked()) throw new Error('请先完成当前草稿操作。');
-  const reason = previewScreenshotReason();
-  if (reason) throw new Error(reason);
-  const item = store.items.find((value) => value.id === id),
-    image = item?.snapshot.image;
-  if (!image) throw new Error('此标注未保存截图。');
-  const bytes = attachmentBytes(image.data);
-  if (generation !== projectPreviewGeneration || store !== currentPreviewAnnotations()) return;
-  await controller.add([
-    new File([bytes], `网页标注-${id.slice(0, 32)}.png`, { type: 'image/png' }),
-  ]);
-}
-function renderProjectPreview() {
-  const c = currentProjectPreview(),
-    annotations = currentPreviewAnnotations(),
-    generation = projectPreviewGeneration;
-  const act = (
-    work: (controller: ProjectPreviewController, store: PreviewAnnotationStore) => Promise<unknown>,
-  ) =>
-    run(async () => {
-      if (generation !== projectPreviewGeneration || c !== currentProjectPreview()) return;
-      await previewOperation(work);
-    });
-  if (c?.frame && projectPreviewReason()) {
-    void c.dispose();
-    return;
-  }
-  const keepAlive =
-    projectPreviewPanelOpen &&
-    c?.active &&
-    !c.closing &&
-    !c.pending &&
-    !c.busy &&
-    !projectPreviewReason();
-  if (!keepAlive && previewHeartbeat) {
-    clearTimeout(previewHeartbeat);
-    previewHeartbeat = undefined;
-  }
-  if (keepAlive && !previewHeartbeat)
-    previewHeartbeat = setTimeout(() => {
-      previewHeartbeat = undefined;
-      if (
-        generation === projectPreviewGeneration &&
-        projectPreviewPanelOpen &&
-        c === currentProjectPreview()
-      )
-        act(async (value) => {
-          await value.status();
-        });
-    }, 12000);
-  showProjectPreviewControl(
-    attentionVisible
-      ? undefined
-      : { onOpen: () => run(openProjectPreview), disabled: !gitTarget() },
-  );
-  showPreviewAnnotationCards(
-    !attentionVisible && annotations
-      ? {
-          store: annotations,
-          disabled: previewAnnotationLocked() || annotations.busy,
-          onOpen: () => run(openProjectPreview),
-          onRemove: (id) =>
-            act(async (_value, store) => {
-              if (previewAnnotationLocked()) return;
-              await store.select(id, false);
-            }),
-        }
-      : undefined,
-  );
-  if (!projectPreviewPanelOpen) {
-    showProjectPreviewPanel();
-    return;
-  }
-  const local = async (store: PreviewAnnotationStore, work: () => Promise<unknown>) => {
-    if (previewAnnotationLocked() || store !== currentPreviewAnnotations())
-      throw new Error('请先确认当前指令，再更改标注草稿。');
-    await work();
-  };
-  showProjectPreviewPanel({
-    controller: c,
-    annotations,
-    reason: projectPreviewReason(),
-    location: selected?.name,
-    annotationLocked: previewAnnotationLocked(),
-    screenshotReason: previewScreenshotReason(),
-    onDismiss: () => {
-      if (generation !== projectPreviewGeneration) return;
-      projectPreviewPanelOpen = false;
-      if (previewHeartbeat) clearTimeout(previewHeartbeat);
-      previewHeartbeat = undefined;
-      showProjectPreviewPanel();
-      act(async (value) => {
-        await value.close();
-      });
-    },
-    onOptions: () =>
-      act(async (value) => {
-        await value.refreshOptions();
-      }),
-    onConnect: (id, viewport) =>
-      act(async (value) => {
-        await value.open(id, viewport);
-      }),
-    onClose: () =>
-      act(async (value) => {
-        await value.close();
-      }),
-    onCapture: () =>
-      act(async (value) => {
-        await value.capture();
-      }),
-    onInspect: () =>
-      act(async (value) => {
-        await value.inspect();
-      }),
-    onLocate: (x, y) =>
-      act(async (value) => {
-        await value.locate(x, y);
-      }),
-    onInteract: (action) =>
-      act(async (value) => {
-        await value.interact(action);
-      }),
-    onSave: async (note, image) => {
-      if (generation !== projectPreviewGeneration || c !== currentProjectPreview()) return;
-      try {
-        await previewOperation(async (value, store) => {
-          await local(store, () => store.save(value.annotation(note, image)));
-        });
-      } catch (cause) {
-        error(cause);
-        throw cause;
-      }
-    },
-    onSelect: (id, selected) =>
-      act(async (_value, store) => {
-        await local(store, () => store.select(id, selected));
-      }),
-    onRemove: (id) =>
-      act(async (_value, store) => {
-        await local(store, () => store.remove(id));
-      }),
-    onEdit: (id, note) =>
-      act(async (_value, store) => {
-        const item = store.items.find((value) => value.id === id);
-        if (item) await local(store, () => store.save({ ...item.snapshot, note }, id));
-      }),
-    onImage: (id) =>
-      run(async () => {
-        if (generation === projectPreviewGeneration && c === currentProjectPreview())
-          await addPreviewScreenshot(id);
-      }),
   });
 }
 
@@ -2545,11 +1512,7 @@ let gitLoading = false,
   gitGeneration = 0,
   gitPanelOpen = false;
 function resetGitWorkspace() {
-  resetMcp();
-  resetTasks();
-  resetRoles();
   resetSkills();
-  resetProjectPreview();
   resetGithub();
   resetSessionFork();
   gitGeneration++;
@@ -2843,19 +1806,7 @@ function setAttentionVisible(visible: boolean) {
   if (visible) {
     googleAccountGeneration++;
     showGoogleAccountPanel();
-    mcpPanelOpen = false;
-    currentMcp()?.invalidate();
-    showMcpPanel();
-    tasksPanelOpen = false;
-    currentTasks()?.invalidate();
-    showTasksPanel();
-    resetRoles();
     resetSkills();
-    projectPreviewPanelOpen = false;
-    if (previewHeartbeat) clearTimeout(previewHeartbeat);
-    previewHeartbeat = undefined;
-    showProjectPreviewPanel();
-    void currentProjectPreview()?.dispose();
     githubWritePanelOpen = false;
     currentGithubWrite()?.invalidate();
     showGithubWritePanel();
@@ -3014,10 +1965,6 @@ async function loadAttachmentDraft() {
     if (token === attachmentGeneration && generation === sessionGeneration) await loadSessionFork();
     if (token === attachmentGeneration && generation === sessionGeneration) await loadGithub();
     if (token === attachmentGeneration && generation === sessionGeneration) await loadGithubWrite();
-    if (token === attachmentGeneration && generation === sessionGeneration)
-      await loadProjectPreview();
-    if (token === attachmentGeneration && generation === sessionGeneration) await loadTasks();
-    if (token === attachmentGeneration && generation === sessionGeneration) await loadMcp();
   } catch (e) {
     if (token === attachmentGeneration)
       attachmentLoadError = '附件草稿无法恢复，请重新打开会话后重试。';
@@ -3774,7 +2721,6 @@ function shell() {
   showShell({
     onSend: () => run(sendTurn),
     onDraft: (value) => {
-      if (roleDraftSaving) roleDraftAbort?.abort();
       if (skillsDraftSaving) skillsDraftAbort?.abort();
       void saveComposerDraft(value).catch(error);
     },
@@ -3794,12 +2740,9 @@ function pairComputer() {
   });
 }
 function logout() {
-  resetMcp();
-  resetRoles();
   sessionAgent = undefined;
   sessionAgentError = '';
   resetSkills();
-  resetProjectPreview();
   resetGithub();
   resetSessionFork();
   notificationAccountGeneration++;
@@ -3882,13 +2825,9 @@ function connect() {
     connected = false;
     runOptionsGeneration++;
     runOptionsLoading = false;
-    currentMcp()?.invalidate('执行电脑连接已关闭；原 MCP 选择保留，请手动重新读取。');
-    currentTasks()?.invalidate('执行电脑连接已关闭，请手动重新读取任务状态。');
-    invalidateRoles('执行电脑连接已关闭，请手动重新读取角色。');
     invalidateSkills('执行电脑连接已关闭，请手动重新读取 Skills。');
     currentGithub()?.invalidate();
     currentGithubWrite()?.invalidate();
-    void currentProjectPreview()?.dispose();
     renderNavigation();
     renderTarget();
     updateComposer();
@@ -3904,38 +2843,11 @@ function connect() {
       const message = JSON.parse(event.data);
       if (
         message.type === 'changed' &&
-        message.room?.scope === 'doc' &&
-        !message.room.docId &&
-        message.deviceId === selected?.id &&
-        message.workspaceId === workspace?.id
-      ) {
-        roleDraftAbort?.abort();
-        currentRoles()?.catalogChanged();
-        currentMcp()?.invalidate();
-      }
-
-      if (
-        message.type === 'changed' &&
-        message.room?.scope === 'mcp' &&
-        message.deviceId === selected?.id &&
-        message.workspaceId === workspace?.id
-      )
-        currentMcp()?.invalidate();
-
-      if (
-        message.type === 'changed' &&
         message.room?.scope === 'skills' &&
         message.deviceId === selected?.id &&
         message.workspaceId === workspace?.id
       )
         invalidateSkills('执行电脑的 Skills 配置已变化，请手动重新读取。');
-      if (
-        message.type === 'changed' &&
-        message.room?.scope === 'preview' &&
-        message.deviceId === selected?.id &&
-        message.workspaceId === workspace?.id
-      )
-        void currentProjectPreview()?.dispose();
       if (
         message.type === 'changed' &&
         message.room?.scope === 'github' &&
@@ -4091,9 +3003,6 @@ function renderNewSessionControls() {
       pending ||
       attachmentWorking ||
       githubDraftAppending ||
-      roleApplying ||
-      tasksReviewing ||
-      !!currentTasks()?.busy ||
       gitLoading ||
       currentGitWorkspace()?.busy ||
       currentGitWorkspace()?.pending ||
@@ -4129,9 +3038,6 @@ function renderNewSessionControls() {
       !!pending ||
       attachmentWorking ||
       githubDraftAppending ||
-      roleApplying ||
-      tasksReviewing ||
-      !!currentTasks()?.busy ||
       gitLoading ||
       !!currentGitWorkspace()?.busy ||
       !!currentGitWorkspace()?.pending ||
@@ -4141,12 +3047,10 @@ function renderNewSessionControls() {
   });
 }
 function renderTarget() {
+  const environment = document.getElementById('legacy-environment');
+  if (environment) environment.hidden = !sessionId;
   renderProjectControls();
-  renderMcp();
-  renderTasks();
-  renderRoles();
   renderSkills();
-  renderProjectPreview();
   renderGithubWrite();
   renderGithub();
   renderGitWorkspace();
@@ -4949,6 +3853,8 @@ async function loadSession() {
 function renderHistory() {
   const view = mirror(volatileSessionDoc ?? doc, sessionId),
     state = view.getState();
+  const environment = document.getElementById('legacy-environment');
+  if (environment) environment.hidden = !state.history.length;
   const container = $('#history'),
     atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
   const html =
@@ -5184,20 +4090,19 @@ function renderRunOptions() {
     capabilities,
     selection: runSelection,
     agentType: currentAgent()?.agentType,
-    disabled:
-      sending ||
-      !!pending ||
-      roleApplying ||
-      attachmentWorking ||
-      runOptionsLoading ||
-      !runOptionsReady,
+    disabled: sending || !!pending || attachmentWorking || runOptionsLoading || !runOptionsReady,
     loading: runOptionsLoading,
-    canRefresh: connected && !!selected?.online && !!replica?.available,
+    canRefresh:
+      connected &&
+      !!selected?.online &&
+      !!replica?.available &&
+      !sending &&
+      !pending &&
+      !attachmentWorking,
     validation,
     status: runOptionsError,
     existing: !!sessionId,
     onChange: (property, value) => {
-      if (roleApplying) roleDraftAbort?.abort();
       runSelectionTouched = true;
       runSelection = { ...runSelection, [property]: value || undefined };
       if (
@@ -5224,11 +4129,7 @@ function renderRunOptions() {
 }
 
 function updateComposer() {
-  renderMcp();
-  renderTasks();
-  renderRoles();
   renderSkills();
-  renderProjectPreview();
   renderGithubWrite();
   renderGithub();
   renderGitWorkspace();
@@ -5256,12 +4157,6 @@ function updateComposer() {
   send.disabled =
     sending ||
     skillsDraftAppending ||
-    roleApplying ||
-    (!pending && !!mcpSendReason()) ||
-    !!currentTasks()?.busy ||
-    (!pending && !!tasksSendReason()) ||
-    !!currentPreviewAnnotations()?.busy ||
-    (!!currentPreviewAnnotations()?.loadError && !pending) ||
     !!currentGithubWrite()?.blocksExecution ||
     githubBlocksComposer() ||
     gitBlocksComposer() ||
@@ -5296,12 +4191,7 @@ function updateComposer() {
   send.setAttribute('aria-label', sending ? '提交中' : pending ? '重试确认' : '发送指令');
   send.classList.toggle('pending', !!pending);
   $<HTMLTextAreaElement>('#prompt').readOnly =
-    sending ||
-    !!pending ||
-    attachmentWorking ||
-    githubDraftAppending ||
-    skillsDraftSaving ||
-    roleDraftSaving;
+    sending || !!pending || attachmentWorking || githubDraftAppending || skillsDraftSaving;
   const state = document.querySelector('#draft-state');
   if (state)
     state.textContent = currentGithubWrite()?.blocksExecution
@@ -5336,73 +4226,43 @@ function updateComposer() {
   $<HTMLButtonElement>('#cancel').hidden = !active;
   $<HTMLButtonElement>('#cancel').disabled = !connected || !selected?.online;
 }
-async function submit(
-  m: Mutation,
-  annotations?: PreviewAnnotationSubmission,
-  mcpReview?: McpReview,
-) {
+async function submit(m: Mutation) {
   if (sending) return;
   const generation = sessionGeneration,
     pendingKey = key('pending'),
     draftKey = key('draft'),
     endpoint = prefix() + '/mutations' + query();
-  const attachmentController = currentAttachments();
-  const annotationController = currentPreviewAnnotations();
-  const annotationDelivery = annotations
-    ? {
-        operationId: m.operationId,
-        submission: previewAnnotationSubmissionSchema.parse(annotations),
-      }
-    : pendingAnnotationDelivery?.operationId === m.operationId
+  const attachmentController = currentAttachments(),
+    creatingSession = !sessionId,
+    retrying = !!pending;
+  const annotationDelivery =
+    pendingAnnotationDelivery?.operationId === m.operationId
       ? pendingAnnotationDelivery
       : undefined;
+  const target = gitTarget();
   if (
     annotationDelivery &&
-    (!annotationController ||
-      previewAnnotationKey(annotationController.target) !==
-        previewAnnotationKey(annotationDelivery.submission.target))
+    (!target ||
+      previewAnnotationKey(target) !== previewAnnotationKey(annotationDelivery.submission.target))
   )
-    throw new Error('指令标注与当前执行范围不匹配。');
-  const taskController = currentTasks(),
-    retrying = !!pending,
-    taskSubmission =
-      m.kind === 'turn' && !!(taskController?.delivery || (!retrying && taskController?.enabled));
-  const mcpController = currentMcp(),
-    mcpSubmission = m.kind === 'turn' && !!(mcpController?.delivery || (!retrying && mcpReview));
-  const creatingSession = !sessionId;
+    throw new Error('原指令标注与当前执行范围不匹配。');
   pending = m;
-  pendingAnnotationDelivery = annotationDelivery;
   sending = true;
   updateComposer();
   let durable = false;
   try {
-    const pendingValue = annotationDelivery
-      ? pendingPreviewMutationSchema.parse({
-          previewDraftVersion: 1,
-          mutation: m,
-          annotationDelivery,
-        })
-      : m;
-    if (mcpSubmission && !retrying) {
-      if (!mcpController || !mcpReview) throw new Error('MCP 草稿授权无法恢复。');
-      await mcpController.stageSubmission(
-        m,
-        mcpReview,
-        pendingKey,
-        pendingValue,
-        taskSubmission
-          ? (entry, current) =>
-              taskController!.stageSubmission(m, pendingKey, pendingValue, [entry], current)
-          : undefined,
-      );
-    } else if (taskSubmission) {
-      if (!retrying) await taskController!.stageSubmission(m, pendingKey, pendingValue);
-    } else await cache.write(pendingKey, pendingValue);
+    // Retired feature envelopes remain immutable until the host confirms the original operation.
+    await cache.write(
+      pendingKey,
+      annotationDelivery
+        ? pendingPreviewMutationSchema.parse({
+            previewDraftVersion: 1,
+            mutation: m,
+            annotationDelivery,
+          })
+        : m,
+    );
     durable = true;
-    if (taskSubmission && !(await taskController!.verifySubmission(m)))
-      throw new Error('原任务授权无法恢复。');
-    if (mcpSubmission && !(await mcpController!.verifySubmission(m)))
-      throw new Error('原 MCP 授权无法恢复。');
     const confirmation = await api(endpoint, m);
     if (
       confirmation?.accepted !== true ||
@@ -5410,19 +4270,6 @@ async function submit(
       confirmation.operationId !== m.operationId
     )
       throw new Error('指令尚未获得有效的主机确认，请使用原请求手动重试。');
-    if (taskSubmission) {
-      if (generation !== sessionGeneration) return;
-      await taskController!.confirmSubmission(m.operationId);
-    }
-    if (mcpSubmission) {
-      if (generation !== sessionGeneration) return;
-      await mcpController!.confirmSubmission(m.operationId);
-    }
-    if (annotationDelivery) {
-      // Keep the original outbox until its own page can finish local confirmation cleanup.
-      if (generation !== sessionGeneration) return;
-      await annotationController!.confirmSent(annotationDelivery.submission);
-    }
     if (m.kind === 'turn' && attachmentController?.scope.sessionId === m.sessionId) {
       await attachmentController.forget(
         attachmentController.items.map((item) => item.reference.attachmentId),
@@ -5441,19 +4288,12 @@ async function submit(
     await openSession(m.sessionId);
     await loadSessions();
   } catch (e) {
-    // Only an explicit rejection from the host proves this operation was never staged.
-    // Relay offline/timeout errors cannot invalidate the original operation id.
-    if (
-      (!durable && !retrying) ||
-      (e instanceof ApiError && e.rejected && !((taskSubmission || mcpSubmission) && retrying))
-    ) {
-      if (taskSubmission && durable && generation === sessionGeneration)
-        await taskController!.confirmSubmission(m.operationId, false);
-      if (mcpSubmission && durable && generation === sessionGeneration)
-        await mcpController!.confirmSubmission(m.operationId, false);
-      if (!(taskSubmission || mcpSubmission) || durable) await cache.write(pendingKey, undefined);
-      if (generation === sessionGeneration) pending = undefined;
-      if (generation === sessionGeneration) pendingAnnotationDelivery = undefined;
+    if ((!durable && !retrying) || (e instanceof ApiError && e.rejected)) {
+      await cache.write(pendingKey, undefined);
+      if (generation === sessionGeneration) {
+        pending = undefined;
+        pendingAnnotationDelivery = undefined;
+      }
     }
     throw e;
   } finally {
@@ -5461,8 +4301,13 @@ async function submit(
     updateComposer();
   }
 }
+let runOptionWrites: Promise<void> = Promise.resolve();
+function persistRunOptions(optionKey: string, value: unknown) {
+  const writing = runOptionWrites.catch(() => {}).then(() => cache.write(optionKey, value));
+  runOptionWrites = writing;
+  return writing;
+}
 async function sendTurn() {
-  if (roleApplying) throw new Error('请等待角色草稿保存完成。');
   if (skillsDraftAppending) throw new Error('请等待 Skill 说明保存到草稿。');
   if (currentGithubWrite()?.blocksExecution) throw new Error('请先核查原提交或推送操作。');
   if (githubBlocksComposer()) throw new Error('请先完成或确认 GitHub 上下文操作。');
@@ -5479,8 +4324,6 @@ async function sendTurn() {
   }
   if (runOptionsError) throw new Error(runOptionsError);
   if (runOptionsLoading) throw new Error('请等待模型选项读取完成。');
-  if (tasksSendReason()) throw new Error(tasksSendReason());
-  if (mcpSendReason()) throw new Error(mcpSendReason());
   if (sessionPersistenceError) throw new Error(sessionPersistenceError);
   if (sessionAgentError) throw new Error(sessionAgentError);
   if (interactionLoadError) throw new Error(interactionLoadError);
@@ -5488,15 +4331,9 @@ async function sendTurn() {
     throw new Error('请先确认或关闭原交互记录。');
   if (meta?.isArchived) throw new Error('请先恢复会话，再发送新的指令。');
   if (!workspace || !selected?.online || !connected) throw new Error('执行电脑离线，草稿已保留');
-  const annotationStore = currentPreviewAnnotations();
-  if (
-    annotationStore &&
-    (!annotationStore.loaded || annotationStore.loadError || annotationStore.busy)
-  )
-    throw new Error(annotationStore.loadError || '请等待标注草稿恢复或保存。');
+
   const composerText = $<HTMLTextAreaElement>('#prompt').value,
-    composed = annotationStore?.compose(composerText.trim()),
-    prompt = composed?.prompt ?? composerText.trim();
+    prompt = composerText.trim();
   const attachmentController = currentAttachments();
   if (!prompt && !attachmentController?.items.length) return;
   const generation = sessionGeneration;
@@ -5508,31 +4345,18 @@ async function sendTurn() {
   if (generation !== sessionGeneration) return;
   const prepared = await prepareTurnMutation(prompt, attachmentController, { text: composerText });
   if (!prepared || generation !== sessionGeneration) return;
-  await submit(
-    prepared.mutation,
-    composed?.submission.selection.length ? composed.submission : undefined,
-    prepared.mcpReview,
-  );
+  await submit(prepared.mutation);
 }
 async function prepareTurnMutation(
   prompt: string,
   attachmentController?: AttachmentDraftController,
   composerSelections?: { text: string },
-): Promise<{ mutation: Mutation; mcpReview?: McpReview } | undefined> {
+): Promise<{ mutation: Mutation } | undefined> {
   // Only the composer selects its attachment draft for this turn. Continuing an
   // attention item sends its reviewed text and preserves separate composer attachments and annotations.
   const generation = sessionGeneration;
-  if (mcpSendReason()) throw new Error(mcpSendReason());
-  if (currentTasks()?.busy || tasksSendReason())
-    throw new Error(tasksSendReason() || '请先确认当前任务操作。');
-  if (roleApplying) throw new Error('请等待角色草稿保存完成。');
   if (skillsDraftAppending) throw new Error('请等待 Skill 说明保存到草稿。');
-  const annotationStore = currentPreviewAnnotations();
-  if (
-    annotationStore &&
-    (!annotationStore.loaded || annotationStore.loadError || annotationStore.busy)
-  )
-    throw new Error(annotationStore.loadError || '请等待标注草稿恢复或保存。');
+
   if (currentGithubWrite()?.blocksExecution) throw new Error('请先核查原提交或推送操作。');
   if (githubBlocksComposer()) throw new Error('请先完成或确认 GitHub 上下文操作。');
   if (forkBlocksComposer()) throw new Error('请先在会话副本中确认原 Fork 操作。');
@@ -5563,13 +4387,6 @@ async function prepareTurnMutation(
   if (!agent) throw new Error('这台电脑还没有可用的 Agent 配置');
   if (!runOptionsReady || runOptionsLoading) throw new Error('正在读取运行设置，请稍后发送');
   const selectedConfig = resolveRunSelection(runSelection, agent.runConfig);
-  const taskController = currentTasks(),
-    taskReview = composerSelections ? taskController?.enabled : undefined;
-  const mcpController = currentMcp(),
-    mcpReview = composerSelections ? await mcpController?.prepareSend() : undefined;
-  if (generation !== sessionGeneration || mcpController !== currentMcp()) return;
-  if (taskReview && (meta?.taskOrigin || taskReview.parentAgentId !== agent.id))
-    throw new Error('请重新审查当前父 Agent 的任务计划。');
   if (attachmentController?.items.length) {
     if (attachmentController.items.some((item) => item.pending))
       throw new Error('附件结果待确认，请先手动重试。');
@@ -5595,21 +4412,7 @@ async function prepareTurnMutation(
     }
     if (generation !== sessionGeneration) return;
   }
-  if (
-    taskReview &&
-    (taskController !== currentTasks() || taskController?.enabled?.reviewId !== taskReview.reviewId)
-  )
-    throw new Error('任务计划已改变，请重新审查。');
   const attached = attachmentController?.references() ?? [];
-  if (composerSelections) mcpController?.assertReview(mcpReview);
-  if (
-    mcpReview &&
-    (composerSelections?.text !== $<HTMLTextAreaElement>('#prompt').value ||
-      currentAgent()?.id !== agent.id ||
-      JSON.stringify(resolveRunSelection(runSelection, currentAgent()?.runConfig)) !==
-        JSON.stringify(selectedConfig))
-  )
-    throw new Error('读取 MCP 期间指令或运行设置已改变，请核对后重新发送。');
   const candidate = new LoroDoc();
   candidate.import(doc.export({ mode: 'snapshot' }));
   const localFlock = Flock.fromJson(
@@ -5626,9 +4429,6 @@ async function prepareTurnMutation(
     prompt,
     cliType: agent.cliType,
     agentType: agent.agentType,
-    mcpServerIds: mcpReview?.servers.map((server) => server.id) ?? [],
-    taskToolsEnabled: !!taskReview,
-    ...(taskReview ? { taskPlan: taskReview.plan } : {}),
     ...(attached.length ? { attachments: attached } : {}),
   };
   view.setState((s: any) => {
@@ -5669,7 +4469,6 @@ async function prepareTurnMutation(
       };
   putMeta(localFlock, 'session-' + id, fields);
   return {
-    mcpReview,
     mutation: {
       operationId: crypto.randomUUID(),
       workspaceId: workspace.id,
@@ -5730,9 +4529,5 @@ window.addEventListener('online', () => {
   }
 });
 window.addEventListener('offline', () => {
-  currentMcp()?.invalidate('当前离线；原 MCP 选择保留，连接后请手动重新读取。');
-  currentTasks()?.invalidate('当前离线，请手动重新读取任务状态。');
-  invalidateRoles('当前离线，请连接后手动重新读取角色。');
   invalidateSkills('当前离线；Skills 正文已清除，连接后可手动重新读取。');
-  void currentProjectPreview()?.dispose();
 });

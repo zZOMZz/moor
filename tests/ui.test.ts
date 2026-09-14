@@ -138,7 +138,7 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await click(hostItem);
     assert.equal(selectedHost, 'h');
     await click(button('设置与账号'));
-    assert.equal(document.querySelectorAll('[role="menuitemradio"]').length, 3);
+    assert.match(document.querySelector('[role="menu"]')!.textContent!, /外观设置/);
     await act(async () => {
       document.activeElement?.dispatchEvent(
         new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
@@ -315,13 +315,12 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await act(async () => {
       showRunControls({ ...controls, selection: { modelId: 'b' } });
     });
-    await click(button('运行设置'));
     await click(button('思考强度'));
     const effortList = document.getElementById(button('思考强度').getAttribute('aria-controls')!)!;
     assert.ok(effortList);
     assert.deepEqual(
       [...effortList.querySelectorAll('[role="option"]')].map((e) => e.textContent),
-      ['默认', 'medium'],
+      ['默认强度', 'medium'],
     );
     await act(async () => {
       document.activeElement?.dispatchEvent(
@@ -329,11 +328,6 @@ test('navigation and composer pickers preserve focus, controlled selections and 
       );
     });
     assert.equal(document.activeElement, button('思考强度'));
-    assert.equal(
-      button('运行设置').getAttribute('aria-expanded'),
-      'true',
-      'Escape from a nested picker keeps run settings open',
-    );
     await click(button('思考强度'));
     const effortOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
       (e) => e.textContent === 'medium',
@@ -352,11 +346,6 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await act(async () => {
       showRunControls({ ...controls, selection: updatedSelection });
     });
-    assert.equal(
-      button('运行设置').getAttribute('aria-expanded'),
-      'true',
-      'updating a selection preserves the settings popup',
-    );
     assert.match(button('模型').textContent ?? '', /Model B/);
     assert.match(button('思考强度').textContent ?? '', /medium/);
     await click(button('审批'));
@@ -378,21 +367,20 @@ test('navigation and composer pickers preserve focus, controlled selections and 
         new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
       );
     });
-    assert.equal(document.activeElement, button('运行设置'));
-    assert.equal(button('运行设置').getAttribute('aria-expanded'), 'false');
 
     await act(async () => {
-      showRunControls({ ...controls, selection: updatedSelection, disabled: true });
+      showRunControls({
+        ...controls,
+        selection: updatedSelection,
+        disabled: true,
+        canRefresh: false,
+      });
     });
-    assert.equal(button('运行设置').disabled, false, 'locked settings remain available to inspect');
-    await click(button('运行设置'));
     for (const name of ['模型', '思考强度', '审批'])
       assert.equal(button(name).disabled, true, 'pending operations lock configuration');
     assert.equal(document.querySelector<HTMLButtonElement>('#refresh-run-options')!.disabled, true);
     assert.match(button('思考强度').textContent ?? '', /medium/);
     assert.match(button('审批').textContent ?? '', /完全访问/);
-    await click(button('关闭运行设置'));
-    assert.equal(document.activeElement, button('运行设置'));
     assert.equal(sent, 0, 'settings interactions never submit the composer');
     await act(async () => {
       showRunControls({ ...controls, validation: '所选模型不再可用' });
@@ -401,7 +389,6 @@ test('navigation and composer pickers preserve focus, controlled selections and 
       (e) => e.textContent === '所选模型不再可用',
     )!;
     assert.ok(validation, 'validation is visible while settings are closed');
-    assert.equal(button('运行设置').getAttribute('aria-expanded'), 'false');
   } finally {
     await act(async () => disposeUI());
     dom.window.close();

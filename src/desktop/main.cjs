@@ -8,6 +8,7 @@ const {
   Notification,
   shell,
   protocol,
+  nativeTheme,
 } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,7 +25,6 @@ const {
 } = require('./notifications.cjs');
 const { createAttachmentSaver } = require('./attachment-save.cjs');
 const { DesktopGitHubSettings } = require('./github-settings.cjs');
-const { DesktopPreviewSettings } = require('./preview-settings.cjs');
 const { DesktopSkillsSettings } = require('./skills-settings.cjs');
 const { DesktopAgentSettings } = require('./agent-settings.cjs');
 const { DesktopMcpSettings } = require('./mcp-settings.cjs');
@@ -37,6 +37,7 @@ const { DesktopSecureBridge } = require('./secure-client.cjs');
 const { DesktopProjectRegistration } = require('./project-registration.cjs');
 const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
 const { removeRetiredClientData } = require('./retired-client-data.cjs');
+const { createAppearance } = require('./appearance.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
 const {
   CLIENT_SCHEME,
@@ -94,7 +95,6 @@ let navigationRevision = 0;
 let localReadyGeneration = 0,
   localReadyChain = Promise.resolve();
 const githubSettings = new DesktopGitHubSettings({ bridge: () => bridge });
-const previewSettings = new DesktopPreviewSettings({ bridge: () => bridge });
 const skillsSettings = new DesktopSkillsSettings({ bridge: () => bridge });
 const agentSettings = new DesktopAgentSettings({ bridge: () => bridge });
 const mcpSettings = new DesktopMcpSettings({ bridge: () => bridge });
@@ -128,6 +128,17 @@ const write = (file, value) => {
   }
 };
 const contentWindows = new Map();
+const appearance = createAppearance({
+  file: path.join(data, 'appearance-v1.json'),
+  nativeTheme,
+  write,
+  changed: (value) => {
+    for (const contents of contentWindows.keys())
+      if (!contents.isDestroyed()) contents.send('moor:appearance-changed', value);
+    if (settingsWindow && !settingsWindow.isDestroyed())
+      settingsWindow.webContents.send('moor:appearance-changed', value);
+  },
+});
 const workspaceClient = new DesktopWorkspaceBridge({
   registry: contentWindows,
   window: () => secureWindow,
@@ -298,7 +309,6 @@ function showSettings() {
   settingsWindow.on('closed', () => {
     settingsWindow = null;
     githubSettings.invalidate();
-    previewSettings.invalidate();
     skillsSettings.invalidate();
     agentSettings.invalidate();
     deviceMetadata.invalidate();
@@ -387,7 +397,6 @@ function startBridge() {
       return;
     }
     if (githubSettings.receive(child, message)) return;
-    if (previewSettings.receive(child, message)) return;
     if (skillsSettings.receive(child, message)) return;
     if (agentSettings.receive(child, message)) return;
     if (mcpSettings.receive(child, message)) return;
@@ -493,7 +502,6 @@ function startBridge() {
   });
   child.on('exit', () => {
     githubSettings.disconnect(child);
-    previewSettings.disconnect(child);
     skillsSettings.disconnect(child);
     agentSettings.disconnect(child);
     deviceMetadata.disconnect(child);
@@ -535,7 +543,6 @@ async function restartBridgeOnce() {
   workspaceClient.invalidate(undefined, 'local');
   const old = bridge;
   if (old) githubSettings.disconnect(old);
-  if (old) previewSettings.disconnect(old);
   if (old) skillsSettings.disconnect(old);
   if (old) agentSettings.disconnect(old);
   if (old) deviceMetadata.disconnect(old);
@@ -560,6 +567,7 @@ ipcMain.handle('personal:settings', (event) => {
   trusted(event);
   return {
     ...settings,
+    appearance: appearance.read(),
     name: deviceNameState?.metadata.name ?? settings.name,
     projects: [...settings.projects],
     agents: [...settings.agents],
@@ -567,6 +575,10 @@ ipcMain.handle('personal:settings', (event) => {
     health: health(),
     paired: fs.existsSync(bridgeFile),
   };
+});
+ipcMain.handle('personal:appearance', (event, value) => {
+  trusted(event);
+  return value === undefined ? appearance.read() : appearance.set(value);
 });
 ipcMain.handle('personal:open-codex-install', async (event) => {
   trusted(event);
@@ -597,19 +609,6 @@ ipcMain.handle('personal:github-config', (event, value) => {
   const sender = event.sender,
     frame = event.senderFrame;
   return githubSettings.request(value, () => {
-    try {
-      trusted({ sender, senderFrame: frame });
-      return true;
-    } catch {
-      return false;
-    }
-  });
-});
-ipcMain.handle('personal:preview-config', (event, value) => {
-  trusted(event);
-  const sender = event.sender,
-    frame = event.senderFrame;
-  return previewSettings.request(value, () => {
     try {
       trusted({ sender, senderFrame: frame });
       return true;
@@ -831,6 +830,10 @@ ipcMain.handle('moor:workspace-context', (event, value) => {
     revision: navigationRevision,
   };
 });
+ipcMain.handle('moor:appearance', (event, value) => {
+  trustedWorkspaceDocument(event);
+  return value === undefined ? appearance.read() : appearance.set(value);
+});
 let choosingProject = false;
 ipcMain.handle('moor:add-project', async (event, value) => {
   trustedWorkspaceDocument(event, value);
@@ -957,7 +960,6 @@ else {
     quitting = true;
     nativeNotifications.close();
     githubSettings.close();
-    previewSettings.close();
     skillsSettings.close();
     agentSettings.close();
     deviceMetadata.close();

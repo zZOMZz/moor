@@ -375,13 +375,13 @@ test('session menus, host-confirmed rename, archive filters and long lists work 
     }));
     await render({ list: longList, listError: undefined, selectedSession: 's-1999' });
     assert.equal(
-      document.querySelectorAll('#sessions .session').length,
+      document.querySelectorAll('#sessions .session-group .session').length,
       101,
       'only the first page and selected session are rendered',
     );
     assert.equal(
-      document.querySelectorAll('#sessions button').length,
-      203,
+      document.querySelectorAll('#sessions .session-group button').length,
+      202,
       'large catalogs have a bounded initial set of navigation controls',
     );
     assert.match(
@@ -395,16 +395,16 @@ test('session menus, host-confirmed rename, archive filters and long lists work 
       'a selection outside the initial page remains reachable',
     );
     await click(document.querySelector<HTMLElement>('.load-more')!);
-    assert.equal(document.querySelectorAll('#sessions .session').length, 201);
+    assert.equal(document.querySelectorAll('#sessions .session-group .session').length, 201);
     await render({ connected: false });
     assert.equal(
-      document.querySelectorAll('#sessions .session').length,
+      document.querySelectorAll('#sessions .session-group .session').length,
       201,
       'background updates retain the expanded page',
     );
     await render({ search: 'Synthetic' });
     assert.equal(
-      document.querySelectorAll('#sessions .session').length,
+      document.querySelectorAll('#sessions .session-group .session').length,
       101,
       'changing the filter resets pagination while retaining selection',
     );

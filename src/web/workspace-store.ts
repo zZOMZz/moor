@@ -376,7 +376,9 @@ export class WorkspaceStore {
     mcpReview?: McpReview,
     annotations?: PreviewAnnotationSubmission,
     taskReview?: ReviewedTasks,
+    plainTurn = false,
   ) {
+    if (plainTurn && (mcpReview || annotations || taskReview)) throw conflict();
     original = sessionOriginalOperationSchema.parse(original);
     draft = draft === undefined ? undefined : operationSchema.shape.draft.parse(draft);
     this.#validateOriginal(scope, original);
@@ -446,7 +448,7 @@ export class WorkspaceStore {
           (tasks?.cacheRevision ?? 0) !== (draft.taskRevision ?? 0) ||
           tasks?.delivery ||
           tasks?.pending ||
-          !same(tasks?.enabled ?? null, taskReview ?? null)
+          (!plainTurn && !same(tasks?.enabled ?? null, taskReview ?? null))
         )
           throw Error('任务计划已改变或原任务操作尚未确认，请重新读取。');
         if (taskReview) {
@@ -464,7 +466,7 @@ export class WorkspaceStore {
           .map((item) => ({ id: item.id, version: item.version, selectionId: item.selectionId }));
         if (
           (savedAnnotations?.cacheRevision ?? 0) !== (draft.annotationRevision ?? 0) ||
-          !same(selection, annotations?.selection ?? [])
+          (!plainTurn && !same(selection, annotations?.selection ?? []))
         )
           throw Error('标注草稿已改变，请重新读取后发送。');
         if (this.forkBlocked(state, draft.sessionId))
@@ -481,7 +483,7 @@ export class WorkspaceStore {
         if (
           (mcp?.cacheRevision ?? 0) !== (draft.mcpRevision ?? 0) ||
           mcp?.delivery ||
-          !same(mcpReview ?? null, mcp?.review?.servers.length ? mcp.review : null)
+          (!plainTurn && !same(mcpReview ?? null, mcp?.review?.servers.length ? mcp.review : null))
         )
           throw Error('MCP 草稿已改变或原授权尚未确认，请重新读取。');
         if (mcpReview) {

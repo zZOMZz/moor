@@ -381,6 +381,28 @@ async function fixture(t: TestContext, uuid?: () => string) {
   };
 }
 
+test('removed encrypted tools reject new requests before IPC and leave original operation records intact', async (t) => {
+  const f = await fixture(t);
+  await f.ready();
+  await f.create();
+  const target = f.controller.contentContext.target!,
+    count = f.requests.length,
+    operations = f.controller.state.operations;
+  for (const method of [
+    'readMcpCatalog',
+    'applyMcp',
+    'updatePreviewAnnotations',
+    'addPreviewImage',
+  ])
+    assert.equal(method in f.controller, false);
+  await assert.rejects(f.controller.contentRequest(target, 'mcp-read' as any, {}));
+  for (const method of ['preview-read', 'preview-action', 'preview-inspect', 'preview-close'])
+    await assert.rejects(f.controller.scopedRequest(target, method as any, {}, () => {}));
+  assert.equal(f.requests.length, count);
+  assert.deepEqual(f.controller.state.operations, operations);
+  assert.equal(f.prompts(), 0);
+});
+
 test('content requests read the selected Host scope and never accept a mutation or foreign target', async (t) => {
   const f = await fixture(t);
   assert.equal(f.controller.contentContext.target, null);
@@ -488,105 +510,6 @@ test('a render-time send target cannot be moved to a later selected session', as
   const count = f.requests.length;
   await assert.rejects(f.controller.send('Synthetic old target prompt', shown), /发送目标/);
   assert.equal(f.requests.length, count);
-  assert.equal(f.prompts(), 0);
-});
-
-test('a saved MCP selection cannot send or stage when the Host lacks encrypted turn authority', async (t) => {
-  const f = await fixture(t);
-  f.fault.omitSecureTurnAuthorityFeature = true;
-  await f.registerMcp();
-  await f.ready();
-  await f.create();
-  const target = f.controller.contentContext.target!,
-    otherPage = new SecureMcp(f.store),
-    catalog = await f.controller.readMcpCatalog(target);
-  const draft = await otherPage.apply(
-    target,
-    await otherPage.read(target, () => {}),
-    catalog.servers,
-    { online: true, catalog },
-    () => {},
-  );
-  await f.controller.refreshOperations();
-  assert.equal(draft.review!.servers.length, 1);
-  const features = f.controller.state.catalog!.workspaces[0].features!;
-  assert(features.includes(MCP_FEATURE));
-  assert(!features.includes(SECURE_TURN_AUTHORITY_FEATURE));
-  const count = f.requests.length,
-    saved = structuredClone(f.memory.values);
-  await assert.rejects(
-    f.controller.send('Synthetic reviewed prompt', {
-      target,
-      attachments: [],
-      mcpDraft: draft,
-    }),
-    /完整的加密回合授权/,
-  );
-  assert.equal(f.requests.length, count, 'downgraded Host receives no new IPC');
-  assert.deepEqual(f.memory.values, saved, 'no upload or turn was staged');
-  assert.equal(f.prompts(), 0);
-});
-
-test('a rendered empty MCP selection cannot send a newer review loaded into controller state', async (t) => {
-  const f = await fixture(t);
-  await f.registerMcp();
-  await f.ready();
-  await f.create();
-  const target = f.controller.contentContext.target!,
-    shown = { target, attachments: [], mcpDraft: f.controller.state.mcpDraft },
-    otherPage = new SecureMcp(f.store),
-    catalog = await f.controller.readMcpCatalog(target);
-  await otherPage.apply(
-    target,
-    await otherPage.read(target, () => {}),
-    catalog.servers,
-    { online: true, catalog },
-    () => {},
-  );
-  await f.controller.refreshOperations();
-  assert.equal(shown.mcpDraft!.review, undefined);
-  assert.equal(f.controller.state.mcpDraft!.review!.servers.length, 1);
-  const count = f.requests.length,
-    saved = structuredClone(f.memory.values);
-  await assert.rejects(f.controller.send('Synthetic reviewed prompt', shown), /已审阅/);
-  assert.equal(f.requests.length, count, 'unseen review fails before any IPC');
-  assert.deepEqual(f.memory.values, saved);
-  assert.equal(f.prompts(), 0);
-});
-
-test('a rendered MCP review cannot send after another page changes persistence without refreshing controller state', async (t) => {
-  const f = await fixture(t);
-  await f.registerMcp();
-  await f.ready();
-  await f.create();
-  const target = f.controller.contentContext.target!,
-    otherPage = new SecureMcp(f.store),
-    catalog = await f.controller.readMcpCatalog(target);
-  const selected = await otherPage.apply(
-    target,
-    await otherPage.read(target, () => {}),
-    catalog.servers,
-    { online: true, catalog },
-    () => {},
-  );
-  await f.controller.refreshOperations();
-  const shown = { target, attachments: [], mcpDraft: f.controller.state.mcpDraft };
-  const changed = await otherPage.apply(target, selected, [], { online: false }, () => {});
-  assert.deepEqual(
-    f.controller.state.mcpDraft,
-    selected,
-    'controller still presents the old review',
-  );
-  assert.notEqual(changed.review!.reviewId, selected.review!.reviewId);
-  const count = f.requests.length,
-    saved = structuredClone(f.memory.values);
-  await assert.rejects(f.controller.send('Synthetic reviewed prompt', shown), /MCP 草稿已改变/);
-  assert.deepEqual(
-    f.requests.slice(count).map((input) => input.action === 'execute' && input.command.method),
-    ['session'],
-    'only the existing session read occurs; no MCP read, upload or turn dispatch follows',
-  );
-  assert.deepEqual(f.memory.values, saved, 'a stale review cannot stage an original turn');
   assert.equal(f.prompts(), 0);
 });
 
@@ -897,7 +820,7 @@ test('controller dispatch snapshot cannot be overtaken by another store committi
   let dispatchLockHeld = false;
   f.memory.exclusive = (key, current, task) =>
     exclusive(key, current, async () => {
-      dispatchLockHeld = true;
+      dispatchLockHeld = JSON.parse(key)[0] === 'moor-secure-operation-lock-v1';
       try {
         return await task();
       } finally {
@@ -913,6 +836,9 @@ test('controller dispatch snapshot cannot be overtaken by another store committi
       'operations' in snapshot &&
       (snapshot as { operations: Array<{ kind: string; state: string }> }).operations.some(
         (entry) => entry.kind === 'turn' && entry.state === 'pending',
+      ) &&
+      f.controller.state.operations.some(
+        (operation) => operation.kind === 'turn' && operation.state === 'pending',
       ) &&
       dispatchLockHeld &&
       !paused
@@ -1501,108 +1427,6 @@ test('closing an extension panel while the Host reads suppresses its response', 
   release.resolve();
   await rejected;
   assert.equal(f.prompts(), 0);
-});
-
-test('root freezes annotation composition and lost turn receipt consumes only the confirmed original selection', async (t) => {
-  const f = await fixture(t);
-  await f.ready();
-  await f.create();
-  const target = f.controller.contentContext.target!,
-    annotations = f.controller.previewAnnotations;
-  const saved = await annotations.change(
-    target,
-    [],
-    () => {},
-    (store) => store.save(syntheticAnnotation()),
-  );
-  await annotations.change(
-    target,
-    saved.store.items,
-    () => {},
-    (store) => store.select(saved.value.id, true),
-  );
-  const shown = await annotations.read(target, () => {});
-  f.controller.updatePreviewAnnotations(target, shown, () => {});
-  f.fault.loseMutation = true;
-  await f.controller.saveDraft('Original text');
-  await f.controller.send('Original text', {
-    target,
-    attachments: [],
-    mcpDraft: f.controller.state.mcpDraft,
-    previewAnnotations: shown,
-  });
-  await f.started.promise;
-  const original = f.controller.state.operations.find((operation) => operation.kind === 'turn')!;
-  assert.equal(original.state, 'pending');
-  assert.deepEqual(original.previewReview?.annotations, shown);
-  assert.equal(f.controller.state.previewAnnotations.filter((item) => item.selectionId).length, 1);
-  const count = f.requests.length;
-  await assert.rejects(
-    f.controller.beforeExtensionWrite(target, () => {}),
-    /原会话操作/,
-  );
-  assert.equal(f.requests.length, count);
-  f.fault.loseMutation = false;
-  await f.controller.recover(original.operationId, 'inspect');
-  assert.equal(f.controller.state.previewAnnotations.filter((item) => item.selectionId).length, 0);
-  assert.equal(f.prompts(), 1);
-  await f.controller.refreshSession();
-  const user = f.controller.state.session!.history.find((turn) => turn.role === 'user')!;
-  assert.match(JSON.stringify(user), /Original text/);
-  assert.match(JSON.stringify(user), /SYNTHETIC_PRIVATE_ANNOTATION/);
-  assert(
-    !f.requests.some(
-      (request) => request.action === 'execute' && request.command.method === 'attachment-action',
-    ),
-    'saved annotation image is not automatically uploaded',
-  );
-});
-
-test('another page changing annotation selection blocks the old send before attachments or turn staging', async (t) => {
-  const f = await fixture(t);
-  await f.ready();
-  await f.create();
-  const target = f.controller.contentContext.target!,
-    annotations = f.controller.previewAnnotations;
-  const saved = await annotations.change(
-    target,
-    [],
-    () => {},
-    (store) => store.save(syntheticAnnotation()),
-  );
-  await annotations.change(
-    target,
-    saved.store.items,
-    () => {},
-    (store) => store.select(saved.value.id, true),
-  );
-  const shown = await annotations.read(target, () => {});
-  f.controller.updatePreviewAnnotations(target, shown, () => {});
-  await annotations.change(
-    target,
-    shown,
-    () => {},
-    (store) => store.select(saved.value.id, false),
-  );
-  const before = f.controller.state.operations.length;
-  await assert.rejects(
-    f.controller.send('Reviewed', {
-      target,
-      attachments: [],
-      mcpDraft: f.controller.state.mcpDraft,
-      previewAnnotations: shown,
-    }),
-    /标注选择已改变/,
-  );
-  assert.equal(f.controller.state.operations.length, before);
-  assert.equal(f.prompts(), 0);
-  assert(
-    !f.requests.some(
-      (request) =>
-        request.action === 'execute' &&
-        (request.command.method === 'attachment-action' || request.command.method === 'mutate'),
-    ),
-  );
 });
 
 function rootGithub(f: Awaited<ReturnType<typeof fixture>>) {

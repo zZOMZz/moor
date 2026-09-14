@@ -292,6 +292,8 @@ test('actual Agent settings create, check, edit, enable and remove versions with
     require: () => ({
       contextBridge: { exposeInMainWorld: (name: string, value: any) => exposed.set(name, value) },
       ipcRenderer: {
+        on() {},
+        removeListener() {},
         invoke(name: string, value: unknown) {
           if (name === 'personal:agent-config') return f.bridge.request(value, () => !closed);
           if (name === 'personal:agent-executable') return Promise.resolve(process.execPath);

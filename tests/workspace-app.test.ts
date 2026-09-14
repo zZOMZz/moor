@@ -173,6 +173,12 @@ test('packaged workspace opens local projects without an account and preserves d
     attachmentsSaved = resolve;
   });
   const controller = {
+    async readGitContext() {
+      return undefined;
+    },
+    async listProjectSessions() {
+      return state.sessions;
+    },
     get contextRevision() {
       return contextRevision;
     },
@@ -534,240 +540,6 @@ test('packaged workspace opens local projects without an account and preserves d
       calls.push('github:open');
       return fixture.controller;
     },
-    async openTasks(changed: () => void) {
-      const plan = syntheticTaskPlan(),
-        grant = syntheticTaskGrant('session');
-      grant.tasks[0]!.childSessionId = 'task-child';
-      grant.tasks[0]!.sessionCreated = true;
-      const value = {
-        loaded: true,
-        busy: false,
-        saving: false,
-        draft: structuredClone(plan),
-        enabled: undefined as any,
-        list: undefined as any,
-        async edit(draft: typeof plan) {
-          value.draft = draft;
-          calls.push('tasks:edit');
-          changed();
-        },
-        async refresh() {
-          calls.push('tasks:read');
-          value.list = { grants: [grant] };
-          changed();
-        },
-        async disable() {
-          calls.push('tasks:disable');
-          value.enabled = undefined;
-          delete state.ledger!.tasks![state.sessionId!]!.enabled;
-          emit();
-          changed();
-        },
-      };
-      return {
-        controller: value,
-        repository: {
-          branches: [{ name: 'main', oid: plan.tasks[0]!.expectedOid }],
-          partial: false,
-        },
-        close() {
-          calls.push('tasks:close');
-        },
-        async review() {
-          calls.push('tasks:review');
-          return structuredClone(value.draft);
-        },
-        async enable(reviewed: typeof plan) {
-          assert.deepEqual(reviewed, value.draft);
-          calls.push('tasks:enable');
-          value.enabled = { reviewId: 'ui-review', parentAgentId: 'agent', plan: reviewed };
-          state.ledger ??= {
-            version: 1,
-            scope: state.scope!,
-            revision: 1,
-            drafts: {},
-            operations: [],
-          };
-          (state.ledger.tasks ??= {})[state.sessionId!] = {
-            version: 1,
-            cacheRevision: 1,
-            target: {
-              owner: 'local-desktop',
-              deviceId: 'device',
-              userId: 'user',
-              machineId: 'machine',
-              workspaceId: 'runtime',
-              localProjectId: 'project',
-              sessionId: 'session',
-              catalogWorkspaceId: 'catalog',
-              replicaId: 'replica',
-            },
-            draft: value.draft,
-            enabled: value.enabled,
-          };
-          emit();
-          changed();
-        },
-        async openSession(id: string) {
-          assert.equal(id, 'task-child');
-          await controller.openSession(id);
-        },
-      };
-    },
-    async openRoles(changed: () => void) {
-      let role: any;
-      const value = {
-        target: {
-          owner: 'local-desktop',
-          deviceId: 'device',
-          userId: 'user',
-          machineId: 'machine',
-          workspaceId: 'runtime',
-          localProjectId: 'project',
-          sessionId: 'session',
-          catalogWorkspaceId: 'catalog',
-          replicaId: 'replica',
-        },
-        loaded: true,
-        busy: false,
-        list: undefined as any,
-        receipt: undefined as any,
-      };
-      return {
-        controller: value,
-        close() {
-          calls.push('roles:close');
-        },
-        async refresh() {
-          calls.push('roles:read');
-          value.list = { roles: role ? [role] : [] };
-          changed();
-        },
-        async save(edit: any) {
-          calls.push('roles:save');
-          assert.equal(edit.name, 'UI reviewer');
-          role = { ...edit, id: 'ui-role', revision: 1, available: true };
-          value.receipt = {
-            accepted: true,
-            operationId: 'ui-save',
-            action: 'save',
-            roleId: 'ui-role',
-          };
-          value.list = undefined;
-          changed();
-        },
-        async apply(selected: any) {
-          assert.deepEqual(selected, role);
-          calls.push('roles:apply');
-          state.draft = {
-            ...state.draft!,
-            revision: state.draft!.revision + 1,
-            text: state.draft!.text + '\nRole instruction',
-          };
-          emit();
-        },
-      };
-    },
-    async openPreview(changed: () => void) {
-      const value = {
-        loaded: true,
-        busy: false,
-        active: false,
-        canInteract: false,
-        options: undefined as any,
-        openRequest: undefined as any,
-        async refreshOptions() {
-          calls.push('preview:options');
-          value.options = { available: true, services: [{ id: 'service', label: 'Synthetic' }] };
-          changed();
-        },
-        async open(service: string, viewport: { width: number; height: number }) {
-          assert.equal(service, 'service');
-          assert.deepEqual(viewport, { width: 1280, height: 800 });
-          calls.push('preview:open');
-          value.openRequest = { clientId: 'client' };
-          changed();
-        },
-        async close() {
-          calls.push('preview:close');
-          value.openRequest = undefined;
-          changed();
-        },
-      };
-      return {
-        controller: value,
-        annotations: {
-          loaded: true,
-          busy: false,
-          items: [],
-          target: {
-            owner: 'local-desktop',
-            deviceId: 'device',
-            userId: 'user',
-            machineId: 'machine',
-            workspaceId: 'runtime',
-            localProjectId: 'project',
-            sessionId: 'session',
-            catalogWorkspaceId: 'catalog',
-            replicaId: 'replica',
-          },
-        },
-        close: () => value.close(),
-        dispose() {
-          calls.push('preview:dispose');
-        },
-      };
-    },
-    async openMcp(changed: () => void) {
-      const server = {
-        id: 'original-server-version',
-        name: 'Synthetic MCP',
-        description: 'Synthetic metadata',
-        transport: 'http' as const,
-      };
-      const value = {
-        busy: false,
-        loaded: true,
-        error: '',
-        loadError: '',
-        list: undefined as any,
-        selected: [] as (typeof server)[],
-        unavailable() {
-          return !value.list;
-        },
-        async refresh() {
-          calls.push('mcp:read');
-          value.list = { servers: [server] };
-          changed();
-        },
-        async apply(servers: (typeof server)[]) {
-          calls.push('mcp:save');
-          assert.deepEqual(servers, [server]);
-          value.selected = servers;
-          state.ledger ??= {
-            version: 1,
-            scope: state.scope!,
-            revision: 1,
-            drafts: {},
-            operations: [],
-          };
-          (state.ledger.mcp ??= {})[state.sessionId!] = {
-            version: 1,
-            cacheRevision: 1,
-            target: state.scope!.target as any,
-            review: { reviewId: 'review', servers },
-          };
-          emit();
-          changed();
-        },
-      };
-      return {
-        controller: value,
-        close() {
-          calls.push('mcp:close');
-        },
-      };
-    },
     openSkills(changed: () => void) {
       const source = {
         id: 'project-skills',
@@ -1108,59 +880,6 @@ test('packaged workspace opens local projects without an account and preserves d
       state.project!.runtime.features!.push('project-preview-v1', 'roles-v1', 'session-tasks-v1');
       emit();
     });
-    await act(async () => visibleButton('项目预览').click());
-    assert.equal(calls.includes('preview:options'), false);
-    await act(async () => visibleButton('读取登记的预览服务').click());
-    await act(async () => visibleButton('连接预览').click());
-    assert.equal(calls.filter((value) => value === 'preview:open').length, 1);
-    assert.equal(calls.filter((value) => value === 'send').length, 1);
-    await act(async () => visibleButton('关闭网页预览面板').click());
-    assert.equal(calls.filter((value) => value === 'preview:close').length, 1);
-    assert.equal(dom.window.document.querySelector('.project-preview-panel'), null);
-    await act(async () => visibleButton('角色预设').click());
-    assert.equal(calls.filter((value) => value === 'roles:read').length, 1);
-    await act(async () => visibleButton('新建角色').click());
-    const roleName = dom.window.document.querySelector<HTMLInputElement>('.roles-detail input')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
-        roleName,
-        'UI reviewer',
-      );
-      roleName.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-    });
-    await act(async () =>
-      dom.window.document
-        .querySelector<HTMLFormElement>('.roles-detail form')!
-        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
-    );
-    assert.equal(calls.filter((value) => value === 'roles:save').length, 1);
-    assert.equal(calls.filter((value) => value === 'send').length, 1);
-    await act(async () => visibleButton('重新读取角色').click());
-    await act(async () => visibleButton('确认应用到草稿').click());
-    assert.match(textarea.value, /Reviewed skill\nRole instruction/);
-    assert.equal(calls.filter((value) => value === 'send').length, 1);
-    await act(async () => visibleButton('关闭角色预设').click());
-    assert.equal(dom.window.document.querySelector('.roles-panel'), null);
-    await act(async () => visibleButton('协作任务').click());
-    assert.equal(calls.includes('tasks:read'), false);
-    await act(async () => visibleButton('审查本次任务计划').click());
-    assert.match(
-      dom.window.document.querySelector('.task-review')!.textContent!,
-      /Synthetic instruction/,
-    );
-    await act(async () => visibleButton('启用本次任务计划').click());
-    assert.equal(calls.filter((value) => value === 'tasks:enable').length, 1);
-    assert.equal(calls.filter((value) => value === 'send').length, 1);
-    await act(async () => visibleButton('停用本次计划').click());
-    await act(async () => visibleButton('读取任务状态').click());
-    await act(async () => visibleButton('打开子会话').click());
-    assert.match(
-      dom.window.document.querySelector('[aria-label="子任务来源"]')!.textContent!,
-      /Human verifies synthetic result/,
-    );
-    await act(async () => visibleButton('打开父会话').click());
-    textarea = dom.window.document.querySelector('textarea')!;
-    assert.equal(calls.filter((value) => value === 'send').length, 1);
     await act(async () => visibleButton('GitHub').click());
     assert(calls.includes('github:open'));
     assert(dom.window.document.querySelector('.github-panel'));
@@ -1206,26 +925,28 @@ test('packaged workspace opens local projects without an account and preserves d
     await act(async () => visibleButton('置顶会话').click());
     assert(calls.includes('metadata:pin'));
     assert.equal(calls.filter((value) => value === 'send').length, 1);
-    await act(async () => visibleButton('额外 MCP').click());
-    assert.equal(calls.filter((value) => value === 'mcp:read').length, 0);
-    await act(async () => visibleButton('读取项目允许的 MCP').click());
-    await act(async () =>
-      dom.window.document
-        .querySelector<HTMLInputElement>('[aria-label="选择 MCP：Synthetic MCP"]')!
-        .click(),
-    );
-    assert.equal(calls.filter((value) => value === 'mcp:save').length, 0);
-    await act(async () => visibleButton('确认保存 MCP 选择到草稿').click());
-    assert.equal(calls.filter((value) => value === 'mcp:save').length, 1);
-    assert.equal(calls.filter((value) => value === 'send').length, 1);
-    await act(async () => visibleButton('关闭额外 MCP').click());
-    assert.equal(dom.window.document.querySelector('.mcp-panel'), null);
-    assert.match(visibleButton('额外 MCP').textContent!, /1/);
+    for (const label of ['额外 MCP', '网页预览', '项目预览', '角色预设', '协作任务']) {
+      assert(
+        !Array.from(dom.window.document.querySelectorAll('button')).some(
+          (button) =>
+            button.textContent?.includes(label) || button.getAttribute('aria-label') === label,
+        ),
+      );
+    }
+    const originalHistory = structuredClone(state.session!.history);
     await act(async () => {
       state.session!.history = [];
       emit();
     });
-    await act(async () => visibleButton('Git 与工作目录').click());
+    assert.equal(
+      dom.window.document.querySelector('.workspace-menu-environment:not([hidden])'),
+      null,
+    );
+    await act(async () =>
+      dom.window.document
+        .querySelector<HTMLButtonElement>('.workspace-composer-context > button')!
+        .click(),
+    );
     assert(calls.includes('git:read'));
     const baseline = dom.window.document.querySelector<HTMLSelectElement>(
       '.git-workspace-panel select',
@@ -1257,6 +978,10 @@ test('packaged workspace opens local projects without an account and preserves d
     );
     await act(async () => visibleButton('关闭 Git 与工作目录').click());
     assert.equal(dom.window.document.querySelector('.git-workspace-panel'), null);
+    await act(async () => {
+      state.session!.history = originalHistory;
+      emit();
+    });
     await act(async () => visibleButton('创建会话副本').click());
     assert.equal(calls.filter((value) => value === 'fork:read').length, 1);
     const forkSelects = dom.window.document.querySelectorAll<HTMLSelectElement>(
@@ -1316,7 +1041,9 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(calls.filter((value) => value.startsWith('session:')).length, previousReads + 1);
     assert.equal(calls.filter((value) => value === 'send').length, 1);
     assert.equal(textarea.value, '');
-    await act(async () => visibleButton('本机设置').click());
+    await act(async () => visibleButton('设置').click());
+    await act(async () => visibleButton('设备、Agent 与连接设置').click());
+    await act(async () => visibleButton('关闭设置').click());
     assert(calls.includes('settings'));
     await act(async () => visibleButton('连接其他电脑').click());
     assert.equal(

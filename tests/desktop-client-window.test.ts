@@ -31,12 +31,28 @@ test('trusted window keeps service authority separate from its immutable documen
   }
   const window = createClientWindow({
     BrowserWindow: Window,
+    platform: 'darwin',
     session,
     origin: 'https://relay.example',
     preloadPath: '/synthetic/secure-preload.cjs',
     registry,
     invalidate: (contents: unknown) => invalidated.push(contents),
   });
+  assert.equal(window.options.titleBarStyle, 'hiddenInset');
+  assert.deepEqual(window.options.trafficLightPosition, { x: 16, y: 16 });
+  for (const platform of ['linux', 'win32'] as const) {
+    const native = createClientWindow({
+      BrowserWindow: Window,
+      session,
+      origin: '',
+      preloadPath: '/synthetic/preload.cjs',
+      registry: new Map(),
+      invalidate() {},
+      platform,
+    });
+    assert.equal(native.options.titleBarStyle, undefined);
+    assert.equal(native.options.trafficLightPosition, undefined);
+  }
   const contents = window.webContents;
   assert.deepEqual(window.options.webPreferences, {
     session,
