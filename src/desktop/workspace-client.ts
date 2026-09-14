@@ -17,7 +17,6 @@ import { type HostCommand, type HostCommandMethod } from '../bridge/host-command
 import { AppError } from '../protocol';
 import { validateHostResponse } from '../host-response';
 import { publicAgentFailure } from '../agent-errors';
-export { normalizeLegacyCache } from './legacy-cache';
 import {
   desktopWorkspaceRequestSchema,
   desktopWorkspaceCatalogSchema,

@@ -55,22 +55,9 @@ import {
   validateSessionActionReceipt,
 } from '../session-responses';
 import {
-  legacyCacheRecoverySchema,
-  legacyIndexSchema,
-  legacyIndexCursorSchema,
-  type LegacyIndexCursor,
-  type LegacyReadSelection,
-  legacyDraftRecoverySchema,
-  matchesLegacyDraft,
-  type LegacyDraftRecovery,
-  legacySessionRecoverySchema,
-  type LegacySessionRecovery,
-} from '../desktop/legacy-cache';
-import {
   sessionControlActionSchema,
   validateSessionControlReceipt,
   validateSessionOperationResult,
-  type SessionOriginalOperation,
 } from '../session-control-protocol';
 import type { RunSelection } from '../run-config';
 import { publicAgentFailure } from '../agent-errors';
@@ -209,7 +196,6 @@ export class WorkspaceController {
   constructor(
     private readonly options: {
       request: (request: DesktopWorkspaceRequest) => Promise<unknown>;
-      legacy?: (request: unknown) => Promise<unknown>;
       store?: WorkspaceStore;
       uuid?: () => string;
       now?: () => string;
@@ -219,9 +205,6 @@ export class WorkspaceController {
     this.store = options.store ?? new WorkspaceStore();
   }
   readonly store: WorkspaceStore;
-  get canRecoverLegacy() {
-    return !!this.options.legacy;
-  }
   get state() {
     return structuredClone(this.#state);
   }
@@ -383,17 +366,7 @@ export class WorkspaceController {
         )
       )
         throw Error('会话列表执行范围不匹配。');
-      const recovered = this.#state.ledger?.legacy ?? [];
-      this.#state.sessions = [
-        ...sessions,
-        ...recovered
-          .filter(
-            (item, index) =>
-              !sessions.some((session) => session.id === item.sessionId) &&
-              recovered.findIndex((other) => other.sessionId === item.sessionId) === index,
-          )
-          .map((item) => item.snapshot.meta),
-      ];
+      this.#state.sessions = sessions;
       this.#state.offline = false;
     } catch (error) {
       context.current();
@@ -594,7 +567,6 @@ export class WorkspaceController {
       };
       await this.#draftWrites;
       current();
-      if (kind === 'create') await this.#checkLegacyBeforeSend(context, sessionId);
       return this.store.exclusiveOperation(
         context.scope,
         'fork:' + sessionId,
@@ -609,8 +581,7 @@ export class WorkspaceController {
                 (item) => item.status === 'pending' && item.original.value.sessionId === sessionId,
               ) ||
               ledger.interactions?.[sessionId]?.value.pending ||
-              ledger.mcp?.[sessionId]?.delivery ||
-              this.store.recoveryBlocked(ledger, sessionId))
+              ledger.mcp?.[sessionId]?.delivery)
           )
             throw Error('请先核查源会话原操作，再创建或重试 Fork。');
           if (
@@ -820,8 +791,6 @@ export class WorkspaceController {
         };
         await this.#draftWrites;
         check();
-        if (['continue', 'permission'].includes(original.operation.kind))
-          await this.#checkLegacyBeforeSend(context, original.sessionId);
         return this.store.exclusiveOperation(
           context.scope,
           'attention:' + original.sessionId,
@@ -861,14 +830,12 @@ export class WorkspaceController {
       prepareTurn: async (route, sessionId, text) => {
         await this.#draftWrites;
         const context = scoped(route, sessionId);
-        await this.#checkLegacyBeforeSend(context, sessionId);
         const ledger = await this.store.read(context.scope, current),
           draft = ledger.drafts[sessionId];
         if (
           this.store.attentionBlocked(ledger, sessionId) ||
           this.store.githubBlocked(ledger, sessionId) ||
           this.store.forkBlocked(ledger, sessionId) ||
-          this.store.recoveryBlocked(ledger, sessionId) ||
           ledger.git?.[sessionId]?.pending ||
           ledger.interactions?.[sessionId]?.value.pending ||
           ledger.tasks?.[sessionId]?.pending ||
@@ -962,7 +929,6 @@ export class WorkspaceController {
     const context = this.#context();
     if (!shown || shown.id !== context.sessionId) throw Error('请先读取原会话。');
     if (this.#state.offline) throw Error('执行电脑离线，请连接后手动整理会话。');
-    await this.#checkLegacyBeforeSend(context, shown.id);
     await this.refreshSession();
     context.current();
     const read = this.#state.session!;
@@ -999,16 +965,7 @@ export class WorkspaceController {
         current();
         if (!same({ ...scope.target, sessionId: target.sessionId }, target))
           throw Error('文件缓存目标已改变。');
-        const fresh = await cache.read(target, key, current);
-        if (fresh !== undefined) return fresh;
-        const ledger = await this.store.read(scope, current);
-        const values = [...(ledger.legacy ?? []), ...(ledger.legacyDrafts ?? [])]
-          .filter((record) => record.sessionId === target.sessionId)
-          .flatMap((record) => record.content?.filter((entry) => entry.key === key) ?? []);
-        if (values.some((entry) => !same(entry.value, values[0]!.value)))
-          throw Error('多个旧来源的文件缓存版本不一致，请连接原主机重新读取。');
-        current();
-        return structuredClone(values[0]?.value);
+        return cache.read(target, key, current);
       },
       writeBatch: cache.writeBatch.bind(cache),
     };
@@ -1314,7 +1271,6 @@ export class WorkspaceController {
       beforeWrite: async (target, current) => {
         await this.#draftWrites;
         checkTarget(target, current);
-        await this.#checkLegacyBeforeSend({ ...context, current }, sessionId);
         const ledger = await this.store.read(context.scope, current);
         if (
           this.store.githubBlocked(ledger, sessionId) ||
@@ -1324,8 +1280,7 @@ export class WorkspaceController {
           ledger.interactions?.[sessionId]?.value.pending ||
           ledger.operations.some(
             (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,
-          ) ||
-          this.store.recoveryBlocked(ledger, sessionId)
+          )
         )
           throw Error('请先核查此会话原操作，再确认新的 GitHub 操作。');
       },
@@ -1446,7 +1401,6 @@ export class WorkspaceController {
       await this.#draftWrites;
       current();
       const recovery = ['retry', 'inspect', 'abandon'].includes(kind);
-      if (kind !== 'refresh' && !recovery) await this.#checkLegacyBeforeSend(context, sessionId);
       return this.store.exclusiveOperation(context.scope, 'git:' + sessionId, current, async () => {
         const ledger = await this.store.read(context.scope, current);
         if (
@@ -1459,8 +1413,7 @@ export class WorkspaceController {
             this.store.forkBlocked(ledger, sessionId) ||
             this.store.githubBlocked(ledger, sessionId) ||
             this.store.attentionBlocked(ledger, sessionId) ||
-            ledger.mcp?.[sessionId]?.delivery ||
-            this.store.recoveryBlocked(ledger, sessionId))
+            ledger.mcp?.[sessionId]?.delivery)
         )
           throw Error('请先核查此会话原操作，再改变工作目录。');
         if (recovery && (!pending || !same(pending, ledger.git?.[sessionId]?.pending)))
@@ -1661,7 +1614,6 @@ export class WorkspaceController {
       current();
       const draft = structuredClone(controller.draft),
         parent = this.#state.session!.meta.agentConfigId;
-      await this.#checkLegacyBeforeSend(context, sessionId);
       await this.refreshSession();
       current();
       const result = await this.#reviewTasks(context, draft, parent);
@@ -1851,7 +1803,6 @@ export class WorkspaceController {
       current();
       const draft = structuredClone(this.#state.draft);
       if (!draft) throw Error('原会话草稿不可用。');
-      await this.#checkLegacyBeforeSend(scoped, sessionId);
       const role = await freshRole(input);
       await this.refreshSession();
       current();
@@ -2273,263 +2224,6 @@ export class WorkspaceController {
       };
     this.#emit();
   }
-  async #legacy(
-    action: 'list' | 'read' | 'index',
-    origin?: string,
-    context = this.#context(),
-    extra: { selection?: LegacyReadSelection; cursor?: LegacyIndexCursor } = {},
-  ) {
-    await this.#draftWrites;
-    if (!this.options.legacy) throw Error('当前客户端不支持读取旧缓存。');
-    context.current();
-    const result = z
-      .discriminatedUnion('ok', [
-        z.object({ ok: z.literal(true), value: z.unknown() }).strict(),
-        z
-          .object({
-            ok: z.literal(false),
-            error: z
-              .object({ message: z.string(), code: z.literal('index-changed').optional() })
-              .strict(),
-          })
-          .strict(),
-      ])
-      .parse(
-        await this.options.legacy({
-          action,
-          source: context.scope.source,
-          target: context.scope.target,
-          connectionId: context.connectionId,
-          ...(origin ? { origin } : {}),
-          ...extra,
-        }),
-      );
-    context.current();
-    if (!result.ok)
-      throw Error(
-        result.error.code === 'index-changed'
-          ? '旧缓存目录已变化，请从第一页重新读取。'
-          : '旧缓存暂不可读取，原分区中的数据保持不变。',
-      );
-    return { context, value: result.value };
-  }
-  async legacyOrigins() {
-    return this.#legacyOrigins(this.#context());
-  }
-  async #legacyOrigins(context: Context) {
-    return z
-      .object({ origins: z.array(z.string().url()).max(256) })
-      .strict()
-      .parse((await this.#legacy('list', undefined, context)).value).origins;
-  }
-  async legacyIndex(origin: string, cursor?: LegacyIndexCursor) {
-    const context = this.#context();
-    const page = legacyIndexSchema.parse(
-      (
-        await this.#legacy(
-          'index',
-          origin,
-          context,
-          cursor ? { cursor: legacyIndexCursorSchema.parse(cursor) } : {},
-        )
-      ).value,
-    );
-    if (
-      !same(page.scope, { ...context.scope, origin }) ||
-      (cursor &&
-        (cursor.version !== page.version || page.sessionIds.some((id) => id <= cursor.after)))
-    )
-      throw Error('旧缓存目录分页范围不匹配，请重新读取。');
-    return page;
-  }
-  async readLegacy(origin: string, selection?: LegacyReadSelection) {
-    return this.#readLegacy(this.#context(), origin, selection);
-  }
-  async #readLegacy(context: Context, origin: string, selection?: LegacyReadSelection) {
-    const { value } = await this.#legacy('read', origin, context, selection ? { selection } : {});
-    const recovered = legacyCacheRecoverySchema.parse(value);
-    if (
-      !same(recovered.scope, { ...context.scope, origin }) ||
-      !same(recovered.selection ?? null, selection ?? null) ||
-      recovered.sessions.some((item) => !same(item.scope, recovered.scope)) ||
-      (recovered.newDraft && !same(recovered.newDraft.scope, recovered.scope))
-    )
-      throw Error('旧缓存身份与当前项目不匹配。');
-    return recovered;
-  }
-  async restoreLegacy(input: LegacySessionRecovery) {
-    await this.#draftWrites;
-    const context = this.#context(),
-      reviewed = legacySessionRecoverySchema.parse(input);
-    if (!same(reviewed.scope, { ...context.scope, origin: reviewed.scope.origin }))
-      throw Error('旧记录不属于当前电脑和项目。');
-    // Re-read through the native authority before committing the reviewed record.
-    const latest = await this.#readLegacy(context, reviewed.scope.origin, {
-      kind: 'session',
-      sessionId: reviewed.sessionId,
-    });
-    context.current();
-    if (!latest.sessions.some((item) => same(item, reviewed)))
-      throw Error('旧缓存已改变，请重新预览后恢复。');
-    await this.store.restoreLegacy(context.scope, reviewed, context.current);
-    await this.#reloadLedger(context);
-    if (!this.#state.sessions.some((item) => item.id === reviewed.sessionId))
-      this.#state.sessions.push(reviewed.snapshot.meta);
-    this.#emit();
-  }
-  async restoreLegacyDraft(input: LegacyDraftRecovery) {
-    await this.#draftWrites;
-    const context = this.#context(),
-      reviewed = legacyDraftRecoverySchema.parse(input);
-    const latest = await this.#readLegacy(context, reviewed.scope.origin, { kind: 'new' });
-    context.current();
-    if (!latest.newDraft || !same(latest.newDraft, reviewed))
-      throw Error('旧新会话草稿已改变，请重新预览。');
-    const ledger = await this.store.read(context.scope, context.current);
-    const mapped = reviewed.sessionId ?? ledger.legacyDraftSlots?.[reviewed.scope.origin];
-    const previous = ledger.legacyDrafts?.find(
-      (item) =>
-        item.scope.origin === reviewed.scope.origin &&
-        (mapped ? item.sessionId === mapped : matchesLegacyDraft(item, reviewed)),
-    );
-    const sessionId = mapped ?? previous?.sessionId ?? this.#uuid();
-    await this.store.restoreLegacyDraft(context.scope, reviewed, sessionId, context.current);
-    await this.#reloadLedger(context);
-    return sessionId;
-  }
-  async openLegacyDraft(sessionId: string, selectedAgentId?: string) {
-    await this.#draftWrites;
-    const context = this.#context(sessionId);
-    await this.store.exclusiveOperation(
-      context.scope,
-      'legacy-draft:' + sessionId,
-      context.current,
-      async () => {
-        const ledger = await this.store.read(context.scope, context.current);
-        const record = ledger.legacyDrafts?.find((item) => item.sessionId === sessionId);
-        if (!record) throw Error('请先恢复原新会话草稿。');
-        await this.#checkLegacyBeforeSend(context, sessionId);
-        const originals = ledger.operations.filter(
-          (item) => item.original.value.sessionId === sessionId,
-        );
-        if (
-          originals.some((item) => item.status === 'pending' && item.original.kind === 'mutation')
-        )
-          throw Error('首次指令尚未确认，请先核查或明确重试原请求。');
-        const sessions = sessionListSchema.parse(
-          await this.#execute(
-            { ...context, sessionId: undefined },
-            this.#command(context.scope, 'sessions', {}),
-          ),
-        );
-        const existing = sessions.find((item) => item.id === sessionId);
-        const agentId = record.pending ? record.agentId : (selectedAgentId ?? record.agentId);
-        if (existing) {
-          if (
-            existing.project.localProjectId !== context.scope.target.localProjectId ||
-            existing.machineId !== context.scope.target.machineId ||
-            existing.userId !== context.scope.target.userId ||
-            (agentId && existing.agentConfigId !== agentId)
-          )
-            throw Error('预留会话与原项目或 Agent 不匹配。');
-        } else {
-          if (record.pending)
-            throw Error('原首次指令未创建会话，请先核查原请求；不会另建替代会话。');
-          if (record.unresolvedKeys.length) throw Error('旧草稿还有未识别记录，请先完成恢复。');
-          if (!agentId || !context.project.runtime.agents.some((agent) => agent.id === agentId))
-            throw Error('请为原草稿选择当前电脑已登记的 Agent；过期 Agent 不会被静默替换。');
-          const prior = originals.find(
-            (item) => item.original.kind === 'control' && item.original.value.action === 'create',
-          );
-          if (prior) {
-            if (
-              prior.original.kind !== 'control' ||
-              prior.original.value.action !== 'create' ||
-              prior.original.value.agentId !== agentId
-            )
-              throw Error('原创建请求使用不同 Agent，请先核查。');
-            if (prior.status !== 'pending')
-              throw Error('原创建请求已有结果，但会话不可读取，请核对原主机。');
-            await this.retry(prior.original.value.operationId);
-          } else {
-            const target = context.scope.target;
-            const value = sessionControlActionSchema.parse({
-              controlVersion: 1,
-              action: 'create',
-              operationId: this.#uuid(),
-              workspaceId: target.workspaceId,
-              localProjectId: target.localProjectId,
-              userId: target.userId,
-              machineId: target.machineId,
-              sessionId,
-              agentId,
-            });
-            await this.store.stage(
-              context.scope,
-              { kind: 'control', value },
-              undefined,
-              context.current,
-            );
-            await this.#reloadLedger(context);
-            await this.retry(value.operationId);
-          }
-        }
-      },
-    );
-    context.current();
-    await this.refreshSessions();
-    await this.openSession(sessionId);
-  }
-  async #checkLegacyBeforeSend(context: Context, sessionId: string) {
-    if (!this.options.legacy) return;
-    const origins = await this.#legacyOrigins(context);
-    context.current();
-    const ledger = await this.store.read(context.scope, context.current);
-    for (const origin of origins) {
-      const cache = await this.#readLegacy(context, origin, { kind: 'session', sessionId });
-      const newCache = await this.#readLegacy(context, origin, { kind: 'new' });
-      context.current();
-      const newDraft = newCache.newDraft;
-      const reserved =
-        newDraft?.sessionId ??
-        ledger.legacyDraftSlots?.[origin] ??
-        (newDraft
-          ? ledger.legacyDrafts?.find(
-              (item) => item.scope.origin === origin && matchesLegacyDraft(item, newDraft),
-            )?.sessionId
-          : undefined);
-      if (
-        newDraft &&
-        reserved === sessionId &&
-        !ledger.legacyDrafts?.some(
-          (item) => item.sessionId === sessionId && matchesLegacyDraft(item, newDraft),
-        )
-      )
-        throw Error('旧新会话草稿或首次请求尚未恢复，请先核对原记录。');
-      const record = cache.sessions.find((item) => item.sessionId === sessionId);
-      if (
-        record &&
-        (record.fork ||
-          record.git ||
-          record.github ||
-          record.githubWrite ||
-          record.attention ||
-          record.tasks ||
-          record.roles ||
-          record.roleApplied ||
-          record.preview ||
-          record.annotations ||
-          record.mcp ||
-          record.interactions ||
-          record.pending ||
-          record.metadata ||
-          record.attachments?.items.length ||
-          record.unresolvedKeys.length) &&
-        !ledger.legacy?.some((item) => same(item, record))
-      )
-        throw Error('旧客户端还有此会话的待确认或未识别记录，请先打开“恢复旧客户端草稿”核对。');
-    }
-  }
   async createSession(agentId: string, title?: string) {
     const sessionId = this.#uuid(),
       context = this.#context(sessionId);
@@ -2645,8 +2339,7 @@ export class WorkspaceController {
       ledger.git?.[context.sessionId!]?.pending ||
       this.store.forkBlocked(ledger, context.sessionId!) ||
       this.store.githubBlocked(ledger, context.sessionId!) ||
-      this.store.attentionBlocked(ledger, context.sessionId!) ||
-      this.store.recoveryBlocked(ledger, context.sessionId!)
+      this.store.attentionBlocked(ledger, context.sessionId!)
     )
       throw Error('请先核查此会话的原操作。');
     const snapshot = workspaceInteractionSnapshot(this.#state);
@@ -2669,7 +2362,6 @@ export class WorkspaceController {
       reviewed = structuredClone(answer);
     await this.#draftWrites;
     const context = this.#context();
-    await this.#checkLegacyBeforeSend(context, context.sessionId!);
     return this.#withInteractions(context, async (controller) => {
       const snapshot = await this.#freshInteraction(context, 'question');
       const item = snapshot.questions.find(
@@ -2687,7 +2379,6 @@ export class WorkspaceController {
   async steer(expectedTurnId: string, prompt: string) {
     await this.#draftWrites;
     const context = this.#context();
-    await this.#checkLegacyBeforeSend(context, context.sessionId!);
     return this.#withInteractions(context, async (controller) => {
       const snapshot = await this.#freshInteraction(context, 'steer');
       if (snapshot.activeId !== expectedTurnId)
@@ -2747,13 +2438,10 @@ export class WorkspaceController {
     const attachments = structuredClone(
       this.#state.ledger?.attachments?.[sessionId] ?? emptyWorkspaceAttachments(),
     );
-    await this.#checkLegacyBeforeSend(context, sessionId);
     await this.refreshSession();
     await this.refreshAgentOptions();
     context.current();
     const ledger = await this.store.read(context.scope, context.current);
-    if (this.store.recoveryBlocked(ledger, sessionId))
-      throw Error('此会话还有未识别的旧记录，请先完成恢复；原草稿保持可编辑。');
     if (
       ledger.operations.some(
         (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,

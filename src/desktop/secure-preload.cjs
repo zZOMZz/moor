@@ -2,7 +2,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('moorWorkspace', {
   version: 1,
   request: (value) => ipcRenderer.invoke('moor:workspace-client', value),
-  legacy: (value) => ipcRenderer.invoke('moor:legacy-cache', value),
   context: () => ipcRenderer.invoke('moor:workspace-context'),
   addProject: () => ipcRenderer.invoke('moor:add-project'),
   onChange: (listener) => {

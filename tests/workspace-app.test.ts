@@ -15,7 +15,6 @@ import type { SecureUiController } from '../src/web/secure-app';
 import type { SecureWorkspaceState } from '../src/web/secure-controller';
 import { desktopWorkspaceCatalogSchema } from '../src/desktop/workspace-protocol';
 import { notificationIdentity, type HostNotificationEvent } from '../src/notification-protocol';
-import type { LegacySessionRecovery, LegacyDraftRecovery } from '../src/desktop/legacy-cache';
 import { createAttachmentDraftItem } from '../src/web/attachments';
 import type { AttachmentReference } from '../src/content-protocol';
 import type { QuestionRequest, QuestionAnswer } from '../src/interaction-protocol';
@@ -173,26 +172,7 @@ test('packaged workspace opens local projects without an account and preserves d
   const attachmentSaved = new Promise<void>((resolve) => {
     attachmentsSaved = resolve;
   });
-  const legacyRecord: LegacySessionRecovery = {
-    version: 1,
-    scope: { source: 'local', origin: catalog.origin, target: catalog.targets[0]!.target },
-    sessionId: meta.id,
-    title: 'Old draft',
-    draft: '<img src=x onerror=unsafe()>',
-    snapshot: { snapshot: '', meta, metaBundle: { version: 1, entries: {} } },
-    unresolvedKeys: ['original-pending'],
-  };
-  const oldNew: LegacyDraftRecovery = {
-    version: 1,
-    kind: 'draft',
-    scope: legacyRecord.scope,
-    sessionId: 'legacy-new-session',
-    agentId: 'agent',
-    draft: 'Unsent synthetic new draft',
-    unresolvedKeys: [],
-  };
   const controller = {
-    canRecoverLegacy: true,
     get contextRevision() {
       return contextRevision;
     },
@@ -928,74 +908,6 @@ test('packaged workspace opens local projects without an account and preserves d
         },
       };
     },
-    async legacyOrigins() {
-      calls.push('legacy-list');
-      return [catalog.origin];
-    },
-    async legacyIndex(origin: string, cursor?: { version: string; after: string }) {
-      assert.equal(origin, catalog.origin);
-      calls.push(cursor ? 'legacy-index:next' : 'legacy-index');
-      if (cursor)
-        assert.deepEqual(cursor, {
-          version: 'sha256:' + 'a'.repeat(64),
-          after: legacyRecord.sessionId,
-        });
-      return {
-        scope: legacyRecord.scope,
-        version: 'sha256:' + 'a'.repeat(64),
-        sessionIds: cursor ? ['zzz-last-session'] : [legacyRecord.sessionId],
-        total: 2,
-        hasNew: true,
-        ...(!cursor
-          ? { nextCursor: { version: 'sha256:' + 'a'.repeat(64), after: legacyRecord.sessionId } }
-          : {}),
-      };
-    },
-    async readLegacy(
-      origin: string,
-      selection: { kind: 'new' } | { kind: 'session'; sessionId: string },
-    ) {
-      assert.equal(origin, catalog.origin);
-      if (selection.kind === 'session') assert.equal(selection.sessionId, legacyRecord.sessionId);
-      calls.push('legacy-read');
-      return {
-        version: 1,
-        scope: legacyRecord.scope,
-        sessions: selection.kind === 'session' ? [legacyRecord] : [],
-        ...(selection.kind === 'new' ? { newDraft: oldNew } : {}),
-        unresolved: 1,
-      };
-    },
-    async restoreLegacyDraft(record: LegacyDraftRecovery) {
-      assert.deepEqual(record, oldNew);
-      calls.push('legacy-new:restore');
-      state.ledger ??= { version: 1, scope: state.scope!, revision: 1, drafts: {}, operations: [] };
-      state.ledger.legacyDrafts = [{ ...record, sessionId: record.sessionId! }];
-      state.ledger.drafts[record.sessionId!] = { revision: 1, text: record.draft!, selection: {} };
-      emit();
-      return record.sessionId!;
-    },
-    async openLegacyDraft(sessionId: string, agentId?: string) {
-      assert.equal(sessionId, oldNew.sessionId);
-      assert.equal(agentId, oldNew.agentId);
-      calls.push('legacy-new:open');
-    },
-    async restoreLegacy(record: LegacySessionRecovery) {
-      calls.push('legacy-restore');
-      assert.deepEqual(record, legacyRecord);
-      const previous = state.ledger?.legacy?.[0];
-      state.ledger = {
-        version: 1,
-        scope: state.scope!,
-        revision: 1,
-        drafts: {},
-        operations: [],
-        legacy: [structuredClone(record)],
-        ...(previous ? { legacyRevisions: [structuredClone(previous)] } : {}),
-      };
-      if (!previous) state.draft = { revision: 1, text: record.draft!, selection: {} };
-      emit();
-    },
   } as unknown as WorkspaceController;
   const encrypted: SecureWorkspaceState = {
     status: null,
@@ -1562,48 +1474,8 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(calls.filter((call) => call === 'content:open:changes').length, 1);
     await act(async () => visibleButton('关闭文件与变更').click());
     assert.equal(calls.filter((call) => call === 'send').length, 1);
-    const recovery = dom.window.document.querySelector<HTMLDetailsElement>(
-      '.workspace-legacy-recovery',
-    )!;
-    recovery.open = true;
-    await act(async () => visibleButton('查找旧草稿').click());
-    await act(async () => visibleButton('预览旧缓存 1').click());
-    assert.equal(calls.filter((value) => value === 'legacy-read').length, 0);
-    await act(async () => visibleButton('下一页旧会话').click());
-    assert.equal(calls.filter((value) => value === 'legacy-index:next').length, 1);
-    assert.equal(recovery.textContent!.includes('预览会话 · ' + legacyRecord.sessionId), false);
-    assert(recovery.textContent!.includes('预览会话 · zzz-last-session'));
-    assert.equal(calls.filter((value) => value === 'legacy-read').length, 0);
-    await act(async () => visibleButton('刷新旧缓存目录').click());
-    await act(async () => visibleButton('预览会话 · ' + legacyRecord.sessionId).click());
-    assert.match(recovery.textContent!, /<img src=x onerror=unsafe\(\)>/);
-    assert.equal(recovery.querySelector('img'), null, 'old drafts render as text');
-    assert.equal(calls.filter((value) => value === 'legacy-restore').length, 0);
-    await act(async () => visibleButton('恢复此会话').click());
-    assert.equal(visibleButton('已恢复').disabled, true);
-    assert.equal(visibleButton('发送').disabled, true, 'unresolved originals block new execution');
-    await act(async () => {
-      state.ledger!.legacy![0]!.draft = 'Earlier imported source text';
-      state.draft = { revision: 3, text: 'Preserved current edit', selection: {} };
-      emit();
-    });
-    assert.equal(visibleButton('核对并恢复更新').disabled, false);
-    assert.match(recovery.textContent!, /旧来源已有更新/);
-    await act(async () => visibleButton('核对并恢复更新').click());
-    assert.equal(state.draft?.text, 'Preserved current edit');
-    assert.match(recovery.textContent!, /之前恢复的旧版本/);
-    assert.match(recovery.textContent!, /Earlier imported source text/);
-    await act(async () => visibleButton('预览新会话草稿').click());
-    assert.equal(recovery.textContent!.includes('<img src=x onerror=unsafe()>'), false);
-    await act(async () => visibleButton('恢复新会话草稿').click());
-    assert.match(
-      dom.window.document.querySelector('.workspace-recovered-draft')!.textContent!,
-      /Unsent synthetic new draft/,
-    );
-    assert.equal(calls.filter((value) => value === 'legacy-new:open').length, 0);
-    await act(async () => visibleButton('创建空会话并打开草稿').click());
-    assert.equal(calls.filter((value) => value === 'legacy-new:open').length, 1);
-
+    assert.equal(dom.window.document.querySelector('.workspace-legacy-recovery'), null);
+    assert.equal(dom.window.document.querySelector('[aria-label="恢复旧客户端草稿"]'), null);
     assert.equal(calls.filter((value) => value === 'send').length, 1);
   } finally {
     await act(async () => root.unmount());

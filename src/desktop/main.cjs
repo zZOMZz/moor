@@ -14,7 +14,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { ProcessRecovery } = require('./recovery.cjs');
-const { loadPage, clearLocalShellCache } = require('./page-loader.cjs');
+const { loadPage } = require('./page-loader.cjs');
 const { pathToFileURL } = require('node:url');
 const {
   DesktopNotifications,
@@ -36,7 +36,7 @@ const { DesktopGoogleAuth } = require('./google-auth.cjs');
 const { DesktopSecureBridge } = require('./secure-client.cjs');
 const { DesktopProjectRegistration } = require('./project-registration.cjs');
 const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
-const { DesktopLegacyCache } = require('./legacy-cache.cjs');
+const { removeRetiredClientData } = require('./retired-client-data.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
 const {
   CLIENT_SCHEME,
@@ -53,7 +53,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: CLIENT_SCHEME, privileges: CLIEN
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
 if (customDataDir) app.setPath('userData', path.resolve(customDataDir));
-// Reuse the MVP's data directory when upgrading; browser cache ids and IPC cookie names also stay compatible.
+// Reuse the existing settings and execution-host directory when upgrading.
 if (!customDataDir && !fs.existsSync(app.getPath('userData'))) {
   const previous = ['lody-personal', 'Lody Personal']
     .map((n) => path.join(app.getPath('appData'), n))
@@ -133,17 +133,6 @@ const workspaceClient = new DesktopWorkspaceBridge({
   window: () => secureWindow,
   local: () => (!quitting && bridge?.connected ? localConnection : undefined),
   origin: () => settings.server,
-  loadRuntime: () => import(pathToFileURL(path.join(contentRoot, 'workspace-client.mjs')).href),
-});
-const legacyCache = new DesktopLegacyCache({
-  workspace: workspaceClient,
-  BrowserWindow,
-  ipcMain,
-  sessionFor: (source) =>
-    session.fromPartition(
-      source === 'local' ? 'persist:personal-local' : 'persist:personal-remote',
-    ),
-  preloadPath: path.join(__dirname, 'legacy-cache-preload.cjs'),
   loadRuntime: () => import(pathToFileURL(path.join(contentRoot, 'workspace-client.mjs')).href),
 });
 const secureClient = new DesktopSecureBridge({
@@ -458,24 +447,10 @@ function startBridge() {
     const origin = message.origin,
       generation = ++localReadyGeneration,
       current = () => !quitting && bridge === child && generation === localReadyGeneration;
-    // An in-progress cookie write cannot be cancelled. Serialize initialization
-    // across child generations so a replacement always writes its own login last.
+    // Serialize host readiness so a replacement never installs an older connection.
     const preparing = localReadyChain.then(async () => {
       if (!current()) return;
       try {
-        // Clear only replaceable shell caches, never cookies/IndexedDB where
-        // login, drafts and pending requests live. Keep this origin immutable.
-        await clearLocalShellCache(session.fromPartition('persist:personal-local'), origin);
-        if (!current()) return;
-        await session.fromPartition('persist:personal-local').cookies.set({
-          url: origin,
-          name: 'personal',
-          value: message.secret,
-          httpOnly: true,
-          sameSite: 'strict',
-          path: '/',
-        });
-        if (!current()) return;
         localOrigin = origin;
         workspaceClient.invalidate(undefined, 'local');
         const identity = message.identity;
@@ -830,7 +805,6 @@ ipcMain.handle('moor:google-auth-complete', (event, value) =>
 ipcMain.handle('moor:google-auth-cancel', (event, value) => googleFor(event).cancel(event, value));
 ipcMain.handle('moor:secure-client', (event, value) => secureClient.request(event, value));
 ipcMain.handle('moor:workspace-client', (event, value) => workspaceClient.request(event, value));
-ipcMain.handle('moor:legacy-cache', (event, value) => legacyCache.request(event, value));
 function trustedWorkspaceDocument(event, value) {
   const registered = contentWindows.get(event.sender);
   if (
@@ -939,11 +913,12 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => showLocal());
   app.whenReady().then(() => {
-    for (const partition of ['persist:personal-local', 'persist:personal-remote']) {
-      const s = session.fromPartition(partition);
-      s.setPermissionRequestHandler((_, __, callback) => callback(false));
-      s.setPermissionCheckHandler(() => false);
-      s.on('will-download', (event) => event.preventDefault());
+    try {
+      removeRetiredClientData(data);
+    } catch {
+      dialog.showErrorBox('无法清理旧客户端数据', '请检查 Moor 数据目录的访问权限后重新打开。');
+      app.quit();
+      return;
     }
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
@@ -990,7 +965,6 @@ else {
     mcpSettings.close();
     secureClient.close();
     workspaceClient.close();
-    legacyCache.close();
     secureGoogleAuth.close();
     secureAccount.close();
     clearTimeout(restart);

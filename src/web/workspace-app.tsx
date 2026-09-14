@@ -1,5 +1,4 @@
 import { useWorkspaceLayout, SidebarSizer, WorkspaceToolMenu } from './workspace-layout';
-import { productCanonicalJson as canonicalLegacy } from '../security/encrypted-product-catalog';
 import {
   SessionTimeline,
   SessionInformation,
@@ -48,11 +47,6 @@ import { resolveRunSelection, type RunSelection } from '../run-config';
 import { markdown } from './content';
 import { sessionPermissionReviews } from '../session-client';
 import { productCanonicalJson as canonical } from '../security/encrypted-product-catalog';
-import type {
-  LegacyCacheRecovery,
-  LegacyReservedDraft,
-  LegacyIndex,
-} from '../desktop/legacy-cache';
 import {
   attachmentInputReason,
   attachmentPreviewUrl,
@@ -76,354 +70,6 @@ const message = (error: unknown) =>
   error instanceof Error ? error.message : '操作尚未确认，请重新核对。';
 function readable(value: unknown) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-}
-
-function WorkspaceRecoveredDraft({
-  controller,
-  state,
-  record,
-  busy,
-  run,
-}: {
-  controller: WorkspaceController;
-  state: WorkspaceClientState;
-  record: LegacyReservedDraft;
-  busy: boolean;
-  run: Run;
-}) {
-  const [agentId, setAgentId] = useState(record.agentId ?? '');
-  const operations =
-    state.ledger?.operations.filter(
-      (item) => item.original.value.sessionId === record.sessionId && item.status === 'pending',
-    ) ?? [];
-  return (
-    <article className="workspace-recovered-draft">
-      <h3>已恢复的新会话草稿</h3>
-      <pre>{state.ledger?.drafts[record.sessionId]?.text || '没有文字草稿'}</pre>
-      {!!record.attachments?.items.length && (
-        <p>保留 {record.attachments.items.length} 个附件和原上传状态。</p>
-      )}
-      {!!record.unresolvedKeys.length && (
-        <p role="status">还有 {record.unresolvedKeys.length} 条旧记录未识别，原草稿保留。</p>
-      )}
-      {!record.pending && (
-        <label>
-          草稿 Agent
-          <select
-            aria-label="恢复草稿 Agent"
-            value={agentId}
-            disabled={busy}
-            onChange={(event) => setAgentId(event.target.value)}
-          >
-            <option value="">选择 Agent</option>
-            {record.agentId &&
-              !state.project?.runtime.agents.some((agent) => agent.id === record.agentId) && (
-                <option value={record.agentId} disabled>
-                  原 Agent 当前不可用
-                </option>
-              )}
-            {state.project?.runtime.agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <button
-        disabled={busy}
-        onClick={() =>
-          run(() => controller.openLegacyDraft(record.sessionId, agentId || undefined))
-        }
-      >
-        {record.pending ? '打开原会话' : '创建空会话并打开草稿'}
-      </button>
-      <p>恢复和打开草稿不会发送新指令；首次指令若已有待确认请求，请先核查。</p>
-      {operations.map((item) => (
-        <div key={item.original.value.operationId}>
-          <small>原请求：{item.original.value.operationId}</small>
-          <button
-            disabled={busy}
-            onClick={() => run(() => controller.inspect(item.original.value.operationId))}
-          >
-            核查旧请求
-          </button>
-          <button
-            disabled={busy}
-            onClick={() => run(() => controller.retry(item.original.value.operationId))}
-          >
-            {item.original.kind === 'mutation' ? '重试原首次指令' : '重试旧请求'}
-          </button>
-        </div>
-      ))}
-    </article>
-  );
-}
-
-export function WorkspaceLegacyRecovery({
-  controller,
-  state,
-  busy,
-  run,
-}: {
-  controller: WorkspaceController;
-  state: WorkspaceClientState;
-  busy: boolean;
-  run: Run;
-}) {
-  const [origins, setOrigins] = useState<string[] | null>(null);
-  const [recovery, setRecovery] = useState<LegacyCacheRecovery | null>(null);
-  const [index, setIndex] = useState<LegacyIndex | null>(null);
-  if (!state.scope || !controller.canRecoverLegacy) return null;
-  return (
-    <details className="workspace-legacy-recovery">
-      <summary>恢复旧客户端草稿</summary>
-      <p>
-        当前项目：{state.project?.projectName} · {state.project?.hostName}
-        。恢复会保留原会话和待确认请求，发送与重试仍需手动操作。
-      </p>
-      <button
-        disabled={busy}
-        onClick={() =>
-          run(async () => {
-            setRecovery(null);
-            setIndex(null);
-            setOrigins(await controller.legacyOrigins());
-          })
-        }
-      >
-        查找旧草稿
-      </button>
-      {origins?.length === 0 && <p role="status">未找到当前电脑或账号的旧缓存。</p>}
-      {origins && origins.length > 0 && (
-        <ul>
-          {origins.map((origin, index) => (
-            <li key={origin}>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    setRecovery(null);
-                    setIndex(null);
-                    setIndex(await controller.legacyIndex(origin));
-                  })
-                }
-              >
-                预览旧缓存 {index + 1}
-              </button>
-              <small>{origin}</small>
-            </li>
-          ))}
-        </ul>
-      )}
-      {index && (
-        <section aria-label="旧缓存目录">
-          <p>
-            旧电脑工作区的候选会话：{index.total} 个。选中后核对项目并读取内容，每次最多显示 100
-            个。
-          </p>
-          <button
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                setRecovery(null);
-                setIndex(await controller.legacyIndex(index.scope.origin));
-              })
-            }
-          >
-            刷新旧缓存目录
-          </button>
-          {index.hasNew && (
-            <button
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  setRecovery(null);
-                  setRecovery(await controller.readLegacy(index.scope.origin, { kind: 'new' }));
-                })
-              }
-            >
-              预览新会话草稿
-            </button>
-          )}
-          <ul className="workspace-legacy-index">
-            {index.sessionIds.map((sessionId) => (
-              <li key={sessionId}>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    run(async () => {
-                      setRecovery(null);
-                      setRecovery(
-                        await controller.readLegacy(index.scope.origin, {
-                          kind: 'session',
-                          sessionId,
-                        }),
-                      );
-                    })
-                  }
-                >
-                  预览会话 · {sessionId}
-                </button>
-              </li>
-            ))}
-          </ul>
-          {index.nextCursor && (
-            <button
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  setRecovery(null);
-                  setIndex(await controller.legacyIndex(index.scope.origin, index.nextCursor));
-                })
-              }
-            >
-              下一页旧会话
-            </button>
-          )}
-        </section>
-      )}
-      {state.ledger?.legacyDrafts?.map((record) => (
-        <WorkspaceRecoveredDraft
-          key={record.sessionId}
-          controller={controller}
-          state={state}
-          record={record}
-          busy={busy}
-          run={run}
-        />
-      ))}
-      {!!state.ledger?.legacyRevisions?.length && (
-        <details>
-          <summary>之前恢复的旧版本 · {state.ledger.legacyRevisions.length}</summary>
-          {state.ledger.legacyRevisions.map((record, index) => (
-            <article key={index}>
-              <h3>{'title' in record ? record.title : '旧新会话草稿'}</h3>
-              <small>
-                {record.scope.origin} · {record.sessionId}
-              </small>
-              <pre>{record.draft || '没有文字草稿'}</pre>
-              {record.pending && (
-                <p>原请求：{record.pending.operationId}；操作结果以待确认列表中的核查结果为准。</p>
-              )}
-            </article>
-          ))}
-        </details>
-      )}
-      {recovery && (
-        <section aria-label="旧草稿预览">
-          {!recovery.sessions.length && !recovery.newDraft && (
-            <p>此缓存没有能确认属于当前项目的会话。</p>
-          )}
-          {recovery.unassignedDraft !== undefined && (
-            <article>
-              <h3>原项目未确认的旧文字</h3>
-              <p>
-                这段文字保存在旧电脑工作区中，无法确认原项目。请手动复制到正确项目；原请求和附件不会随文字改投。
-              </p>
-              <textarea
-                readOnly
-                aria-label="原项目未确认的旧文字"
-                value={recovery.unassignedDraft}
-              />
-            </article>
-          )}
-          {recovery.newDraft && (
-            <article>
-              <h3>旧新会话草稿</h3>
-              <pre>{recovery.newDraft.draft || '没有文字草稿'}</pre>
-              {!!recovery.newDraft.attachments?.items.length && (
-                <p>包含 {recovery.newDraft.attachments.items.length} 个附件。</p>
-              )}
-              {recovery.newDraft.pending && <p>包含原首次指令。恢复只保存原请求，不启动 Agent。</p>}
-              {!!recovery.newDraft.unresolvedKeys.length && (
-                <p role="status">部分旧记录尚未识别，恢复后仍需核对。</p>
-              )}
-              <button
-                disabled={busy}
-                onClick={() => run(() => controller.restoreLegacyDraft(recovery.newDraft!))}
-              >
-                恢复新会话草稿
-              </button>
-            </article>
-          )}
-          {recovery.sessions.map((record) => {
-            const previous = state.ledger?.legacy?.find(
-              (item) =>
-                item.scope.origin === record.scope.origin && item.sessionId === record.sessionId,
-            );
-            const imported = previous && canonicalLegacy(previous) === canonicalLegacy(record);
-            return (
-              <article key={record.sessionId}>
-                <h3>{record.title}</h3>
-                <pre>{record.draft || '没有文字草稿'}</pre>
-                {!!record.attachments?.items.length && (
-                  <p>包含 {record.attachments.items.length} 个附件，恢复时保留原内容和上传状态。</p>
-                )}
-                {!!record.content?.length && (
-                  <p>
-                    包含 {record.content.length}{' '}
-                    条旧目录、文件或历史变更缓存，恢复时校验原版本与内容。
-                  </p>
-                )}
-                {(record.tasks ||
-                  record.githubWrite ||
-                  record.interactions ||
-                  record.annotations ||
-                  record.selection) && (
-                  <details>
-                    <summary>查看旧来源中的设置与工具草稿</summary>
-                    <p>后来在本客户端编辑的内容会保留；这里可查看或复制旧来源中的其他修改。</p>
-                    <pre>
-                      {JSON.stringify(
-                        {
-                          模型选择: record.selection,
-                          协作任务: record.tasks?.draft,
-                          GitHub草稿: record.githubWrite?.drafts,
-                          问答草稿: record.interactions?.drafts,
-                          追加文字: record.interactions?.steerDraft,
-                          页面标注: record.annotations?.annotations.map((item) => ({
-                            页面: item.snapshot.pagePath,
-                            备注: item.snapshot.note,
-                          })),
-                        },
-                        null,
-                        2,
-                      )}
-                    </pre>
-                  </details>
-                )}
-                {record.interactions && <p>包含问答与追加草稿，原交互记录将一并恢复。</p>}
-                {record.attention && <p>包含原账号的待办草稿与操作记录，恢复后不会自动发送。</p>}
-                {record.mcp && <p>包含 MCP 选择，恢复会保留原版本与待确认授权。</p>}
-                {(record.pending || record.metadata) && <p>包含待确认请求，恢复后请先核查结果。</p>}
-                {record.unresolvedKeys.length > 0 && (
-                  <p role="status">
-                    还有 {record.unresolvedKeys.length}{' '}
-                    条旧记录需要进一步恢复。可恢复文字供查看和编辑，此会话暂不能发送新指令。
-                  </p>
-                )}
-                {previous && !imported && (
-                  <p>
-                    旧来源已有更新。恢复保留当前编辑和已确认结果；新增原请求只保存，仍需手动核查或重试。
-                  </p>
-                )}
-                <button
-                  disabled={busy || imported}
-                  onClick={() => run(() => controller.restoreLegacy(record))}
-                >
-                  {imported ? '已恢复' : previous ? '核对并恢复更新' : '恢复此会话'}
-                </button>
-              </article>
-            );
-          })}
-          {recovery.unresolved > 0 && (
-            <p>另有 {recovery.unresolved} 条记录尚未完整识别，仍保留在旧客户端分区中。</p>
-          )}
-        </section>
-      )}
-    </details>
-  );
 }
 
 function WorkspaceConversation({
@@ -545,10 +191,6 @@ function WorkspaceConversation({
       item.pending ||
       attachmentInputReason(item.reference, session.agent?.inputCapabilities),
   );
-  const recoveryBlocked = [
-    ...(state.ledger?.legacy ?? []),
-    ...(state.ledger?.legacyDrafts ?? []),
-  ].some((item) => item.sessionId === state.sessionId && item.unresolvedKeys.length > 0);
   return (
     <>
       <header className="workspace-session-header">
@@ -649,11 +291,7 @@ function WorkspaceConversation({
           </button>
         </aside>
       )}
-      {recoveryBlocked && (
-        <p className="workspace-status" role="status">
-          此会话还有未完成恢复的旧记录。草稿可以继续编辑，完成恢复前不能发送新指令。
-        </p>
-      )}
+
       <SessionTimeline
         history={session.history}
         variant="workspace"
@@ -982,7 +620,6 @@ function WorkspaceConversation({
                   )) ||
                 attachmentBlocked ||
                 state.offline ||
-                recoveryBlocked ||
                 !!pending.length ||
                 !!state.ledger?.interactions?.[state.sessionId]?.value.pending
               }
@@ -1491,6 +1128,7 @@ export function WorkspaceApp({
               <Settings size={15} />
             </button>
           )}
+
           <button
             disabled={blocked}
             onClick={() => {
@@ -1538,13 +1176,6 @@ export function WorkspaceApp({
           </div>
         )}
         <main hidden={view !== 'plain'} className="workspace-conversation">
-          <WorkspaceLegacyRecovery
-            key={canonical(state.scope ?? null)}
-            controller={controller}
-            state={state}
-            busy={blocked}
-            run={run}
-          />
           <WorkspaceConversation
             key={scopeKey}
             controller={controller}
@@ -1581,7 +1212,6 @@ export async function bootWorkspace() {
     moorWorkspace?: {
       version: number;
       request(value: DesktopWorkspaceRequest): Promise<unknown>;
-      legacy(value: unknown): Promise<unknown>;
       context(): Promise<unknown>;
       addProject(): Promise<unknown>;
       onChange(listener: () => void): () => void;
@@ -1600,7 +1230,6 @@ export async function bootWorkspace() {
   let account: Account | null = null;
   const controller = new WorkspaceController({
     request: (value) => bridges.moorWorkspace!.request(value),
-    legacy: (value) => bridges.moorWorkspace!.legacy(value),
   });
   const secure = new SecureWorkspaceController({
     request: (value) => bridges.moorSecure!.request(value),

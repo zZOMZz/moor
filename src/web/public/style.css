@@ -4120,23 +4120,6 @@ dialog pre {
     padding: 12px;
   }
 }
-.workspace-legacy-recovery {
-  margin: 8px 16px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 13px;
-}
-.workspace-legacy-recovery pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 200px;
-  overflow: auto;
-}
-.workspace-legacy-recovery small {
-  margin-left: 8px;
-  overflow-wrap: anywhere;
-}
 .workspace-attachments {
   display: grid;
   gap: 6px;

@@ -1,5 +1,3 @@
-import { mergeLegacyToolState, legacyObject } from './legacy-merge';
-import { parseLegacyContentEntry, validateLegacyContent } from './legacy-project-content';
 import { actorSchema, type AttentionActor } from '../attention';
 import { attentionScopeKey, pendingAttentionSchema, type AttentionRoute } from './attention';
 import {
@@ -23,19 +21,9 @@ import {
   type SessionOriginalOperation,
 } from '../session-control-protocol';
 import { sessionReadResponseSchema } from '../session-responses';
-import { readClientSession, readLegacyClientSession } from '../session-client';
+import { readClientSession } from '../session-client';
 import { productCanonicalJson as canonical } from '../security/encrypted-product-catalog';
 import { IndexedSecureStorage, type SecureStorageBackend } from './secure-store';
-import {
-  legacySessionRead,
-  legacyReservedDraftSchema,
-  legacyRestorableSchema,
-  legacyDraftRecoverySchema,
-  type LegacyRestorable,
-  type LegacyDraftRecovery,
-  legacySessionRecoverySchema,
-  type LegacySessionRecovery,
-} from '../desktop/legacy-cache';
 import {
   workspaceAttachmentDraftSchema,
   emptyWorkspaceAttachments,
@@ -80,7 +68,6 @@ import {
   interactionSavedSchema,
   interactionKey,
   interactionScope,
-  emptyInteractionSaved,
   type InteractionSaved,
 } from './interactions';
 const interactionDocumentSchema = z
@@ -131,10 +118,6 @@ const ledgerSchema = z
     revision: z.number().int().nonnegative().safe(),
     drafts: z.record(draftSchema),
     operations: z.array(operationSchema).max(512),
-    legacy: z.array(legacySessionRecoverySchema).max(10000).optional(),
-    legacyDrafts: z.array(legacyReservedDraftSchema).max(1000).optional(),
-    legacyDraftSlots: z.record(z.string(), legacyReservedDraftSchema.shape.sessionId).optional(),
-    legacyRevisions: z.array(legacyRestorableSchema).max(1000).optional(),
     attachments: z.record(workspaceAttachmentDraftSchema).optional(),
     interactions: z.record(interactionDocumentSchema).optional(),
     mcp: z.record(mcpStoredSchema).optional(),
@@ -169,21 +152,30 @@ export class WorkspaceStore {
     current();
     const raw = await this.backend.read(keyFor(normalized));
     current();
+    const retired = ['legacy', 'legacyDrafts', 'legacyDraftSlots', 'legacyRevisions'];
+    const hasRetired =
+      raw !== null && typeof raw === 'object' && retired.some((key) => Object.hasOwn(raw, key));
+    const cleaned = hasRetired
+      ? Object.fromEntries(Object.entries(raw).filter(([key]) => !retired.includes(key)))
+      : raw;
     const value =
       raw == null
         ? { version: 1 as const, scope: normalized, revision: 0, drafts: {}, operations: [] }
-        : ledgerSchema.parse(raw);
-    return this.#validateLedger(value, normalized, current);
+        : ledgerSchema.parse(cleaned);
+    await this.#validateLedger(value, normalized, current);
+    if (hasRetired) {
+      // Drop obsolete recovery copies only after validating the current ledger.
+      // CAS prevents cleanup from overwriting another page's edits or receipts.
+      value.revision++;
+      ledgerSchema.parse(value);
+      current();
+      await this.backend.compareAndSet(keyFor(normalized), raw, value, current);
+      current();
+    }
+    return value;
   }
   async #validateLedger(value: WorkspaceLedger, normalized: WorkspaceScope, current: () => void) {
     if (!same(value.scope, normalized)) throw conflict();
-    for (const [origin, sessionId] of Object.entries(value.legacyDraftSlots ?? {}))
-      if (
-        !value.legacyDrafts?.some(
-          (record) => record.scope.origin === origin && record.sessionId === sessionId,
-        )
-      )
-        throw Error('旧新会话草稿的来源映射不完整。');
     for (const operation of value.operations)
       this.#validateOriginal(normalized, operation.original);
     for (const operation of value.operations)
@@ -197,12 +189,6 @@ export class WorkspaceStore {
             )))
       )
         throw Error('原 MCP 授权记录不完整。');
-    for (const recovered of [
-      ...(value.legacy ?? []),
-      ...(value.legacyDrafts ?? []),
-      ...(value.legacyRevisions ?? []),
-    ])
-      this.#validateRecovery(normalized, recovered);
     for (const operation of value.operations)
       if (
         operation.taskReview &&
@@ -416,12 +402,6 @@ export class WorkspaceStore {
     const requestVersion =
       original.kind === 'mutation' && draft ? await mcpMutationVersion(original.value) : undefined;
     return this.#change(scope, current, (state) => {
-      if (
-        original.kind === 'mutation' &&
-        draft &&
-        this.recoveryBlocked(state, original.value.sessionId)
-      )
-        throw Error('此会话还有未识别的旧记录，请先完成恢复；原草稿保持可编辑。');
       const found = state.operations.find(
         (operation) => operation.original.value.operationId === original.value.operationId,
       );
@@ -585,693 +565,6 @@ export class WorkspaceStore {
       );
     });
   }
-  recoveryBlocked(ledger: WorkspaceLedger, sessionId: string) {
-    return [...(ledger.legacy ?? []), ...(ledger.legacyDrafts ?? [])].some(
-      (item) => item.sessionId === sessionId && item.unresolvedKeys.length > 0,
-    );
-  }
-  #validateRecovery(scope: WorkspaceScope, value: LegacyRestorable) {
-    const record = legacyRestorableSchema.parse(value);
-    if (!same(scope, { source: record.scope.source, target: record.scope.target }))
-      throw conflict();
-    if (record.content)
-      for (const entry of record.content)
-        parseLegacyContentEntry(entry, { ...scope.target, sessionId: record.sessionId });
-    if (
-      record.attachments &&
-      !same(record.attachments.scope, {
-        owner: scope.target.owner,
-        deviceId: scope.target.deviceId,
-        workspaceId: scope.target.workspaceId,
-        localProjectId: scope.target.localProjectId,
-        sessionId: record.sessionId,
-      })
-    )
-      throw conflict();
-    if ('snapshot' in record)
-      readLegacyClientSession(legacySessionRead(record), {
-        ...scope.target,
-        sessionId: record.sessionId,
-      });
-    if (record.draftActor && record.draftActor.accountId !== scope.target.owner) throw conflict();
-    if (record.attention) {
-      const bucket = validateWorkspaceAttentionBucket(record.attention, scope.target);
-      if (
-        bucket.route.origin !== record.scope.origin ||
-        Object.keys(bucket.entries).some((key) => {
-          const entry = workspaceAttentionKey(bucket.route, key);
-          return entry.kind === 'page' || entry.sessionId !== record.sessionId;
-        })
-      )
-        throw conflict();
-      for (const pending of workspaceAttentionPending({ recovered: bucket }, record.sessionId))
-        if (pending.operation.kind === 'continue')
-          this.#validateOriginal(scope, {
-            kind: 'mutation',
-            value: pending.operation.body.mutation,
-          });
-    }
-    if (record.interactions)
-      this.#validateInteraction(scope, record.sessionId, record.interactions);
-    if (record.git)
-      validateWorkspaceGit(record.git, { ...scope.target, sessionId: record.sessionId });
-    if (record.fork)
-      validateWorkspaceFork(record.fork, { ...scope.target, sessionId: record.sessionId });
-    if (record.mcp)
-      validateWorkspaceMcp(record.mcp, { ...scope.target, sessionId: record.sessionId });
-    if (record.tasks)
-      validateWorkspaceTasks(record.tasks, { ...scope.target, sessionId: record.sessionId });
-    if (record.github)
-      validateWorkspaceGithub(record.github, { ...scope.target, sessionId: record.sessionId });
-    if (record.githubWrite)
-      validateWorkspaceGithubWrite(record.githubWrite, {
-        ...scope.target,
-        sessionId: record.sessionId,
-      });
-    if (record.roles)
-      validateWorkspaceRoles(record.roles, { ...scope.target, sessionId: record.sessionId });
-    if (record.roleApplied)
-      validateWorkspaceRoleApplied(record.roleApplied, {
-        ...scope.target,
-        sessionId: record.sessionId,
-      });
-    if (record.preview)
-      validateWorkspacePreview(record.preview, { ...scope.target, sessionId: record.sessionId });
-    if (
-      record.annotationDelivery &&
-      (!record.pending ||
-        record.pending.kind !== 'turn' ||
-        !same(
-          record.annotationDelivery.target,
-          workspaceFeatureTarget({ ...scope.target, sessionId: record.sessionId }),
-        ))
-    )
-      throw Error('旧标注发送记录与原指令不匹配。');
-    return record;
-  }
-  async restoreLegacyDraft(
-    scope: WorkspaceScope,
-    input: LegacyDraftRecovery,
-    reservedId: string,
-    current: () => void,
-  ) {
-    const source = legacyDraftRecoverySchema.parse(input);
-    if (source.sessionId && source.sessionId !== reservedId)
-      throw Error('旧草稿的预留会话编号不能改变。');
-    return this.#restoreLegacy(
-      scope,
-      legacyReservedDraftSchema.parse({ ...source, sessionId: reservedId }),
-      current,
-      source.sessionId === undefined,
-    );
-  }
-  /** Atomic, explicit import. The original profile and original operation bodies are immutable. */
-  async restoreLegacy(scope: WorkspaceScope, input: LegacySessionRecovery, current: () => void) {
-    return this.#restoreLegacy(scope, legacySessionRecoverySchema.parse(input), current);
-  }
-  #mergeLegacyAttachments(
-    state: WorkspaceLedger,
-    previous: LegacyRestorable,
-    record: LegacyRestorable,
-  ) {
-    if (same(previous.attachments ?? null, record.attachments ?? null)) return;
-    const existing = state.attachments?.[record.sessionId] ?? emptyWorkspaceAttachments();
-    const items = structuredClone(existing.items);
-    for (const source of record.attachments?.items ?? []) {
-      const prior = previous.attachments?.items.find(
-        (item) => item.reference.attachmentId === source.reference.attachmentId,
-      );
-      if (prior && same(prior, source)) continue;
-      if (prior && (!same(prior.reference, source.reference) || prior.data !== source.data))
-        throw Error('同一旧附件编号的内容发生变化，不能覆盖原附件。');
-      const incoming = structuredClone(source);
-      let confirmedUpload = false;
-      const index = items.findIndex(
-        (item) => item.reference.attachmentId === incoming.reference.attachmentId,
-      );
-      const local = items[index];
-      if (local && (!same(local.reference, incoming.reference) || local.data !== incoming.data))
-        throw Error('同一旧附件编号的内容发生变化，不能覆盖已有附件。');
-      if (incoming.pending) {
-        const settled = state.operations.find(
-          (item) => item.original.value.operationId === incoming.pending!.request.operationId,
-        );
-        if (
-          settled &&
-          (settled.original.kind !== 'attachment' ||
-            !same(settled.original.value, incoming.pending.request))
-        )
-          throw Error('同一旧附件操作编号的内容发生变化。');
-        if (settled && settled.status !== 'pending') {
-          if (
-            settled.status === 'confirmed' &&
-            incoming.pending.request.action === 'remove' &&
-            !local
-          )
-            continue;
-          if (settled.status === 'confirmed' && incoming.pending.request.action === 'upload') {
-            incoming.uploaded = true;
-            confirmedUpload = true;
-          }
-          delete incoming.pending;
-        }
-      }
-      if (local?.pending && incoming.pending && !same(local.pending, incoming.pending))
-        throw Error('此附件还有另一份未确认原请求，请先核查原上传或移除操作后恢复更新。');
-      if (local)
-        items[index] = {
-          ...incoming,
-          uploaded: local.uploaded || confirmedUpload,
-          ...(local.pending ? { pending: local.pending } : {}),
-        };
-      else items.push(incoming);
-    }
-    Object.defineProperty((state.attachments ??= {}), record.sessionId, {
-      value: { revision: existing.revision + 1, items },
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  async #refreshLegacy(
-    state: WorkspaceLedger,
-    previous: LegacyRestorable,
-    record: LegacyRestorable,
-    check: () => void,
-  ) {
-    // Read-only projections and composer edits may change independently of an
-    // original request. Other feature outboxes retain their own recovery rules.
-    const execution = (value: LegacyRestorable) => {
-      const {
-        draft: _draft,
-        draftActor: _actor,
-        selection: _selection,
-        content: _content,
-        pending: _pending,
-        metadata: _metadata,
-        attachments: _attachments,
-        git: _git,
-        fork: _fork,
-        github: _github,
-        githubWrite: _githubWrite,
-        roles: _roles,
-        roleApplied: _roleApplied,
-        tasks: _tasks,
-        preview: _preview,
-        annotations: _annotations,
-        annotationDelivery: _annotationDelivery,
-        mcp: _mcp,
-        interactions: _interactions,
-        attention: _attention,
-        ...rest
-      } = value;
-      if ('snapshot' in rest) {
-        const { snapshot: _snapshot, title: _title, ...binding } = rest;
-        return binding;
-      }
-      return rest;
-    };
-    if (
-      'snapshot' in previous &&
-      'snapshot' in record &&
-      previous.snapshot.meta.agentConfigId !== record.snapshot.meta.agentConfigId
-    )
-      throw Error('旧会话的 Agent 绑定发生变化，不能替换原执行身份。');
-    if (!same(execution(previous), execution(record)))
-      throw Error('旧来源的工具恢复记录发生变化，请先核查原操作；当前草稿与原记录均保留。');
-    this.#mergeLegacyAttachments(state, previous, record);
-    const featureFields = {
-      git: 'git',
-      fork: 'forks',
-      github: 'github',
-      githubWrite: 'githubWrite',
-      roles: 'roles',
-      roleApplied: 'roleApplied',
-      tasks: 'tasks',
-      preview: 'previews',
-      annotations: 'annotations',
-      mcp: 'mcp',
-    } as const;
-    for (const [source, field] of Object.entries(featureFields) as [
-      keyof typeof featureFields,
-      (typeof featureFields)[keyof typeof featureFields],
-    ][]) {
-      const old = previous[source],
-        incoming = record[source];
-      if (same(old ?? null, incoming ?? null)) continue;
-      if (source === 'roleApplied') {
-        const draft = state.drafts[record.sessionId];
-        if (
-          draft &&
-          (draft.text !== (previous.draft ?? '') ||
-            !same(draft.selection, previous.selection ?? {}) ||
-            !same(draft.actor ?? null, previous.draftActor ?? null))
-        )
-          continue;
-      }
-      let local: unknown = state[field]?.[record.sessionId];
-      if (
-        source === 'fork' &&
-        local &&
-        !workspaceForkPending(local as NonNullable<WorkspaceLedger['forks']>[string]) &&
-        record.fork?.operation
-      ) {
-        const saved = local as Record<string, unknown>;
-        local = { ...saved, operation: undefined, receipt: undefined };
-      }
-      const merged = mergeLegacyToolState(old, incoming, local);
-      if (merged === undefined) continue;
-      if (!legacyObject(merged)) throw Error('旧工具恢复记录无效。');
-      const existing = state[field]?.[record.sessionId];
-      const value =
-        source === 'roleApplied'
-          ? merged
-          : {
-              ...merged,
-              cacheRevision:
-                (existing && 'cacheRevision' in existing ? existing.cacheRevision : 0) + 1,
-            };
-      Object.defineProperty((state[field] ??= {}), record.sessionId, {
-        value,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-    if (!same(previous.interactions ?? null, record.interactions ?? null)) {
-      const local = state.interactions?.[record.sessionId];
-      const value = mergeLegacyToolState(previous.interactions, record.interactions, local?.value);
-      if (value !== undefined)
-        Object.defineProperty((state.interactions ??= {}), record.sessionId, {
-          value: { revision: (local?.revision ?? 0) + 1, value },
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
-    }
-    if (record.attention && !same(previous.attention ?? null, record.attention)) {
-      if (previous.attention && !same(previous.attention.route, record.attention.route))
-        throw Error('旧待办账号或执行范围发生变化。');
-      const key = attentionScopeKey(record.attention.route);
-      const local = state.attention?.[key];
-      const entries = { ...local?.entries };
-      for (const [entryKey, incoming] of Object.entries(record.attention.entries)) {
-        const kind = workspaceAttentionKey(record.attention.route, entryKey);
-        const value = mergeLegacyToolState(
-          previous.attention?.entries[entryKey],
-          incoming,
-          entries[entryKey],
-          kind.kind === 'pending' ? 'pending' : kind.kind,
-        );
-        if (value !== undefined)
-          Object.defineProperty(entries, entryKey, {
-            value,
-            writable: true,
-            enumerable: true,
-            configurable: true,
-          });
-      }
-      Object.defineProperty((state.attention ??= {}), key, {
-        value: { route: record.attention.route, entries },
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-
-    const originals: SessionOriginalOperation[] = [
-      ...(record.pending ? [{ kind: 'mutation' as const, value: record.pending }] : []),
-      ...(record.metadata ? [{ kind: 'metadata' as const, value: record.metadata.request }] : []),
-      ...(state.attachments?.[record.sessionId]?.items.flatMap((item) =>
-        item.pending ? [{ kind: 'attachment' as const, value: item.pending.request }] : [],
-      ) ?? []),
-    ];
-    for (const original of originals) {
-      this.#validateOriginal(state.scope, original);
-      const found = state.operations.find(
-        (item) => item.original.value.operationId === original.value.operationId,
-      );
-      if (found && !same(found.original, original))
-        throw Error('同一旧操作编号的内容发生变化，不能覆盖原请求。');
-      if (!found)
-        state.operations.push({
-          original: structuredClone(original),
-          status: 'pending',
-          ...(original.kind === 'mutation' && record.annotationDelivery
-            ? { annotations: structuredClone(record.annotationDelivery) }
-            : {}),
-          ...(record.mcp?.delivery?.operationId === original.value.operationId
-            ? { mcpReview: structuredClone(record.mcp.delivery.review) }
-            : {}),
-          ...(record.tasks?.delivery?.operationId === original.value.operationId
-            ? { taskReview: structuredClone(record.tasks.delivery.review) }
-            : {}),
-        });
-    }
-    const current = state.drafts[record.sessionId];
-    const composer = (value: LegacyRestorable) => ({
-      text: value.draft ?? '',
-      selection: value.selection ?? {},
-      ...(value.draftActor ? { actor: value.draftActor } : {}),
-    });
-    if (
-      !current ||
-      same(
-        {
-          text: current.text,
-          selection: current.selection,
-          ...(current.actor ? { actor: current.actor } : {}),
-        },
-        composer(previous),
-      )
-    ) {
-      Object.defineProperty(state.drafts, record.sessionId, {
-        value: { ...composer(record), revision: (current?.revision ?? 0) + 1 },
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-    // Prior source versions remain reviewable; current edits and operation
-    // confirmations are never rolled back by a second import.
-    (state.legacyRevisions ??= []).push(structuredClone(previous));
-    if ('snapshot' in record) {
-      const index = state.legacy!.findIndex(
-        (item) =>
-          item.scope.origin === previous.scope.origin && item.sessionId === previous.sessionId,
-      );
-      state.legacy![index] = structuredClone(record);
-    } else {
-      const index = state.legacyDrafts!.findIndex(
-        (item) =>
-          item.scope.origin === previous.scope.origin && item.sessionId === previous.sessionId,
-      );
-      state.legacyDrafts![index] = structuredClone(record);
-    }
-    await this.#validateLedger(state, state.scope, check);
-  }
-  async #restoreLegacy(
-    scope: WorkspaceScope,
-    input: LegacyRestorable,
-    current: () => void,
-    unassignedSlot = false,
-  ) {
-    const record = this.#validateRecovery(scope, input);
-    if (
-      record.tasks?.delivery &&
-      (!record.pending ||
-        record.pending.kind !== 'turn' ||
-        record.pending.operationId !== record.tasks.delivery.operationId ||
-        (await taskMutationVersion(record.pending)) !== record.tasks.delivery.requestVersion)
-    )
-      throw Error('旧任务授权与原父指令不匹配。');
-    if (record.annotations)
-      await validateWorkspaceAnnotations(record.annotations, {
-        ...scope.target,
-        sessionId: record.sessionId,
-      });
-    if (
-      record.mcp?.delivery &&
-      (!record.pending ||
-        record.pending.kind !== 'turn' ||
-        record.pending.operationId !== record.mcp.delivery.operationId ||
-        (await mcpMutationVersion(record.pending)) !== record.mcp.delivery.requestVersion)
-    )
-      throw Error('旧 MCP 授权与原指令不匹配。');
-    current();
-    if (record.content)
-      await validateLegacyContent(
-        record.content,
-        { ...scope.target, sessionId: record.sessionId },
-        current,
-      );
-    if (record.attachments)
-      await validateWorkspaceAttachments(
-        { revision: 0, items: record.attachments.items },
-        { ...scope.target, sessionId: record.sessionId },
-        current,
-      );
-    return this.#change(scope, current, (state) => {
-      if (unassignedSlot) {
-        const existing = state.legacyDraftSlots?.[record.scope.origin];
-        if (existing && existing !== record.sessionId) throw conflict();
-        Object.defineProperty((state.legacyDraftSlots ??= {}), record.scope.origin, {
-          value: record.sessionId,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
-      }
-      const previous =
-        'snapshot' in record
-          ? state.legacy?.find(
-              (item) =>
-                item.scope.origin === record.scope.origin && item.sessionId === record.sessionId,
-            )
-          : state.legacyDrafts?.find(
-              (item) =>
-                item.scope.origin === record.scope.origin && item.sessionId === record.sessionId,
-            );
-      if (previous) {
-        if (!same(previous, record)) return this.#refreshLegacy(state, previous, record, current);
-        return;
-      }
-      if (record.attention) {
-        const bucketKey = attentionScopeKey(record.attention.route),
-          old = state.attention?.[bucketKey];
-        if (
-          old &&
-          (!same(old.route, record.attention.route) ||
-            Object.keys(record.attention.entries).some((key) => old.entries[key] !== undefined))
-        )
-          throw Error('当前事项已有草稿或原操作，请先处理后再恢复。');
-        Object.defineProperty((state.attention ??= {}), bucketKey, {
-          value: {
-            route: record.attention.route,
-            entries: { ...old?.entries, ...record.attention.entries },
-          },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      }
-      const draft = state.drafts[record.sessionId];
-      const tasks = state.tasks?.[record.sessionId];
-      if (
-        record.tasks &&
-        tasks &&
-        (tasks.draft.tasks.length || tasks.enabled || tasks.delivery || tasks.pending)
-      )
-        throw Error('当前会话已有任务草稿或原操作，请先处理后再恢复。');
-      for (const kind of ['github', 'githubWrite'] as const) {
-        const old = state[kind]?.[record.sessionId];
-        if (
-          record[kind] &&
-          old &&
-          (old.pending || ('drafts' in old && (Object.keys(old.drafts).length || old.receipt)))
-        )
-          throw Error('当前会话已有 GitHub 草稿或原操作，请先处理后再恢复。');
-      }
-      const roles = state.roles?.[record.sessionId];
-      if (record.roles && roles?.pending) throw Error('当前会话已有角色原操作，请先处理后再恢复。');
-      if (record.roleApplied && state.roleApplied?.[record.sessionId]?.applied.length)
-        throw Error('当前草稿已有角色应用记录，请先处理后再恢复。');
-      const annotations = state.annotations?.[record.sessionId];
-      const preview = state.previews?.[record.sessionId];
-      if (record.annotations && annotations?.annotations.length)
-        throw Error('当前会话已有标注草稿，请先处理后再恢复。');
-      if (record.preview && (preview?.open || preview?.pending || preview?.receipt))
-        throw Error('当前会话已有预览连接记录，请先处理后再恢复。');
-      const interaction = state.interactions?.[record.sessionId];
-      const git = state.git?.[record.sessionId];
-      const fork = state.forks?.[record.sessionId];
-      if (record.fork && (fork?.operation || fork?.resources.length))
-        throw Error('当前会话已有 Fork 操作，请先处理后再恢复。');
-      if (record.git && (git?.pending || git?.receipt))
-        throw Error('当前会话已有 Git 操作，请先处理后再恢复。');
-      const mcp = state.mcp?.[record.sessionId];
-      if (record.mcp && (mcp?.review || mcp?.delivery))
-        throw Error('当前会话已有 MCP 选择，请先处理后再恢复。');
-      if (record.interactions && interaction && !same(interaction.value, emptyInteractionSaved()))
-        throw Error('当前会话已有问答或追加草稿，请先处理后再恢复。');
-      const attachments = state.attachments?.[record.sessionId] ?? emptyWorkspaceAttachments();
-      if (attachments.items.length) throw Error('当前会话已有附件，请先处理现有附件再恢复。');
-      if (draft && (draft.text || Object.keys(draft.selection).length))
-        throw Error('当前会话已有草稿，请先处理现有草稿，再恢复旧记录。');
-      const originals: SessionOriginalOperation[] = [
-        ...(record.pending ? [{ kind: 'mutation' as const, value: record.pending }] : []),
-        ...(record.metadata ? [{ kind: 'metadata' as const, value: record.metadata.request }] : []),
-        ...(record.attachments?.items.flatMap((item) =>
-          item.pending ? [{ kind: 'attachment' as const, value: item.pending.request }] : [],
-        ) ?? []),
-      ];
-      for (const original of originals) {
-        this.#validateOriginal(scope, original);
-        const found = state.operations.find(
-          (item) => item.original.value.operationId === original.value.operationId,
-        );
-        if (found && !same(found.original, original)) throw conflict();
-        const taskReview =
-          record.tasks?.delivery?.operationId === original.value.operationId
-            ? record.tasks.delivery.review
-            : undefined;
-        if (found && taskReview) {
-          if (found.taskReview && !same(found.taskReview, taskReview)) throw conflict();
-          found.taskReview = taskReview;
-        }
-        const annotationDelivery =
-          original.kind === 'mutation' ? record.annotationDelivery : undefined;
-        if (found && annotationDelivery) {
-          if (found.annotations && !same(found.annotations, annotationDelivery)) throw conflict();
-          found.annotations = annotationDelivery;
-        }
-        const mcpReview =
-          record.mcp?.delivery?.operationId === original.value.operationId
-            ? record.mcp.delivery.review
-            : undefined;
-        if (found && mcpReview) {
-          if (found.mcpReview && !same(found.mcpReview, mcpReview)) throw conflict();
-          found.mcpReview = mcpReview;
-        }
-        // Do not attach an unproven draft revision to a legacy receipt: the old
-        // editor may have changed after submission. Confirmation cannot erase it.
-        if (!found)
-          state.operations.push({
-            original,
-            status: 'pending',
-            ...(mcpReview ? { mcpReview } : {}),
-            ...(taskReview ? { taskReview } : {}),
-            ...(annotationDelivery ? { annotations: annotationDelivery } : {}),
-          });
-      }
-      Object.defineProperty(state.drafts, record.sessionId, {
-        value: {
-          revision: (draft?.revision ?? 0) + 1,
-          text: record.draft ?? '',
-          ...(record.draftActor ? { actor: record.draftActor } : {}),
-          selection: record.selection ?? {},
-        },
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-      for (const kind of ['github', 'githubWrite'] as const) {
-        const recovered = record[kind];
-        if (recovered)
-          Object.defineProperty((state[kind] ??= {}), record.sessionId, {
-            value: {
-              ...recovered,
-              cacheRevision: (state[kind]?.[record.sessionId]?.cacheRevision ?? 0) + 1,
-            },
-            enumerable: true,
-            writable: true,
-            configurable: true,
-          });
-      }
-      if (record.roles)
-        Object.defineProperty((state.roles ??= {}), record.sessionId, {
-          value: { ...record.roles, cacheRevision: (roles?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      if (record.tasks) {
-        if (
-          record.tasks.delivery &&
-          !state.operations.some(
-            (item) =>
-              item.status === 'pending' &&
-              item.original.value.operationId === record.tasks!.delivery!.operationId,
-          )
-        )
-          throw Error('任务原指令已有结果，请先核对原恢复记录。');
-        Object.defineProperty((state.tasks ??= {}), record.sessionId, {
-          value: { ...record.tasks, cacheRevision: (tasks?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      }
-      if (record.roleApplied)
-        Object.defineProperty((state.roleApplied ??= {}), record.sessionId, {
-          value: record.roleApplied,
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      if (record.annotations)
-        Object.defineProperty((state.annotations ??= {}), record.sessionId, {
-          value: { ...record.annotations, cacheRevision: (annotations?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      if (record.preview)
-        Object.defineProperty((state.previews ??= {}), record.sessionId, {
-          value: { ...record.preview, cacheRevision: (preview?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      if (record.attachments) {
-        const items = structuredClone(record.attachments.items);
-        for (const item of items)
-          if (item.pending) {
-            const operation = state.operations.find(
-              (entry) => entry.original.value.operationId === item.pending!.request.operationId,
-            )!;
-            if (operation.status !== 'pending')
-              throw Error('附件原操作已有结果，请先核对原恢复记录。');
-          }
-        Object.defineProperty((state.attachments ??= {}), record.sessionId, {
-          value: { revision: attachments.revision + 1, items },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      }
-      if ('snapshot' in record) (state.legacy ??= []).push(structuredClone(record));
-      else (state.legacyDrafts ??= []).push(structuredClone(record));
-      if (record.fork)
-        Object.defineProperty((state.forks ??= {}), record.sessionId, {
-          value: { ...record.fork, cacheRevision: (fork?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      if (record.git)
-        Object.defineProperty((state.git ??= {}), record.sessionId, {
-          value: { ...record.git, cacheRevision: (git?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      if (record.mcp) {
-        if (
-          record.mcp.delivery &&
-          !state.operations.some(
-            (item) =>
-              item.status === 'pending' &&
-              item.original.value.operationId === record.mcp!.delivery!.operationId,
-          )
-        )
-          throw Error('旧 MCP 原指令已有结果，请先核对恢复记录。');
-        Object.defineProperty((state.mcp ??= {}), record.sessionId, {
-          value: { ...record.mcp, cacheRevision: (mcp?.cacheRevision ?? 0) + 1 },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-      }
-      if (record.interactions)
-        Object.defineProperty((state.interactions ??= {}), record.sessionId, {
-          value: { revision: (interaction?.revision ?? 0) + 1, value: record.interactions },
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
-    });
-  }
   #validateInteraction(scope: WorkspaceScope, sessionId: string, input: InteractionSaved) {
     const value = interactionSavedSchema.parse(input),
       target = { ...scope.target, sessionId };
@@ -1350,8 +643,7 @@ export class WorkspaceStore {
               [sessionId, pending.request.childSessionId].includes(item.original.value.sessionId),
           ) ||
           state.interactions?.[sessionId]?.value.pending ||
-          state.mcp?.[sessionId]?.delivery ||
-          this.recoveryBlocked(state, sessionId))
+          state.mcp?.[sessionId]?.delivery)
       )
         throw Error('请先核查原会话操作，再创建副本。');
       Object.defineProperty((state.forks ??= {}), sessionId, {
@@ -1392,7 +684,6 @@ export class WorkspaceStore {
             state.interactions?.[sessionId]?.value.pending ||
             state.tasks?.[sessionId]?.pending ||
             state.mcp?.[sessionId]?.delivery ||
-            this.recoveryBlocked(state, sessionId) ||
             state.operations.some(
               (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,
             )
@@ -1453,8 +744,7 @@ export class WorkspaceStore {
           state.interactions?.[sessionId]?.value.pending ||
           state.operations.some(
             (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,
-          ) ||
-          this.recoveryBlocked(state, sessionId))
+          ))
       )
         throw Error('请先核查此会话原操作，再保存新的 GitHub 操作。');
       if (value.pending && previous?.pending) {
@@ -1493,8 +783,7 @@ export class WorkspaceStore {
             (item) => item.status === 'pending' && item.original.value.sessionId === sessionId,
           ) ||
           state.interactions?.[sessionId]?.value.pending ||
-          state.mcp?.[sessionId]?.delivery ||
-          this.recoveryBlocked(state, sessionId))
+          state.mcp?.[sessionId]?.delivery)
       )
         throw Error('请先核查此会话原操作，再改变工作目录。');
       if (
@@ -1530,8 +819,7 @@ export class WorkspaceStore {
       if (
         value.enabled &&
         value.enabled.reviewId !== previous?.enabled?.reviewId &&
-        (this.recoveryBlocked(state, sessionId) ||
-          this.forkBlocked(state, sessionId) ||
+        (this.forkBlocked(state, sessionId) ||
           this.githubBlocked(state, sessionId) ||
           this.attentionBlocked(state, sessionId) ||
           state.git?.[sessionId]?.pending ||
@@ -1603,7 +891,6 @@ export class WorkspaceStore {
       const draft = state.drafts[sessionId] ?? emptyDraft();
       if (draft.revision !== expectedRevision) throw conflict();
       if (
-        this.recoveryBlocked(state, sessionId) ||
         this.forkBlocked(state, sessionId) ||
         this.githubBlocked(state, sessionId) ||
         this.attentionBlocked(state, sessionId) ||
@@ -1902,11 +1189,7 @@ export class WorkspaceStore {
     );
     current();
     if (raw != null) return readClientSession(raw, { ...scope.target, sessionId });
-    const ledger = await this.read(scope, current);
-    const legacy = ledger.legacy?.find((item) => item.sessionId === sessionId);
-    return legacy
-      ? readLegacyClientSession(legacySessionRead(legacy), { ...scope.target, sessionId })
-      : null;
+    return null;
   }
   close() {
     this.backend.close?.();

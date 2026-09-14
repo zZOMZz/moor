@@ -48,8 +48,6 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     clientCreated = gate();
   let menu: any[] = [];
   let clientLoaded: ((window: any) => void) | undefined;
-  let clearGate: ReturnType<typeof gate> | undefined,
-    cookieGate: ReturnType<typeof gate> | undefined;
   let timerId = 0;
   const paths = new Map([
     ['userData', directory],
@@ -177,12 +175,6 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
             Object.assign(new EventEmitter(), {
               cookies: {
                 set: async (value: { url: string; value: string }) => {
-                  const waiting = cookieGate;
-                  cookieGate = undefined;
-                  if (waiting) {
-                    waiting.enter();
-                    await waiting.waiting;
-                  }
                   cookieWrites.push({ url: value.url, value: value.value });
                 },
               },
@@ -261,14 +253,6 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       if (name === './page-loader.cjs')
         return {
           loadPage: (window: any, url: string) => window.loadURL(url),
-          clearLocalShellCache: async () => {
-            const waiting = clearGate;
-            clearGate = undefined;
-            if (waiting) {
-              waiting.enter();
-              await waiting.waiting;
-            }
-          },
         };
       if (name === './notifications.cjs') {
         const original = localRequire(name);
@@ -863,16 +847,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   await emitMessage(children[0], { type: 'notification', event: { ...next, turnId: 'wrong' } });
   assert.equal(notices.length, previousCount);
   assert.equal(children[0].sent.length, ackCount);
-  // A former child's delayed cache clear must not write its login at the new
-  // child's origin. The actual main handler runs with controlled async signals.
-  const clearing = gate();
-  clearGate = clearing;
-  const staleReady = emitMessage(children.at(-1), {
-    type: 'local-ready',
-    origin: 'http://127.0.0.1:4531',
-    secret: 'synthetic-stale',
-  });
-  await clearing.entered;
+  // Restart invalidates pending settings requests without recreating retired browser partitions.
   const previewBeforeRestart = invoke('personal:preview-config', { action: 'read' });
   const previewRestartRejection = assert.rejects(previewBeforeRestart, /已重启/);
   const skillsBeforeRestart = invoke('personal:skills-config', { action: 'read' });
@@ -883,43 +858,15 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   await previewRestartRejection;
   await skillsRestartRejection;
   await mcpRestartRejection;
-  const replacementReady = emitMessage(children.at(-1), {
+  await emitMessage(children.at(-1), {
     type: 'local-ready',
     origin: 'http://127.0.0.1:4532',
-    secret: 'synthetic-replacement',
+    secret: 's'.repeat(43),
   });
-  clearing.release();
-  await Promise.all([staleReady, replacementReady]);
-  assert.deepEqual(cookieWrites.at(-1), {
-    url: 'http://127.0.0.1:4532',
-    value: 'synthetic-replacement',
-  });
-  assert.equal(
-    cookieWrites.some((value) => value.value === 'synthetic-stale'),
-    false,
-  );
-  // Even a cookie write already in flight cannot finish after a replacement's
-  // write at the same reused loopback origin and overwrite the current login.
-  const writingCookie = gate();
-  cookieGate = writingCookie;
-  const staleWrite = emitMessage(children.at(-1), {
-    type: 'local-ready',
-    origin: 'http://127.0.0.1:4532',
-    secret: 'synthetic-in-flight',
-  });
-  await writingCookie.entered;
-  await invoke('personal:recover');
-  const currentWrite = emitMessage(children.at(-1), {
-    type: 'local-ready',
-    origin: 'http://127.0.0.1:4532',
-    secret: 'synthetic-current',
-  });
-  writingCookie.release();
-  await Promise.all([staleWrite, currentWrite]);
-  assert.deepEqual(cookieWrites.slice(-2), [
-    { url: 'http://127.0.0.1:4532', value: 'synthetic-in-flight' },
-    { url: 'http://127.0.0.1:4532', value: 'synthetic-current' },
-  ]);
+  assert.deepEqual(cookieWrites, []);
+  assert.equal(partitions.has('persist:personal-local'), false);
+  assert.equal(partitions.has('persist:personal-remote'), false);
+  assert.equal(handlers.has('moor:legacy-cache'), false);
   assert.equal(reopened.urls.at(-1), CLIENT_URL);
   assert.equal(
     windows.filter(
