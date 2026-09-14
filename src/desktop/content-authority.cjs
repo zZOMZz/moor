@@ -15,6 +15,10 @@ function isCurrentContentDocument(registered, contents, frame) {
       frame !== contents.mainFrame
     )
       return false;
+    // A packaged local-only window may have no configured relay. Non-empty
+    // registrations still require a canonical HTTP service origin below.
+    if (registered.trustedClient === true && registered.origin === '')
+      return isTrustedClientUrl(frame.url) && frame.origin === CLIENT_ORIGIN;
     const target = new URL(registered.origin);
     if (
       !['https:', 'http:'].includes(target.protocol) ||

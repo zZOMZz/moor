@@ -15,6 +15,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { id } from '../protocol';
 import { CliError } from './args';
+import { workspaceTargetSchema as cliTargetSchema } from '../workspace-target';
+export { workspaceTargetSchema as cliTargetSchema } from '../workspace-target';
 import {
   secureOperationSchema,
   secureOperationDigestSource,
@@ -24,20 +26,6 @@ import {
   type SecureCliOperation,
   type SecureCatalogOperation,
 } from './secure-operation';
-export const cliTargetSchema = z
-  .object({
-    serverKey: z.string().min(1).max(2048),
-    owner: z.string().min(1).max(1000),
-    deviceId: id,
-    userId: z.string().min(1).max(1000),
-    machineId: id,
-    workspaceId: id,
-    localProjectId: id,
-    catalogWorkspaceId: id,
-    replicaId: id,
-    sessionId: id.optional(),
-  })
-  .strict();
 export type CliTarget = z.infer<typeof cliTargetSchema>;
 const operationSchema = z
   .object({

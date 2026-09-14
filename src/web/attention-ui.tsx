@@ -544,7 +544,8 @@ export function AttentionWorkbench({
                   </p>
                   <textarea
                     id="attention-draft"
-                    readOnly={state.busy || state.pending?.operation.kind === 'continue'}
+                    readOnly={state.busy}
+                    maxLength={100000}
                     value={state.draft.text}
                     onChange={(e) => controller.editDraft(e.target.value)}
                   />

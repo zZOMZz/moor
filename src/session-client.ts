@@ -16,7 +16,16 @@ export type SessionClientScope = {
   sessionId: string;
 };
 export function readClientSession(raw: unknown, scope: SessionClientScope) {
+  return readBoundSession(raw, scope, false);
+}
+/** Old Moor host snapshots may lack the document id. They remain unconfirmed
+ * cached views and cannot be used as a send baseline until the host is read. */
+export function readLegacyClientSession(raw: unknown, scope: SessionClientScope) {
+  return readBoundSession(raw, scope, true);
+}
+function readBoundSession(raw: unknown, scope: SessionClientScope, legacy: boolean) {
   const result = sessionReadResponseSchema.parse(raw);
+  if (legacy && result.persisted !== false) throw new Error('旧快照不能被标为主机已确认');
   validateSessionBundle(result);
   if (
     result.meta.id !== scope.sessionId ||
@@ -31,7 +40,11 @@ export function readClientSession(raw: unknown, scope: SessionClientScope) {
     const view = mirror(doc, scope.sessionId);
     try {
       const state = view.getState();
-      if (state.session.id !== scope.sessionId) throw new Error('会话文档身份不匹配');
+      if (
+        state.session.id !== scope.sessionId &&
+        !(legacy && (state.session.id === undefined || state.session.id === ''))
+      )
+        throw new Error('会话文档身份不匹配');
       return { ...result, history: structuredClone(state.history) };
     } finally {
       view.dispose();

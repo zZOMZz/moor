@@ -27,66 +27,84 @@ export type SecureGithubMethod =
   | 'github-write-action'
   | 'github-write-inspect'
   | 'github-write-abandon';
-export type SecureGithubContext = {
-  target: SecureCliTarget | null;
-  online: boolean;
-  generation: number;
+export type GithubSessionContext<T> = { target: T | null; online: boolean; generation: number };
+export type GithubSessionStorage<T> = {
+  forTarget(
+    target: T,
+    current: () => void,
+  ): Pick<import('./git-workspace').GitWorkspaceDependencies, 'read' | 'compareWrite'>;
+  list(target: T, current: () => void): Promise<Array<{ target: T; key: string; value: unknown }>>;
+  exclusive<R>(
+    target: T,
+    namespace: 'execution',
+    current: () => void,
+    task: () => Promise<R>,
+  ): Promise<R>;
 };
-export type SecureGithubDependencies = {
-  context(): SecureGithubContext;
-  storage: SecureScopedStorage;
+export type GithubSessionDependencies<T> = {
+  context(): GithubSessionContext<T>;
+  storage: GithubSessionStorage<T>;
+  parseTarget(target: T): T;
+  gitTarget(target: T): import('./git-workspace').GitTarget;
   request(
-    target: SecureCliTarget,
+    target: T,
     method: SecureGithubMethod,
     params: unknown,
     current: () => void,
   ): Promise<unknown>;
-  appendInstruction(target: SecureCliTarget, text: string, current: () => void): Promise<void>;
-  /** Runs under the execution lock, before a new binding or write is staged. */
-  beforeWrite(target: SecureCliTarget, current: () => void): Promise<void>;
-  changed?(target: SecureCliTarget, current: () => void): Promise<void> | void;
+  appendInstruction(target: T, text: string, current: () => void): Promise<void>;
+  beforeWrite(target: T, current: () => void): Promise<void>;
+  changed?(target: T, current: () => void): Promise<void> | void;
   uuid?(): string;
 };
-type BoundContext = SecureGithubContext & { target: SecureCliTarget };
+export type SecureGithubContext = GithubSessionContext<SecureCliTarget>;
+export type SecureGithubDependencies = Omit<
+  GithubSessionDependencies<SecureCliTarget>,
+  'parseTarget' | 'gitTarget'
+>;
+type BoundContext<T> = GithubSessionContext<T> & { target: T };
 export type SecureGithubMode = 'read' | 'write' | 'recovery';
-export type SecureGithubReview = {
-  target: SecureCliTarget;
+export type GithubSessionReview<T> = {
+  target: T;
   generation: number;
   panel: number;
   mode: SecureGithubMode;
   /** Immutable snapshot of the data actually presented by this render. */
   material: string;
 };
-type Recovery = {
+export type SecureGithubReview = GithubSessionReview<SecureCliTarget>;
+type Recovery<T> = {
   id: string;
-  target: SecureCliTarget;
+  target: T;
   binding?: GithubController;
   write?: GithubWriteController;
 };
-export type SecureGithubRecovery = {
+export type GithubSessionRecovery<T> = {
   id: string;
-  target: SecureCliTarget;
+  target: T;
   binding?: GithubController['pending'];
   pending?: GithubWriteController['pending'];
   drafts?: GithubWriteController['drafts'];
   receipt?: GithubWriteController['receipt'];
   error: string;
 };
-export type SecureGithubState = {
-  target: SecureCliTarget;
+export type SecureGithubRecovery = GithubSessionRecovery<SecureCliTarget>;
+export type GithubSessionState<T> = {
+  target: T;
   online: boolean;
   mode: SecureGithubMode;
-  review: SecureGithubReview;
-  /** Detached presentation objects: panel callbacks never read newer controller content. */
+  review: GithubSessionReview<T>;
+  /** Detached presentation objects keep callbacks tied to the displayed review. */
   read: GithubController;
   write: GithubWriteController;
-  recoveries: SecureGithubRecovery[];
+  recoveries: GithubSessionRecovery<T>[];
   working: boolean;
   opening: boolean;
   adding: boolean;
   saving: boolean;
   error: string;
 };
+export type SecureGithubState = GithubSessionState<SecureCliTarget>;
 
 /** A send must consult all original mappings, even when the GitHub panel was never opened. */
 export async function readSecureGithubExecutionBlock(
@@ -188,11 +206,11 @@ function immutableDraft(draft: GithubWriteDraft) {
 }
 
 /** Reuses product validation and pure panels, with finite encrypted transport and isolated storage. */
-export class SecureGithubController {
-  #context?: BoundContext;
+export class GithubSessionController<T> {
+  #context?: BoundContext<T>;
   #read?: GithubController;
   #write?: GithubWriteController;
-  #recoveries: Recovery[] = [];
+  #recoveries: Recovery<T>[] = [];
   #branches = new Set<string>();
   #panel = 0;
   #mode: SecureGithubMode = 'read';
@@ -202,7 +220,7 @@ export class SecureGithubController {
   #saving = 0;
   #error = '';
   #listeners = new Set<() => void>();
-  constructor(private readonly options: SecureGithubDependencies) {}
+  constructor(private readonly options: GithubSessionDependencies<T>) {}
   subscribe(listener: () => void) {
     this.#listeners.add(listener);
     return () => {
@@ -212,28 +230,28 @@ export class SecureGithubController {
   #emit() {
     for (const listener of this.#listeners) listener();
   }
-  #bind(): BoundContext {
+  #bind(): BoundContext<T> {
     const context = this.options.context();
     if (!context.target || !Number.isSafeInteger(context.generation) || context.generation < 0)
       throw Error('请先打开已确认的项目会话。');
-    const target = secureTargetSchema.parse(context.target);
-    secureGitTarget(target);
+    const target = this.options.parseTarget(context.target);
+    this.options.gitTarget(target);
     return { target, generation: context.generation, online: context.online === true };
   }
-  #matches(context: BoundContext) {
+  #matches(context: BoundContext<T>) {
     try {
       return same(context, this.#bind());
     } catch {
       return false;
     }
   }
-  #current(context: BoundContext, panel: number) {
+  #current(context: BoundContext<T>, panel: number) {
     if (this.#context !== context || panel !== this.#panel || !this.#matches(context))
       throw Error('GitHub 面板、执行目标或连接已改变，请重新打开并审阅。');
   }
   #recoveryData() {
     return this.#recoveries.map(
-      (entry): SecureGithubRecovery =>
+      (entry): GithubSessionRecovery<T> =>
         copy({
           id: entry.id,
           target: entry.target,
@@ -268,7 +286,7 @@ export class SecureGithubController {
       recovery: this.#recoveryData(),
     });
   }
-  get state(): SecureGithubState | null {
+  get state(): GithubSessionState<T> | null {
     const context = this.#context,
       read = this.#read,
       write = this.#write;
@@ -344,7 +362,7 @@ export class SecureGithubController {
     this.close();
     this.#listeners.clear();
   }
-  #dependencies(target: SecureCliTarget, context: BoundContext, panel: number) {
+  #dependencies(target: T, context: BoundContext<T>, panel: number) {
     const current = () => this.#current(context, panel);
     const alive = () => {
       try {
@@ -354,7 +372,8 @@ export class SecureGithubController {
         return false;
       }
     };
-    const prefix = `/api/workspaces/${target.product!.catalogWorkspaceId}/replicas/${target.product!.replicaId}/`;
+    const projected = this.options.gitTarget(target);
+    const prefix = `/api/workspaces/${projected.catalogWorkspaceId}/replicas/${projected.replicaId}/`;
     const mappings = {
       'github/read': ['github-read', githubReadSchema],
       'github/action': ['github-action', githubActionSchema],
@@ -389,9 +408,9 @@ export class SecureGithubController {
           params = schema.parse(input);
         const scope = 'request' in params ? params.request : params;
         if (
-          scope.workspaceId !== target.workspaceId ||
-          scope.localProjectId !== target.localProjectId ||
-          scope.sessionId !== target.sessionId
+          scope.workspaceId !== projected.workspaceId ||
+          scope.localProjectId !== projected.localProjectId ||
+          scope.sessionId !== projected.sessionId
         )
           throw Error('GitHub 请求不属于原执行范围。');
         if (
@@ -405,9 +424,9 @@ export class SecureGithubController {
       },
     };
   }
-  async open(expectedTarget: SecureCliTarget, mode: SecureGithubMode = 'read') {
+  async open(expectedTarget: T, mode: SecureGithubMode = 'read') {
     const context = this.#bind();
-    if (!same(context.target, secureTargetSchema.parse(expectedTarget)))
+    if (!same(context.target, this.options.parseTarget(expectedTarget)))
       throw Error('项目会话已改变，请重新打开 GitHub。');
     this.close();
     this.#context = context;
@@ -416,8 +435,11 @@ export class SecureGithubController {
     const panel = this.#panel,
       current = () => this.#current(context, panel);
     const deps = this.#dependencies(context.target, context, panel);
-    const read = (this.#read = new GithubController(secureGitTarget(context.target), deps));
-    const write = (this.#write = new GithubWriteController(secureGitTarget(context.target), deps));
+    const read = (this.#read = new GithubController(this.options.gitTarget(context.target), deps));
+    const write = (this.#write = new GithubWriteController(
+      this.options.gitTarget(context.target),
+      deps,
+    ));
     this.#emit();
     try {
       const loaded = await Promise.allSettled([read.load(), write.load()]);
@@ -445,14 +467,14 @@ export class SecureGithubController {
       }
     }
   }
-  async #loadRecovery(context: BoundContext, panel: number) {
+  async #loadRecovery(context: BoundContext<T>, panel: number) {
     const current = () => this.#current(context, panel);
     const records = await this.options.storage.list(context.target, current);
-    const recovered: Recovery[] = [];
+    const recovered: Recovery<T>[] = [];
     for (const record of records) {
       current();
       if (same(record.target, context.target)) continue;
-      const target = secureGitTarget(record.target),
+      const target = this.options.gitTarget(record.target),
         deps = this.#dependencies(record.target, context, panel);
       if (record.key === githubKey(target)) {
         const binding = new GithubController(target, deps);
@@ -473,7 +495,7 @@ export class SecureGithubController {
     current();
     this.#recoveries = recovered;
   }
-  #assertReview(review: SecureGithubReview, material = true) {
+  #assertReview(review: GithubSessionReview<T>, material = true) {
     const state = this.state;
     if (
       !state ||
@@ -483,11 +505,11 @@ export class SecureGithubController {
       throw Error('GitHub 内容、草稿或确认目标已改变，请重新查看后操作。');
     return state;
   }
-  async #run<T>(
-    review: SecureGithubReview,
-    action: (current: () => void) => Promise<T>,
+  async #run<R>(
+    review: GithubSessionReview<T>,
+    action: (current: () => void) => Promise<R>,
     options: { lock?: boolean; beforeWrite?: boolean; online?: boolean } = {},
-  ): Promise<T> {
+  ): Promise<R> {
     this.#assertReview(review);
     if (this.#opening || this.#working || this.#saving)
       throw Error('正在保存或核对 GitHub 内容，请稍后再试。');
@@ -527,7 +549,7 @@ export class SecureGithubController {
       }
     }
   }
-  refresh(review: SecureGithubReview) {
+  refresh(review: GithubSessionReview<T>) {
     return this.#run(
       review,
       async () => {
@@ -538,7 +560,7 @@ export class SecureGithubController {
       { online: this.#mode !== 'recovery' },
     );
   }
-  show(review: SecureGithubReview, mode: SecureGithubMode) {
+  show(review: GithubSessionReview<T>, mode: SecureGithubMode) {
     const detail = copy(this.#read?.detail);
     return this.#run(
       review,
@@ -553,13 +575,13 @@ export class SecureGithubController {
       { online: false },
     );
   }
-  branches(review: SecureGithubReview, page: number) {
+  branches(review: GithubSessionReview<T>, page: number) {
     return this.#run(review, async () => {
       await (this.#mode === 'read' ? this.#read! : this.#write!).loadBranches(page);
     });
   }
   list(
-    review: SecureGithubReview,
+    review: GithubSessionReview<T>,
     view: 'issues' | 'pulls',
     state: 'open' | 'closed' | 'all',
     page: number,
@@ -568,27 +590,27 @@ export class SecureGithubController {
       await this.#read!.loadList(view, state, page);
     });
   }
-  item(review: SecureGithubReview, kind: 'issue' | 'pull', number: number) {
+  item(review: GithubSessionReview<T>, kind: 'issue' | 'pull', number: number) {
     return this.#run(review, async () => {
       await this.#read!.openItem(kind, number);
     });
   }
-  comments(review: SecureGithubReview, page: number) {
+  comments(review: GithubSessionReview<T>, page: number) {
     return this.#run(review, async () => {
       await this.#read!.loadComments(page);
     });
   }
-  checks(review: SecureGithubReview, page: number) {
+  checks(review: GithubSessionReview<T>, page: number) {
     return this.#run(review, async () => {
       await this.#read!.loadChecks(page);
     });
   }
-  clear(review: SecureGithubReview) {
+  clear(review: GithubSessionReview<T>) {
     this.#assertReview(review);
     if (this.#opening || this.#working) throw Error('请等待当前 GitHub 操作完成。');
     this.#read!.clearSelection();
   }
-  bind(review: SecureGithubReview, branch: string) {
+  bind(review: GithubSessionReview<T>, branch: string) {
     return this.#run(
       review,
       async () => {
@@ -597,7 +619,7 @@ export class SecureGithubController {
       { lock: true, beforeWrite: true },
     );
   }
-  unbind(review: SecureGithubReview) {
+  unbind(review: GithubSessionReview<T>) {
     return this.#run(
       review,
       async () => {
@@ -606,7 +628,7 @@ export class SecureGithubController {
       { lock: true, beforeWrite: true },
     );
   }
-  retryBinding(review: SecureGithubReview) {
+  retryBinding(review: GithubSessionReview<T>) {
     return this.#run(
       review,
       async () => {
@@ -615,7 +637,7 @@ export class SecureGithubController {
       { lock: true },
     );
   }
-  abandonBinding(review: SecureGithubReview) {
+  abandonBinding(review: GithubSessionReview<T>) {
     return this.#run(
       review,
       async () => {
@@ -624,7 +646,7 @@ export class SecureGithubController {
       { lock: true },
     );
   }
-  add(review: SecureGithubReview) {
+  add(review: GithubSessionReview<T>) {
     return this.#run(review, async (current) => {
       const detail: GithubDetail | undefined = copy(this.#read!.detail);
       if (!detail) throw Error('请先读取要加入草稿的 Issue 或 PR。');
@@ -642,23 +664,23 @@ export class SecureGithubController {
       await this.options.appendInstruction(copy(this.#context!.target), text, current);
     });
   }
-  pull(review: SecureGithubReview, view: 'files' | 'review-comments', page: number) {
+  pull(review: GithubSessionReview<T>, view: 'files' | 'review-comments', page: number) {
     return this.#run(review, async () => {
       await this.#write!.loadPull(view, page);
     });
   }
-  commitPreview(review: SecureGithubReview, paths: string[]) {
+  commitPreview(review: GithubSessionReview<T>, paths: string[]) {
     return this.#run(review, async () => {
       await this.#write!.previewCommit(copy(paths));
     });
   }
-  pushPreview(review: SecureGithubReview) {
+  pushPreview(review: GithubSessionReview<T>) {
     return this.#run(review, async () => {
       await this.#write!.previewPush();
     });
   }
   createDraft(
-    review: SecureGithubReview,
+    review: GithubSessionReview<T>,
     kind: GithubWriteDraft['kind'],
     values: GithubWriteDraft['values'],
   ) {
@@ -667,7 +689,7 @@ export class SecureGithubController {
     });
   }
   async saveDraft(
-    review: SecureGithubReview,
+    review: GithubSessionReview<T>,
     displayed: GithubWriteDraft,
     input: GithubWriteDraft,
   ) {
@@ -700,7 +722,7 @@ export class SecureGithubController {
       }
     }
   }
-  removeDraft(review: SecureGithubReview, id: string) {
+  removeDraft(review: GithubSessionReview<T>, id: string) {
     return this.#run(
       review,
       async () => {
@@ -709,17 +731,17 @@ export class SecureGithubController {
       { online: false },
     );
   }
-  prepare(review: SecureGithubReview, id: string) {
+  prepare(review: GithubSessionReview<T>, id: string) {
     return this.#run(review, async () => {
       await this.#write!.prepare(id);
     });
   }
-  cancelReview(review: SecureGithubReview) {
+  cancelReview(review: GithubSessionReview<T>) {
     this.#assertReview(review);
     if (this.#opening || this.#working) return;
     this.#write!.cancelReview();
   }
-  confirm(review: SecureGithubReview) {
+  confirm(review: GithubSessionReview<T>) {
     return this.#run(
       review,
       async () => {
@@ -728,7 +750,7 @@ export class SecureGithubController {
       { lock: true, beforeWrite: true },
     );
   }
-  inspect(review: SecureGithubReview, page = 1) {
+  inspect(review: GithubSessionReview<T>, page = 1) {
     return this.#run(
       review,
       async () => {
@@ -737,7 +759,7 @@ export class SecureGithubController {
       { lock: true },
     );
   }
-  abandon(review: SecureGithubReview) {
+  abandon(review: GithubSessionReview<T>) {
     return this.#run(
       review,
       async () => {
@@ -746,7 +768,7 @@ export class SecureGithubController {
       { lock: true },
     );
   }
-  recover(review: SecureGithubReview, id: string, action: 'inspect' | 'abandon', page = 1) {
+  recover(review: GithubSessionReview<T>, id: string, action: 'inspect' | 'abandon', page = 1) {
     return this.#run(
       review,
       async () => {
@@ -762,5 +784,16 @@ export class SecureGithubController {
       },
       { lock: true },
     );
+  }
+}
+
+/** Encrypted transport supplies its real target and isolated storage to the shared controller. */
+export class SecureGithubController extends GithubSessionController<SecureCliTarget> {
+  constructor(options: SecureGithubDependencies) {
+    super({
+      ...options,
+      parseTarget: (target) => secureTargetSchema.parse(target),
+      gitTarget: secureGitTarget,
+    });
   }
 }

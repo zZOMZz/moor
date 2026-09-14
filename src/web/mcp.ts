@@ -32,6 +32,9 @@ const storedSchema = z
   })
   .strict();
 type Stored = z.infer<typeof storedSchema>;
+export const mcpStoredSchema = storedSchema;
+export const mcpReviewSchema = reviewSchema;
+export type McpSaved = Stored;
 export const mcpKey = (target: GitTarget) =>
   'mcp-draft-v1/' +
   JSON.stringify([
@@ -50,7 +53,7 @@ const sameServer = (a: McpServerView, b: McpServerView) =>
   a.name === b.name &&
   a.description === b.description &&
   a.transport === b.transport;
-async function mutationVersion(mutation: Mutation) {
+export async function mcpMutationVersion(mutation: Mutation) {
   const bytes = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(JSON.stringify(mutationSchema.parse(mutation))),
@@ -264,7 +267,7 @@ export class McpController {
         mutation.sessionId !== this.target.sessionId
       )
         throw new Error('MCP 授权与原指令范围不匹配。');
-      const requestVersion = await mutationVersion(mutation);
+      const requestVersion = await mcpMutationVersion(mutation);
       this.current(generation);
       this.assertReview(review);
       const value = this.record({
@@ -292,7 +295,7 @@ export class McpController {
   async verifySubmission(mutation: Mutation) {
     if (!this.delivery) return false;
     const generation = this.generation,
-      version = await mutationVersion(mutation);
+      version = await mcpMutationVersion(mutation);
     this.access(generation);
     if (
       this.delivery.operationId !== mutation.operationId ||

@@ -105,7 +105,9 @@ $('settings').onsubmit = async (e) => {
     });
     $('code').value = '';
     if (r.deviceMetadata) acceptNameState(r.deviceMetadata);
-    status(r.paired ? '设备已配对。可以打开“我的所有电脑”。' : '设置已保存。本机任务会继续运行。');
+    status(
+      r.paired ? '设备已配对。可以打开工作区查看已连接电脑。' : '设置已保存。本机任务会继续运行。',
+    );
   } catch (e) {
     status(e.message);
   } finally {
@@ -113,8 +115,6 @@ $('settings').onsubmit = async (e) => {
   }
 };
 $('local').onclick = () => window.personal.open('local');
-$('remote').onclick = () => window.personal.open('remote');
-$('secure').onclick = () => window.personal.open('secure');
 
 function renderHealth(value) {
   if (value.deviceMetadata) renderNameState(value.deviceMetadata);

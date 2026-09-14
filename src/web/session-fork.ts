@@ -49,6 +49,8 @@ const storedSchema = z
     cleanup: sessionExecutionSchema.optional(),
   })
   .strict();
+export const forkStoredSchema = storedSchema;
+export type ForkSaved = z.infer<typeof storedSchema>;
 export function sessionForkKey(target: ForkTarget) {
   return gitWorkspaceKey(target).replace('git-workspace-v1/', 'session-fork-v1/');
 }
@@ -108,7 +110,10 @@ export function validateForkReceipt(value: unknown, operation: ForkOperation): F
     throw new Error('Fork 确认的执行目录与原请求不匹配。');
   return receipt;
 }
-function matchesResourceCleanup(receipt: ForkReceipt | undefined, cleanup: SessionExecution) {
+export function matchesResourceCleanup(
+  receipt: ForkReceipt | undefined,
+  cleanup: SessionExecution,
+) {
   const original = receipt?.execution;
   return !!(
     receipt &&

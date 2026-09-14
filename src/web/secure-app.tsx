@@ -43,7 +43,7 @@ import {
   type SecureContentUiHandle,
 } from './secure-content-ui';
 
-type Account = {
+export type Account = {
   origin: string;
   owner: string | null;
   needsSetup: boolean;
@@ -1110,10 +1110,14 @@ export function SecureApp({
   controller,
   accountApi,
   onAccountVerified,
+  layout = 'standalone',
+  onNavigationBlocked,
 }: {
   controller: SecureUiController;
   accountApi: SecureAccountApi;
   onAccountVerified?: (value: Account | null) => void;
+  layout?: 'standalone' | 'session' | 'connections';
+  onNavigationBlocked?: (blocked: boolean) => void;
 }) {
   const [state, setState] = useState(controller.state);
   const contentUi = useRef<SecureContentUiHandle>(null);
@@ -1134,6 +1138,9 @@ export function SecureApp({
   const [localBusy, setLocalBusy] = useState(false);
   const [error, setError] = useState('');
   const [dirty, setDirty] = useState(false);
+  useEffect(() => {
+    onNavigationBlocked?.(dirty || localBusy || state.busy);
+  }, [dirty, localBusy, state.busy, onNavigationBlocked]);
   const [agentId, setAgentId] = useState('');
   const active = useRef(true);
   const actionLock = useRef(false);
@@ -1229,8 +1236,8 @@ export function SecureApp({
     });
   };
   return (
-    <div className="secure-app">
-      <header className="secure-topbar">
+    <div className={'secure-app' + (layout === 'standalone' ? '' : ' secure-app-embedded')}>
+      <header className="secure-topbar" hidden={layout === 'session'}>
         <div className="secure-brand">
           <img src="/moor-logo.png" alt="Moor" width={96} height={32} />
           <span>加密访问</span>
@@ -1291,8 +1298,10 @@ export function SecureApp({
           <button onClick={() => location.reload()}>重新核对账号</button>
         </main>
       ) : (
-        <div className="secure-layout">
-          <aside className="secure-sidebar" aria-label="设备和会话">
+        <div
+          className={'secure-layout' + (layout === 'standalone' ? '' : ' secure-layout-embedded')}
+        >
+          <aside className="secure-sidebar" aria-label="设备和会话" hidden={layout === 'session'}>
             <p className="secure-account-id">账号 · {account.owner}</p>
             <DevicePanel
               account={account}
@@ -1393,7 +1402,7 @@ export function SecureApp({
                 </>
               )}
             </section>
-            <section className="secure-card">
+            <section className="secure-card" hidden={layout === 'connections'}>
               <div className="secure-section-title">
                 <h2>会话</h2>
                 <button
@@ -1459,7 +1468,7 @@ export function SecureApp({
               )}
             </section>
           </aside>
-          <main className="secure-workspace">
+          <main className="secure-workspace" hidden={layout === 'connections'}>
             {session ? (
               <>
                 <header className="secure-session-header">

@@ -23,9 +23,11 @@ import { DeviceManager } from '../src/security/device-manager';
 import { generateRecoveryKey } from '../src/security/e2ee-recovery';
 import { PrivateEndpointFile } from '../src/security/private-endpoint-file';
 import { RuntimeStore } from '../src/runtime/store';
+import { DesktopWorkspaceClient } from '../src/desktop/workspace-client';
+import { desktopWorkspaceCatalogSchema } from '../src/desktop/workspace-protocol';
 
 test(
-  'real secure CLI and Host use an opaque production Relay for synthetic execution and durable recovery',
+  'one desktop Host serves local and encrypted clients through an opaque Relay with durable recovery',
   { timeout: 120000 },
   async (t) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-secure-cli-'))),
@@ -231,16 +233,54 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
         closed = once(child, 'close');
       children.push({ child, closed });
       let stdout = '',
-        stderr = '';
+        stderr = '',
+        buffered = '';
       child.stdout!.on('data', (chunk) => {
         stdout += chunk;
+        buffered += chunk;
+        let end: number;
+        while ((end = buffered.indexOf('\n')) >= 0) {
+          const line = buffered.slice(0, end);
+          buffered = buffered.slice(end + 1);
+          try {
+            emit(JSON.parse(line));
+          } catch {
+            /* Host progress is ordinary text. */
+          }
+        }
       });
       child.stderr!.on('data', (chunk) => {
         stderr += chunk;
       });
       child.stdin!.on('error', () => {});
       child.stdin!.end(input);
-      return { child, closed, output: () => ({ stdout, stderr }) };
+      const messages: any[] = [],
+        waiting = new Set<{ match(message: any): boolean; resolve(message: any): void }>();
+      function emit(message: any) {
+        messages.push(message);
+        for (const waiter of waiting)
+          if (waiter.match(message)) {
+            waiting.delete(waiter);
+            waiter.resolve(message);
+          }
+      }
+      child.on('message', emit);
+      return {
+        child,
+        closed,
+        output: () => ({ stdout, stderr }),
+        wait(match: (message: any) => boolean): Promise<any> {
+          const found = messages.find(match);
+          return found
+            ? Promise.resolve(found)
+            : Promise.race([
+                new Promise((resolve) => waiting.add({ match, resolve })),
+                closed.then(() => {
+                  throw Error('Synthetic Host exited before IPC: ' + stderr);
+                }),
+              ]);
+        },
+      };
     }
     async function configure(action: unknown) {
       const result = child(
@@ -273,6 +313,9 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
       enabled: true,
     });
     const hostArguments = [
+      '--desktop',
+      '--public-dir',
+      packagedRuntime ? join(packagedRuntime, 'public') : resolve('src/web/public'),
       '--config',
       config,
       '--runtime-data',
@@ -291,6 +334,13 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
         throw Error(currentHost.output().stderr);
       }),
     ]);
+    const local = await currentHost.wait((message) => message.type === 'local-ready');
+    await currentHost.wait((message) => message.type === 'health' && message.local === 'ready');
+    const localIdentity = await fetch(local.origin + '/api/me', {
+      headers: { Cookie: 'personal=' + local.secret },
+    });
+    assert.equal(localIdentity.status, 200);
+    assert.equal((await localIdentity.json()).owner, 'local-desktop');
     async function run(args: string[], input = '', expectedCode = 0) {
       const result = child(
         'cli',
@@ -921,8 +971,161 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
       store.db.prepare('SELECT password,salt FROM account WHERE id=?').get(owner)?.password,
       null,
     );
+    // Losing encrypted authority must not terminate the shared runtime or
+    // switch the original operations to the authenticated local connection.
+    const localState = join(root, 'local-client-state');
+    const localCli = (args: string[], input = '') =>
+      child('cli', ['--json', '--state-dir', localState, ...args], input);
+    async function localRun(args: string[], input = '') {
+      const operation = localCli(args, input);
+      assert.equal((await operation.closed)[0], 0, operation.output().stderr);
+      return JSON.parse(operation.output().stdout.trim().split('\n').at(-1)!).data;
+    }
+    await localRun(['auth', 'login', '--connection', config + '.cli.json']);
+    const localTargets = (await localRun(['targets', 'list'])).targets;
+    assert.equal(localTargets.length, 1);
+    await localRun([
+      'targets',
+      'use',
+      '--workspace',
+      localTargets[0].target.catalogWorkspaceId,
+      '--replica',
+      localTargets[0].target.replicaId,
+    ]);
+    await localRun(['session', 'create', '--agent', agentId, '--stdin'], 'Synthetic local turn');
+    const localFollow = localCli(
+      ['session', 'send', '--stdin', '--follow', '--timeout', '15000'],
+      'hold-for-stop',
+    );
+    const localActive = await localFollow.wait(
+      (message) =>
+        message.data?.event === 'session' &&
+        JSON.stringify(message.data.history).includes('synthetic-holding'),
+    );
+    const localTurn = localActive.data.history.find(
+      (turn: any) => turn.role === 'assistant' && !turn.finished,
+    );
+    assert(localTurn);
+    const currentLocal = await currentHost.wait((message) => message.type === 'local-ready'),
+      currentPid = currentHost.child.pid,
+      beforeDisconnect = readFileSync(aggregateFile, 'utf8'),
+      originalConnection = readFileSync(connectionFile);
+    writeFileSync(connectionFile, '{}\n', { mode: 0o600 });
+    const renamed = currentHost.wait(
+      (message) => message.type === 'device-metadata-result' && message.requestId === 'shared-host',
+    );
+    currentHost.child.send({
+      type: 'device-metadata',
+      requestId: 'shared-host',
+      action: { action: 'rename', name: 'Synthetic shared host', expectedRevision: 1 },
+    });
+    assert.equal((await renamed).ok, true);
+    const localAfter = await fetch(currentLocal.origin + '/api/workspaces', {
+      headers: { Cookie: 'personal=' + currentLocal.secret },
+    });
+    assert.equal(localAfter.status, 200);
+    assert((await localAfter.text()).includes(workspace.id));
+    assert.equal(currentHost.child.pid, currentPid);
+    assert.equal(currentHost.child.exitCode, null);
+    assert.equal(readFileSync(aggregateFile, 'utf8'), beforeDisconnect);
+    const localStillActive = await localRun(['session', 'read']);
+    assert.equal(
+      localStillActive.history.find((turn: any) => turn.id === localTurn.id).finished,
+      false,
+    );
+    const desktopConnection = new DesktopWorkspaceClient({
+      source: 'local',
+      origin: currentLocal.origin,
+      cookie: 'personal=' + currentLocal.secret,
+      localIdentity: currentLocal.identity,
+      current: () => {
+        assert.equal(currentHost.child.exitCode, null);
+        assert.equal(currentHost.child.pid, currentPid);
+      },
+    });
+    t.after(() => desktopConnection.close());
+    const nativeCatalog: any = await desktopConnection.request({
+      action: 'catalog',
+      source: 'local',
+    });
+    assert.equal(nativeCatalog.ok, true);
+    const available = desktopWorkspaceCatalogSchema.parse(nativeCatalog.value);
+    assert.equal(available.targets.length, 1);
+    const nativeTarget = { ...available.targets[0]!.target, sessionId: localStillActive.meta.id };
+    const stopResult: any = await desktopConnection.request({
+      action: 'execute',
+      source: 'local',
+      connectionId: available.connectionId,
+      target: nativeTarget,
+      command: {
+        method: 'session-control',
+        workspaceId: nativeTarget.workspaceId,
+        localProjectId: nativeTarget.localProjectId,
+        params: {
+          controlVersion: 1,
+          action: 'stop',
+          operationId: 'synthetic-desktop-stop',
+          workspaceId: nativeTarget.workspaceId,
+          localProjectId: nativeTarget.localProjectId,
+          userId: nativeTarget.userId,
+          machineId: nativeTarget.machineId,
+          sessionId: nativeTarget.sessionId,
+          turnId: localTurn.id,
+        },
+      },
+    });
+    assert.equal(stopResult.ok, true, JSON.stringify(stopResult));
+    assert.equal(stopResult.value.status, 'accepted');
+    desktopConnection.close();
+    assert.equal((await localFollow.closed)[0], 0, localFollow.output().stderr);
     currentHost.child.kill('SIGTERM');
     assert.equal((await currentHost.closed)[0], 0, currentHost.output().stderr);
+    const offlinePrompts = readFileSync(aggregateFile, 'utf8'),
+      offlineFrames = captured.length,
+      offlineRequests = httpRequests.length,
+      legacyDevice = store.localDevice(owner, 'Synthetic legacy device');
+    writeFileSync(config, JSON.stringify({ server: origin, ...legacyDevice }), { mode: 0o600 });
+    const offlineHost = child('host', hostArguments);
+    const offlineLocal = await offlineHost.wait((message) => message.type === 'local-ready');
+    await offlineHost.wait(
+      (message) =>
+        message.type === 'health' && message.local === 'ready' && message.relay === 'unavailable',
+    );
+    assert.equal(
+      (
+        await fetch(offlineLocal.origin + '/api/workspaces', {
+          headers: { Cookie: 'personal=' + offlineLocal.secret },
+        })
+      ).status,
+      200,
+    );
+    const duplicate = child('host', hostArguments);
+    assert.equal((await duplicate.closed)[0], 3, duplicate.output().stderr);
+    assert.equal(readFileSync(aggregateFile, 'utf8'), offlinePrompts);
+    assert.equal(captured.length, offlineFrames);
+    offlineHost.child.kill('SIGTERM');
+    assert.equal((await offlineHost.closed)[0], 0, offlineHost.output().stderr);
+    assert.equal(httpRequests.length, offlineRequests);
+    assert.equal(captured.length, offlineFrames);
+    // Restore the synthetic connection so private-path startup rejection below
+    // still exercises project boundaries, rather than invalid credentials.
+    writeFileSync(connectionFile, originalConnection, { mode: 0o600 });
+    hostReady = new Promise<void>((resolve) => {
+      hostReadyResolve = resolve;
+    });
+    const headless = child('host', hostArguments.slice(3));
+    await Promise.race([
+      hostReady,
+      headless.closed.then(() => {
+        throw Error('Headless secure Host failed: ' + headless.output().stderr);
+      }),
+    ]);
+    assert.equal(
+      (await run(['catalog', '--host', 'synthetic-secure-host'])).catalog.machineId,
+      workspace.machineId,
+    );
+    headless.child.kill('SIGTERM');
+    assert.equal((await headless.closed)[0], 0, headless.output().stderr);
     const promptsBeforeUnsafeStartup = readFileSync(aggregateFile, 'utf8'),
       framesBeforeUnsafeStartup = captured.length;
     const refusedProject = child('host', [...hostArguments, '--project', privateRoot]);

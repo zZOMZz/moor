@@ -46,28 +46,30 @@ export const taskDraftSchema = z
   })
   .strict();
 export type TaskDraft = z.infer<typeof taskDraftSchema>;
-const reviewedSchema = z.object({ reviewId: id, parentAgentId: id, plan: taskPlanSchema }).strict();
-export type ReviewedTasks = z.infer<typeof reviewedSchema>;
+export const taskReviewedSchema = z
+  .object({ reviewId: id, parentAgentId: id, plan: taskPlanSchema })
+  .strict();
+export type ReviewedTasks = z.infer<typeof taskReviewedSchema>;
 const deliverySchema = z
   .object({
     operationId: id,
-    review: reviewedSchema,
+    review: taskReviewedSchema,
     requestVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
 export type TaskDelivery = z.infer<typeof deliverySchema>;
-const storedSchema = z
+export const tasksStoredSchema = z
   .object({
     version: z.literal(1),
     cacheRevision: z.number().int().nonnegative().safe(),
     target: gitTargetSchema,
     draft: taskDraftSchema,
-    enabled: reviewedSchema.optional(),
+    enabled: taskReviewedSchema.optional(),
     delivery: deliverySchema.optional(),
     pending: taskActionSchema.optional(),
   })
   .strict();
-type Stored = z.infer<typeof storedSchema>;
+type Stored = z.infer<typeof tasksStoredSchema>;
 export const tasksKey = (target: GitTarget) =>
   gitWorkspaceKey(target).replace('git-workspace-v1/', 'task-draft-v1/');
 export const emptyTaskDraft = (): TaskDraft => ({
@@ -103,7 +105,7 @@ export function validateTaskReview(
   }
   return plan;
 }
-async function mutationVersion(mutation: Mutation) {
+export async function taskMutationVersion(mutation: Mutation) {
   const bytes = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(JSON.stringify(mutationSchema.parse(mutation))),
@@ -163,7 +165,7 @@ export class TasksController {
     return `/api/workspaces/${this.target.catalogWorkspaceId}/replicas/${this.target.replicaId}/tasks-${kind}`;
   }
   private record(extra: Partial<Stored> = {}): Stored {
-    return storedSchema.parse({
+    return tasksStoredSchema.parse({
       version: 1,
       cacheRevision: this.cacheRevision + 1,
       target: this.target,
@@ -179,7 +181,7 @@ export class TasksController {
       const raw = await this.deps.read(tasksKey(this.target));
       this.current();
       if (raw !== undefined) {
-        const saved = storedSchema.parse(raw);
+        const saved = tasksStoredSchema.parse(raw);
         if (
           tasksKey(saved.target) !== tasksKey(this.target) ||
           (saved.pending &&
@@ -285,7 +287,7 @@ export class TasksController {
       const parsed = taskPlanSchema.parse(plan);
       if (JSON.stringify(parsed) !== JSON.stringify(taskPlanSchema.parse(this.draft)))
         throw new Error('任务草稿已改变，请重新审查。');
-      const review = reviewedSchema.parse({
+      const review = taskReviewedSchema.parse({
         reviewId: (this.deps.uuid ?? (() => crypto.randomUUID()))(),
         parentAgentId,
         plan: parsed,
@@ -318,7 +320,7 @@ export class TasksController {
         mutation.sessionId !== this.target.sessionId
       )
         throw new Error('任务计划与原指令范围不匹配。');
-      const version = await mutationVersion(mutation);
+      const version = await taskMutationVersion(mutation);
       this.current(generation);
       if (this.delivery) {
         if (
@@ -362,7 +364,7 @@ export class TasksController {
   async verifySubmission(mutation: Mutation) {
     if (!this.delivery) return false;
     const generation = this.generation,
-      version = await mutationVersion(mutation);
+      version = await taskMutationVersion(mutation);
     this.access(generation);
     if (
       this.delivery.operationId !== mutation.operationId ||

@@ -123,7 +123,7 @@ export const pendingPreviewMutationSchema = z
       value.mutation.workspaceId === value.annotationDelivery.submission.target.workspaceId &&
       value.mutation.sessionId === value.annotationDelivery.submission.target.sessionId,
   );
-const storedSchema = z
+export const previewAnnotationsStoredSchema = z
   .object({
     version: z.literal(1),
     cacheRevision: z.number().int().safe().nonnegative(),
@@ -171,7 +171,7 @@ function pngViewport(bytes: Uint8Array, viewport: { width: number; height: numbe
     view.getUint32(20) === viewport.height
   );
 }
-async function snapshotVersion(snapshot: PreviewAnnotationSnapshot) {
+export async function snapshotVersion(snapshot: PreviewAnnotationSnapshot) {
   if (snapshot.image) {
     const bytes = attachmentBytes(snapshot.image.data);
     if (
@@ -257,7 +257,7 @@ export class PreviewAnnotationStore {
       const raw = await this.deps.read(previewAnnotationKey(this.target));
       this.current();
       if (raw !== undefined) {
-        const saved = storedSchema.parse(raw);
+        const saved = previewAnnotationsStoredSchema.parse(raw);
         if (previewAnnotationKey(saved.target) !== previewAnnotationKey(this.target))
           throw new Error('标注草稿不属于当前执行范围。');
         for (const item of saved.annotations) {
@@ -278,7 +278,7 @@ export class PreviewAnnotationStore {
   }
   private async persist(annotations: PreviewAnnotation[]) {
     this.ready();
-    const value = storedSchema.parse({
+    const value = previewAnnotationsStoredSchema.parse({
       version: 1,
       cacheRevision: this.cacheRevision + 1,
       target: this.target,
@@ -387,7 +387,7 @@ export class PreviewAnnotationStore {
   }
 }
 
-const previewStoredSchema = z
+export const previewStoredSchema = z
   .object({
     version: z.literal(1),
     cacheRevision: z.number().int().nonnegative().safe(),

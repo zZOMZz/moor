@@ -405,7 +405,8 @@ test('accessors, cycles, sparse arrays and excessive structure fail without exec
 
 test('the trusted preload exposes finite application entry points', async () => {
   const exposed = new Map<string, any>(),
-    calls: unknown[] = [];
+    calls: unknown[] = [],
+    listeners = new Map<string, (...args: unknown[]) => void>();
   runInNewContext(await readFile('src/desktop/secure-preload.cjs', 'utf8'), {
     require(name: string) {
       assert.equal(name, 'electron');
@@ -414,6 +415,11 @@ test('the trusted preload exposes finite application entry points', async () => 
           exposeInMainWorld: (key: string, value: unknown) => exposed.set(key, value),
         },
         ipcRenderer: {
+          on: (channel: string, callback: (...args: unknown[]) => void) =>
+            listeners.set(channel, callback),
+          removeListener: (channel: string, callback: (...args: unknown[]) => void) => {
+            if (listeners.get(channel) === callback) listeners.delete(channel);
+          },
           invoke: (...args: unknown[]) => {
             calls.push(args);
             return Promise.resolve();
@@ -429,13 +435,38 @@ test('the trusted preload exposes finite application entry points', async () => 
   ]);
   await exposed.get('moorSecure').request({ action: 'status' });
   await exposed.get('moorSecure').account({ action: 'status' });
+  assert.deepEqual(Object.keys(exposed.get('moorWorkspace')).sort(), [
+    'context',
+    'legacy',
+    'onChange',
+    'request',
+    'version',
+  ]);
+  await exposed.get('moorWorkspace').request({ action: 'catalog', source: 'local' });
+  await exposed.get('moorDesktop').openSettings();
+  await exposed.get('moorWorkspace').context();
+  await exposed.get('moorWorkspace').legacy({ action: 'list' });
+  let signals = 0;
+  const unsubscribe = exposed.get('moorWorkspace').onChange((...args: unknown[]) => {
+    assert.deepEqual(args, []);
+    signals++;
+  });
+  listeners.get('moor:workspace-changed')!({ sender: 'private Electron event' });
+  assert.equal(signals, 1);
+  unsubscribe();
+  assert.equal(listeners.size, 0);
   assert.deepEqual(calls, [
     ['moor:secure-client', { action: 'status' }],
     ['moor:secure-account', { action: 'status' }],
+    ['moor:workspace-client', { action: 'catalog', source: 'local' }],
+    ['moor:open-settings'],
+    ['moor:workspace-context'],
+    ['moor:legacy-cache', { action: 'list' }],
   ]);
   assert.deepEqual(Object.keys(exposed.get('moorDesktop')).sort(), [
     'cancelAttachmentSave',
     'googleAuth',
+    'openSettings',
     'saveAttachment',
     'version',
   ]);

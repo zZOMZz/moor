@@ -56,7 +56,7 @@ const pendingSchema = z
   })
   .strict();
 export type PendingGithubWrite = z.infer<typeof pendingSchema>;
-const storedSchema = z
+export const githubWriteStoredSchema = z
   .object({
     version: z.literal(1),
     cacheRevision: z.number().int().safe().nonnegative().default(0),
@@ -174,7 +174,7 @@ export class GithubWriteController {
       const value = await this.deps.read(githubWriteKey(this.target));
       this.current();
       if (value !== undefined) {
-        const saved = storedSchema.parse(value);
+        const saved = githubWriteStoredSchema.parse(value);
         if (
           githubWriteKey(saved.target) !== githubWriteKey(this.target) ||
           (saved.pending &&
@@ -208,7 +208,7 @@ export class GithubWriteController {
   ) {
     this.current(generation);
     if (this.loadError) throw new Error(this.loadError);
-    const next = storedSchema.parse({
+    const next = githubWriteStoredSchema.parse({
       version: 1,
       cacheRevision: this.cacheRevision + 1,
       target: this.target,

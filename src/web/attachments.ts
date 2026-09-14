@@ -49,6 +49,7 @@ const draftSchema = z
     items: z.array(itemSchema).max(MAX_TURN_ATTACHMENTS),
   })
   .strict();
+export const attachmentDraftSchema = draftSchema;
 export function attachmentDraftKey(scope: AttachmentScope) {
   const value = scopeSchema.parse(scope);
   return (
@@ -97,6 +98,30 @@ async function verify(reference: AttachmentReference, data: string) {
   )
     throw new Error('附件内容校验失败，请重新选择文件。');
   return bytes;
+}
+export const verifyAttachmentBytes = verify;
+export async function createAttachmentDraftItem(
+  file: File,
+  attachmentId: string,
+): Promise<AttachmentDraftItem> {
+  if (file.size > CONTENT_LIMITS.attachmentBytes) throw Error('每个附件最多 8 MiB。');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength !== file.size || bytes.byteLength > CONTENT_LIMITS.attachmentBytes)
+    throw Error('附件大小发生变化，请重新选择文件。');
+  return {
+    reference: attachmentReferenceSchema.parse({
+      contentVersion: CONTENT_VERSION,
+      attachmentId,
+      name: file.name,
+      content: {
+        byteLength: bytes.length,
+        version: await version(bytes),
+        mediaType: file.type.toLowerCase() || 'application/octet-stream',
+      },
+    }),
+    data: base64(bytes),
+    uploaded: false,
+  };
 }
 export function attachmentInputReason(
   reference: AttachmentReference,

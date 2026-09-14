@@ -16,6 +16,10 @@ const desktopFiles = [
   'web-preload.cjs',
   'secure-preload.cjs',
   'secure-client.cjs',
+  'workspace-bridge.cjs',
+  'legacy-cache.cjs',
+  'legacy-cache-keys.cjs',
+  'legacy-cache-preload.cjs',
   'secure-account.cjs',
   'client-window.cjs',
   'secure-input.cjs',
@@ -44,6 +48,7 @@ async function copyRuntime(dest) {
     'cli.mjs',
     'security.mjs',
     'desktop-client.mjs',
+    'workspace-client.mjs',
     'server.mjs',
     'preview-renderer.cjs',
   ])

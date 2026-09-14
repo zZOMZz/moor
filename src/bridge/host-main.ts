@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
-import { resolve, dirname, join, basename } from 'node:path';
+import { resolve, dirname, join, basename, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { WebSocket } from 'ws';
 import { HostWorkspace } from './host-workspace';
@@ -31,6 +31,7 @@ import {
   type AttentionContext,
 } from '../attention';
 import { EncryptedHostTransport, openSecureHostEndpoint } from './encrypted-host';
+import { assertPrivatePathsOutsideProjects } from '../security/private-project-path';
 import { HostProductCatalog } from './host-product-catalog';
 import { encryptedHostCatalogSchema } from './encrypted-host-command';
 import { NotificationDispatcher, relayNotificationChannel } from './notification-dispatch';
@@ -87,7 +88,6 @@ if (
   secureMode &&
   (!values['secure-endpoint'] ||
     !values['secure-connection'] ||
-    values.desktop ||
     values.local ||
     values.pair ||
     configurationOnly)
@@ -95,19 +95,33 @@ if (
   writeFileSync(
     process.stdout.fd,
     JSON.stringify({
-      error: '加密主机需要同时指定私有设备和连接文件，不能混用本机、桌面、旧配对或配置命令',
+      error: '加密主机需要同时指定私有设备和连接文件，不能混用仅本机、旧配对或配置命令',
     }) + '\n',
   );
   process.exit(1);
 }
-const secureEndpoint = secureMode
-  ? await openSecureHostEndpoint({
+let secureEndpoint: Awaited<ReturnType<typeof openSecureHostEndpoint>> | undefined;
+if (secureMode) {
+  const paths = [values['secure-endpoint']!, values['secure-connection']!];
+  assert(
+    paths.every((path) => isAbsolute(path) && path === resolve(path)),
+    400,
+    '设备路径无效',
+  );
+  assertPrivatePathsOutsideProjects(paths, secureProjectRoots());
+  try {
+    secureEndpoint = await openSecureHostEndpoint({
       endpointFile: values['secure-endpoint']!,
       connectionFile: values['secure-connection']!,
       server: values.server,
       projectRoots: () => secureProjectRoots(),
-    })
-  : undefined;
+    });
+  } catch (error) {
+    if (!values.desktop) throw error;
+    // An unavailable remote identity never authorizes a legacy connection and
+    // does not prevent the independently authenticated local desktop starting.
+  }
+}
 process.once('exit', () => secureEndpoint?.close());
 let secureTransport: EncryptedHostTransport | undefined;
 if (
@@ -269,7 +283,7 @@ secureProjectRoots = () => [
       [row.root, row.cwd].filter((path): path is string => typeof path === 'string'),
     ),
 ];
-secureEndpoint?.current();
+requireRuntimeBoundary();
 const agentSettings = new AgentSettings(runtime, acpDriver, () => {
   if (!configurationOnly) {
     for (const host of workspaces.values()) host.updateCatalogue();
@@ -503,7 +517,7 @@ function reportHealth() {
     type: 'health',
     deviceMetadata: deviceMetadataState(),
     local: ready && workspaces.size > 0 ? 'ready' : 'unavailable',
-    relay: secureEndpoint
+    relay: secureMode
       ? secureTransport?.ready
         ? 'connected'
         : 'unavailable'
@@ -520,10 +534,25 @@ function reportHealth() {
 function broadcast(v: unknown) {
   for (const t of targets) send(t.socket, v);
 }
+// Remote credentials do not own a shared desktop runtime. Private endpoint
+// files must still stay outside every project, including after revocation.
+function requireRuntimeBoundary() {
+  if (!secureMode) return;
+  assertPrivatePathsOutsideProjects(
+    [values['secure-endpoint']!, values['secure-connection']!],
+    secureProjectRoots(),
+  );
+  try {
+    secureEndpoint?.current();
+  } catch (error) {
+    if (!values.desktop) throw error;
+    secureTransport?.close();
+  }
+}
 function hello() {
-  if (secureEndpoint) {
+  if (secureMode) {
     try {
-      secureEndpoint.current();
+      requireRuntimeBoundary();
     } catch {
       void stop();
       return;
@@ -563,7 +592,7 @@ async function refresh() {
   if (stopped || refreshing) return;
   refreshing = true;
   try {
-    secureEndpoint?.current();
+    requireRuntimeBoundary();
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
       host = new HostWorkspace(
@@ -612,7 +641,7 @@ async function refresh() {
       runtime.saveMachine();
       projectsRegistered = true;
     }
-    secureEndpoint?.current();
+    requireRuntimeBoundary();
     host.updateCatalogue();
     ready = true;
     hello();
@@ -620,9 +649,9 @@ async function refresh() {
   } catch {
     ready = false;
     broadcast({ type: 'unavailable' });
-    if (secureEndpoint) {
+    if (secureMode) {
       try {
-        secureEndpoint.current();
+        requireRuntimeBoundary();
       } catch {
         void stop();
       }
@@ -766,7 +795,16 @@ async function connect(target: Target) {
           params: m.params,
         };
         let receiptContext: AttentionContext | undefined;
+        const current = () => {
+          requireRuntimeBoundary();
+          assert(
+            !stopped && !target.revoked && target.socket === ws && ws.readyState === WebSocket.OPEN,
+            409,
+            '原请求连接已失效，请核查原操作',
+          );
+        };
         try {
+          current();
           const workspace = workspaces.get(m.workspaceId);
           assert(ready && workspace && !workspace.closed, 409, '本机执行服务不可达');
           let result: unknown;
@@ -799,6 +837,7 @@ async function connect(target: Target) {
                 deviceId: target.config.id,
               }),
               current: () => {
+                current();
                 assert(
                   !stopped &&
                     !target.revoked &&
@@ -880,10 +919,12 @@ async function connect(target: Target) {
                     deviceId: target.config.id,
                   });
             result = await commands.execute(command, {
+              current,
               authority: authority
                 ? {
                     ...authority,
                     current: () => {
+                      current();
                       assert(
                         !stopped &&
                           !target.revoked &&
@@ -899,6 +940,7 @@ async function connect(target: Target) {
                 : undefined,
             });
           }
+          current();
           send(ws, { type: 'response', requestId: m.requestId, result });
         } catch (e) {
           let attentionRejected = false;
@@ -1081,7 +1123,19 @@ if (values.desktop || values.local) {
       }
     }
     process.once('exit', () => cliConnection?.remove());
-    if (values.desktop) process.send!({ type: 'local-ready', origin, secret });
+    if (values.desktop)
+      process.send!({
+        type: 'local-ready',
+        origin,
+        secret,
+        identity: {
+          owner,
+          deviceId: device.id,
+          workspaceId: runtime.workspace.id,
+          machineId: runtime.workspace.machineId,
+          userId: runtime.workspace.userId,
+        },
+      });
     else console.log('本机 CLI 连接已就绪');
   } catch (error) {
     stopped = true;
@@ -1327,12 +1381,14 @@ reportHealth();
 const refreshTimer = setInterval(() => void refresh(), 10000);
 const notificationTimer = setInterval(() => notifications.drain(), 2000);
 for (const target of targets) void connect(target);
-if (secureEndpoint) {
+async function startSecureTransport() {
+  const endpoint = secureEndpoint;
+  if (!endpoint) return;
   await refresh();
   if (ready) {
     const runtimeCatalog = () => {
       assert(ready && !stopped, 503, '加密主机暂不可用');
-      secureEndpoint.current();
+      endpoint.current();
       return encryptedHostCatalogSchema.parse({
         catalogVersion: 1,
         machineId,
@@ -1352,10 +1408,10 @@ if (secureEndpoint) {
     const products = new HostProductCatalog({
       db: journal.db,
       authority: {
-        serverOrigin: secureEndpoint.connection.origin,
-        accountId: secureEndpoint.connection.owner,
-        rootKeyId: secureEndpoint.current().checkpoint.rootKeyId,
-        hostDeviceId: secureEndpoint.deviceId,
+        serverOrigin: endpoint.connection.origin,
+        accountId: endpoint.connection.owner,
+        rootKeyId: endpoint.current().checkpoint.rootKeyId,
+        hostDeviceId: endpoint.deviceId,
       },
       runtime: runtimeCatalog,
     });
@@ -1368,7 +1424,7 @@ if (secureEndpoint) {
       }
     };
     secureTransport = new EncryptedHostTransport({
-      endpoint: secureEndpoint,
+      endpoint,
       dispatcher: commands,
       products,
       invalidated: invalidateAuthorizations,
@@ -1380,10 +1436,9 @@ if (secureEndpoint) {
         };
       },
       closed: () => {
-        for (const host of workspaces.values()) host.previewManager.invalidate();
         invalidateAuthorizations();
         try {
-          secureEndpoint.current();
+          requireRuntimeBoundary();
         } catch {
           void stop();
         }
@@ -1392,6 +1447,11 @@ if (secureEndpoint) {
     });
   }
 }
+await startSecureTransport().catch((error) => {
+  if (!values.desktop) throw error;
+  requireRuntimeBoundary();
+  reportHealth();
+});
 async function stop() {
   if (stopped) return;
   stopped = true;

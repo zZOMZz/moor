@@ -26,7 +26,7 @@ function createClientWindow({ BrowserWindow, session, origin, preloadPath, regis
     height: 850,
     minWidth: 390,
     minHeight: 550,
-    title: 'Moor · 加密工作区',
+    title: 'Moor',
     webPreferences: {
       session,
       preload: preloadPath,

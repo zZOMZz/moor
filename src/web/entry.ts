@@ -7,6 +7,14 @@ export async function start() {
     location.protocol === 'moor-client:' &&
     (window as unknown as { moorSecure?: { version: number } }).moorSecure?.version === 1
   ) {
+    if (
+      (window as unknown as { moorWorkspace?: { version: number } }).moorWorkspace?.version === 1
+    ) {
+      const { bootWorkspace } = await import('./workspace-app');
+      await bootWorkspace();
+      window.dispatchEvent(new Event('moor:ready'));
+      return;
+    }
     const { bootSecure } = await import('./secure-app');
     await bootSecure();
     window.dispatchEvent(new Event('moor:ready'));

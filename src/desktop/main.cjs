@@ -20,7 +20,7 @@ const {
   DesktopNotifications,
   notificationSettings,
   validateSettings,
-  notificationUrl,
+  validateEvent,
 } = require('./notifications.cjs');
 const { createAttachmentSaver } = require('./attachment-save.cjs');
 const { DesktopGitHubSettings } = require('./github-settings.cjs');
@@ -34,8 +34,15 @@ const {
 } = require('./device-metadata.cjs');
 const { DesktopGoogleAuth } = require('./google-auth.cjs');
 const { DesktopSecureBridge } = require('./secure-client.cjs');
+const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
+const { DesktopLegacyCache } = require('./legacy-cache.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
-const { CLIENT_SCHEME, CLIENT_PRIVILEGES, CLIENT_URL } = require('./client-assets.cjs');
+const {
+  CLIENT_SCHEME,
+  CLIENT_PRIVILEGES,
+  CLIENT_URL,
+  CLIENT_ORIGIN,
+} = require('./client-assets.cjs');
 const {
   CLIENT_PARTITION,
   prepareClientSession,
@@ -70,8 +77,6 @@ settings.agents = Array.isArray(settings.agents)
   : ['codex'];
 settings.notifications = notificationSettings(settings.notifications);
 let settingsWindow,
-  localWindow,
-  remoteWindow,
   secureWindow,
   bridge,
   quitting = false,
@@ -83,6 +88,8 @@ let settingsWindow,
   recovering = false,
   restart;
 let requestedView = 'local';
+let requestedNotification = null;
+let navigationRevision = 0;
 let localReadyGeneration = 0,
   localReadyChain = Promise.resolve();
 const githubSettings = new DesktopGitHubSettings({ bridge: () => bridge });
@@ -92,6 +99,7 @@ const agentSettings = new DesktopAgentSettings({ bridge: () => bridge });
 const mcpSettings = new DesktopMcpSettings({ bridge: () => bridge });
 const deviceMetadata = new DesktopDeviceMetadata({ bridge: () => bridge });
 let deviceNameState;
+let localConnection;
 const contentRoot = path.join(__dirname, 'runtime');
 const env = {
   ...process.env,
@@ -118,6 +126,24 @@ const write = (file, value) => {
   }
 };
 const contentWindows = new Map();
+const workspaceClient = new DesktopWorkspaceBridge({
+  registry: contentWindows,
+  window: () => secureWindow,
+  local: () => (!quitting && bridge?.connected ? localConnection : undefined),
+  origin: () => settings.server,
+  loadRuntime: () => import(pathToFileURL(path.join(contentRoot, 'workspace-client.mjs')).href),
+});
+const legacyCache = new DesktopLegacyCache({
+  workspace: workspaceClient,
+  BrowserWindow,
+  ipcMain,
+  sessionFor: (source) =>
+    session.fromPartition(
+      source === 'local' ? 'persist:personal-local' : 'persist:personal-remote',
+    ),
+  preloadPath: path.join(__dirname, 'legacy-cache-preload.cjs'),
+  loadRuntime: () => import(pathToFileURL(path.join(contentRoot, 'workspace-client.mjs')).href),
+});
 const secureClient = new DesktopSecureBridge({
   registry: contentWindows,
   remoteWindow: () => secureWindow,
@@ -133,13 +159,6 @@ const secureClient = new DesktopSecureBridge({
   },
   loadRuntime: () => import(pathToFileURL(path.join(contentRoot, 'desktop-client.mjs')).href),
 });
-const googleAuth = new DesktopGoogleAuth({
-  registry: contentWindows,
-  remoteWindow: () => remoteWindow,
-  origin: () => settings.server,
-  openExternal: (url) => shell.openExternal(url),
-  confirm: (window, options) => dialog.showMessageBox(window, options),
-});
 const secureGoogleAuth = new DesktopGoogleAuth({
   registry: contentWindows,
   remoteWindow: () => secureWindow,
@@ -152,6 +171,7 @@ const secureAccount = new DesktopSecureAccount({
   remoteWindow: () => secureWindow,
   origin: () => settings.server,
   onInvalidate: (contents) => {
+    workspaceClient.invalidate(contents, 'remote');
     secureClient.invalidate(contents);
     secureGoogleAuth.invalidate(contents);
     return secureGoogleAuth.cookieWrites;
@@ -188,54 +208,9 @@ function endpoint(value) {
     throw new Error('请填写服务根地址，例如 https://moor.example.com');
   return u.origin;
 }
-function lockedWindow(origin, partition) {
-  const window = new BrowserWindow({
-    width: 1200,
-    height: 850,
-    minWidth: 720,
-    minHeight: 550,
-    title: 'Moor',
-    webPreferences: {
-      partition,
-      preload: path.join(__dirname, 'web-preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-  const contents = window.webContents;
-  contentWindows.set(contents, { window, origin });
-  contents.on('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
-    if (mainFrame) {
-      attachmentSaver.invalidate(contents);
-      googleAuth.invalidate(contents);
-      secureClient.invalidate(contents);
-    }
-  });
-  window.on('closed', () => {
-    googleAuth.invalidate(contents);
-    attachmentSaver.invalidate(contents);
-    secureClient.invalidate(contents);
-    contentWindows.delete(contents);
-  });
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  contents.on('will-navigate', (event, url) => {
-    if (new URL(url).origin !== contentWindows.get(contents)?.origin) event.preventDefault();
-  });
-  contents.on('will-redirect', (event, url) => {
-    if (new URL(url).origin !== contentWindows.get(contents)?.origin) event.preventDefault();
-  });
-  return window;
-}
 function openPage(window, origin) {
   const registered = contentWindows.get(window.webContents);
-  if (registered?.trustedClient && origin !== CLIENT_URL) return;
-  if (registered && !registered.trustedClient && registered.origin !== new URL(origin).origin) {
-    googleAuth.invalidate(window.webContents);
-    attachmentSaver.invalidate(window.webContents);
-    secureClient.invalidate(window.webContents);
-    contentWindows.set(window.webContents, { window, origin: new URL(origin).origin });
-  }
+  if (registered?.trustedClient !== true || origin !== CLIENT_URL) return;
   loadPage(window, origin, () => {
     void dialog
       .showMessageBox(window, {
@@ -256,44 +231,21 @@ function openPage(window, origin) {
 }
 function showLocal(event) {
   requestedView = 'local';
-  if (!localOrigin) {
-    showSettings();
-    return;
-  }
-  if (localWindow && !localWindow.isDestroyed()) {
-    localWindow.show();
-    localWindow.focus();
-    if (event) openPage(localWindow, notificationUrl(localOrigin, event));
-    return;
-  }
-  localWindow = lockedWindow(localOrigin, 'persist:personal-local');
-  localWindow.on('closed', () => {
-    localWindow = null;
-  });
-  openPage(localWindow, event ? notificationUrl(localOrigin, event) : localOrigin);
+  navigationRevision++;
+  if (event) requestedNotification = validateEvent(event);
+  return showSecure().then(notifyWorkspaceChanged);
 }
 function showRemote() {
   requestedView = 'remote';
-  if (!settings.server) {
-    showSettings();
-    return;
-  }
-  if (remoteWindow && !remoteWindow.isDestroyed()) {
-    remoteWindow.show();
-    return;
-  }
-  remoteWindow = lockedWindow(settings.server, 'persist:personal-remote');
-  remoteWindow.on('closed', () => {
-    remoteWindow = null;
-  });
-  openPage(remoteWindow, settings.server);
+  navigationRevision++;
+  return showSecure().then(notifyWorkspaceChanged);
+}
+function notifyWorkspaceChanged() {
+  if (secureWindow && !secureWindow.isDestroyed())
+    secureWindow.webContents.send('moor:workspace-changed');
 }
 let clientPreparation;
 async function showSecure() {
-  if (!settings.server) {
-    showSettings();
-    return;
-  }
   const origin = settings.server;
   try {
     const clientSession = session.fromPartition(CLIENT_PARTITION);
@@ -312,6 +264,7 @@ async function showSecure() {
       preloadPath: path.join(__dirname, 'secure-preload.cjs'),
       registry: contentWindows,
       invalidate: (contents) => {
+        workspaceClient.invalidate(contents);
         secureClient.invalidate(contents);
         secureAccount.invalidate(contents);
         secureGoogleAuth.invalidate(contents);
@@ -326,7 +279,7 @@ async function showSecure() {
   } catch {
     void dialog.showMessageBox({
       type: 'error',
-      title: 'Moor 加密工作区未能打开',
+      title: 'Moor 工作区未能打开',
       message: '安装包中的可信客户端资源不可用，请重新安装当前版本。',
     });
   }
@@ -377,6 +330,7 @@ function health() {
     unpaired: '尚未配对。登录个人服务后，使用“添加电脑”的配对码连接。',
     connected: '中转链路已连接。手机和其他电脑可以访问在线工作区。',
     reconnecting: '中转服务不可达，正在重连。本机任务可以继续，远程草稿不会自动发送。',
+    unavailable: '远程连接暂不可用。本机任务可以继续；请检查连接后手动核查原操作。',
     revoked: '设备授权失效或被其他连接替换，请获取新的配对码。',
   };
   return {
@@ -406,6 +360,8 @@ function health() {
   };
 }
 function startBridge() {
+  localConnection = undefined;
+  workspaceClient.invalidate(undefined, 'local');
   const args = [
     path.join(contentRoot, 'bridge.mjs'),
     '--desktop',
@@ -465,13 +421,18 @@ function startBridge() {
       return;
     }
     if (message?.type === 'health') {
+      const previousNameRevision = deviceNameState?.metadata.revision;
       try {
         deviceNameState = deviceMetadataState(message.deviceMetadata);
       } catch {}
       if (
         ['ready', 'unavailable'].includes(message.local) &&
-        ['unpaired', 'connected', 'reconnecting', 'revoked'].includes(message.relay)
+        ['unpaired', 'connected', 'reconnecting', 'unavailable', 'revoked'].includes(message.relay)
       ) {
+        const catalogChanged =
+          bridgeHealth.local !== message.local ||
+          bridgeHealth.workspaces !== (Number(message.workspaces) || 0) ||
+          previousNameRevision !== deviceNameState?.metadata.revision;
         bridgeHealth = {
           local: message.local,
           relay: message.relay,
@@ -484,6 +445,7 @@ function startBridge() {
           attempt: 0,
         };
         bridgeStatus = message.local === 'ready' ? '本机工作区已就绪' : '等待本机执行组件恢复连接';
+        if (catalogChanged) notifyWorkspaceChanged();
       }
       return;
     }
@@ -512,9 +474,33 @@ function startBridge() {
         });
         if (!current()) return;
         localOrigin = origin;
+        workspaceClient.invalidate(undefined, 'local');
+        const identity = message.identity;
+        localConnection =
+          identity &&
+          identity.owner === 'local-desktop' &&
+          ['deviceId', 'workspaceId', 'machineId'].every(
+            (key) =>
+              typeof identity[key] === 'string' && /^[A-Za-z0-9_:-]{1,200}$/.test(identity[key]),
+          ) &&
+          typeof identity.userId === 'string' &&
+          identity.userId.length > 0 &&
+          identity.userId.length <= 1000 &&
+          /^[A-Za-z0-9_-]{43}$/.test(message.secret)
+            ? Object.freeze({
+                origin,
+                cookie: 'personal=' + message.secret,
+                identity: {
+                  owner: identity.owner,
+                  deviceId: identity.deviceId,
+                  workspaceId: identity.workspaceId,
+                  machineId: identity.machineId,
+                  userId: identity.userId,
+                },
+              })
+            : undefined;
         bridgeStatus = '本机界面已启动，等待执行组件';
-        if (localWindow && !localWindow.isDestroyed()) openPage(localWindow, origin);
-        else if (requestedView === 'local') showLocal();
+        notifyWorkspaceChanged();
       } catch {
         if (!current()) return;
         bridgeStatus = '本机界面初始化失败，请重新打开 Moor。';
@@ -537,6 +523,8 @@ function startBridge() {
     mcpSettings.disconnect(child);
     if (bridge !== child) return;
     bridge = null;
+    localConnection = undefined;
+    workspaceClient.invalidate(undefined, 'local');
     localOrigin = '';
     bridgeHealth.local = 'unavailable';
     bridgeHealth.relay = settings.server ? 'reconnecting' : 'unpaired';
@@ -564,6 +552,8 @@ async function restartBridgeOnce() {
   hostRecovery.stop();
   clearTimeout(restart);
   localOrigin = '';
+  localConnection = undefined;
+  workspaceClient.invalidate(undefined, 'local');
   const old = bridge;
   if (old) githubSettings.disconnect(old);
   if (old) previewSettings.disconnect(old);
@@ -788,7 +778,7 @@ ipcMain.handle('personal:save', async (event, value) => {
       expectedRevision: value.nameRevision,
     });
   if (changed) {
-    googleAuth.invalidate();
+    workspaceClient.invalidate(undefined, 'remote');
     secureClient.invalidate();
     secureGoogleAuth.invalidate();
     secureAccount.invalidate();
@@ -801,10 +791,6 @@ ipcMain.handle('personal:save', async (event, value) => {
     notifications: settings.notifications,
   };
   write(settingsFile, settings);
-  if (changed && remoteWindow) {
-    remoteWindow.close();
-    remoteWindow = null;
-  }
   if (changed && secureWindow) {
     secureWindow.close();
     secureWindow = null;
@@ -827,7 +813,8 @@ ipcMain.handle('personal:notification-test', async (event) => {
 });
 ipcMain.handle('moor:save-attachment', (event, value) => attachmentSaver.save(event, value));
 function googleFor(event) {
-  if (contentWindows.get(event.sender)?.trustedClient !== true) return googleAuth;
+  if (contentWindows.get(event.sender)?.trustedClient !== true)
+    throw Error('Google 登录只能从当前 Moor 主窗口启动。');
   if (secureAccount.isLoggingOut(event.sender)) throw new Error('正在退出账号，请完成后重试。');
   return secureGoogleAuth;
 }
@@ -837,11 +824,45 @@ ipcMain.handle('moor:google-auth-complete', (event, value) =>
 );
 ipcMain.handle('moor:google-auth-cancel', (event, value) => googleFor(event).cancel(event, value));
 ipcMain.handle('moor:secure-client', (event, value) => secureClient.request(event, value));
+ipcMain.handle('moor:workspace-client', (event, value) => workspaceClient.request(event, value));
+ipcMain.handle('moor:legacy-cache', (event, value) => legacyCache.request(event, value));
+function trustedWorkspaceDocument(event, value) {
+  const registered = contentWindows.get(event.sender);
+  if (
+    value !== undefined ||
+    !secureWindow ||
+    secureWindow.isDestroyed() ||
+    registered?.window !== secureWindow ||
+    registered.trustedClient !== true ||
+    event.sender.isDestroyed() ||
+    secureWindow.webContents !== event.sender ||
+    !event.senderFrame ||
+    event.senderFrame !== event.sender.mainFrame ||
+    event.senderFrame.url !== CLIENT_URL ||
+    event.senderFrame.origin !== CLIENT_ORIGIN
+  )
+    throw Error('本机设置只能从当前 Moor 主窗口打开。');
+}
+ipcMain.handle('moor:workspace-context', (event, value) => {
+  trustedWorkspaceDocument(event, value);
+  return {
+    localReady: !!localConnection,
+    view: requestedView,
+    notification: requestedNotification,
+    revision: navigationRevision,
+  };
+});
+ipcMain.handle('moor:open-settings', (event, value) => {
+  trustedWorkspaceDocument(event, value);
+  showSettings();
+  return { opened: true };
+});
 ipcMain.handle('moor:secure-account', (event, value) => secureAccount.request(event, value));
 ipcMain.handle('moor:cancel-attachment-save', (event) => attachmentSaver.cancel(event));
 ipcMain.handle('personal:open', async (event, mode) => {
   trusted(event);
-  mode === 'secure' ? await showSecure() : mode === 'remote' ? showRemote() : showLocal();
+  if (mode === 'secure' || mode === 'remote') await showRemote();
+  else await showLocal();
 });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -858,9 +879,7 @@ else {
         {
           label: 'Moor',
           submenu: [
-            { label: '本机工作区', click: () => showLocal() },
-            { label: '我的所有电脑', click: showRemote },
-            { label: '加密工作区', click: showSecure },
+            { label: '打开 Moor', click: () => showLocal() },
             { label: '连接设置…', accelerator: 'CmdOrCtrl+,', click: showSettings },
             { type: 'separator' },
             { role: 'quit' },
@@ -897,8 +916,9 @@ else {
     agentSettings.close();
     deviceMetadata.close();
     mcpSettings.close();
-    googleAuth.close();
     secureClient.close();
+    workspaceClient.close();
+    legacyCache.close();
     secureGoogleAuth.close();
     secureAccount.close();
     clearTimeout(restart);

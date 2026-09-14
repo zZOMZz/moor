@@ -1,5 +1,7 @@
+import { actorSchema } from '../attention';
 import { z } from 'zod';
 import { CliError } from './args';
+import { publicAgentFailure } from '../agent-errors';
 import type { CliConnection } from './state';
 import {
   localCliChallenge,
@@ -39,14 +41,18 @@ export class CliHttpError extends CliError {
   constructor(
     public status: number,
     public rejected: boolean,
+    message?: string,
   ) {
     super(
       status === 401 ? 'authentication' : status === 409 ? 'conflict' : 'http',
-      status === 401
-        ? '登录或主机凭据已失效。'
-        : rejected
-          ? '主机明确拒绝了本次新请求。'
-          : '服务器未能确认请求；请核查原操作。',
+      publicAgentFailure(
+        new Error(message ?? ''),
+        status === 401
+          ? '登录或主机凭据已失效。'
+          : rejected
+            ? '主机明确拒绝了本次新请求。'
+            : '服务器未能确认请求；请核查原操作。',
+      ),
       status === 401 ? 3 : rejected ? 5 : 4,
     );
   }
@@ -190,12 +196,29 @@ export class CliHttp {
       throw new CliHttpError(
         response.status,
         !!value && typeof value === 'object' && (value as { rejected?: unknown }).rejected === true,
+        value &&
+          typeof value === 'object' &&
+          typeof (value as { error?: unknown }).error === 'string'
+          ? (value as { error: string }).error
+          : undefined,
       );
     return { value, headers: response.headers };
   }
   async json(path: string, body?: unknown, limit?: number) {
     return (await this.request(path, body === undefined ? undefined : JSON.stringify(body), limit))
       .value;
+  }
+  async identityContext() {
+    const value = z
+      .object({ owner: z.string().nullable(), actor: actorSchema.nullish() })
+      .parse(await this.json('/api/me'));
+    if (
+      !value.owner ||
+      (this.owner && value.owner !== this.owner) ||
+      (value.actor && value.actor.accountId !== value.owner)
+    )
+      throw new CliError('authentication', '登录账号与此连接不匹配。', 3);
+    return { owner: value.owner, actor: value.actor ?? undefined };
   }
   async identity() {
     const result = z.object({ owner: z.string().nullable() }).parse(await this.json('/api/me'));

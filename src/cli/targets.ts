@@ -2,8 +2,11 @@ import { z } from 'zod';
 import { agentSchema, id, runtimeWorkspaceSchema } from '../protocol';
 import { CliError } from './args';
 import { CliHttp } from './http';
-import { cliTargetSchema, type CliTarget } from './state';
-const catalogSchema = z
+import {
+  workspaceTargetSchema as cliTargetSchema,
+  type WorkspaceTarget as CliTarget,
+} from '../workspace-target';
+export const catalogSchema = z
   .array(
     z.object({
       id,
@@ -33,7 +36,7 @@ const catalogSchema = z
     }),
   )
   .max(1000);
-const devicesSchema = z
+export const devicesSchema = z
   .array(
     z.object({
       id,

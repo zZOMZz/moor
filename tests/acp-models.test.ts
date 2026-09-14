@@ -65,6 +65,23 @@ async function fixture(
       },
     },
   );
+  const waitSignal = (matches: (message: any) => boolean) =>
+    Promise.race([
+      new Promise<void>((done) => {
+        const inspect = () => {
+          if (signals.some(matches)) {
+            observers.delete(inspect);
+            done();
+          }
+        };
+        observers.add(inspect);
+        inspect();
+      }),
+      closed!.then(() => {
+        throw new Error('Synthetic ACP exited before signal');
+      }),
+    ]);
+  let barrier = 0;
   return {
     session,
     wires,
@@ -75,17 +92,13 @@ async function fixture(
     release() {
       child.send('release');
     },
-    held: () =>
-      new Promise<void>((done) => {
-        const inspect = () => {
-          if (signals.some((s) => s.kind === 'held')) {
-            observers.delete(inspect);
-            done();
-          }
-        };
-        observers.add(inspect);
-        inspect();
-      }),
+    held: () => waitSignal((message) => message.kind === 'held'),
+    drain() {
+      const id = ++barrier;
+      const waiting = waitSignal((message) => message.kind === 'barrier' && message.id === id);
+      child.send({ kind: 'barrier', id });
+      return waiting;
+    },
   };
 }
 
@@ -103,6 +116,7 @@ test('new and loaded sessions report observed current model without inventing a 
 test('model probe reads its returned effort choices and never prompts', async (t) => {
   const f = await fixture(t);
   const caps = await f.session.configureModel!('b');
+  await f.drain();
   assert.equal(caps.currentModelId, 'b');
   assert.equal(caps.defaultModelId, 'a');
   assert.deepEqual(
@@ -120,6 +134,7 @@ test('sending first changes the model, validates its new efforts, then dispatche
     modelId: 'b',
     configOptionValues: { effort: 'high' },
   });
+  await f.drain();
   assert.deepEqual(f.methods(), [
     'initialize',
     'session/new',
@@ -143,6 +158,7 @@ test('obsolete model, previous model effort and stale config IDs cannot dispatch
   ]) {
     const f = await fixture(t);
     await assert.rejects(f.session.prompt({ prompt: 'Never send', ...input }), /模型|配置/);
+    await f.drain();
     assert.equal(f.methods().includes('session/prompt'), false);
   }
 });
@@ -163,6 +179,7 @@ test('removed configuration or a rejected model cannot be presented as a success
   for (const settings of [{ removeOptions: true }, { rejectSelection: true }]) {
     const f = await fixture(t, settings);
     await assert.rejects(f.session.configureModel!('b'), /模型/);
+    await f.drain();
     assert.equal(f.methods().includes('session/prompt'), false);
   }
 });
@@ -176,6 +193,7 @@ test('a pending configuration probe excludes prompts and checks revoked authorit
   f.revoke();
   f.release();
   await rejected;
+  await f.drain();
   assert.equal(f.methods().includes('session/prompt'), false);
 });
 
@@ -195,6 +213,7 @@ test('known upstream model failures expose fixed guidance and never fall back or
       f.session.prompt({ prompt: 'Keep this original input', modelId: 'b' }),
       (error: unknown) => error instanceof Error && error.message === expected,
     );
+    await f.drain();
     assert.equal(f.methods().filter((method) => method === 'session/set_config_option').length, 1);
     assert.equal(f.methods().includes('session/prompt'), false);
   }

@@ -124,7 +124,7 @@ export function showQuestionPanel(props: QuestionPanelProps | undefined) {
     props ? <QuestionPanel key={questionDraftKey(props.item.request)} {...props} /> : null,
   );
 }
-function QuestionPanel(props: QuestionPanelProps) {
+export function QuestionPanel(props: QuestionPanelProps) {
   const [values, setValues] = useState(props.values),
     [error, setError] = useState('');
   const request = props.item.request;
@@ -377,7 +377,7 @@ export type SteerPanelProps = {
 export function showSteerPanel(props: SteerPanelProps) {
   paint('#interaction-view', <SteerPanel {...props} />);
 }
-function SteerPanel(props: SteerPanelProps) {
+export function SteerPanel(props: SteerPanelProps) {
   const [draft, setDraft] = useState(props.draft),
     [error, setError] = useState('');
   return (

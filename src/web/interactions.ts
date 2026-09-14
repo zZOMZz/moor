@@ -63,6 +63,14 @@ const savedSchema = z
     closed: z.array(closedSchema).max(50),
   })
   .strict();
+export const interactionSavedSchema = savedSchema;
+export type InteractionSaved = z.infer<typeof savedSchema>;
+export const emptyInteractionSaved = (): InteractionSaved => ({
+  version: 1,
+  drafts: {},
+  steerDraft: '',
+  closed: [],
+});
 type Saved = z.infer<typeof savedSchema>;
 export function interactionKey(scope: InteractionScope) {
   return (

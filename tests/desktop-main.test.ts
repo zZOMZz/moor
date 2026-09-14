@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { JSDOM } from 'jsdom';
 import { notificationIdentity } from '../src/notification-protocol';
+import { CLIENT_URL, CLIENT_ORIGIN } from '../src/desktop/client-assets.cjs';
 
 function gate() {
   let enter!: () => void, release!: () => void;
@@ -43,6 +44,10 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   const nativeTimers = new Map<number, () => void>();
   const cookieWrites: { url: string; value: string }[] = [];
   const openedExternal: string[] = [];
+  const clientPreparation = gate(),
+    clientCreated = gate();
+  let menu: any[] = [];
+  let clientLoaded: ((window: any) => void) | undefined;
   let clearGate: ReturnType<typeof gate> | undefined,
     cookieGate: ReturnType<typeof gate> | undefined;
   let timerId = 0;
@@ -78,8 +83,14 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
           this.webContents.openHandler = fn;
         },
         stop() {},
+        session: options.webPreferences.session,
+        messages: [] as unknown[],
+        send(channel: string, value: unknown) {
+          this.messages.push({ channel, value });
+        },
       });
       windows.push(this);
+      if (options.webPreferences.preload.endsWith('secure-preload.cjs')) clientCreated.enter();
     }
     isDestroyed() {
       return this.destroyed;
@@ -87,7 +98,11 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     loadURL(url: string) {
       this.webContents.emit('did-start-navigation', {}, url, false, true);
       this.urls.push(url);
-      this.webContents.mainFrame = { url, origin: new URL(url).origin };
+      this.webContents.mainFrame = {
+        url,
+        origin: url === CLIENT_URL ? CLIENT_ORIGIN : new URL(url).origin,
+      };
+      if (url === CLIENT_URL) clientLoaded?.(this);
       return Promise.resolve();
     }
     loadFile(path: string) {
@@ -148,7 +163,12 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       },
       showMessageBox: async () => ({ response: 0 }),
     },
-    Menu: { setApplicationMenu() {}, buildFromTemplate: (value: any) => value },
+    Menu: {
+      setApplicationMenu(value: any) {
+        menu = value;
+      },
+      buildFromTemplate: (value: any) => value,
+    },
     session: {
       fromPartition: (name: string) => {
         if (!partitions.has(name))
@@ -222,6 +242,22 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       if (name === 'electron') return electron;
       if (name === 'node:child_process') return { spawn };
       if (name === './recovery.cjs') return { ProcessRecovery: Recovery };
+      if (name === './client-window.cjs')
+        return {
+          ...localRequire(name),
+          // Asset integrity has dedicated tests. Hold only the asynchronous Electron
+          // session setup here, while using the production window constructor.
+          prepareClientSession: async (clientSession: any) => {
+            clientSession.setPermissionRequestHandler(
+              (_: unknown, __: unknown, callback: (allowed: boolean) => void) => callback(false),
+            );
+            clientSession.setPermissionCheckHandler(() => false);
+            clientSession.on('will-download', (event: { preventDefault(): void }) =>
+              event.preventDefault(),
+            );
+            await clientPreparation.waiting;
+          },
+        };
       if (name === './page-loader.cjs')
         return {
           loadPage: (window: any, url: string) => window.loadURL(url),
@@ -250,6 +286,15 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   };
   runInNewContext(await readFile(resolve('src/desktop/main.cjs'), 'utf8'), context);
   await Promise.resolve();
+  assert.deepEqual(
+    Array.from(menu[0].submenu)
+      .filter((item: any) => item.label)
+      .map((item: any) => item.label),
+    ['打开 Moor', '连接设置…'],
+  );
+  menu[0].submenu.find((item: any) => item.label === '连接设置…').click();
+  clientPreparation.release();
+  await clientCreated.entered;
   const settingsWindow = windows[0],
     settingsEvent = () => ({
       sender: settingsWindow.webContents,
@@ -472,12 +517,22 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     origin: 'http://127.0.0.1:4521',
     secret: 'synthetic-secret',
   });
+  await emitMessage(children[0], {
+    type: 'health',
+    local: 'ready',
+    relay: 'unavailable',
+    workspaces: 1,
+  });
+  const sharedHealth = await invoke('personal:health');
+  assert.equal(sharedHealth.local.state, 'ready');
+  assert.equal(sharedHealth.relay.state, 'unavailable');
+  assert.match(sharedHealth.relay.message, /本机任务可以继续/);
   const localWindow = windows.at(-1),
     localEvent = () => ({
       sender: localWindow.webContents,
       senderFrame: localWindow.webContents.mainFrame,
     });
-  assert.match(localWindow.options.webPreferences.preload, /web-preload\.cjs$/);
+  assert.match(localWindow.options.webPreferences.preload, /secure-preload\.cjs$/);
   assert.equal(localWindow.options.webPreferences.sandbox, true);
   assert.equal(localWindow.options.webPreferences.nodeIntegration, false);
   assert.throws(
@@ -567,11 +622,31 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   notices[1].emit('show');
   await sending;
   assert.equal(children[0].sent.at(-1).status, 'shown');
+  const opening = new Promise<any>((resolve) => {
+    clientLoaded = resolve;
+  });
   notices[1].emit('click');
-  const reopened = windows.at(-1),
+  const reopened = await opening,
     url = new URL(reopened.urls.at(-1));
-  assert.equal(url.origin, 'http://127.0.0.1:4521');
-  assert.deepEqual(JSON.parse(url.searchParams.get('notification')!), next);
+  assert.equal(url.href, CLIENT_URL);
+  const mainEvent = () => ({
+    sender: reopened.webContents,
+    senderFrame: reopened.webContents.mainFrame,
+  });
+  assert.deepEqual(invoke('moor:workspace-context', undefined, mainEvent()).notification, next);
+  assert.throws(() => invoke('moor:workspace-context', {}, mainEvent()), /当前 Moor 主窗口/);
+  assert.throws(
+    () =>
+      invoke('moor:workspace-context', undefined, {
+        ...mainEvent(),
+        senderFrame: { ...reopened.webContents.mainFrame },
+      }),
+    /当前 Moor 主窗口/,
+  );
+  const openCount = windows.length;
+  for (const mode of ['local', 'remote', 'secure']) await invoke('personal:open', mode);
+  assert.equal(windows.length, openCount);
+  assert.equal(invoke('moor:open-settings', undefined, mainEvent()).opened, true);
   assert.equal(url.searchParams.has('approve'), false);
   for (const partition of partitions.values()) {
     let allowed = true;
@@ -771,7 +846,15 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     { url: 'http://127.0.0.1:4532', value: 'synthetic-in-flight' },
     { url: 'http://127.0.0.1:4532', value: 'synthetic-current' },
   ]);
-  assert.equal(new URL(reopened.urls.at(-1)).origin, 'http://127.0.0.1:4532');
+  assert.equal(reopened.urls.at(-1), CLIENT_URL);
+  assert.equal(
+    windows.filter(
+      (window) =>
+        !window.isDestroyed() &&
+        window.options.webPreferences.preload.endsWith('secure-preload.cjs'),
+    ).length,
+    1,
+  );
   dom.window.close();
   application.emit('before-quit');
   assert.equal(nativeTimers.size, 0);

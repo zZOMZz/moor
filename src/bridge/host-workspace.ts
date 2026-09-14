@@ -659,6 +659,30 @@ export class HostWorkspace {
       localProjectId,
     );
     const agent = this.store.agents.binding(scope);
+    const activeDocument =
+      this.active.get(sessionId)?.doc ?? this.settlementFailures.get(sessionId);
+    const document = activeDocument ?? this.store.doc(sessionId);
+    let update: string;
+    try {
+      const identity = mirror(document, sessionId);
+      try {
+        const id = identity.getState().session.id;
+        assert(!id || id === sessionId, 409, '会话文档身份与主机记录不匹配');
+        // Early Moor clients created the first turn without an explicit document
+        // id. Repair only this missing field, under the verified host/project scope.
+        if (!id && !activeDocument) {
+          identity.setState((state) => {
+            state.session.id = sessionId;
+          });
+          this.store.transaction(() => this.store.persist(sessionId, document));
+        }
+      } finally {
+        identity.dispose();
+      }
+      update = delta(document, version);
+    } finally {
+      if (!activeDocument) document.free();
+    }
     return {
       ...(agent &&
       agent.id === metadata.agentConfigId &&
@@ -676,12 +700,7 @@ export class HostWorkspace {
           }),
         ),
       },
-      update: delta(
-        this.active.get(sessionId)?.doc ??
-          this.settlementFailures.get(sessionId) ??
-          this.store.doc(sessionId),
-        version,
-      ),
+      update,
       synced: true,
       persisted: !this.settlementFailures.has(sessionId),
       ...(this.settlementFailures.has(sessionId)
@@ -1780,6 +1799,8 @@ export class HostWorkspace {
     if (m.kind === 'turn') {
       const view = mirror(validated.doc, m.sessionId);
       view.setState((s) => {
+        assert(!s.session.id || s.session.id === m.sessionId, 409, '会话文档身份不匹配');
+        s.session.id = m.sessionId;
         const user = s.history.find((t) => t.id === turnId)!;
         user.read = true;
         user.status = 'processing';

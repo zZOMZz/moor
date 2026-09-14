@@ -33,7 +33,7 @@ const pendingSchema = z
   })
   .strict();
 export type PendingGithubAction = z.infer<typeof pendingSchema>;
-const storedSchema = z
+export const githubStoredSchema = z
   .object({
     version: z.literal(1),
     cacheRevision: z.number().int().nonnegative().safe().default(0),
@@ -212,7 +212,7 @@ export class GithubController {
       const value = await this.dependencies.read(githubKey(this.target));
       this.current();
       if (value !== undefined) {
-        const stored = storedSchema.parse(value);
+        const stored = githubStoredSchema.parse(value);
         if (
           githubKey(stored.target) !== githubKey(this.target) ||
           (stored.pending &&
@@ -238,7 +238,7 @@ export class GithubController {
   ) {
     this.current(generation);
     if (this.loadError) throw new Error(this.loadError);
-    const value = storedSchema.parse({
+    const value = githubStoredSchema.parse({
       version: 1,
       cacheRevision: this.cacheRevision + 1,
       target: this.target,

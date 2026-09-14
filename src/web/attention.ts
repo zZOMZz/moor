@@ -19,65 +19,13 @@ import {
 import type { Mutation } from '../protocol';
 import { ApiError } from './api';
 
-const revision = z.number().int().nonnegative();
-const itemSchema: z.ZodType<AttentionItem> = z.object({
-  itemId: z.string(),
-  sessionId: z.string(),
-  localProjectId: z.string(),
-  assistantTurnId: z.string(),
-  userTurnId: z.string(),
-  kind: z.enum(['permission', 'outcome']),
-  lifecycle: z.enum(['active', 'resolved', 'invalidated', 'ended', 'historical']),
-  requestId: z.string().optional(),
-  cause: z
-    .enum([
-      'agent_returned',
-      'execution_failed',
-      'host_stopped',
-      'host_restarted',
-      'user_canceled',
-      'unknown',
-    ])
-    .optional(),
-  eventRevision: revision,
-  sequence: revision,
-  occurredAt: z.number().nullable(),
-  summary: z.string().max(10000),
-  seenRevision: revision,
-  disposition: z.enum(['pending', 'checked', 'needs_followup', 'continued']),
-  observationRevision: revision,
-  followupUserTurnId: z.string().optional(),
-});
-const groupSchema: z.ZodType<AttentionGroup> = z.object({
-  sessionId: z.string(),
-  title: z.string(),
-  isArchived: z.boolean(),
-  items: z.array(itemSchema).max(50),
-  itemCount: revision,
-  nextItemsCursor: z.string().optional(),
-});
-const pageSchema: z.ZodType<AttentionPage> = z.object({
-  sessions: z.array(groupSchema).max(50),
-  total: revision,
-  nextCursor: z.string().optional(),
-  version: revision,
-});
-const detailSchema: z.ZodType<AttentionDetail> = z.object({
-  item: itemSchema,
-  title: z.string(),
-  isArchived: z.boolean(),
-  turn: z.unknown(),
-  userTurn: z.unknown(),
-  permission: z
-    .object({
-      requestId: z.string(),
-      expectedTurnId: z.string(),
-      options: z.array(z.object({ optionId: z.string(), name: z.string(), kind: z.string() })),
-      toolCall: z.unknown(),
-    })
-    .optional(),
-}) as z.ZodType<AttentionDetail>;
-const routeSchema = z
+import {
+  attentionPageSchema as pageSchema,
+  attentionDetailSchema as detailSchema,
+  attentionItemSchema as itemSchema,
+  attentionItemsPageSchema,
+} from '../attention-response';
+export const attentionRouteSchema = z
   .object({
     origin: z.string(),
     actor: actorSchema,
@@ -90,11 +38,14 @@ const routeSchema = z
     localProjectId: z.string(),
   })
   .strict();
-export type AttentionRoute = z.infer<typeof routeSchema>;
+export type AttentionRoute = z.infer<typeof attentionRouteSchema>;
 function routeOf(target: AttentionRoute): AttentionRoute {
-  return routeSchema.parse(
+  return attentionRouteSchema.parse(
     Object.fromEntries(
-      Object.keys(routeSchema.shape).map((key) => [key, target[key as keyof AttentionRoute]]),
+      Object.keys(attentionRouteSchema.shape).map((key) => [
+        key,
+        target[key as keyof AttentionRoute],
+      ]),
     ),
   );
 }
@@ -118,12 +69,21 @@ const operationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('permission'), body: attentionPermissionSchema }),
   z.object({ kind: z.literal('continue'), body: attentionContinueSchema }),
 ]);
+export const attentionDraftSchema = z
+  .object({
+    text: z.string().max(100000),
+    saved: z.boolean(),
+    shared: z.boolean(),
+    insertion: z.string().max(100000).optional(),
+  })
+  .strict();
 export const pendingAttentionSchema = z
   .object({
-    route: routeSchema,
+    route: attentionRouteSchema,
     sessionId: z.string(),
     itemId: z.string(),
     operation: operationSchema,
+    draft: attentionDraftSchema.optional(),
   })
   .strict();
 export type PendingAttention = z.infer<typeof pendingAttentionSchema>;
@@ -317,6 +277,12 @@ export type AttentionDependencies = {
     sessionId: string,
   ) => Promise<string | { text: string; unscoped: boolean }>;
   prepareTurn: (route: AttentionRoute, sessionId: string, text: string) => Promise<Mutation>;
+  deliver?: (
+    original: PendingAttention,
+    retry: boolean,
+    authorized: () => boolean,
+    onPending: (pending?: PendingAttention) => void,
+  ) => Promise<AttentionReceipt>;
   continued: (route: AttentionRoute, sessionId: string, text: string) => Promise<void>;
 };
 
@@ -609,18 +575,11 @@ export class AttentionController {
     try {
       const e = encodeURIComponent;
       const path = `/api/workspaces/${e(target.catalogWorkspaceId)}/replicas/${e(target.replicaId)}/sessions/${e(selected.sessionId)}/attention`;
-      const page = z
-        .object({
-          items: z.array(itemSchema).max(50),
-          total: revision,
-          nextCursor: z.string().optional(),
-          version: revision,
-        })
-        .parse(
-          await this.deps.request(
-            path + '?view=' + this.state.view + '&limit=50&cursor=' + e(group.nextItemsCursor),
-          ),
-        );
+      const page = attentionItemsPageSchema.parse(
+        await this.deps.request(
+          path + '?view=' + this.state.view + '&limit=50&cursor=' + e(group.nextItemsCursor),
+        ),
+      );
       if (generation !== this.generation || request !== this.listGeneration) return;
       if (
         page.items.some(
@@ -778,7 +737,7 @@ export class AttentionController {
     if (!this.state.pending || !this.target()) return;
     const original = this.state.pending,
       target = this.target()!,
-      draft = this.state.draft;
+      draft = original.draft;
     const generation = this.generation,
       selected = this.state.selected;
     await this.perform(original.operation, true, routeAttention(original, target));
@@ -787,12 +746,14 @@ export class AttentionController {
       generation === this.generation &&
       selected === this.state.selected
     ) {
-      await this.deps.compareAndSet(
-        attentionItemKey(target, original.sessionId, original.itemId) + '/draft',
-        draft,
-        undefined,
-      );
-      if (this.state.draft === draft) this.state.draft = undefined;
+      if (draft)
+        await this.deps.compareAndSet(
+          attentionItemKey(target, original.sessionId, original.itemId) + '/draft',
+          draft,
+          undefined,
+        );
+      if (draft && JSON.stringify(this.state.draft) === JSON.stringify(draft))
+        this.state.draft = undefined;
       await this.deps.continued(target, original.sessionId, draft?.text ?? '');
       this.changed();
     }
@@ -805,7 +766,12 @@ export class AttentionController {
       routeAttention(this.state.seenPending, this.target()!),
     );
   }
-  private async perform(operation: AttentionOperation, refresh = true, retry?: PendingAttention) {
+  private async perform(
+    operation: AttentionOperation,
+    refresh = true,
+    retry?: PendingAttention,
+    submittedDraft?: AttentionDraft,
+  ) {
     const seen = operation.kind === 'seen';
     if (seen ? this.state.seenBusy : this.state.busy) throw new Error('请等待当前操作确认。');
     const target = this.target(),
@@ -831,6 +797,9 @@ export class AttentionController {
       sessionId: selected.sessionId,
       itemId: selected.itemId,
       operation,
+      ...(operation.kind === 'continue' && submittedDraft
+        ? { draft: structuredClone(submittedDraft) }
+        : {}),
     };
     if (seen) {
       this.state.seenBusy = true;
@@ -841,19 +810,32 @@ export class AttentionController {
     }
     this.changed();
     try {
-      const receipt = await deliverAttention(original, {
-        read: this.deps.read,
-        compareAndSet: this.deps.compareAndSet,
-        request: this.deps.request,
-        isAuthorized: () => !!current() && this.canWrite(operation.kind === 'continue'),
-        onPending: (pending) => {
-          if (current()) {
-            if (seen) this.state.seenPending = pending;
-            else this.state.pending = pending;
-            this.changed();
-          }
-        },
-      });
+      const receipt = this.deps.deliver
+        ? await this.deps.deliver(
+            original,
+            !!retry,
+            () => !!current() && this.canWrite(operation.kind === 'continue'),
+            (pending) => {
+              if (current()) {
+                if (seen) this.state.seenPending = pending;
+                else this.state.pending = pending;
+                this.changed();
+              }
+            },
+          )
+        : await deliverAttention(original, {
+            read: this.deps.read,
+            compareAndSet: this.deps.compareAndSet,
+            request: this.deps.request,
+            isAuthorized: () => !!current() && this.canWrite(operation.kind === 'continue'),
+            onPending: (pending) => {
+              if (current()) {
+                if (seen) this.state.seenPending = pending;
+                else this.state.pending = pending;
+                this.changed();
+              }
+            },
+          });
       if (!current()) return;
       // A response to a read started before this receipt cannot undo the confirmed state.
       if (!seen) {
@@ -927,7 +909,7 @@ export class AttentionController {
     this.changed();
   }
   editDraft(text: string) {
-    if (this.state.draft && this.state.pending?.operation.kind !== 'continue') {
+    if (this.state.draft && !this.state.busy) {
       this.state.draft = { ...this.state.draft, text, saved: false };
       this.changed();
     }
@@ -1003,14 +985,19 @@ export class AttentionController {
       mutation.kind !== 'turn'
     )
       throw new Error('后续回合与原事项不匹配。');
-    await this.perform({
-      kind: 'continue',
-      body: {
-        mutation,
-        eventRevision: detail.item.eventRevision,
-        observationRevision: detail.item.observationRevision,
+    await this.perform(
+      {
+        kind: 'continue',
+        body: {
+          mutation,
+          eventRevision: detail.item.eventRevision,
+          observationRevision: detail.item.observationRevision,
+        },
       },
-    });
+      true,
+      undefined,
+      draft,
+    );
     if (generation !== this.generation || selected !== this.state.selected) return;
     await this.deps.compareAndSet(
       attentionItemKey(target, detail.item.sessionId, detail.item.itemId) + '/draft',

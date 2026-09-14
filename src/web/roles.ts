@@ -25,7 +25,7 @@ export type RoleEdit = {
   selection: RunSelection;
   instructions: string;
 };
-const storedSchema = z
+export const rolesStoredSchema = z
   .object({
     version: z.literal(1),
     cacheRevision: z.number().int().nonnegative().safe(),
@@ -131,7 +131,7 @@ export class RolesController {
       const raw = await this.deps.read(rolesKey(this.target));
       this.current();
       if (raw !== undefined) {
-        const saved = storedSchema.parse(raw);
+        const saved = rolesStoredSchema.parse(raw);
         if (rolesKey(saved.target) !== rolesKey(this.target))
           throw new Error('角色操作记录的执行范围不匹配。');
         if (
@@ -156,7 +156,7 @@ export class RolesController {
   }
   private async save(pending: RoleAction | undefined, generation: number, ending = false) {
     this.current(generation);
-    const value = storedSchema.parse({
+    const value = rolesStoredSchema.parse({
       version: 1,
       cacheRevision: this.cacheRevision + 1,
       target: this.target,

@@ -34,6 +34,8 @@ const storedSchema = z
     pending: pendingSchema.optional(),
   })
   .strict();
+export const gitStoredSchema = storedSchema;
+export type GitSaved = z.infer<typeof storedSchema>;
 export function gitWorkspaceKey(target: GitTarget) {
   return (
     'git-workspace-v1/' +
@@ -242,12 +244,14 @@ export class GitWorkspaceController {
       await this.deliver(true);
     });
   }
-  remove() {
+  remove(reviewed?: GitStateResult) {
+    reviewed = reviewed === undefined ? undefined : gitStateResultSchema.parse(reviewed);
     return this.work(async () => {
       if (this.pending || this.loadError || !this.loaded) throw new Error('请先确认原 Git 操作。');
       await this.readState();
       this.current();
       const state = this.state!;
+      this.assertReviewedDirectory(state, reviewed);
       if (!state.canRemove || state.execution.mode !== 'worktree' || !state.execution.executionId)
         throw new Error(
           state.execution.reason || '此工作目录当前不能清理；请先确认未提交改动与活动回合。',
@@ -266,12 +270,23 @@ export class GitWorkspaceController {
       await this.deliver(true);
     });
   }
-  detach() {
+  private assertReviewedDirectory(state: GitStateResult, reviewed?: GitStateResult) {
+    if (
+      reviewed &&
+      (state.execution.executionId !== reviewed.execution.executionId ||
+        state.execution.revision !== reviewed.execution.revision ||
+        state.repository.version !== reviewed.repository.version)
+    )
+      throw Error('审阅的工作目录或文件状态已改变，请重新读取并确认。');
+  }
+  detach(reviewed?: GitStateResult) {
+    reviewed = reviewed === undefined ? undefined : gitStateResultSchema.parse(reviewed);
     return this.work(async () => {
       if (this.pending || this.loadError || !this.loaded) throw new Error('请先确认原 Git 操作。');
       await this.readState();
       this.current();
       const state = this.state!;
+      this.assertReviewedDirectory(state, reviewed);
       if (!state.canDetach || state.execution.mode !== 'worktree' || !state.execution.executionId)
         throw new Error(state.execution.reason || '此会话当前不能脱离共享工作目录。');
       await this.stage(

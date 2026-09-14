@@ -77,6 +77,10 @@ function handle(message) {
 }
 let held;
 process.on('message', (message) => {
+  if (message?.kind === 'barrier') {
+    process.send?.({ kind: 'barrier', id: message.id });
+    return;
+  }
   if (message === 'release' && held) {
     const next = held;
     held = undefined;

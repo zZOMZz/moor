@@ -47,6 +47,22 @@ test('trusted window keeps service authority separate from its immutable documen
   });
   assert.equal(registry.get(contents).origin, 'https://relay.example');
   assert(isCurrentContentDocument(registry.get(contents), contents, contents.mainFrame));
+  assert(
+    isCurrentContentDocument(
+      { ...registry.get(contents), origin: '' },
+      contents,
+      contents.mainFrame,
+    ),
+    'a packaged local document needs no remote account',
+  );
+  assert.equal(
+    isCurrentContentDocument(
+      { ...registry.get(contents), origin: '', trustedClient: false },
+      contents,
+      contents.mainFrame,
+    ),
+    false,
+  );
   for (const event of ['will-navigate', 'will-redirect']) {
     for (const url of [
       CLIENT_URL,

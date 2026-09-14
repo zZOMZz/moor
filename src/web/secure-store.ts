@@ -71,6 +71,7 @@ export class IndexedSecureStorage implements SecureStorageBackend {
     private readonly options: {
       locks?: Pick<LockManager, 'request'> | null;
       deadline?: (milliseconds: number) => AbortSignal;
+      databaseName?: 'moor-secure-workspace-v1' | 'moor-desktop-workspace-v1';
     } = {},
   ) {}
   async exclusive<T>(key: string, current: () => void, task: () => Promise<T>): Promise<T> {
@@ -96,7 +97,7 @@ export class IndexedSecureStorage implements SecureStorageBackend {
     if (this.#closed) throw Error('加密本机存储已关闭。');
     return (this.#database ??= new Promise<IDBDatabase>((resolve, reject) => {
       let settled = false;
-      const request = indexedDB.open('moor-secure-workspace-v1', 1);
+      const request = indexedDB.open(this.options.databaseName ?? 'moor-secure-workspace-v1', 1);
       request.onupgradeneeded = () => request.result.createObjectStore('state');
       request.onerror = () => {
         settled = true;
