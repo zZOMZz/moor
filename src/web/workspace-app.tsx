@@ -1,3 +1,12 @@
+import { AppearanceSettings } from './appearance';
+import {
+  NavigationSessions,
+  useNavigationSessions,
+  navigationProjects,
+  projectKey,
+  workspaceKey,
+  type NavigationProject,
+} from './workspace-navigation';
 import { useWorkspaceLayout, SidebarSizer, WorkspaceToolMenu } from './workspace-layout';
 import {
   SessionTimeline,
@@ -22,6 +31,13 @@ import {
   PanelLeft,
   GitFork,
   Paperclip,
+  ArrowUp,
+  Square,
+  SquarePen,
+  Search,
+  ChevronDown,
+  GitBranch,
+  CircleUserRound,
   X,
 } from 'lucide-react';
 import { WorkspaceController, type WorkspaceClientState } from './workspace-controller';
@@ -58,12 +74,8 @@ import { WorkspaceAttachmentView } from './workspace-attachment-view';
 import { ATTACHMENTS_FEATURE } from '../attachment-protocol';
 import { WorkspaceInteractionUI } from './workspace-interaction-ui';
 import { WorkspaceSkillsUI } from './workspace-skills-ui';
-import { WorkspaceMcpUI } from './workspace-mcp-ui';
 import { WorkspaceGitUI } from './workspace-git-ui';
 import { WorkspaceForkUI, type WorkspaceForkHandle } from './workspace-fork-ui';
-import { WorkspacePreviewUI } from './workspace-preview-ui';
-import { WorkspaceRolesUI } from './workspace-roles-ui';
-import { WorkspaceTasksUI } from './workspace-tasks-ui';
 
 type Run = (action: () => Promise<unknown>) => boolean;
 const message = (error: unknown) =>
@@ -80,6 +92,8 @@ function WorkspaceConversation({
   onDirty,
   addProject,
   configureAgent,
+  projects,
+  onProjectChange,
 }: {
   controller: WorkspaceController;
   state: WorkspaceClientState;
@@ -88,12 +102,31 @@ function WorkspaceConversation({
   onDirty(value: boolean): void;
   addProject?: () => void;
   configureAgent?: () => void;
+  projects: NavigationProject[];
+  onProjectChange(project: NavigationProject): void;
 }) {
   const [text, setText] = useState(state.draft?.text ?? ''),
     [selection, setSelection] = useState<RunSelection>(state.draft?.selection ?? {});
   const [saveError, setSaveError] = useState('');
   const contentPanel = useRef<WorkspaceContentHandle>(null),
-    forkPanel = useRef<WorkspaceForkHandle>(null);
+    forkPanel = useRef<WorkspaceForkHandle>(null),
+    gitPanel = useRef<{ open(): boolean }>(null),
+    skillsPanel = useRef<{ open(): boolean }>(null);
+  const [branch, setBranch] = useState<string>();
+  const readBranch = useCallback(() => {
+    let active = true;
+    if (!state.sessionId || state.offline) return () => {};
+    void controller
+      .readGitContext()
+      .then((value) => {
+        if (active) setBranch(value?.execution.branch ?? value?.repository.branch);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [controller, state.sessionId, state.offline]);
+  useEffect(readBranch, [readBranch]);
   const draftVersion = useRef(0),
     saving = useRef(false),
     active = useRef(true);
@@ -183,6 +216,7 @@ function WorkspaceConversation({
     validation = message(error);
   }
   const pending = state.ledger?.operations.filter((entry) => entry.status === 'pending') ?? [];
+  const retiredTask = state.ledger?.tasks?.[state.sessionId]?.pending;
   const attachments = state.ledger?.attachments?.[state.sessionId]?.items ?? [];
   const attachmentSupported = state.project?.runtime.features?.includes(ATTACHMENTS_FEATURE);
   const attachmentBlocked = attachments.some(
@@ -191,60 +225,85 @@ function WorkspaceConversation({
       item.pending ||
       attachmentInputReason(item.reference, session.agent?.inputCapabilities),
   );
+  const canSend =
+    !busy &&
+    !saving.current &&
+    !saveError &&
+    !validation &&
+    (text.trim() || attachments.length) &&
+    !attachmentBlocked &&
+    !state.offline &&
+    !pending.length &&
+    !retiredTask &&
+    !activeTurns.length &&
+    !state.ledger?.interactions?.[state.sessionId]?.value.pending;
   return (
     <>
       <header className="workspace-session-header">
-        <div>
-          <small>
-            {state.project?.projectName} · {state.project?.hostName}
-          </small>
-          <h1>{session.meta.title || '未命名会话'}</h1>
+        <h1>{session.meta.title || '新对话'}</h1>
+        <div className="workspace-header-tools">
+          <WorkspaceToolMenu>
+            <WorkspaceSessionTools controller={controller} state={state} busy={busy} run={run} />
+            <WorkspaceForkUI
+              controller={controller}
+              state={state}
+              busy={busy}
+              run={run}
+              controlRef={forkPanel}
+            />
+            <SessionInformation
+              history={session.history}
+              disabled={busy || dirty.current.composer || dirty.current.interaction || !!saveError}
+              onCommand={(command) =>
+                run(() => controller.saveDraft(text ? text + '\n' + command : command, selection))
+              }
+              onFiles={
+                state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE)
+                  ? (turnId) => {
+                      contentPanel.current?.open('changes', turnId);
+                    }
+                  : undefined
+              }
+            />
+            <button
+              disabled={busy}
+              onClick={() => run(() => controller.refreshSession())}
+              aria-label="刷新会话"
+            >
+              <RefreshCw size={16} />
+              <span>刷新会话</span>
+            </button>
+          </WorkspaceToolMenu>
+          <WorkspaceToolMenu kind="environment" hidden={!session.history.length}>
+            <WorkspaceContentUI
+              controller={controller}
+              busy={busy}
+              run={run}
+              controlRef={contentPanel}
+            />
+            <div className="workspace-environment-location">
+              <Monitor size={16} />
+              <span>{state.project?.hostName}</span>
+              <small>{state.offline ? '离线' : '已连接'}</small>
+            </div>
+            <WorkspaceGitUI
+              controller={controller}
+              state={state}
+              busy={busy}
+              run={run}
+              controlRef={gitPanel}
+              onChanged={readBranch}
+            />
+            <WorkspaceGithubUI controller={controller} state={state} busy={busy} run={run} />
+          </WorkspaceToolMenu>
         </div>
-        <WorkspaceToolMenu>
-          <WorkspaceContentUI
-            controller={controller}
-            busy={busy}
-            run={run}
-            controlRef={contentPanel}
-          />
-          <WorkspaceSkillsUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceMcpUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceGitUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceForkUI
-            controller={controller}
-            state={state}
-            busy={busy}
-            run={run}
-            controlRef={forkPanel}
-          />
-          <WorkspacePreviewUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceRolesUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceTasksUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceGithubUI controller={controller} state={state} busy={busy} run={run} />
-          <WorkspaceSessionTools controller={controller} state={state} busy={busy} run={run} />
-        </WorkspaceToolMenu>
-        <SessionInformation
-          history={session.history}
-          disabled={busy || dirty.current.composer || dirty.current.interaction || !!saveError}
-          onCommand={(command) =>
-            run(() => controller.saveDraft(text ? text + '\n' + command : command, selection))
-          }
-          onFiles={
-            state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE)
-              ? (turnId) => {
-                  contentPanel.current?.open('changes', turnId);
-                }
-              : undefined
-          }
-        />
-        <button
-          disabled={busy}
-          onClick={() => run(() => controller.refreshSession())}
-          aria-label="刷新会话"
-        >
-          <RefreshCw size={16} />
-        </button>
       </header>
+      {!session.history.length && (
+        <div className="workspace-welcome">
+          <h2>今天想完成什么？</h2>
+          <p>{state.project?.projectName} · 随时开始一个想法</p>
+        </div>
+      )}
       {session.meta.forkOrigin && (
         <aside className="fork-origin">
           <span>
@@ -275,23 +334,6 @@ function WorkspaceConversation({
           执行电脑暂不可达，显示本机缓存；草稿仍可编辑。
         </p>
       )}
-      {session.meta.taskOrigin && (
-        <aside className="task-plan-card" aria-label="子任务来源">
-          <span>
-            子任务 · 完成条件：{session.meta.taskOrigin.completion}。此会话不能再次授权协作任务。
-          </span>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              run(() => controller.openSession(session.meta.taskOrigin!.parentSessionId))
-            }
-          >
-            打开父会话
-          </button>
-        </aside>
-      )}
-
       <SessionTimeline
         history={session.history}
         variant="workspace"
@@ -446,6 +488,25 @@ function WorkspaceConversation({
           ))}
         </details>
       )}
+      {retiredTask && (
+        <details className="workspace-pending">
+          <summary>待确认的旧版操作</summary>
+          <p>协作功能已移除，原操作记录仍保留。核查结果不会创建任务。</p>
+          <code>{retiredTask.operationId}</code>
+          <button
+            disabled={busy || state.offline}
+            onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'inspect'))}
+          >
+            核查旧版操作
+          </button>
+          <button
+            disabled={busy || state.offline}
+            onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'retry'))}
+          >
+            重试旧版原操作
+          </button>
+        </details>
+      )}
       <WorkspaceInteractionUI
         controller={controller}
         state={state}
@@ -455,126 +516,240 @@ function WorkspaceConversation({
       />
       <form
         className="workspace-composer"
+        data-empty={!session.history.length}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!busy && !saving.current && !saveError) run(() => controller.send());
+          if (canSend) run(() => controller.send());
         }}
       >
-        <textarea
-          aria-label="消息"
-          placeholder="描述你想完成的事情…"
-          value={text}
-          onChange={(event) => save(event.target.value, selection)}
-          onPaste={(event) => {
-            const files = [...event.clipboardData.files];
-            if (files.length && !busy) {
-              event.preventDefault();
-              run(() => controller.addAttachments(files));
-            }
-          }}
-        />
-        <div className="workspace-attachments">
-          <label className="workspace-attach-trigger">
-            <Paperclip size={14} />
-            添加附件
-            <input
-              type="file"
-              multiple
-              aria-label="添加附件"
-              disabled={busy}
+        <div className="workspace-composer-context" aria-label="执行上下文">
+          <label>
+            <Folder size={14} />
+            <select
+              aria-label="选择项目"
+              value={
+                state.project && state.scope
+                  ? projectKey({ ...state.project, source: state.scope.source })
+                  : ''
+              }
+              disabled={busy || saving.current || !!saveError}
               onChange={(event) => {
-                const files = [...(event.currentTarget.files ?? [])];
-                event.currentTarget.value = '';
-                if (files.length) run(() => controller.addAttachments(files));
+                const project = projects.find((entry) => projectKey(entry) === event.target.value);
+                if (project) onProjectChange(project);
               }}
-            />
-          </label>
-          {!!attachments.length && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => run(() => controller.reloadDraft())}
             >
-              重新读取附件
-            </button>
-          )}
-          {attachments.map((item) => {
-            const image = attachmentPreviewUrl(item.reference, item.data),
-              text = attachmentText(item.reference, item.data);
-            const reason = attachmentSupported
-              ? attachmentInputReason(item.reference, session.agent?.inputCapabilities)
-              : '此执行电脑尚未提供附件能力，请更新主机。';
-            return (
-              <article key={item.reference.attachmentId}>
-                <span>
-                  {item.reference.name} · {formatAttachmentSize(item.reference.content.byteLength)}
-                </span>
-                <small>
-                  {item.pending ? '等待主机确认' : item.uploaded ? '已上传' : '保存在本机'}
-                </small>
-                {image && <img src={image} alt={item.reference.name} />}
-                {text !== undefined && (
-                  <details>
-                    <summary>预览附件</summary>
-                    <pre>{text}</pre>
-                  </details>
-                )}
-                {reason && <p>{reason}</p>}
-                {item.pending ? (
-                  <button
-                    type="button"
-                    disabled={busy || state.offline}
-                    onClick={() => run(() => controller.retry(item.pending!.request.operationId))}
-                  >
-                    重试附件原操作
-                  </button>
-                ) : (
-                  <>
-                    {!item.uploaded && (
-                      <button
-                        type="button"
-                        disabled={busy || state.offline || !!reason}
-                        onClick={() =>
-                          run(() => controller.uploadAttachment(item.reference.attachmentId))
-                        }
-                      >
-                        上传附件
-                      </button>
-                    )}
+              {projects.map((entry) => (
+                <option key={projectKey(entry)} value={projectKey(entry)}>
+                  {entry.projectName} · {entry.hostName}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} />
+          </label>
+          <label>
+            <Monitor size={14} />
+            <select
+              aria-label="执行电脑"
+              value={
+                state.project && state.scope
+                  ? projectKey({ ...state.project, source: state.scope.source })
+                  : ''
+              }
+              disabled={busy || saving.current || !!saveError}
+              onChange={(event) => {
+                const project = projects.find((entry) => projectKey(entry) === event.target.value);
+                if (project) onProjectChange(project);
+              }}
+            >
+              {projects
+                .filter(
+                  (entry) =>
+                    entry.target.catalogProjectId === state.scope?.target.catalogProjectId &&
+                    entry.target.owner === state.scope?.target.owner &&
+                    entry.target.serverKey === state.scope?.target.serverKey,
+                )
+                .map((entry) => (
+                  <option key={projectKey(entry)} value={projectKey(entry)}>
+                    {entry.hostName}
+                    {entry.online ? '' : ' · 离线'}
+                  </option>
+                ))}
+            </select>
+            <ChevronDown size={12} />
+          </label>
+          <button
+            type="button"
+            disabled={busy || state.offline}
+            onClick={() => gitPanel.current?.open()}
+            title="选择 Git 分支与工作目录"
+          >
+            <GitBranch size={14} />
+            <span>{branch ?? '工作目录'}</span>
+            <ChevronDown size={12} />
+          </button>
+        </div>
+        <div className="workspace-input-box">
+          <textarea
+            aria-label="消息"
+            placeholder="描述你想完成的事情，输入 $ 使用 Skills…"
+            rows={2}
+            onKeyDown={(event) => {
+              if (event.key === '$' && !event.nativeEvent.isComposing && !text.trim() && !busy) {
+                event.preventDefault();
+                skillsPanel.current?.open();
+              }
+              if (
+                event.key === 'Enter' &&
+                (event.metaKey || event.ctrlKey) &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+            value={text}
+            onChange={(event) => save(event.target.value, selection)}
+            onPaste={(event) => {
+              const files = [...event.clipboardData.files];
+              if (files.length && !busy) {
+                event.preventDefault();
+                run(() => controller.addAttachments(files));
+              }
+            }}
+          />
+          <div className="workspace-attachments">
+            {!!attachments.length && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => run(() => controller.reloadDraft())}
+              >
+                重新读取附件
+              </button>
+            )}
+            {attachments.map((item) => {
+              const image = attachmentPreviewUrl(item.reference, item.data),
+                text = attachmentText(item.reference, item.data);
+              const reason = attachmentSupported
+                ? attachmentInputReason(item.reference, session.agent?.inputCapabilities)
+                : '此执行电脑尚未提供附件能力，请更新主机。';
+              return (
+                <article key={item.reference.attachmentId}>
+                  <span>
+                    {item.reference.name} ·{' '}
+                    {formatAttachmentSize(item.reference.content.byteLength)}
+                  </span>
+                  <small>
+                    {item.pending ? '等待主机确认' : item.uploaded ? '已上传' : '保存在本机'}
+                  </small>
+                  {image && <img src={image} alt={item.reference.name} />}
+                  {text !== undefined && (
+                    <details>
+                      <summary>预览附件</summary>
+                      <pre>{text}</pre>
+                    </details>
+                  )}
+                  {reason && <p>{reason}</p>}
+                  {item.pending ? (
                     <button
                       type="button"
-                      disabled={busy || (item.uploaded && (state.offline || !attachmentSupported))}
-                      onClick={() =>
-                        run(() => controller.removeAttachment(item.reference.attachmentId))
-                      }
+                      disabled={busy || state.offline}
+                      onClick={() => run(() => controller.retry(item.pending!.request.operationId))}
                     >
-                      移除附件
+                      重试附件原操作
                     </button>
-                  </>
-                )}
-              </article>
-            );
-          })}
-        </div>
-        {saveError && (
-          <div role="alert">
-            <p>{saveError} 当前输入保留在编辑框中。</p>
-            <button
-              type="button"
-              onClick={() =>
-                run(async () => {
-                  await controller.reloadDraft();
-                  setText(controller.state.draft?.text ?? '');
-                  setSelection(controller.state.draft?.selection ?? {});
-                  setSaveError('');
-                  reportDirty('composer', false);
-                })
-              }
-            >
-              重新读取已保存草稿
-            </button>
+                  ) : (
+                    <>
+                      {!item.uploaded && (
+                        <button
+                          type="button"
+                          disabled={busy || state.offline || !!reason}
+                          onClick={() =>
+                            run(() => controller.uploadAttachment(item.reference.attachmentId))
+                          }
+                        >
+                          上传附件
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={
+                          busy || (item.uploaded && (state.offline || !attachmentSupported))
+                        }
+                        onClick={() =>
+                          run(() => controller.removeAttachment(item.reference.attachmentId))
+                        }
+                      >
+                        移除附件
+                      </button>
+                    </>
+                  )}
+                </article>
+              );
+            })}
           </div>
-        )}
+          {saveError && (
+            <div role="alert">
+              <p>{saveError} 当前输入保留在编辑框中。</p>
+              <button
+                type="button"
+                onClick={() =>
+                  run(async () => {
+                    await controller.reloadDraft();
+                    setText(controller.state.draft?.text ?? '');
+                    setSelection(controller.state.draft?.selection ?? {});
+                    setSaveError('');
+                    reportDirty('composer', false);
+                  })
+                }
+              >
+                重新读取已保存草稿
+              </button>
+            </div>
+          )}
+          <div className="workspace-compose-actions">
+            <WorkspaceToolMenu kind="composer">
+              <label className="workspace-attach-trigger">
+                <Paperclip size={14} />
+                添加附件
+                <input
+                  type="file"
+                  multiple
+                  aria-label="添加附件"
+                  disabled={busy}
+                  onChange={(event) => {
+                    const files = [...(event.currentTarget.files ?? [])];
+                    event.currentTarget.value = '';
+                    if (files.length) run(() => controller.addAttachments(files));
+                  }}
+                />
+              </label>
+              <WorkspaceSkillsUI
+                controller={controller}
+                state={state}
+                busy={busy}
+                run={run}
+                controlRef={skillsPanel}
+              />
+            </WorkspaceToolMenu>
+            {saving.current && <small role="status">正在保存草稿…</small>}
+            {activeTurns.length === 1 ? (
+              <button
+                type="button"
+                disabled={busy || state.offline}
+                onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
+              >
+                <Square size={14} fill="currentColor" />
+                <span className="sr-only">停止</span>
+              </button>
+            ) : (
+              <button type="submit" disabled={!canSend}>
+                <ArrowUp size={18} />
+                <span className="sr-only">发送</span>
+              </button>
+            )}
+          </div>
+        </div>
         <RunControls
           idPrefix="workspace"
           capabilities={session.agent?.runConfig}
@@ -595,39 +770,6 @@ function WorkspaceConversation({
           onRefresh={() => run(() => controller.refreshAgentOptions())}
           onOpenModels={() => run(() => controller.refreshAgentOptions())}
         />
-        <div className="workspace-compose-actions">
-          <small>{saving.current ? '正在保存草稿…' : '草稿保存在本机'}</small>
-          {activeTurns.length === 1 ? (
-            <button
-              type="button"
-              disabled={busy || state.offline}
-              onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
-            >
-              停止
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={
-                busy ||
-                saving.current ||
-                !!saveError ||
-                !!validation ||
-                (!text.trim() &&
-                  !attachments.length &&
-                  !state.ledger?.annotations?.[state.sessionId ?? '']?.annotations.some(
-                    (item) => item.selectionId,
-                  )) ||
-                attachmentBlocked ||
-                state.offline ||
-                !!pending.length ||
-                !!state.ledger?.interactions?.[state.sessionId]?.value.pending
-              }
-            >
-              发送
-            </button>
-          )}
-        </div>
       </form>
     </>
   );
@@ -661,10 +803,23 @@ export function WorkspaceApp({
     [plainDirty, setPlainDirty] = useState(false),
     [secureBlocked, setSecureBlocked] = useState(false);
   const [agentId, setAgentId] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false),
+    [workspace, setWorkspace] = useState(''),
+    [searchOpen, setSearchOpen] = useState(false),
+    [account, setAccount] = useState<Account | null>(null);
+  const navigation = useNavigationSessions(controller, state);
+  const allProjects = navigationProjects(state);
+  const workspaces = [
+    ...new Map(allProjects.map((entry) => [workspaceKey(entry), entry.workspaceName])).entries(),
+  ];
+  const activeWorkspace = workspaces.some(([key]) => key === workspace) ? workspace : '';
+  const projects = allProjects.filter(
+    (entry) => !activeWorkspace || workspaceKey(entry) === activeWorkspace,
+  );
   const layout = useWorkspaceLayout();
   const navigationOpen = layout.open,
     setNavigationOpen = layout.setOpen;
-  const [collapsedProject, setCollapsedProject] = useState('');
+  const [collapsedProject, setCollapsedProject] = useState('all');
   const [sessionFilter, setSessionFilter] = useState('active'),
     [sessionQuery, setSessionQuery] = useState('');
   const rootElement = useRef<HTMLDivElement>(null);
@@ -731,6 +886,7 @@ export function WorkspaceApp({
   }, [readDesktopContext, subscribeDesktopChanges]);
   const verified = useCallback(
     (account: Account | null) => {
+      setAccount(account);
       onAccountVerified?.(account);
       if (account?.owner) void controller.refreshCatalog('remote').catch(() => {});
     },
@@ -872,11 +1028,13 @@ export function WorkspaceApp({
             (session) =>
               (sessionFilter === 'all' ||
                 (sessionFilter === 'archived' ? session.isArchived : !session.isArchived)) &&
+              !session.isPinned &&
               (session.title || '未命名会话')
                 .toLocaleLowerCase()
                 .includes(sessionQuery.toLocaleLowerCase()),
           )
           .sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned))
+          .slice(0, sessionQuery || sessionFilter !== 'active' ? undefined : 5)
           .map((session) => (
             <li key={session.id}>
               <button
@@ -907,6 +1065,51 @@ export function WorkspaceApp({
       </ul>
     </section>
   );
+  const navigationEntries = projects
+    .flatMap((project) =>
+      (navigation.sessions[projectKey(project)] ?? [])
+        .filter(
+          (session) =>
+            !session.isArchived &&
+            (session.title || '未命名会话')
+              .toLocaleLowerCase()
+              .includes(sessionQuery.toLocaleLowerCase()),
+        )
+        .map((session) => ({ project, session })),
+    )
+    .sort((a, b) => (b.session.lastMessageAt ?? 0) - (a.session.lastMessageAt ?? 0));
+  const navigationSelected =
+    view === 'plain' && state.project && state.scope
+      ? canonical([projectKey({ ...state.project, source: state.scope.source }), state.sessionId])
+      : undefined;
+  const openNavigationSession = (
+    project: NavigationProject,
+    session: (typeof sessions)[number],
+  ) => {
+    run(async () => {
+      setView('plain');
+      if (
+        state.scope?.source !== project.source ||
+        canonical(state.scope.target) !== canonical(project.target)
+      )
+        await controller.selectProject(project.source, project.target);
+      await controller.openSession(session.id);
+      hideMobileNavigation();
+    });
+  };
+  const changeComposerProject = (project: NavigationProject) => {
+    if (blocked) return;
+    run(async () => {
+      await controller.selectProject(project.source, project.target);
+      const agent =
+        project.runtime.agents.find((entry) => entry.id === selectedAgent) ??
+        project.runtime.agents[0];
+      if (agent) {
+        const id = await controller.createSession(agent.id);
+        await controller.openSession(id);
+      }
+    });
+  };
   return (
     <div
       className="workspace-app"
@@ -935,30 +1138,34 @@ export function WorkspaceApp({
         aria-modal={layout.narrow && navigationOpen ? true : undefined}
         hidden={!navigationOpen}
       >
-        <header>
-          <img src="/moor-logo.png" alt="Moor" width={90} height={30} />
+        <header className="workspace-sidebar-top">
+          <label className="workspace-switcher">
+            <span className="workspace-avatar">M</span>
+            <select
+              aria-label="切换工作区"
+              value={activeWorkspace}
+              onChange={(event) => setWorkspace(event.target.value)}
+            >
+              <option value="">全部工作区</option>
+              {workspaces.map(([key, name]) => (
+                <option key={key} value={key}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} />
+          </label>
           <button
             className="workspace-navigation-close"
             aria-label="关闭项目与会话"
             onClick={() => setNavigationOpen(false)}
           >
-            <X size={16} />
+            <PanelLeft size={16} />
           </button>
         </header>
-        <div className="workspace-navigation-actions">
-          {addProject && (
-            <button
-              className="workspace-add-project"
-              disabled={blocked || (desktop !== null && !desktop.value.localReady)}
-              onClick={addProject}
-            >
-              <Plus size={15} />
-              添加项目
-            </button>
-          )}
-        </div>
         {!!agents.length && (
           <form
+            className="workspace-new-conversation"
             onSubmit={(event) => {
               event.preventDefault();
               if (!selectedAgent || blocked) return;
@@ -985,14 +1192,35 @@ export function WorkspaceApp({
               ))}
             </select>
             <button type="submit" disabled={blocked || !selectedAgent}>
-              <Plus size={16} />
-              新会话
+              <SquarePen size={16} />
+              新对话
             </button>
           </form>
         )}
+        <div className="workspace-navigation-actions">
+          {addProject && (
+            <button
+              className="workspace-add-project"
+              disabled={blocked || (desktop !== null && !desktop.value.localReady)}
+              onClick={addProject}
+            >
+              <Plus size={15} />
+              添加项目
+            </button>
+          )}
+        </div>
         <div className="workspace-sidebar-search">
+          <button
+            aria-label="搜索会话"
+            aria-expanded={searchOpen}
+            onClick={() => setSearchOpen((open) => !open)}
+          >
+            <Search size={15} />
+            <span>搜索</span>
+          </button>
           <input
-            aria-label="筛选当前项目会话"
+            hidden={!searchOpen}
+            aria-label="筛选当前工作区会话"
             placeholder="筛选会话"
             value={sessionQuery}
             onChange={(event) => setSessionQuery(event.target.value)}
@@ -1002,142 +1230,175 @@ export function WorkspaceApp({
           )}
         </div>
         <nav className="workspace-projects" aria-label="电脑和项目">
-          {(['local', 'remote'] as const).flatMap((source) =>
-            (state.catalogs[source]?.targets ?? []).map((entry) => {
-              const key = source + ':' + canonical(entry.target);
-              const selected =
-                view === 'plain' &&
-                state.scope?.source === source &&
-                canonical(state.scope.target) === canonical(entry.target);
-              const expanded = selected && collapsedProject !== key;
-              return (
-                <section className="workspace-project-group" key={key}>
-                  <div className="workspace-project-heading">
+          {navigation.unavailable.length > 0 && (
+            <p className="workspace-muted" role="status">
+              部分电脑的会话暂不可读取
+            </p>
+          )}
+          <NavigationSessions
+            kind="pinned"
+            entries={navigationEntries.filter((entry) => entry.session.isPinned)}
+            selected={navigationSelected}
+            disabled={blocked}
+            onOpen={openNavigationSession}
+          />
+          <section className="workspace-navigation-section" aria-label="项目">
+            <h2>项目</h2>
+            {(['local', 'remote'] as const).flatMap((source) =>
+              projects
+                .filter((entry) => entry.source === source)
+                .map((entry) => {
+                  const key = source + ':' + canonical(entry.target);
+                  const selected =
+                    view === 'plain' &&
+                    state.scope?.source === source &&
+                    canonical(state.scope.target) === canonical(entry.target);
+                  const expanded = selected && collapsedProject === '';
+                  return (
+                    <section className="workspace-project-group" key={key}>
+                      <div className="workspace-project-heading">
+                        <button
+                          className="workspace-project"
+                          aria-current={selected ? 'page' : undefined}
+                          disabled={blocked}
+                          title={
+                            entry.projectName +
+                            ' · ' +
+                            entry.hostName +
+                            (source === 'local' ? ' · 本机' : '')
+                          }
+                          onClick={() => {
+                            setCollapsedProject('');
+                            choose(source, entry.target);
+                          }}
+                        >
+                          <Folder size={15} />
+                          <span>
+                            {entry.projectName}
+                            <small>
+                              {entry.hostName}
+                              {source === 'local' ? ' · 本机' : ''}
+                              {entry.online ? '' : ' · 离线'}
+                            </small>
+                          </span>
+                        </button>
+                        {selected && (
+                          <button
+                            aria-label={expanded ? '折叠项目会话' : '展开项目会话'}
+                            aria-expanded={expanded}
+                            onClick={() => setCollapsedProject(expanded ? key : '')}
+                          >
+                            {expanded ? '−' : '+'}
+                          </button>
+                        )}
+                      </div>
+                      {selected && <div hidden={!expanded}>{sessionList}</div>}
+                    </section>
+                  );
+                }),
+            )}
+            {encrypted.status?.connection?.hosts.map((host) => (
+              <div key={host.deviceId}>
+                <button
+                  className="workspace-project"
+                  disabled={blocked}
+                  onClick={() =>
+                    run(async () => {
+                      setView('secure');
+                      await secure.selectHost(host.deviceId);
+                    })
+                  }
+                >
+                  <Monitor size={16} />
+                  <span>
+                    {encrypted.hostId === host.deviceId
+                      ? (encrypted.catalog?.deviceMetadata?.name ?? host.deviceId)
+                      : host.deviceId}
+                  </span>
+                </button>
+                {encrypted.hostId === host.deviceId &&
+                  encrypted.catalog?.products.replicas.map((replica) => (
                     <button
                       className="workspace-project"
-                      aria-current={selected ? 'page' : undefined}
-                      disabled={blocked}
-                      title={
-                        entry.projectName +
-                        ' · ' +
-                        entry.hostName +
-                        (source === 'local' ? ' · 本机' : '')
+                      key={replica.id}
+                      disabled={blocked || !replica.available}
+                      aria-current={
+                        view === 'secure' && encrypted.replicaId === replica.id ? 'page' : undefined
                       }
-                      onClick={() => {
-                        setCollapsedProject('');
-                        choose(source, entry.target);
-                      }}
+                      onClick={() =>
+                        run(async () => {
+                          setView('secure');
+                          await secure.selectReplica(replica.id);
+                        })
+                      }
                     >
-                      <Folder size={15} />
+                      <Folder size={16} />
                       <span>
-                        {entry.projectName}
-                        <small>
-                          {entry.hostName}
-                          {source === 'local' ? ' · 本机' : ''}
-                          {entry.online ? '' : ' · 离线'}
-                        </small>
+                        {encrypted.catalog?.products.projects.find(
+                          (project) => project.id === replica.projectId,
+                        )?.name ?? replica.localProjectId}
                       </span>
                     </button>
-                    {selected && (
-                      <button
-                        aria-label={expanded ? '折叠项目会话' : '展开项目会话'}
-                        aria-expanded={expanded}
-                        onClick={() => setCollapsedProject(expanded ? key : '')}
-                      >
-                        {expanded ? '−' : '+'}
-                      </button>
-                    )}
-                  </div>
-                  {selected && <div hidden={!expanded}>{sessionList}</div>}
-                </section>
-              );
-            }),
-          )}
-          {encrypted.status?.connection?.hosts.map((host) => (
-            <div key={host.deviceId}>
-              <button
-                className="workspace-project"
-                disabled={blocked}
-                onClick={() =>
-                  run(async () => {
-                    setView('secure');
-                    await secure.selectHost(host.deviceId);
-                  })
-                }
-              >
-                <Monitor size={16} />
-                <span>
-                  {encrypted.hostId === host.deviceId
-                    ? (encrypted.catalog?.deviceMetadata?.name ?? host.deviceId)
-                    : host.deviceId}
-                </span>
-              </button>
-              {encrypted.hostId === host.deviceId &&
-                encrypted.catalog?.products.replicas.map((replica) => (
-                  <button
-                    className="workspace-project"
-                    key={replica.id}
-                    disabled={blocked || !replica.available}
-                    aria-current={
-                      view === 'secure' && encrypted.replicaId === replica.id ? 'page' : undefined
-                    }
-                    onClick={() =>
-                      run(async () => {
-                        setView('secure');
-                        await secure.selectReplica(replica.id);
-                      })
-                    }
-                  >
-                    <Folder size={16} />
-                    <span>
-                      {encrypted.catalog?.products.projects.find(
-                        (project) => project.id === replica.projectId,
-                      )?.name ?? replica.localProjectId}
-                    </span>
-                  </button>
-                ))}
-            </div>
-          ))}
-          {view === 'secure' && secureReplica && sessionList}
+                  ))}
+              </div>
+            ))}
+            {view === 'secure' && secureReplica && sessionList}
+          </section>
+          <NavigationSessions
+            kind="recent"
+            entries={navigationEntries.filter((entry) => !entry.session.isPinned).slice(0, 30)}
+            selected={navigationSelected}
+            disabled={blocked}
+            onOpen={openNavigationSession}
+          />
           {!Object.values(state.catalogs).some((catalog) => catalog.targets.length) && (
             <p className="workspace-muted">点击“添加项目”，选择本机文件夹。</p>
           )}
         </nav>
 
-        <footer>
+        <footer className="workspace-account">
           <button
-            aria-label="刷新电脑"
-            title="刷新电脑"
-            disabled={blocked}
-            onClick={() =>
-              run(async () => {
-                await controller.refreshCatalog('local');
-                if (state.catalogs.remote) await controller.refreshCatalog('remote');
-              })
-            }
-          >
-            <RefreshCw size={15} />
-          </button>
-          {openSettings && (
-            <button
-              aria-label="本机设置"
-              title="本机设置"
-              disabled={blocked}
-              onClick={() => run(openSettings)}
-            >
-              <Settings size={15} />
-            </button>
-          )}
-
-          <button
+            className="workspace-account-button"
             disabled={blocked}
             onClick={() => {
               setView('connections');
               hideMobileNavigation();
             }}
+            aria-label="账号与连接"
           >
-            <Monitor size={16} />
-            连接其他电脑
+            <CircleUserRound size={22} />
+            <span>
+              {account?.owner ? '已连接账号' : '本机账号'}
+              <small>{account?.owner ? '账号与设备' : 'Local workspace'}</small>
+            </span>
+          </button>
+          <WorkspaceToolMenu>
+            <button
+              disabled={blocked}
+              onClick={() => {
+                setView('connections');
+                hideMobileNavigation();
+              }}
+            >
+              <Monitor size={16} />
+              连接其他电脑
+            </button>
+            <button
+              aria-label="刷新电脑"
+              disabled={blocked}
+              onClick={() =>
+                run(async () => {
+                  await controller.refreshCatalog('local');
+                  if (state.catalogs.remote) await controller.refreshCatalog('remote');
+                })
+              }
+            >
+              <RefreshCw size={16} />
+              刷新电脑
+            </button>
+          </WorkspaceToolMenu>
+          <button aria-label="设置" title="设置" onClick={() => setSettingsOpen(true)}>
+            <Settings size={16} />
           </button>
         </footer>
       </aside>
@@ -1149,6 +1410,17 @@ export function WorkspaceApp({
           onClick={() => setNavigationOpen(false)}
         />
       )}
+      <AppearanceSettings
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        openDesktopSettings={
+          openSettings
+            ? () => {
+                run(openSettings);
+              }
+            : undefined
+        }
+      />
       <div className="workspace-body">
         <div className="workspace-navigation-bar">
           <button
@@ -1157,7 +1429,7 @@ export function WorkspaceApp({
             onClick={() => setNavigationOpen((open) => !open)}
           >
             <PanelLeft size={16} />
-            项目与会话
+            <span className="sr-only">项目与会话</span>
           </button>
         </div>
         {desktop && !desktop.value.localReady && (
@@ -1183,6 +1455,8 @@ export function WorkspaceApp({
             busy={busy}
             run={run}
             onDirty={setPlainDirty}
+            projects={allProjects}
+            onProjectChange={changeComposerProject}
             addProject={addProject}
             configureAgent={
               state.scope?.source === 'local' && openSettings

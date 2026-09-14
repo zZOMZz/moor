@@ -1,8 +1,11 @@
 // Keep this entry independent of the large application/WASM bundle so failures
 // can be displayed even when that bundle never downloads or evaluates.
 const root = document.getElementById('app');
+if (window.moorDesktop?.platform === 'darwin') document.documentElement.dataset.platform = 'darwin';
 try {
-  const appearance = localStorage.getItem('moor-appearance');
+  const appearance = window.moorDesktop?.appearance
+    ? 'system'
+    : localStorage.getItem('moor-appearance');
   if (['light', 'dark', 'system'].includes(appearance))
     document.documentElement.dataset.theme = appearance;
 } catch {

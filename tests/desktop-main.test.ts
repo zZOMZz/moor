@@ -144,6 +144,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       },
     },
     app: application,
+    nativeTheme: { themeSource: 'system' },
     BrowserWindow: Window,
     Notification: NativeNotification,
     shell: { openExternal: async (url: string) => void openedExternal.push(url) },
@@ -294,7 +295,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     },
   ])
     for (const method of [
-      'personal:preview-config',
+      'personal:appearance',
       'personal:skills-config',
       'personal:agent-config',
       'personal:mcp-config',
@@ -345,18 +346,11 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       );
     },
   );
-  const previewReading = invoke('personal:preview-config', { action: 'read' });
-  const previewRequest = children[0].sent.at(-1);
-  assert.equal(previewRequest.type, 'preview-config');
-  children[0].emit('message', {
-    type: 'preview-config-result',
-    requestId: previewRequest.requestId,
-    ok: true,
-    state: { revision: 0, targets: [], services: [], privateMetadata: 'not-public' },
-  });
-  const previewState = await previewReading;
-  assert.equal(previewState.revision, 0);
-  assert.equal('privateMetadata' in previewState, false);
+  assert.equal(handlers.has('personal:preview-config'), false);
+  assert.equal(invoke('personal:appearance'), 'system');
+  assert.equal(invoke('personal:appearance', 'dark'), 'dark');
+  assert.equal((await invoke('personal:settings')).appearance, 'dark');
+  assert.throws(() => invoke('personal:appearance', 'blue'), /外观/);
   const skillsReading = invoke('personal:skills-config', { action: 'read' });
   const skillsRequest = children[0].sent.at(-1);
   assert.equal(skillsRequest.type, 'skills-config');
@@ -542,6 +536,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     require: () => ({
       contextBridge: { exposeInMainWorld: (key: string, value: any) => exposed.set(key, value) },
       ipcRenderer: {
+        on() {},
+        removeListener() {},
         invoke: (name: string, value: unknown) => Promise.resolve(invoke(name, value)),
       },
     }),
@@ -646,6 +642,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     require: () => ({
       contextBridge: { exposeInMainWorld: (key: string, value: any) => webBridge.set(key, value) },
       ipcRenderer: {
+        on() {},
+        removeListener() {},
         invoke: (name: string, value: unknown) =>
           Promise.resolve(
             invoke(name, value, {
@@ -848,14 +846,11 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   assert.equal(notices.length, previousCount);
   assert.equal(children[0].sent.length, ackCount);
   // Restart invalidates pending settings requests without recreating retired browser partitions.
-  const previewBeforeRestart = invoke('personal:preview-config', { action: 'read' });
-  const previewRestartRejection = assert.rejects(previewBeforeRestart, /已重启/);
   const skillsBeforeRestart = invoke('personal:skills-config', { action: 'read' });
   const skillsRestartRejection = assert.rejects(skillsBeforeRestart, /已重启/);
   const mcpBeforeRestart = invoke('personal:mcp-config', { action: 'read' });
   const mcpRestartRejection = assert.rejects(mcpBeforeRestart, /已重启/);
   await invoke('personal:recover');
-  await previewRestartRejection;
   await skillsRestartRejection;
   await mcpRestartRejection;
   await emitMessage(children.at(-1), {

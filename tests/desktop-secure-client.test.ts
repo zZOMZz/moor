@@ -408,6 +408,7 @@ test('the trusted preload exposes finite application entry points', async () => 
     calls: unknown[] = [],
     listeners = new Map<string, (...args: unknown[]) => void>();
   runInNewContext(await readFile('src/desktop/secure-preload.cjs', 'utf8'), {
+    process: { platform: 'darwin' },
     require(name: string) {
       assert.equal(name, 'electron');
       return {
@@ -466,9 +467,12 @@ test('the trusted preload exposes finite application entry points', async () => 
     ['moor:add-project'],
   ]);
   assert.deepEqual(Object.keys(exposed.get('moorDesktop')).sort(), [
+    'appearance',
     'cancelAttachmentSave',
     'googleAuth',
+    'onAppearance',
     'openSettings',
+    'platform',
     'saveAttachment',
     'version',
   ]);

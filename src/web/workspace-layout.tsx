@@ -1,5 +1,5 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { Ellipsis } from 'lucide-react';
+import { useEffect, useState, useRef, type CSSProperties, type ReactNode } from 'react';
+import { Ellipsis, SlidersHorizontal, Plus } from 'lucide-react';
 const key = 'moor-workspace-layout-v1';
 const clamp = (width: number) => Math.max(220, Math.min(400, width));
 function initial(): { width: number; open: boolean } {
@@ -88,13 +88,62 @@ export function SidebarSizer({ width, resize }: { width: number; resize(width: n
     />
   );
 }
-export function WorkspaceToolMenu({ children }: { children: ReactNode }) {
+export function WorkspaceToolMenu({
+  children,
+  kind = 'session',
+  hidden = false,
+}: {
+  children: ReactNode;
+  kind?: 'session' | 'environment' | 'composer';
+  hidden?: boolean;
+}) {
+  const element = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !element.current?.contains(event.target) &&
+        element.current
+      )
+        element.current.open = false;
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (
+        event.key === 'Escape' &&
+        element.current?.open &&
+        element.current.contains(document.activeElement)
+      ) {
+        element.current.open = false;
+        element.current.querySelector('summary')?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', escape);
+    };
+  }, []);
+  const label =
+    kind === 'environment' ? '环境信息' : kind === 'composer' ? '添加附件与 Skills' : '会话工具';
+  const Icon = kind === 'environment' ? SlidersHorizontal : kind === 'composer' ? Plus : Ellipsis;
   return (
-    <details className="workspace-tool-menu">
-      <summary aria-label="会话工具" title="会话工具">
-        <Ellipsis size={18} />
+    <details
+      ref={element}
+      className={'workspace-tool-menu workspace-menu-' + kind}
+      hidden={hidden}
+      onToggle={() => {
+        if (element.current?.open)
+          document.querySelectorAll<HTMLDetailsElement>('.workspace-tool-menu').forEach((menu) => {
+            if (menu !== element.current) menu.open = false;
+          });
+      }}
+    >
+      <summary aria-label={label} title={label}>
+        <Icon size={18} />
       </summary>
-      <div className="workspace-tool-menu-items" aria-label="会话工具列表">
+      <div className="workspace-tool-menu-items" aria-label={label + '列表'}>
+        {kind === 'environment' && <h2>环境信息</h2>}
         {children}
       </div>
     </details>

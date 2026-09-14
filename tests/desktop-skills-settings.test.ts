@@ -218,6 +218,8 @@ test('actual Skills settings and preload select a directory, save, revoke stale 
     require: () => ({
       contextBridge: { exposeInMainWorld: (name: string, value: any) => exposed.set(name, value) },
       ipcRenderer: {
+        on() {},
+        removeListener() {},
         invoke(name: string, value: unknown) {
           if (name === 'personal:skills-config') return f.bridge.request(value, () => !closed);
           if (name === 'personal:skills-directory') return Promise.resolve(root);

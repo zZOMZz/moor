@@ -442,13 +442,7 @@ test('actual Actor app isolates attention continuation, local drafts and durable
       'Actor boot renders the workbench and navigation closes session panels',
       async () => {
         assert.ok(button('待我处理'));
-        for (const open of [
-          app.openGitWorkspace,
-          app.openSkills,
-          app.openRoles,
-          app.openTasks,
-          app.openMcp,
-        ]) {
+        for (const open of [app.openGitWorkspace, app.openSkills]) {
           await act(async () => app.openSession(sessionId, 'replica'));
           await act(async () => open());
           assert.ok(
@@ -481,27 +475,13 @@ test('actual Actor app isolates attention continuation, local drafts and durable
             .currentAttachments()
             .add([new File(['SYNTHETIC_ATTACHMENT'], 'hidden.txt', { type: 'text/plain' })]),
         );
-        await act(async () => {
-          const annotations = app.currentPreviewAnnotations();
-          const saved = await annotations.save({
-            serviceId: 'service',
-            serviceLabel: 'Synthetic preview',
-            pagePath: '/',
-            frameId: 'frame',
-            capturedAt: '2026-01-01T00:00:00Z',
-            viewport: { width: 390, height: 844 },
-            element: {
-              elementId: 'element',
-              tagName: 'button',
-              role: 'button',
-              name: 'Save',
-              text: 'SYNTHETIC_ELEMENT',
-              bounds: { x: 0, y: 0, width: 20, height: 20 },
-            },
-            note: 'SYNTHETIC_ANNOTATION',
-          });
-          await annotations.select(saved.id, true);
-        });
+        const legacyAnnotations = {
+          version: 1,
+          target,
+          cacheRevision: 1,
+          annotations: [{ note: 'SYNTHETIC_RETIRED_ANNOTATION' }],
+        };
+        storage.set(previewAnnotationKey(target), legacyAnnotations);
         const taskRecord = {
           version: 1,
           cacheRevision: 1,
@@ -555,9 +535,9 @@ test('actual Actor app isolates attention continuation, local drafts and durable
           input = z.record(z.unknown()).parse(turn.inputConfig);
         assert.equal(input.prompt, reviewed);
         assert.equal(input.attachments, undefined);
-        assert.equal(input.taskToolsEnabled, false);
+        assert.equal(Boolean(input.taskToolsEnabled), false);
         assert.equal(input.taskPlan, undefined);
-        assert.deepEqual(input.mcpServerIds, []);
+        assert.deepEqual(input.mcpServerIds ?? [], []);
         assert.deepEqual(storage.get(mcpKey(target)), mcpRecord);
         assert.equal(
           requests.some((row) => row.path.includes('/mcp/')),

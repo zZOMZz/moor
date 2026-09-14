@@ -20,13 +20,24 @@ async function prepareClientSession(session, publicRoot) {
   session.protocol.handle(CLIENT_SCHEME, handler);
 }
 
-function createClientWindow({ BrowserWindow, session, origin, preloadPath, registry, invalidate }) {
+function createClientWindow({
+  BrowserWindow,
+  session,
+  origin,
+  preloadPath,
+  registry,
+  invalidate,
+  platform = process.platform,
+}) {
   const window = new BrowserWindow({
     width: 1200,
     height: 850,
     minWidth: 390,
     minHeight: 550,
     title: 'Moor',
+    ...(platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 16 } }
+      : {}),
     webPreferences: {
       session,
       preload: preloadPath,

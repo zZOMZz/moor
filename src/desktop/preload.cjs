@@ -1,5 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('personal', {
+  appearance: (value) => ipcRenderer.invoke('personal:appearance', value),
+  onAppearance: (listener) => {
+    if (typeof listener !== 'function') throw new TypeError('Expected appearance listener');
+    const receive = (_event, value) => listener(value);
+    ipcRenderer.on('moor:appearance-changed', receive);
+    return () => ipcRenderer.removeListener('moor:appearance-changed', receive);
+  },
   health: () => ipcRenderer.invoke('personal:health'),
   recover: () => ipcRenderer.invoke('personal:recover'),
   settings: () => ipcRenderer.invoke('personal:settings'),
@@ -9,7 +16,6 @@ contextBridge.exposeInMainWorld('personal', {
   notificationSettings: (value) => ipcRenderer.invoke('personal:notification-settings', value),
   notificationTest: () => ipcRenderer.invoke('personal:notification-test'),
   githubConfig: (value) => ipcRenderer.invoke('personal:github-config', value),
-  previewConfig: (value) => ipcRenderer.invoke('personal:preview-config', value),
   skillsConfig: (value) => ipcRenderer.invoke('personal:skills-config', value),
   skillsDirectory: () => ipcRenderer.invoke('personal:skills-directory'),
   agentConfig: (value) => ipcRenderer.invoke('personal:agent-config', value),

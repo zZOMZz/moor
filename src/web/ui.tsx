@@ -3,7 +3,9 @@ import { GoogleAccount, GoogleComplete } from './google-login';
 import type { Identity } from './api';
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { flushSync } from 'react-dom';
+import { flushSync, createPortal } from 'react-dom';
+import { AppearanceSettings } from './appearance';
+import { WorkspaceToolMenu } from './workspace-layout';
 import { Dialog } from '@base-ui/react/dialog';
 import { Menu } from '@base-ui/react/menu';
 import { Select } from '@base-ui/react/select';
@@ -27,6 +29,7 @@ import {
   Plus,
   Search,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -145,7 +148,6 @@ export function Shell({
           >
             <Dialog.Title className="sr-only">工作区与会话</Dialog.Title>
             <div className="sidebar-brand">
-              <img className="moor-logo" src="/moor-logo.png" alt="Moor" width="108" height="36" />
               <Dialog.Close className="icon-button mobile-only" aria-label="关闭会话列表">
                 <X />
               </Dialog.Close>
@@ -167,19 +169,20 @@ export function Shell({
             <div id="target">
               <Content name="#target" />
             </div>
-            <div id="session-search-control">
-              <Content name="#session-search-control" />
-            </div>
-            <div id="project-content-controls">
-              <Content name="#project-content-controls" />
-              <Content name="#git-workspace-control" />
+            <WorkspaceToolMenu>
+              <div id="session-search-control">
+                <Content name="#session-search-control" />
+              </div>
               <Content name="#session-fork-control" />
-              <Content name="#github-control" />
-              <Content name="#project-preview-control" />
-              <Content name="#skills-control" />
-              <Content name="#roles-control" />
-              <Content name="#tasks-control" />
-              <Content name="#mcp-control" />
+            </WorkspaceToolMenu>
+            <div id="legacy-environment" hidden>
+              <WorkspaceToolMenu kind="environment">
+                <div id="project-content-controls">
+                  <Content name="#project-content-controls" />
+                </div>
+                <Content name="#git-workspace-control" />
+                <Content name="#github-control" />
+              </WorkspaceToolMenu>
             </div>
           </header>
           <div id="notice" role="alert" />
@@ -187,7 +190,6 @@ export function Shell({
             <Content name="#attention-view" />
           </section>
           <Content name="#session-fork-origin" />
-          <Content name="#task-origin" />
           <div id="history" aria-label="会话内容">
             <div className="welcome">
               <div className="welcome-mark">
@@ -207,6 +209,11 @@ export function Shell({
               onSend();
             }}
           >
+            <div id="composer-context" className="workspace-composer-context">
+              <div id="composer-host" />
+              <div id="composer-connection" />
+              <Content name="#git-workspace-control" />
+            </div>
             <div id="new-options">
               <Content name="#new-options" />
             </div>
@@ -216,9 +223,6 @@ export function Shell({
             <div id="attachment-controls">
               <Content name="#attachment-controls" />
             </div>
-            <Content name="#preview-annotation-cards" />
-            <Content name="#task-plan-card" />
-            <Content name="#mcp-card" />
             <div className="prompt-surface">
               <label className="sr-only" htmlFor="prompt">
                 发送给 Agent 的指令
@@ -243,6 +247,14 @@ export function Shell({
                   onDraft(e.currentTarget.value);
                 }}
                 onKeyDown={(e) => {
+                  if (
+                    e.key === '$' &&
+                    !e.nativeEvent.isComposing &&
+                    !e.currentTarget.value.trim()
+                  ) {
+                    e.preventDefault();
+                    document.querySelector<HTMLButtonElement>('[aria-label="Skills"]')?.click();
+                  }
                   if (e.key === 'Enter' && !e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
                     document.querySelector<HTMLButtonElement>('#send')?.click();
@@ -250,6 +262,23 @@ export function Shell({
                 }}
               />
               <div className="composer-actions">
+                <WorkspaceToolMenu kind="composer">
+                  <Content name="#skills-control" />
+                  <label className="workspace-attach-trigger">
+                    <Paperclip size={15} />
+                    添加附件
+                    <input
+                      type="file"
+                      multiple
+                      aria-label="添加附件"
+                      onChange={(event) => {
+                        const files = Array.from(event.currentTarget.files ?? []);
+                        event.currentTarget.value = '';
+                        if (files.length) onFiles?.(files);
+                      }}
+                    />
+                  </label>
+                </WorkspaceToolMenu>
                 <button
                   type="button"
                   id="cancel"
@@ -292,11 +321,7 @@ export function Shell({
       <Content name="#session-fork-view" />
       <Content name="#github-view" />
       <Content name="#github-write-view" />
-      <Content name="#project-preview-view" />
       <Content name="#skills-view" />
-      <Content name="#roles-view" />
-      <Content name="#tasks-view" />
-      <Content name="#mcp-view" />
       <Content name="#google-account-view" />
     </div>
   );
@@ -526,21 +551,7 @@ export function Navigation(p: NavigationProps) {
       setRename(undefined);
     }
   }, [renameSession, rename]);
-  const [appearance, setAppearance] = useState(() => {
-    try {
-      return localStorage.getItem('moor-appearance') || 'system';
-    } catch {
-      return 'system';
-    }
-  });
-  useEffect(() => {
-    document.documentElement.dataset.theme = appearance;
-    try {
-      localStorage.setItem('moor-appearance', appearance);
-    } catch {
-      /* Appearance is optional in restricted storage. */
-    }
-  }, [appearance]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const groups = new Map<string, { sessions: SessionSummary[]; total: number }>();
   const displayed = p.list.slice(0, visibleCount);
   const selected = p.list.find(
@@ -549,7 +560,7 @@ export function Navigation(p: NavigationProps) {
   if (selected && !displayed.includes(selected)) displayed.push(selected);
   const visible = new Set(displayed);
   for (const s of p.list) {
-    const id = s.projectId ?? '';
+    const id = s.isPinned ? '__pinned' : (s.projectId ?? '');
     let group = groups.get(id);
     if (!group) groups.set(id, (group = { sessions: [], total: 0 }));
     group.total++;
@@ -599,7 +610,11 @@ export function Navigation(p: NavigationProps) {
       )}
       <button id="new" className="new-session" disabled={!p.canCreate} onClick={p.onNew}>
         <SquarePen />
-        新会话<span className="shortcut">＋</span>
+        新对话<span className="shortcut">＋</span>
+      </button>
+      <button className="new-project" onClick={p.onManage}>
+        <Plus size={16} />
+        新项目
       </button>
       <div className="navigation-search">
         <Search />
@@ -658,12 +673,13 @@ export function Navigation(p: NavigationProps) {
           </p>
         )}
         {[...groups]
+          .sort(([a], [b]) => (a === '__pinned' ? -1 : b === '__pinned' ? 1 : 0))
           .filter(([, group]) => group.sessions.length)
           .map(([id, group]) => (
             <section className="session-group" key={id}>
               <div className="section-label">
                 <Folder />
-                {p.projectLabels[id] || '项目'}
+                {id === '__pinned' ? '置顶' : p.projectLabels[id] || '项目'}
                 <span>{group.total}</span>
               </div>
               {group.sessions.map((s) => (
@@ -747,6 +763,26 @@ export function Navigation(p: NavigationProps) {
               ))}
             </section>
           ))}
+        <section className="legacy-chats">
+          <div className="section-label">Chat</div>
+          {displayed
+            .filter((session) => !session.isPinned)
+            .slice(0, 15)
+            .map((session) => (
+              <button
+                key={sessionKey(session)}
+                className="session"
+                aria-current={
+                  session.id === p.selectedSession && session.replicaId === p.selectedReplica
+                    ? 'page'
+                    : undefined
+                }
+                onClick={() => p.onSession(session.id, session.replicaId)}
+              >
+                <span className="truncate">{session.title || '新会话'}</span>
+              </button>
+            ))}
+        </section>
         {!p.list.length && !p.listLoading && !p.listError && (
           <p className="empty">
             {p.search || p.projectFilter
@@ -844,60 +880,57 @@ export function Navigation(p: NavigationProps) {
         </Dialog.Portal>
       </Dialog.Root>
       <div className="sidebar-bottom">
-        <PopupMenu
-          label="我的电脑"
-          trigger={
-            <>
-              <Monitor />
-              <span>我的电脑</span>
-              <small>{p.space?.hosts.filter((h) => h.online).length ?? 0} 台在线</small>
-            </>
-          }
-        >
-          <div className="menu-label">为新会话选择执行电脑</div>
-          {p.space?.hosts.map((h) => (
-            <Menu.Item key={h.id} className="menu-item" onClick={() => p.onHost(h.id)}>
-              <i className={`dot ${h.online ? 'online' : ''}`} />
-              <span>
-                {h.name}
-                <small>{h.online ? '在线' : '离线 · 可读缓存'}</small>
-              </span>
-              {h.deviceId === p.deviceId && h.runtimeWorkspaceId === p.runtimeWorkspaceId && (
-                <Check />
+        {document.getElementById('composer-host') &&
+          createPortal(
+            <PopupMenu
+              label="我的电脑"
+              trigger={
+                <>
+                  <Monitor />
+                  <span>
+                    {p.space?.hosts.find(
+                      (h) =>
+                        h.deviceId === p.deviceId && h.runtimeWorkspaceId === p.runtimeWorkspaceId,
+                    )?.name ?? '选择电脑'}
+                  </span>
+                </>
+              }
+            >
+              <div className="menu-label">为新会话选择执行电脑</div>
+              {p.space?.hosts.map((h) => (
+                <Menu.Item key={h.id} className="menu-item" onClick={() => p.onHost(h.id)}>
+                  <i className={`dot ${h.online ? 'online' : ''}`} />
+                  <span>
+                    {h.name}
+                    <small>{h.online ? '在线' : '离线 · 可读缓存'}</small>
+                  </span>
+                  {h.deviceId === p.deviceId && h.runtimeWorkspaceId === p.runtimeWorkspaceId && (
+                    <Check />
+                  )}
+                </Menu.Item>
+              ))}
+              {!p.localOnly && (
+                <>
+                  <Menu.Separator className="menu-separator" />
+                  <Menu.Item className="menu-item" onClick={p.onPair}>
+                    <Plus />
+                    添加电脑
+                  </Menu.Item>
+                </>
               )}
-            </Menu.Item>
-          ))}
-          {!p.localOnly && (
-            <>
-              <Menu.Separator className="menu-separator" />
-              <Menu.Item className="menu-item" onClick={p.onPair}>
-                <Plus />
-                添加电脑
-              </Menu.Item>
-            </>
+            </PopupMenu>,
+            document.getElementById('composer-host')!,
           )}
-        </PopupMenu>
         <div className="sidebar-account">
           <span className={`connection-state ${p.connected ? '' : 'disconnected'}`} id="connection">
             <i className={`dot ${p.connected ? 'online' : ''}`} />
             {p.connected ? (p.localOnly ? '本机工作区' : '已连接') : '连接中断 · 可读缓存'}
           </span>
           <PopupMenu label="设置与账号" trigger={<MoreHorizontal />}>
-            <div className="menu-label">外观</div>
-            <Menu.RadioGroup value={appearance} onValueChange={setAppearance}>
-              {[
-                { id: 'system', name: '跟随系统' },
-                { id: 'light', name: '浅色' },
-                { id: 'dark', name: '深色' },
-              ].map((theme) => (
-                <Menu.RadioItem key={theme.id} value={theme.id} className="menu-item">
-                  {theme.name}
-                  <Menu.RadioItemIndicator className="item-indicator">
-                    <Check />
-                  </Menu.RadioItemIndicator>
-                </Menu.RadioItem>
-              ))}
-            </Menu.RadioGroup>
+            <Menu.Item className="menu-item" onClick={() => setSettingsOpen(true)}>
+              <Settings2 />
+              外观设置
+            </Menu.Item>
             <Menu.Separator className="menu-separator" />
             <Menu.Item className="menu-item" onClick={p.onManage}>
               <Settings2 />
@@ -923,6 +956,7 @@ export function Navigation(p: NavigationProps) {
           </PopupMenu>
         </div>
       </div>
+      <AppearanceSettings open={settingsOpen} onOpenChange={setSettingsOpen} />
     </>
   );
 }
@@ -949,33 +983,37 @@ export function Target({
         <span className="breadcrumb-divider">/</span>
         <h1>{title || '新会话'}</h1>
       </div>
-      <Popover.Root>
-        <Popover.Trigger className="host-trigger" aria-label="执行电脑与连接状态">
-          <i className={`dot ${online && connected ? 'online' : ''}`} />
-          <span>{host || '选择电脑'}</span>
-          <ChevronDown />
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Positioner sideOffset={10} align="end" className="popup-positioner">
-            <Popover.Popup className="connection-popup">
-              <Popover.Title>{host || '尚未选择执行电脑'}</Popover.Title>
-              <dl>
-                <dt>访问连接</dt>
-                <dd>{connected ? '已连接' : '已断开'}</dd>
-                <dt>执行电脑</dt>
-                <dd>{online ? '在线' : '离线'}</dd>
-                {path && (
-                  <>
-                    <dt>项目目录</dt>
-                    <dd className="project-path">{path}</dd>
-                  </>
-                )}
-              </dl>
-              <Popover.Description>此会话始终由这台电脑执行。</Popover.Description>
-            </Popover.Popup>
-          </Popover.Positioner>
-        </Popover.Portal>
-      </Popover.Root>
+      {document.getElementById('composer-connection') &&
+        createPortal(
+          <Popover.Root>
+            <Popover.Trigger className="host-trigger" aria-label="执行电脑与连接状态">
+              <i className={`dot ${online && connected ? 'online' : ''}`} />
+              <span>{host || '选择电脑'}</span>
+              <ChevronDown />
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Positioner sideOffset={10} align="end" className="popup-positioner">
+                <Popover.Popup className="connection-popup">
+                  <Popover.Title>{host || '尚未选择执行电脑'}</Popover.Title>
+                  <dl>
+                    <dt>访问连接</dt>
+                    <dd>{connected ? '已连接' : '已断开'}</dd>
+                    <dt>执行电脑</dt>
+                    <dd>{online ? '在线' : '离线'}</dd>
+                    {path && (
+                      <>
+                        <dt>项目目录</dt>
+                        <dd className="project-path">{path}</dd>
+                      </>
+                    )}
+                  </dl>
+                  <Popover.Description>此会话始终由这台电脑执行。</Popover.Description>
+                </Popover.Popup>
+              </Popover.Positioner>
+            </Popover.Portal>
+          </Popover.Root>,
+          document.getElementById('composer-connection')!,
+        )}
     </>
   );
 }
@@ -997,7 +1035,6 @@ export type RunControlsProps = {
 };
 export function RunControls(p: RunControlsProps) {
   const models = p.capabilities?.models ?? [];
-  const efforts = models.find((m) => m.id === p.selection.modelId)?.efforts ?? [];
   const modes = p.capabilities?.modes ?? [];
   const labels: Record<string, string> =
     p.agentType === 'codex'
@@ -1015,87 +1052,58 @@ export function RunControls(p: RunControlsProps) {
       : undefined
     : p.capabilities?.defaultModelId;
   const implicitName = models.find((m) => m.id === implicitModel)?.name ?? implicitModel;
-  const defaultLabel = p.existing
-    ? `沿用会话模型${implicitName ? ` · ${implicitName}` : '（发送时确认）'}`
-    : `Agent 默认${implicitName ? ` · ${implicitName}` : '（未确认）'}`;
+  const effectiveModel = p.selection.modelId || implicitModel;
+  const efforts = models.find((m) => m.id === effectiveModel)?.efforts ?? [];
+  const defaultLabel = implicitName ?? (p.existing ? '沿用会话模型' : 'Agent 默认模型');
   return (
     <>
       <div className="run-controls">
-        <Picker
-          id={(p.idPrefix ?? '') + 'model'}
-          label="模型"
-          icon={<Cpu />}
-          value={p.selection.modelId}
-          items={models}
-          disabled={p.disabled}
-          placeholder={defaultLabel}
-          onOpen={p.onOpenModels}
-          onChange={(v) => p.onChange('modelId', v)}
-        />
-        <Popover.Root>
-          {p.selection.modeId === 'agent-full-access' && (
-            <span className="permission-summary">完全访问</span>
-          )}
-          <Popover.Trigger className="run-settings-trigger" aria-label="运行设置">
-            <SlidersHorizontal />
-            <span>运行设置</span>
-          </Popover.Trigger>
-          <Popover.Portal>
-            <Popover.Positioner sideOffset={10} align="end" className="popup-positioner">
-              <Popover.Popup className="connection-popup run-settings-popup">
-                <div className="run-settings-heading">
-                  <Popover.Title>运行设置</Popover.Title>
-                  <Popover.Close className="icon-button" aria-label="关闭运行设置">
-                    <X />
-                  </Popover.Close>
-                </div>
-                <Popover.Description>
-                  {p.existing ? '应用于下一条指令。' : '应用于这段新会话。'}
-                </Popover.Description>
-                <div className="run-settings-row">
-                  <span>思考强度</span>
-                  <Picker
-                    id={(p.idPrefix ?? '') + 'effort'}
-                    label="思考强度"
-                    value={p.selection.reasoningEffort}
-                    items={efforts.map((e) => ({ id: e, name: e }))}
-                    disabled={p.disabled || !efforts.length}
-                    placeholder={
-                      !p.selection.modelId ? '先选模型' : efforts.length ? '默认' : '不支持'
-                    }
-                    onChange={(v) => p.onChange('reasoningEffort', v)}
-                  />
-                </div>
-                <div className="run-settings-row">
-                  <span>审批权限</span>
-                  <Picker
-                    id={(p.idPrefix ?? '') + 'approval-mode'}
-                    label="审批"
-                    value={p.selection.modeId}
-                    items={modes.map((m) => ({ id: m.id, name: labels[m.id] || m.name }))}
-                    disabled={p.disabled}
-                    placeholder="Agent 默认"
-                    onChange={(v) => p.onChange('modeId', v)}
-                  />
-                </div>
-                {mode?.description && <p>{mode.description}</p>}
-                {p.selection.modeId === 'agent-full-access' && (
-                  <p>完全访问允许更广的文件和执行权限。</p>
-                )}
-                <button
-                  type="button"
-                  id={(p.idPrefix ?? '') + 'refresh-run-options'}
-                  className="refresh-run-options"
-                  disabled={!p.canRefresh || p.disabled}
-                  onClick={p.onRefresh}
-                >
-                  <RefreshCw />
-                  刷新可用选项
-                </button>
-              </Popover.Popup>
-            </Popover.Positioner>
-          </Popover.Portal>
-        </Popover.Root>
+        <div className="run-approval" title={mode?.description}>
+          <Picker
+            id={(p.idPrefix ?? '') + 'approval-mode'}
+            label="审批"
+            icon={<ShieldCheck />}
+            value={p.selection.modeId}
+            items={modes.map((m) => ({ id: m.id, name: labels[m.id] || m.name }))}
+            disabled={p.disabled}
+            placeholder="Agent 默认审批"
+            onChange={(v) => p.onChange('modeId', v)}
+          />
+        </div>
+        <div className="run-model-options">
+          {p.agentType && <span className="run-agent-name">{p.agentType}</span>}
+          <Picker
+            id={(p.idPrefix ?? '') + 'model'}
+            label="模型"
+            icon={<Cpu />}
+            value={p.selection.modelId}
+            items={models}
+            disabled={p.disabled}
+            placeholder={defaultLabel}
+            onOpen={p.onOpenModels}
+            onChange={(v) => p.onChange('modelId', v)}
+          />
+          <Picker
+            id={(p.idPrefix ?? '') + 'effort'}
+            label="思考强度"
+            value={p.selection.reasoningEffort}
+            items={efforts.map((e) => ({ id: e, name: e }))}
+            disabled={p.disabled || !efforts.length}
+            placeholder={!effectiveModel ? '先选模型' : efforts.length ? '默认强度' : '不支持'}
+            onChange={(v) => p.onChange('reasoningEffort', v)}
+          />
+          <button
+            type="button"
+            id={(p.idPrefix ?? '') + 'refresh-run-options'}
+            className="refresh-run-options icon-button"
+            aria-label="刷新可用选项"
+            title="刷新模型与权限选项"
+            disabled={!p.canRefresh || p.loading}
+            onClick={p.onRefresh}
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
       </div>
       {(p.validation || p.status || p.loading || !p.capabilities) && (
         <p
@@ -1106,7 +1114,7 @@ export function RunControls(p: RunControlsProps) {
             p.status ||
             (p.loading
               ? '正在读取模型与权限选项…'
-              : '暂未获取选项，可在运行设置中刷新；留空沿用 Agent 设置。')}
+              : '暂未获取选项，可刷新模型与权限；留空沿用 Agent 设置。')}
         </p>
       )}
     </>

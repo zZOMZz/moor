@@ -42,6 +42,7 @@ export function WorkspaceGithubUI({
         }
       >
         <GitPullRequest size={16} />
+        <span>GitHub · 提交与 PR</span>
       </button>
       {value && panel.current && (
         <GithubSessionPanel

@@ -47,6 +47,7 @@ export function WorkspaceContentUI({
         onClick={() => open('tree')}
       >
         <FolderOpen size={16} />
+        <span>项目文件</span>
       </button>
       <button
         type="button"
@@ -56,6 +57,7 @@ export function WorkspaceContentUI({
         onClick={() => open('changes')}
       >
         <GitCompareArrows size={16} />
+        <span>文件变更</span>
       </button>
       {value && panel.current && (
         <ProjectContentPanel

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
 import { BookOpen } from 'lucide-react';
 import type { WorkspaceController, WorkspaceClientState } from './workspace-controller';
 import { SkillsPanel } from './skills-ui';
@@ -9,10 +9,12 @@ export function WorkspaceSkillsUI({
   state,
   busy,
   run,
+  controlRef,
 }: {
   controller: WorkspaceController;
   state: WorkspaceClientState;
   busy: boolean;
+  controlRef?: Ref<{ open(): boolean }>;
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
@@ -34,23 +36,20 @@ export function WorkspaceSkillsUI({
     : !state.project?.runtime.features?.includes(SKILLS_FEATURE)
       ? '此执行电脑尚未提供 Skills 读取能力。'
       : '';
+  const open = () =>
+    run(async () => {
+      panel.current?.close();
+      panel.current = controller.openSkills(() => render((n) => n + 1));
+      render((n) => n + 1);
+      if (!reason) await panel.current.controller.refresh();
+    });
+  useImperativeHandle(controlRef, () => ({ open }));
   return (
     <>
-      <button
-        type="button"
-        aria-label="Skills"
-        title="Skills"
-        disabled={busy}
-        onClick={() =>
-          run(async () => {
-            panel.current?.close();
-            panel.current = controller.openSkills(() => render((n) => n + 1));
-            render((n) => n + 1);
-            if (!reason) await panel.current.controller.refresh();
-          })
-        }
-      >
+      <button type="button" aria-label="Skills" title="Skills" disabled={busy} onClick={open}>
         <BookOpen size={16} />
+        <span>Skills</span>
+        <kbd>$</kbd>
       </button>
       {panel.current && (
         <SkillsPanel

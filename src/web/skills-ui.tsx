@@ -169,6 +169,7 @@ export function showSkillsControl(props?: { disabled: boolean; onOpen(): void })
     '#skills-control',
     props ? (
       <button
+        type="button"
         className="icon-button"
         disabled={props.disabled}
         onClick={props.onOpen}
@@ -176,6 +177,7 @@ export function showSkillsControl(props?: { disabled: boolean; onOpen(): void })
         title="Skills"
       >
         <BookOpen />
+        <span>Skills</span>
       </button>
     ) : null,
   );
