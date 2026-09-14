@@ -101,6 +101,7 @@ function fixture(t: { after(fn: () => unknown): void }, subproject = false) {
     machineId: 'machine',
     cliType: 'builtin',
     agentType: 'codex',
+    runtimeOverrides: { codexPath: process.execPath },
   });
   store.saveMachine();
   let started = signal(),

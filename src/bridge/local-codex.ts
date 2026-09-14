@@ -1,5 +1,6 @@
 import { accessSync, constants, statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
+import { delimiter, isAbsolute, join } from 'node:path';
 
 // Only the execution host selects executable paths; never accept them from the relay.
 export function localCodexPath(
@@ -19,11 +20,20 @@ export function localCodexPath(
       throw new Error('MOOR_CODEX_PATH 必须指向可执行文件的绝对路径');
     return explicit;
   }
-  return [
-    '/Applications/Codex.app/Contents/Resources/codex',
+  const executable = process.platform === 'win32' ? 'codex.exe' : 'codex';
+  const candidates = [
+    join(homedir(), '.local', 'bin', executable),
+    ...(process.platform === 'darwin' ? ['/Applications/Codex.app/Contents/Resources/codex'] : []),
     '/opt/homebrew/bin/codex',
     '/usr/local/bin/codex',
-  ].find(usable);
+    ...(env.PATH ?? '')
+      .split(delimiter)
+      .map((directory) => directory.trim())
+      // Do not resolve a relative or empty PATH entry against Moor's project cwd.
+      .filter(isAbsolute)
+      .map((directory) => join(directory, executable)),
+  ];
+  return [...new Set(candidates)].find(usable);
 }
 
 export function withLocalCodex(config: any, path: string | undefined) {

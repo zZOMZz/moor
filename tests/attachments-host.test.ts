@@ -63,7 +63,11 @@ function fixture(file = ':memory:', inputCapabilities: PromptInputCapabilities |
     Object.assign(store.workspace, structuredClone(ws));
     store.save('identity', Buffer.from(JSON.stringify(store.workspace)));
     for (const project of ws.projects) store.machine.set(['localProject', project.id], project);
-    store.machine.set(['agentConfig', 'agent-a'], { ...ws.agents[0], machineId: ws.machineId });
+    store.machine.set(['agentConfig', 'agent-a'], {
+      ...ws.agents[0],
+      machineId: ws.machineId,
+      runtimeOverrides: { codexPath: process.execPath },
+    });
     store.machine.set(['inputCapabilities', 'agent-a'], inputCapabilities as never);
     store.saveMachine();
   }

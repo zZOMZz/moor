@@ -197,6 +197,7 @@ function hostFixture(t: { after(fn: () => unknown): void }) {
     machineId: scope.machineId,
     cliType: 'builtin',
     agentType: 'codex',
+    runtimeOverrides: { codexPath: process.execPath },
   });
   store.saveMachine();
   let callbacks!: AgentCallbacks,

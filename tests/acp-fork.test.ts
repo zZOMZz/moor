@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { promisify } from 'node:util';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -43,16 +42,12 @@ function fixture(
     cliType: 'builtin',
     agentType,
     ...(custom ? { customAcp: { command: process.execPath, args: [] } } : {}),
+    ...(!custom ? { runtimeOverrides: { codexPath: process.execPath } } : {}),
   };
   const driver = createAcpDriver((_command, _args, options) => {
     const child = spawn(
       process.execPath,
-      [
-        resolve('tests/support/synthetic-acp-fork.mjs'),
-        agentType === 'claude' ? 'claude-agent-acp' : 'codex-acp',
-        version ?? (agentType === 'claude' ? '0.76.0' : '1.11.0'),
-        variant,
-      ],
+      [resolve('tests/support/synthetic-acp-fork.mjs'), 'codex-acp', version ?? '1.11.0', variant],
       { ...options, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] },
     ) as ChildProcessWithoutNullStreams;
     child.on('message', (value: any) => {
@@ -75,8 +70,8 @@ function fixture(
   const anchor: AgentForkAnchor = {
     version: 1,
     kind: 'completed-turn',
-    adapter: agentType === 'claude' ? 'claude-agent-acp' : 'codex-acp',
-    adapterVersion: agentType === 'claude' ? '0.76.0' : '1.11.0',
+    adapter: 'codex-acp',
+    adapterVersion: '1.11.0',
     sourceNativeId: nativeId,
     messageId: 'exact-native-message',
   };
@@ -115,15 +110,13 @@ test('the Host authority guard rejects before launching and between real ACP ini
 test('only pinned advertised native fork capabilities enable supported modes', async (t) => {
   for (const [agent, version, custom, advertised] of [
     ['codex', '1.11.0', false, true],
-    ['claude', '0.76.0', false, true],
     ['codex', '1.11.1', false, true],
-    ['claude', '0.76.0', true, true],
     ['codex', '1.11.0', false, false],
   ] as const) {
     const f = fixture(t, advertised ? 'success' : 'no-capability', agent, version, custom);
     const session = await f.open();
     try {
-      const supported = !custom && advertised && (version === '1.11.0' || agent === 'claude');
+      const supported = !custom && advertised && version === '1.11.0';
       assert.equal(session.forkCapabilities?.sameDirectory, supported);
       assert.equal(session.forkCapabilities?.turnCutoff, supported);
       assert.equal(session.forkCapabilities?.worktree, supported);
@@ -134,33 +127,31 @@ test('only pinned advertised native fork capabilities enable supported modes', a
 });
 
 test('completed-turn anchors come only from live root assistant IDs and completed prompts', async (t) => {
-  for (const agent of ['codex', 'claude']) {
-    const f = fixture(t, 'success', agent),
-      anchors: { anchor: AgentForkAnchor; binding: AgentRunBinding }[] = [];
-    const session = await f.open({
-      forkAnchor: (anchor, scope) => anchors.push({ anchor, binding: scope }),
-    });
-    try {
-      assert.equal(anchors.length, 0, 'native load replay is not an observed Moor turn');
-      for (const scenario of [
-        'missing',
-        'cancelled',
-        'foreign',
-        'subagent',
-        'tool-after',
-        'thought-after',
-      ])
-        await session.prompt({ prompt: scenario }, binding);
-      await assert.rejects(session.prompt({ prompt: 'failed' }, binding));
-      await session.prompt({ prompt: 'no-binding' });
-      assert.equal(anchors.length, 0);
-      await session.prompt({ prompt: 'valid' }, binding);
-      assert.deepEqual(anchors, [
-        { anchor: { ...f.anchor, messageId: 'native-message-valid' }, binding },
-      ]);
-    } finally {
-      await session.close();
-    }
+  const f = fixture(t),
+    anchors: { anchor: AgentForkAnchor; binding: AgentRunBinding }[] = [];
+  const session = await f.open({
+    forkAnchor: (anchor, scope) => anchors.push({ anchor, binding: scope }),
+  });
+  try {
+    assert.equal(anchors.length, 0, 'native load replay is not an observed Moor turn');
+    for (const scenario of [
+      'missing',
+      'cancelled',
+      'foreign',
+      'subagent',
+      'tool-after',
+      'thought-after',
+    ])
+      await session.prompt({ prompt: scenario }, binding);
+    await assert.rejects(session.prompt({ prompt: 'failed' }, binding));
+    await session.prompt({ prompt: 'no-binding' });
+    assert.equal(anchors.length, 0);
+    await session.prompt({ prompt: 'valid' }, binding);
+    assert.deepEqual(anchors, [
+      { anchor: { ...f.anchor, messageId: 'native-message-valid' }, binding },
+    ]);
+  } finally {
+    await session.close();
   }
 });
 
@@ -191,7 +182,7 @@ test('driver fork loads source passively and sends exact cutoff and target cwd o
 });
 
 test('fork without anchor requests only current native context and never fabricates a cutoff', async (t) => {
-  const f = fixture(t, 'success', 'claude');
+  const f = fixture(t);
   assert.deepEqual(
     await f.driver.fork!(f.config, {
       sourceNativeId: nativeId,
@@ -209,8 +200,7 @@ test('fork without anchor requests only current native context and never fabrica
 });
 
 test('invalid source anchors and relative cwd reject before any native fork is attempted', async (t) => {
-  const f = fixture(t),
-    claude = fixture(t, 'success', 'claude');
+  const f = fixture(t);
   await assert.rejects(
     f.driver.fork!(f.config, {
       sourceNativeId: nativeId,
@@ -221,46 +211,18 @@ test('invalid source anchors and relative cwd reject before any native fork is a
     rejected,
   );
   await assert.rejects(
-    claude.driver.fork!(claude.config, {
+    f.driver.fork!(f.config, {
       sourceNativeId: nativeId,
-      sourceCwd: claude.cwd,
+      sourceCwd: f.cwd,
       targetCwd: 'relative-directory',
-      anchor: claude.anchor,
+      anchor: f.anchor,
     }),
     rejected,
   );
   assert.equal(
-    [...f.wires, ...claude.wires].some((wire) => wire.method === 'session/fork'),
+    f.wires.some((wire) => wire.method === 'session/fork'),
     false,
   );
-});
-
-test('Claude worktree fork copies native context at source then loads only the returned child at target', async (t) => {
-  for (const variant of ['success', 'child-load-error']) {
-    const f = fixture(t, variant, 'claude');
-    const work = f.driver.fork!(f.config, {
-      sourceNativeId: nativeId,
-      sourceCwd: f.cwd,
-      targetCwd: f.target,
-      anchor: f.anchor,
-    });
-    if (variant === 'success') assert.deepEqual(await work, { nativeId: 'native-child' });
-    else await assert.rejects(work, unknown);
-    const requests = f.wires.filter((wire) => wire.method === 'session/fork');
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].params.cwd, f.cwd);
-    assert.deepEqual(
-      f.wires.filter((wire) => wire.method === 'session/load').map((wire) => wire.params),
-      [
-        { sessionId: nativeId, cwd: f.cwd, mcpServers: [] },
-        { sessionId: 'native-child', cwd: f.target, mcpServers: [] },
-      ],
-    );
-    assert.equal(
-      f.wires.some((wire) => wire.method === 'session/prompt'),
-      false,
-    );
-  }
 });
 
 test('errors, response loss and reused IDs after native fork remain unknown without any retry', async (t) => {
@@ -283,7 +245,7 @@ test('errors, response loss and reused IDs after native fork remain unknown with
   }
 });
 
-test('host lease is checked immediately before native dispatch and known ID is saved before child load', async (t) => {
+test('host lease is checked before native dispatch and after the known child ID is saved', async (t) => {
   const stale = fixture(t);
   await assert.rejects(
     stale.driver.fork!(stale.config, {
@@ -301,8 +263,8 @@ test('host lease is checked immediately before native dispatch and known ID is s
     false,
   );
 
-  for (const variant of ['success', 'child-load-error', 'changed-after-native', 'journal-error']) {
-    const f = fixture(t, variant, 'claude'),
+  for (const variant of ['success', 'changed-after-native', 'journal-error']) {
+    const f = fixture(t, variant),
       known: string[] = [];
     const work = f.driver.fork!(f.config, {
       sourceNativeId: nativeId,
@@ -321,12 +283,11 @@ test('host lease is checked immediately before native dispatch and known ID is s
     else await assert.rejects(work, unknown);
     assert.deepEqual(known, ['native-child']);
     assert.equal(f.wires.filter((wire) => wire.method === 'session/fork').length, 1);
-    const childLoads = f.wires.filter(
-      (wire) => wire.method === 'session/load' && wire.params.sessionId === 'native-child',
-    );
     assert.equal(
-      childLoads.length,
-      ['changed-after-native', 'journal-error'].includes(variant) ? 0 : 1,
+      f.wires.some(
+        (wire) => wire.method === 'session/load' && wire.params.sessionId === 'native-child',
+      ),
+      false,
     );
     const wireText = JSON.stringify(f.wires);
     assert(!wireText.includes('assertCurrent'));
@@ -400,34 +361,4 @@ test('pinned Codex fork implementation maps native message to inclusive turn cut
     ),
   );
   assert.equal(calls.length, 1, 'unresolved exact ID must never reach native thread/fork');
-});
-
-test('pinned Claude native fork and SDK load preserve exact cutoff and resume only the child at target cwd', async (t) => {
-  const temp = realpathSync(mkdtempSync(join(tmpdir(), 'moor-claude-native-fork-'))),
-    source = join(temp, 'source'),
-    target = join(temp, 'target');
-  mkdirSync(source);
-  mkdirSync(target);
-  t.after(() => rmSync(temp, { recursive: true, force: true }));
-  const result = await promisify(execFile)(
-    process.execPath,
-    [resolve('tests/support/synthetic-claude-native-fork.mjs'), source, target],
-    {
-      env: {
-        PATH: process.env.PATH,
-        CLAUDE_CONFIG_DIR: join(temp, 'config'),
-        CLAUDE_CODE_EXECUTABLE: resolve('tests/support/synthetic-claude-fork-cli.mjs'),
-        MOOR_SYNTHETIC_CLI_REPORT: join(temp, 'launch.jsonl'),
-      },
-      timeout: 20000,
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  assert.deepEqual(JSON.parse(result.stdout), {
-    nativeFork: true,
-    inclusiveCutoff: true,
-    targetLoad: true,
-    sourceUnchanged: true,
-    noPrompt: true,
-  });
 });

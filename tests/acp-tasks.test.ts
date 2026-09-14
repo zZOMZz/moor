@@ -38,6 +38,7 @@ function fixture(
     cliType: 'builtin',
     agentType: 'codex',
     machineId: 'machine',
+    runtimeOverrides: { codexPath: process.execPath },
   };
   const launches: any[] = [];
   const driver = createAcpDriver((command, args, options) => {

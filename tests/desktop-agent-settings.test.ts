@@ -90,6 +90,28 @@ test('private Agent IPC validates actions, strips unchecked fields, and binds re
   const received = await reading;
   assert.equal(received.presets[0].command, '/synthetic/agent');
   assert.equal(JSON.stringify(received).includes('not-public'), false);
+  const missingMessage = '未找到可用的本机 Codex；请先安装 Codex CLI 或配置 MOOR_CODEX_PATH';
+  for (const [privateError, expected] of [
+    [missingMessage, missingMessage],
+    ['/private/private-secret', 'Agent 连接检查失败，请检查本机程序与登录状态。'],
+  ]) {
+    const checking = f.bridge.request({ action: 'read' }, () => true);
+    f.bridge.receive(f.child, {
+      type: 'agent-config-result',
+      requestId: f.sent.at(-1).requestId,
+      ok: true,
+      state: {
+        ...state,
+        presets: [
+          {
+            ...state.presets[0],
+            checked: { versionId: 'agent-v1', ok: false, error: privateError },
+          },
+        ],
+      },
+    });
+    assert.equal((await checking).presets[0].checked.error, expected);
+  }
   for (const action of [
     { action: 'read', command: '/synthetic/extra' },
     { action: 'save', expectedRevision: 2, name: 'Bad', command: 'relative', args: [] },
@@ -101,6 +123,7 @@ test('private Agent IPC validates actions, strips unchecked fields, and binds re
       args: ['\0'],
     },
     { action: 'builtin', expectedRevision: 2, agentType: 'shell' },
+    { action: 'builtin', expectedRevision: 2, agentType: 'claude' },
     { action: 'check', expectedRevision: 2, id: 'preset' },
     { action: 'enabled', expectedRevision: 2, id: 'preset', enabled: 'yes' },
   ])
@@ -151,6 +174,15 @@ test('private Agent IPC validates actions, strips unchecked fields, and binds re
   [...f.timers.values()][0]!();
   await lostError;
   assert.equal(f.sent.length, count);
+  const missing = f.bridge.request({ action: 'read' }, () => true),
+    missingError = assert.rejects(missing, (error: Error) => error.message === missingMessage);
+  f.bridge.receive(f.child, {
+    type: 'agent-config-result',
+    requestId: f.sent.at(-1).requestId,
+    ok: false,
+    error: missingMessage,
+  });
+  await missingError;
   const failed = f.bridge.request({ action: 'read' }, () => true),
     failedError = assert.rejects(
       failed,
@@ -175,28 +207,35 @@ test('actual Agent settings create, check, edit, enable and remove versions with
   t.after(() => store.close());
   let opens = 0,
     closes = 0,
-    prompts = 0;
+    prompts = 0,
+    failOpen = false;
   const launch: unknown[] = [];
-  const settings = new AgentSettings(store, {
-    async open(config, cwd, nativeId, callbacks) {
-      opens++;
-      launch.push(structuredClone(config));
-      assert.equal(nativeId, undefined);
-      assert.ok(cwd.includes('moor-agent-check-'));
-      assert.deepEqual(await callbacks.permission({}), { outcome: { outcome: 'cancelled' } });
-      return {
-        id: 'synthetic-native',
-        capabilities: syntheticCapabilities,
-        async prompt() {
-          prompts++;
-        },
-        async cancel() {},
-        close() {
-          closes++;
-        },
-      };
+  const settings = new AgentSettings(
+    store,
+    {
+      async open(config, cwd, nativeId, callbacks) {
+        opens++;
+        launch.push(structuredClone(config));
+        if (failOpen) throw new Error('synthetic connection failure');
+        assert.equal(nativeId, undefined);
+        assert.ok(cwd.includes('moor-agent-check-'));
+        assert.deepEqual(await callbacks.permission({}), { outcome: { outcome: 'cancelled' } });
+        return {
+          id: 'synthetic-native',
+          capabilities: syntheticCapabilities,
+          async prompt() {
+            prompts++;
+          },
+          async cancel() {},
+          close() {
+            closes++;
+          },
+        };
+      },
     },
-  });
+    () => {},
+    () => process.execPath,
+  );
   t.after(() => settings.close());
   const dom = new JSDOM(await readFile(resolve('src/desktop/settings.html'), 'utf8'), {
     runScripts: 'outside-only',
@@ -211,7 +250,8 @@ test('actual Agent settings create, check, edit, enable and remove versions with
   };
   const f = transport();
   let closed = false,
-    hold = false;
+    hold = false,
+    codexInstallOpens = 0;
   const replies: (() => void)[] = [];
   f.child = {
     connected: true,
@@ -247,6 +287,10 @@ test('actual Agent settings create, check, edit, enable and remove versions with
         invoke(name: string, value: unknown) {
           if (name === 'personal:agent-config') return f.bridge.request(value, () => !closed);
           if (name === 'personal:agent-executable') return Promise.resolve(process.execPath);
+          if (name === 'personal:open-codex-install') {
+            codexInstallOpens++;
+            return Promise.resolve();
+          }
           if (name === 'personal:health') return Promise.resolve(health);
           if (name === 'personal:settings')
             return Promise.resolve({
@@ -272,6 +316,13 @@ test('actual Agent settings create, check, edit, enable and remove versions with
   const click = (id: string) => (element(id).onclick as any)(new dom.window.MouseEvent('click'));
   assert.equal(f.sent.length, 0);
   assert.equal(opens, 0);
+  assert.equal(dom.window.document.getElementById('agent-add-claude'), null);
+  assert.match(
+    element('codex-runtime-status').textContent!,
+    /未发现本机 Codex，Moor 不内置 runtime/,
+  );
+  await click('codex-install');
+  assert.equal(codexInstallOpens, 1);
   await click('agent-refresh');
   await click('agent-choose');
   element('agent-name').value = '合成 ACP';
@@ -326,11 +377,15 @@ test('actual Agent settings create, check, edit, enable and remove versions with
   await click('agent-remove');
   assert.equal(settings.read().presets.length, 0);
   assert.ok(store.agents.get(original.versionId));
-  await click('agent-add-claude');
-  assert.equal(settings.read().presets[0].agentType, 'claude');
+  await click('agent-add-codex');
+  assert.equal(settings.read().presets[0].agentType, 'codex');
   assert.equal(settings.read().presets[0].enabled, false);
   assert.equal(element('agent-save').disabled, true);
-  assert.equal(opens, 1);
+  assert.match(element('codex-runtime-status').textContent!, /尚未检查本机 Codex/);
+  failOpen = true;
+  await click('agent-check');
+  assert.match(element('codex-runtime-status').textContent!, /本机 Codex 已登记，但连接检查失败/);
+  assert.equal(opens, 2);
   assert.equal(prompts, 0);
   hold = true;
   const reading = click('agent-refresh');

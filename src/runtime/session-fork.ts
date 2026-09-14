@@ -23,6 +23,8 @@ import {
 import type { AgentConfig, AgentDriver } from './agent';
 import {
   agentForkAnchorSchema,
+  codexAgentForkAnchorSchema,
+  pinnedForkAdapter,
   type AgentForkAnchor,
   type AgentForkCapabilities,
 } from './agent-fork';
@@ -160,7 +162,9 @@ export class SessionForkStore {
     anchor: AgentForkAnchor,
     agent: AgentConfig,
   ) {
-    const parsed = agentForkAnchorSchema.parse(anchor);
+    // Legacy Claude anchors remain readable, but no current callback may create
+    // or replace one after Claude execution support has been removed.
+    const parsed = codexAgentForkAnchorSchema.parse(anchor);
     this.db
       .prepare('INSERT OR REPLACE INTO session_fork_anchor VALUES(?,?,?,?)')
       .run(
@@ -209,6 +213,26 @@ const unavailable: AgentForkCapabilities = {
   worktreeUnavailableReason: '尚无经过验证的原生工作目录 Fork 能力',
   turnCutoffUnavailableReason: '尚无经过验证的原生回合锚点',
 };
+const removedBuiltinUnavailable: AgentForkCapabilities = {
+  sameDirectory: false,
+  worktree: false,
+  turnCutoff: false,
+  sameDirectoryUnavailableReason: '此历史 Agent 已停止支持，仅可读取原会话',
+  worktreeUnavailableReason: '此历史 Agent 已停止支持，不能创建工作目录 Fork',
+  turnCutoffUnavailableReason: '历史原生锚点仅供读取，不能用于新的 Fork',
+};
+function supportedForkRecord(record: ForkRecord) {
+  const provider = pinnedForkAdapter(record.agent);
+  return (
+    provider !== undefined &&
+    record.capabilities.adapter === provider.adapter &&
+    record.capabilities.adapterVersion === provider.adapterVersion &&
+    (record.anchor === undefined ||
+      (record.anchor.adapter === provider.adapter &&
+        record.anchor.adapterVersion === provider.adapterVersion &&
+        record.anchor.sourceNativeId === record.sourceNativeId))
+  );
+}
 export class SessionForkManager {
   readonly busy = new Set<string>();
   constructor(
@@ -260,6 +284,7 @@ export class SessionForkManager {
       '来源会话没有可验证的固定 Agent 配置',
     );
     const nativeId = store.nativeSession(scope.sessionId, execution);
+    const removedBuiltin = !agent.customAcp && agent.agentType !== 'codex';
     const sourceVersion = hash(
       JSON.stringify([
         scopeKey(scope),
@@ -280,9 +305,11 @@ export class SessionForkManager {
       nativeId,
       agent,
       sourceVersion,
-      capabilities: nativeId
-        ? (store.forks.capabilities(scope, execution, nativeId, agent) ?? unavailable)
-        : unavailable,
+      capabilities: removedBuiltin
+        ? removedBuiltinUnavailable
+        : nativeId
+          ? (store.forks.capabilities(scope, execution, nativeId, agent) ?? unavailable)
+          : unavailable,
     };
   }
   async options(
@@ -655,6 +682,10 @@ export class SessionForkManager {
                 }
               : {}),
           };
+          // A durable record may only authorize side effects for the currently
+          // pinned provider/version. This check precedes child reservation and
+          // any Git, execution-manager or Agent work.
+          assert(supportedForkRecord(record), 409, '此 Agent 的固定 Fork provider 版本已停止支持');
           store.transaction(() => {
             checkpoint?.();
             store.reserveAttachmentScope({ ...scope, sessionId: request.childSessionId });
@@ -673,6 +704,23 @@ export class SessionForkManager {
         }
         this.host.executionManager.busy.add(request.sessionId);
         try {
+          if (!supportedForkRecord(record!)) {
+            if (record!.phase === 'returned') return this.accept(record!, checkpoint);
+            if (record!.phase === 'dispatched')
+              return this.unknown(
+                record!,
+                '历史 Fork 已派发，结果仍未知；不会启动或载入已停止支持的 Agent。',
+              );
+            if (record!.phase === 'preparing')
+              return this.reject(
+                record!,
+                request.directory.kind === 'worktree'
+                  ? '历史 Fork 的 Agent provider 版本已停止支持；原生 Fork 未派发。已创建的工作目录仍保留，需显式清理。'
+                  : '历史 Fork 的 Agent provider 版本已停止支持；原生 Fork 未派发。',
+                'abandoned',
+              );
+            throw new AppError(409, 'Fork 回执状态不一致');
+          }
           this.assertAgentBinding(record!);
           if (record!.phase === 'accepted' || record!.phase === 'rejected')
             throw new AppError(409, 'Fork 回执状态不一致');
@@ -838,6 +886,34 @@ export class SessionForkManager {
           409,
           'Fork 原操作记录不匹配',
         );
+        if (!supportedForkRecord(record)) {
+          if (record.phase === 'returned') return result(this.accept(record, checkpoint));
+          if (record.phase === 'dispatched')
+            return result(
+              this.unknown(
+                record,
+                '历史 Fork 已派发，结果仍未知；核查不会启动或载入已停止支持的 Agent。',
+              ),
+            );
+          assert(record.phase === 'preparing', 409, 'Fork 原操作阶段不可验证');
+          if (operation.action === 'inspect')
+            return result(
+              this.receipt(
+                record,
+                'unknown',
+                '历史 Fork 的 Agent provider 版本已停止支持；核查不会继续执行或改变原操作。',
+              ),
+            );
+          return result(
+            this.reject(
+              record,
+              request.directory.kind === 'worktree'
+                ? '历史 Fork 的 Agent provider 版本已停止支持；原生 Fork 未派发。已创建的工作目录仍保留，需显式清理。'
+                : '历史 Fork 的 Agent provider 版本已停止支持；原生 Fork 未派发。',
+              'abandoned',
+            ),
+          );
+        }
         this.assertAgentBinding(record);
         if (record.phase === 'returned') return result(this.accept(record, checkpoint));
         if (record.phase === 'dispatched')

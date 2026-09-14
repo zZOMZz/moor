@@ -9,23 +9,39 @@ const opaqueId = z
   .min(1)
   .max(500)
   .refine((value) => !/[\s\x00-\x1f\x7f]/u.test(value));
-export const agentForkAnchorSchema = z
+export const codexAgentForkAnchorSchema = z
   .object({
     version: z.literal(1),
     kind: z.literal('completed-turn'),
-    adapter: z.enum(['codex-acp', 'claude-agent-acp']),
-    adapterVersion: z.enum(['1.11.0', '0.76.0']),
+    adapter: z.literal('codex-acp'),
+    adapterVersion: z.literal('1.11.0'),
     sourceNativeId: opaqueId,
     messageId: opaqueId,
   })
   .strict();
+const legacyClaudeAgentForkAnchorSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal('completed-turn'),
+    adapter: z.literal('claude-agent-acp'),
+    adapterVersion: z.literal('0.76.0'),
+    sourceNativeId: opaqueId,
+    messageId: opaqueId,
+  })
+  .strict();
+/** Durable reader only; runtime capability and anchor generation remain Codex-only. */
+export const agentForkAnchorSchema = z.discriminatedUnion('adapter', [
+  codexAgentForkAnchorSchema,
+  legacyClaudeAgentForkAnchorSchema,
+]);
 export type AgentForkAnchor = z.infer<typeof agentForkAnchorSchema>;
+type CodexAgentForkAnchor = z.infer<typeof codexAgentForkAnchorSchema>;
 export type AgentForkCapabilities = {
   sameDirectory: boolean;
   worktree: boolean;
   turnCutoff: boolean;
-  adapter?: AgentForkAnchor['adapter'];
-  adapterVersion?: AgentForkAnchor['adapterVersion'];
+  adapter?: CodexAgentForkAnchor['adapter'];
+  adapterVersion?: CodexAgentForkAnchor['adapterVersion'];
   sameDirectoryUnavailableReason?: string;
   worktreeUnavailableReason?: string;
   turnCutoffUnavailableReason?: string;
@@ -46,9 +62,7 @@ export function pinnedForkAdapter(config: AgentConfig) {
   if (config.customAcp) return undefined;
   return config.agentType === 'codex'
     ? { adapter: 'codex-acp' as const, adapterVersion: '1.11.0' as const }
-    : config.agentType === 'claude'
-      ? { adapter: 'claude-agent-acp' as const, adapterVersion: '0.76.0' as const }
-      : undefined;
+    : undefined;
 }
 export function forkCapabilities(
   config: AgentConfig,
@@ -65,8 +79,6 @@ export function forkCapabilities(
     sameDirectory: native,
     turnCutoff: native,
     ...pinned,
-    // Claude uses source-directory fork followed by child-only load at the target;
-    // Codex passes target cwd directly to its native thread/fork operation.
     worktree: native,
     ...(!native
       ? {
@@ -98,14 +110,14 @@ export function validateForkInput(config: AgentConfig, input: AgentForkInput): v
 }
 export function nativeForkRequest(
   input: AgentForkInput,
-  adapter: AgentForkAnchor['adapter'],
+  _adapter: CodexAgentForkAnchor['adapter'],
 ): ForkSessionRequest {
   return {
     sessionId: input.sourceNativeId,
-    cwd: adapter === 'claude-agent-acp' ? input.sourceCwd : input.targetCwd,
+    cwd: input.targetCwd,
     mcpServers: [],
-    // This extension is implemented by both exact pinned adapters. Its name is
-    // their wire contract; Moor never copies history or uses a text fingerprint.
+    // This extension is implemented by the exact pinned Codex adapter. Its name
+    // is the wire contract; Moor never copies history or uses a text fingerprint.
     ...(input.anchor
       ? {
           _meta: {
@@ -131,16 +143,14 @@ export class ForkAnchorObservation {
   observe(value: unknown) {
     const update = record(value);
     if (!update) return;
-    const meta = record(update._meta),
-      claude = record(meta?.claudeCode);
-    if (claude?.parentToolUseId || meta?.parentToolUseId || meta?.subagent) return;
+    const meta = record(update._meta);
+    if (meta?.parentToolUseId || meta?.subagent) return;
     if (update.sessionUpdate === 'agent_message_chunk') {
       const parsed = opaqueId.safeParse(update.messageId);
       this.messageId = parsed.success ? parsed.data : undefined;
     } else if (
       ['tool_call', 'tool_call_update', 'user_message_chunk'].includes(String(update.sessionUpdate))
     ) {
-      // Claude's cutoff is inclusive at the message, not at the containing turn.
       // Tool/user work after that message must not be lost behind a stale ID.
       this.messageId = undefined;
     } else if (

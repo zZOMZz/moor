@@ -202,6 +202,29 @@ function fixture(t: { after(fn: () => unknown): void }) {
   };
 }
 
+test('new-session catalogue excludes legacy builtin Claude while retaining custom ACP', (t) => {
+  const f = fixture(t);
+  f.store.registerAgent('legacy-claude', {
+    id: 'legacy-claude',
+    name: 'Legacy Claude',
+    cliType: 'builtin',
+    agentType: 'claude',
+    machineId: f.store.workspace.machineId,
+  });
+  f.store.registerAgent('legacy-pathless-codex', {
+    id: 'legacy-pathless-codex',
+    name: 'Legacy pathless Codex',
+    cliType: 'builtin',
+    agentType: 'codex',
+    machineId: f.store.workspace.machineId,
+  });
+  f.host.updateCatalogue();
+  assert.deepEqual(
+    f.host.workspace.agents.map((agent) => agent.id),
+    [f.config.id],
+  );
+});
+
 test('accepted Agent snapshot survives catalogue replacement while before-capture waits', async (t) => {
   const f = fixture(t),
     held = signal(),

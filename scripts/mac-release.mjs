@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isAgentRuntimePackagePath } from './package-dependencies.mjs';
 
 // Apple: https://developer.apple.com/library/archive/technotes/tn2206/_index.html
 // https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
@@ -61,6 +62,7 @@ const runtimeFiles = new Set([
   'server.mjs',
   'preview-renderer.cjs',
 ]);
+const codexAdapterManifest = `${programRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/package.json`;
 const required = [
   'Contents/Info.plist',
   `${programRoot}/package.json`,
@@ -68,6 +70,8 @@ const required = [
   `${programRoot}/runtime/bridge.mjs`,
   `${programRoot}/runtime/cli.mjs`,
   `${programRoot}/runtime/security.mjs`,
+  codexAdapterManifest,
+  `${programRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/dist/index.js`,
   `${programRoot}/licenses/Moor-LICENSE`,
   `${programRoot}/licenses/Moor-NOTICE`,
   `${programRoot}/licenses/BUNDLED-NOTICES.txt`,
@@ -131,6 +135,10 @@ function options(input) {
 }
 function programPath(path, directory) {
   const segments = path.split('/');
+  ensure(
+    !isAgentRuntimePackagePath(path),
+    'Bundled Agent runtime or unsupported adapter is not allowed',
+  );
   ensure(
     !segments.some((p) =>
       ['.git', '.codex', '.agents', '.data', '.cache', '.ssh', '.aws'].includes(p),
@@ -289,31 +297,13 @@ export async function inspectMacApp(inputPath) {
           mode: info.mode & 0o777,
         });
         if (kind) {
-          // Preserve the reviewed runtime exceptions of the pinned native Agent binaries.
-          // Templates are fixed policy, never copied from arbitrary input signatures.
           const electron =
             rel === 'Contents/MacOS/Electron' ||
             /\/Electron Helper[^/]*\.app\/Contents\/MacOS\//.test(rel);
-          const claude = /\/@anthropic-ai\/claude-agent-sdk-darwin-(?:arm64|x64)\/claude$/.test(
-            rel,
-          );
-          const codex =
-            /\/@openai\/codex-darwin-(?:arm64|x64)\/vendor\/(?:aarch64|x86_64)-apple-darwin\/bin\/(?:codex|codex-code-mode-host)$/.test(
-              rel,
-            );
           targets.push({
             path: rel,
             kind,
-            entitlements:
-              kind === 'executable'
-                ? electron
-                  ? 'electron'
-                  : claude
-                    ? 'claude'
-                    : codex
-                      ? 'agent-v8'
-                      : 'native'
-                : null,
+            entitlements: kind === 'executable' ? (electron ? 'electron' : 'native') : null,
           });
         }
       }
@@ -334,6 +324,16 @@ export async function inspectMacApp(inputPath) {
   ensure(
     manifest.name === 'moor' && manifest.main === 'entry.cjs',
     'Unexpected Moor package manifest',
+  );
+  let codexAdapter;
+  try {
+    codexAdapter = JSON.parse(await readFile(join(app, codexAdapterManifest), 'utf8'));
+  } catch {
+    throw new Error('Invalid Codex adapter package manifest');
+  }
+  ensure(
+    codexAdapter.name === '@agentclientprotocol/codex-acp' && codexAdapter.version === '1.11.0',
+    'Unexpected Codex adapter package manifest',
   );
   const plist = await readFile(join(app, 'Contents/Info.plist'), 'utf8');
   ensure(
@@ -537,7 +537,7 @@ export async function executeMacRelease(
     notarization: null,
     archive: null,
     validationLimit:
-      'Signing and Gatekeeper checks do not prove fresh-machine launch or native Agent compatibility.',
+      'Signing and Gatekeeper checks do not prove fresh-machine launch or local Codex compatibility.',
   };
   let current = 'copy-and-recheck-source';
   const save = () => writeReport(reportPath, report);
@@ -567,7 +567,7 @@ export async function executeMacRelease(
     report.completed.push(current);
     const entitlements = join(config.output, 'entitlements');
     await mkdir(entitlements);
-    for (const name of ['electron', 'native', 'claude', 'agent-v8'])
+    for (const name of ['electron', 'native'])
       await cp(join(entitlementsDirectory, name + '.plist'), join(entitlements, name + '.plist'), {
         errorOnExist: true,
         force: false,

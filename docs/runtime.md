@@ -21,9 +21,9 @@ flowchart TD
 
 ## Agent 从哪里启动
 
-客户端附带 Moor 执行服务和锁定的 ACP 适配器。登记内置 Codex 时，可执行程序发现顺序为 `MOOR_CODEX_PATH`、`/Applications/Codex.app` 附带的 CLI、Homebrew `codex`，再退回锁定适配器附带的 CLI。本机启动配置变化会生成新版本供新会话选择，已有会话保留原版本和显式路径。
+客户端附带 Moor 执行服务和锁定的 Codex ACP 适配器，但不附带 Codex CLI runtime。登记内置 Codex 时，可执行程序发现顺序为 `MOOR_CODEX_PATH`、`~/.local/bin/codex`、`/Applications/Codex.app` 附带的 CLI、常见 Homebrew 路径和绝对 `PATH` 目录。没有可用程序时显示“未发现本机 Codex，Moor 不内置 runtime”，并引导打开 [Codex CLI 官方安装说明](https://learn.chatgpt.com/docs/codex/cli)；Moor 不下载、静默安装或执行安装命令。本机启动配置变化会生成新版本供新会话选择，已有会话保留原版本和显式路径。
 
-这些路径仅由本机设置决定，不接受远程覆盖。Moor 不读取另一个应用的会话数据库，也不依赖其源码检出。Agent 登录凭据继续由 Agent 自身管理。
+这些路径仅由本机设置决定，不接受远程覆盖。需要指定其他位置时，在启动 Moor 前把 `MOOR_CODEX_PATH` 设置为可执行文件的绝对路径；设置页的普通程序选择器只用于兼容的自定义 ACP 配置，不会改写内置 Codex 路径。Moor 不读取另一个应用的会话数据库，也不依赖其源码检出。Codex 登录凭据继续由 Codex 自身管理。
 
 刷新模型选项时，主机会打开一个临时 AgentSession，读取它报告的能力后关闭；已有会话使用固定 Agent 版本和实际执行目录，新会话使用已登记项目。此过程不发送用户 prompt。项目目录被替换、会话归属改变或请求连接失效后，不返回迟到的能力结果。
 

@@ -32,10 +32,9 @@ const metadata = `Authority=${identity}\nTeamIdentifier=AAAAAAAAAA\nCodeDirector
 const appRoot = 'Contents/Resources/app';
 const native = `${appRoot}/runtime/node_modules/synthetic/bin/tool`;
 const addon = `${appRoot}/runtime/node_modules/synthetic/addon.node`;
+const adapter = `${appRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/dist/index.js`;
 const framework = 'Contents/Frameworks/Synthetic.framework';
 const helper = 'Contents/Frameworks/Electron Helper.app';
-const claude = `${appRoot}/runtime/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`;
-const codex = `${appRoot}/runtime/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex-code-mode-host`;
 function thin(type = 2) {
   const result = Buffer.alloc(32);
   result.writeUInt32BE(0xcffaedfe);
@@ -74,6 +73,9 @@ async function fixture(t: TestContext) {
     [`${appRoot}/runtime/cli.mjs`]: '// synthetic cli',
     [`${appRoot}/runtime/security.mjs`]: '// synthetic local device security CLI',
     [`${appRoot}/runtime/public/index.html`]: '<title>Synthetic</title>',
+    [`${appRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/package.json`]:
+      '{"name":"@agentclientprotocol/codex-acp","version":"1.11.0"}',
+    [adapter]: '// synthetic Codex ACP adapter',
     [`${appRoot}/licenses/Moor-LICENSE`]: 'synthetic Moor license',
     [`${appRoot}/licenses/Moor-NOTICE`]: 'synthetic attribution',
     [`${appRoot}/licenses/BUNDLED-NOTICES.txt`]: 'synthetic third-party notices',
@@ -81,8 +83,6 @@ async function fixture(t: TestContext) {
     'Contents/MacOS/Electron': thin(),
     [native]: fat(),
     [addon]: thin(8),
-    [claude]: thin(),
-    [codex]: thin(),
     [`${framework}/Versions/A/Synthetic`]: thin(6),
     [`${framework}/Versions/B/Synthetic`]: thin(6),
     [`${framework}/Versions/A/Resources/Info.plist`]: '<plist/>',
@@ -139,12 +139,11 @@ test('macOS release plan is read-only, credential-free and inventories native co
     paths = plan.targets.map((target) => target.path);
   assert.equal(plan.executed, false);
   assert.equal(plan.sourceDigest, before.digest);
+  assert.ok(before.entries.some((entry) => entry.path === adapter && entry.type === 'file'));
   assert.equal(paths.at(-1), '.');
   for (const path of [
     native,
     addon,
-    claude,
-    codex,
     framework,
     `${framework}/Versions/A`,
     `${framework}/Versions/B`,
@@ -157,12 +156,50 @@ test('macOS release plan is read-only, credential-free and inventories native co
   assert.ok(paths.indexOf(`${framework}/Versions/B`) < paths.indexOf(framework));
   assert.ok(paths.indexOf(`${helper}/Contents/MacOS/Electron Helper`) < paths.indexOf(helper));
   assert.equal(plan.targets.find((target) => target.path === addon)?.entitlements, null);
-  assert.equal(plan.targets.find((target) => target.path === claude)?.entitlements, 'claude');
-  assert.equal(plan.targets.find((target) => target.path === codex)?.entitlements, 'agent-v8');
+  assert.ok(plan.targets.every((target) => !['claude', 'agent-v8'].includes(target.entitlements)));
   assert.ok(!JSON.stringify(plan).includes(identity));
   assert.ok(!JSON.stringify(plan).includes(profile));
   assert.deepEqual(await readdir(f.directory), ['Moor.app']);
   assert.equal((await inspectMacApp(f.app)).digest, before.digest);
+});
+
+test('macOS release refuses packaged Agent runtimes and the unsupported Claude adapter', async (t) => {
+  for (const path of [
+    `${appRoot}/runtime/node_modules/@openai/codex/bin/codex.js`,
+    `${appRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`,
+    `${appRoot}/runtime/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`,
+    `${appRoot}/runtime/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`,
+    `${appRoot}/runtime/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js`,
+  ]) {
+    await t.test(path, async (child) => {
+      const f = await fixture(child);
+      await f.put(path, 'synthetic bundled Agent runtime');
+      await assert.rejects(
+        planMacRelease(f.config),
+        /Bundled Agent runtime or unsupported adapter/,
+      );
+    });
+  }
+});
+
+test('macOS release requires the exact pinned Codex adapter manifest', async (t) => {
+  for (const manifest of [
+    '{"name":"@agentclientprotocol/codex-acp","version":"1.10.0"}',
+    '{"name":"synthetic-adapter","version":"1.11.0"}',
+    'not-json',
+  ]) {
+    await t.test(manifest, async (child) => {
+      const f = await fixture(child);
+      await f.put(
+        `${appRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/package.json`,
+        manifest,
+      );
+      await assert.rejects(
+        planMacRelease(f.config),
+        /(?:Invalid|Unexpected) Codex adapter package manifest/,
+      );
+    });
+  }
 });
 
 test('release CLI defaults to plan and refuses ad-hoc identities, secret parameters and incomplete options', () => {
@@ -254,6 +291,7 @@ test('explicit execution signs a separate copy, verifies before upload, staples 
     assert.ok(!call.args.includes('--deep'));
     assert.ok(call.args.includes('--timestamp'));
     assert.ok(call.args.includes('runtime'));
+    assert.ok(!call.args.some((arg) => /(?:claude|agent-v8)\.plist$/.test(arg)));
   }
   const find = (first: string, second?: string) =>
     calls.findIndex((call) => call.args[0] === first && (!second || call.args[1] === second));

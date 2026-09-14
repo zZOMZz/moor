@@ -259,15 +259,3 @@ export async function bridgeElicitation(
     return { action: 'cancel' };
   return elicitationResponse(normalized.request, answer);
 }
-
-// Pinned Claude adapter 0.76.0 opts out of its legacy idle-new-turn fallback.
-// Codex 1.11.0 cannot guarantee this contract and must not use this helper.
-export function claudeSteerParams(nativeSessionId: string, prompt: string) {
-  if (!nativeSessionId || !prompt.trim() || prompt.length > 16000)
-    throw new Error('追加指令格式无效');
-  return {
-    sessionId: nativeSessionId,
-    prompt: [{ type: 'text' as const, text: prompt }],
-    _meta: { steering: { idleBehavior: 'promptRequired' as const } },
-  };
-}

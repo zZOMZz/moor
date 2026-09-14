@@ -2,7 +2,7 @@
 
 本文面向第一次真正接触 ACP 的读者。读完后，你应该能回答四个问题：ACP 连接谁和谁、一条用户消息怎样跑完整个回合、为什么正文不在最终 `response` 里，以及怎样在 Moor 仓库中跑一个不调用真实模型的 ACP 实验。
 
-本文所说的 ACP 是 **Agent Client Protocol**。版本范围是 Moor 0.2.0 当前锁定的 `@agentclientprotocol/sdk` 1.4.0 稳定入口，也就是 ACP v1；内置适配器版本是 Codex ACP 1.11.0 和 Claude Agent ACP 0.76.0。SDK 中单独导出的实验性 v2 不在本文范围内。协议的当前定义以 [ACP v1 官方文档](https://agentclientprotocol.com/protocol/v1/overview)为准，Moor 的实际兼容范围还要以仓库锁定版本、实现和测试为准。
+本文所说的 ACP 是 **Agent Client Protocol**。版本范围是 Moor 0.2.0 当前锁定的 `@agentclientprotocol/sdk` 1.4.0 稳定入口，也就是 ACP v1；内置适配器只有 Codex ACP 1.11.0，Codex runtime 由用户在本机安装。SDK 中单独导出的实验性 v2 不在本文范围内。协议的当前定义以 [ACP v1 官方文档](https://agentclientprotocol.com/protocol/v1/overview)为准，Moor 的实际兼容范围还要以仓库锁定版本、实现和测试为准。
 
 ## 先用一句话理解 ACP
 
@@ -12,7 +12,7 @@ ACP 是客户端与编码 Agent 之间的双向协议：客户端发送用户指
 flowchart LR
   User["用户"] <--> UI["Moor 界面"]
   UI <--> Host["Moor 执行主机 / ACP Client"]
-  Host <-->|"ACP v1：JSON-RPC / stdio"| Agent["Codex、Claude 或自定义 Agent"]
+  Host <-->|"ACP v1：JSON-RPC / stdio"| Agent["本机 Codex 或自定义 ACP Agent"]
   Agent <--> Model["模型服务"]
   Agent <--> Tools["文件、命令与 MCP 工具"]
 ```
@@ -424,14 +424,14 @@ Client 应同时把仍待处理的权限请求回答为 `cancelled`；Agent 应�
 
 通用 ACP 概念进入 Moor 后，还会多一层自己的会话、持久化和安全边界。
 
-| 通用 ACP         | Moor 中的处理                                          |
-| ---------------- | ------------------------------------------------------ |
-| ACP Client       | 执行主机内的 `AgentDriver` / ACP 适配层，不是浏览器    |
-| ACP Agent        | 锁定的 Codex/Claude 适配器，或本机明确登记的自定义 ACP |
-| ACP `sessionId`  | Agent 原生会话 ID，只在执行主机私有保存                |
-| Moor `sessionId` | Moor 自己的会话、路由与历史标识                        |
-| `session/update` | 主机过滤、规范化支持的更新并写入当前 Moor 助手回合     |
-| `PromptResponse` | 用于判断 Agent 回合怎样结束，并读取可验证的可选用量    |
+| 通用 ACP         | Moor 中的处理                                       |
+| ---------------- | --------------------------------------------------- |
+| ACP Client       | 执行主机内的 `AgentDriver` / ACP 适配层，不是浏览器 |
+| ACP Agent        | 锁定的 Codex 适配器，或本机明确登记的自定义 ACP     |
+| ACP `sessionId`  | Agent 原生会话 ID，只在执行主机私有保存             |
+| Moor `sessionId` | Moor 自己的会话、路由与历史标识                     |
+| `session/update` | 主机过滤、规范化支持的更新并写入当前 Moor 助手回合  |
+| `PromptResponse` | 用于判断 Agent 回合怎样结束，并读取可验证的可选用量 |
 
 两种会话 ID 的关系是：
 

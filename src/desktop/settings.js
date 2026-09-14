@@ -29,7 +29,7 @@ window.personal
     $('name').value = s.name;
     $('server').value = s.server;
     projects = s.projects;
-    bootstrapAgents = s.agents.filter((agent) => ['codex', 'claude'].includes(agent));
+    bootstrapAgents = s.agents.filter((agent) => agent === 'codex');
     render();
     renderHealth(s.health);
   })
@@ -603,12 +603,24 @@ let agentState,
   agentEdited = false;
 const selectedAgentPreset = () =>
   agentState?.presets.find((preset) => preset.id === $('agent-preset').value);
+function renderCodexRuntime() {
+  const preset = agentState?.presets.find(
+      (item) => item.agentType === 'codex' && item.cliType !== 'custom',
+    ),
+    checked = preset?.checked;
+  $('codex-runtime-status').textContent = checked?.ok
+    ? '已检测并连接本机 Codex。Moor 将使用此本机 runtime。'
+    : preset && !checked
+      ? '尚未检查本机 Codex。Moor 不内置 runtime；请手动检查连接。'
+      : preset
+        ? '本机 Codex 已登记，但连接检查失败；请查看下方错误并重试。'
+        : '未发现本机 Codex，Moor 不内置 runtime。请按官方说明安装并登录，再添加 Codex 并检查连接。';
+}
 function renderAgentPreset() {
   const preset = selectedAgentPreset(),
     builtin = preset && preset.cliType !== 'custom';
-  for (const type of ['codex', 'claude'])
-    $('agent-add-' + type).disabled =
-      agentState?.presets.some((item) => item.id === 'personal-' + type) === true;
+  $('agent-add-codex').disabled =
+    agentState?.presets.some((item) => item.id === 'personal-codex') === true;
   agentEdited = false;
   $('agent-name').value = preset?.name ?? '';
   $('agent-command').value = preset?.command ?? '';
@@ -633,6 +645,7 @@ function renderAgentPreset() {
       : !checked.ok
         ? checked.error
         : `此版本已连接；报告 ${checked.runConfig?.models.length ?? 0} 个模型、${checked.runConfig?.modes.length ?? 0} 个审批模式。实际项目中的选项可能不同。`;
+  renderCodexRuntime();
 }
 function renderAgents(value, action) {
   const previous = agentState?.presets.map((preset) => preset.id) ?? [];
@@ -691,8 +704,14 @@ $('agent-settings').ontoggle = () => {
   if ($('agent-settings').open && !agentState && !agentBusy) void agentAction({ action: 'read' });
 };
 $('agent-refresh').onclick = () => agentAction({ action: 'read' });
-for (const type of ['codex', 'claude'])
-  $('agent-add-' + type).onclick = () => editAgent({ action: 'builtin', agentType: type });
+$('agent-add-codex').onclick = () => editAgent({ action: 'builtin', agentType: 'codex' });
+$('codex-install').onclick = async () => {
+  try {
+    await window.personal.openCodexInstall();
+  } catch (error) {
+    $('agent-status').textContent = error.message || '无法打开 Codex 官方安装说明';
+  }
+};
 $('agent-preset').onchange = renderAgentPreset;
 function markAgentEdited() {
   agentEdited = true;

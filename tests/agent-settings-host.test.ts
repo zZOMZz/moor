@@ -52,7 +52,11 @@ else send(m.id,{});});\n`,
     rmSync(root, { recursive: true, force: true });
   });
   const args = ['--config', configFile, '--runtime-data', runtimeFile],
-    env = { ...process.env, MOOR_RUNTIME_DATA: runtimeFile };
+    env = {
+      ...process.env,
+      MOOR_RUNTIME_DATA: runtimeFile,
+      MOOR_CODEX_PATH: realpathSync(process.execPath),
+    };
   const save = (extra = {}) => ({
     action: 'save',
     expectedRevision: 0,
@@ -82,7 +86,7 @@ else send(m.id,{});});\n`,
     const [code] = await closed;
     return { code, stdout, stderr, json: () => JSON.parse(stdout) };
   }
-  function desktop() {
+  function desktop(codexPath = env.MOOR_CODEX_PATH) {
     const child = fork(
         entry,
         [
@@ -93,9 +97,13 @@ else send(m.id,{});});\n`,
           '--public-dir',
           resolve('src/web/public'),
           '--builtin-agent',
-          'claude',
+          'codex',
         ],
-        { env, execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] },
+        {
+          env: { ...env, MOOR_CODEX_PATH: codexPath },
+          execArgv: ['--import', 'tsx'],
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        },
       ),
       closed = once(child, 'close');
     children.push({ child, closed });
@@ -143,6 +151,62 @@ else send(m.id,{});});\n`,
   }
   return { root, runtimeFile, configFile, script, log, save, cli, desktop };
 }
+
+test(
+  'missing configured Codex skips automatic registration without making the host unavailable',
+  { timeout: 20000 },
+  async (t) => {
+    const f = fixture(t),
+      host = f.desktop(join(f.root, 'missing-codex'));
+    await host.wait((message) => message.type === 'local-ready');
+    await host.wait((message) => message.type === 'health' && message.local === 'ready');
+    const read = await host.request({ action: 'read' });
+    assert.equal(read.ok, true);
+    assert.deepEqual(read.state, { revision: 0, presets: [] });
+    host.child.kill('SIGTERM');
+    assert.equal((await host.closed)[0], 0, host.output().stderr);
+  },
+);
+
+test(
+  'startup does not revive a disabled pointerless personal Codex config',
+  { timeout: 20000 },
+  async (t) => {
+    const f = fixture(t),
+      stored = new RuntimeStore(f.runtimeFile);
+    stored.machine.set(['agentConfig', 'personal-codex'], {
+      id: 'personal-codex',
+      name: 'Legacy pointerless Codex',
+      machineId: stored.workspace.machineId,
+      cliType: 'builtin',
+      agentType: 'codex',
+    });
+    stored.machine.set(['disabledAgent', 'personal-codex'], true);
+    stored.saveMachine();
+    stored.close();
+
+    const host = f.desktop();
+    await host.wait((message) => message.type === 'local-ready');
+    await host.wait((message) => message.type === 'health' && message.local === 'ready');
+    const read = await host.request({ action: 'read' });
+    assert.equal(read.ok, true);
+    assert.deepEqual(read.state, { revision: 0, presets: [] });
+    host.child.kill('SIGTERM');
+    assert.equal((await host.closed)[0], 0, host.output().stderr);
+
+    const persisted = new RuntimeStore(f.runtimeFile);
+    try {
+      assert.equal(persisted.machine.get(['agentPreset', 'personal-codex']), undefined);
+      assert.equal(persisted.machine.get(['disabledAgent', 'personal-codex']), true);
+      assert.equal(
+        (persisted.machine.get(['agentConfig', 'personal-codex']) as any).name,
+        'Legacy pointerless Codex',
+      );
+    } finally {
+      persisted.close();
+    }
+  },
+);
 
 test(
   'actual Agent CLI keeps launch settings private and disabled, enforces exclusive flags and limits, and checks only when explicitly asked',
@@ -210,7 +274,7 @@ test(
   { timeout: 20000 },
   async (t) => {
     const f = fixture(t);
-    const builtin = await f.cli({ action: 'builtin', expectedRevision: 0, agentType: 'claude' });
+    const builtin = await f.cli({ action: 'builtin', expectedRevision: 0, agentType: 'codex' });
     assert.equal(builtin.code, 0, builtin.stderr);
     const host = f.desktop(),
       ready = await host.wait((m) => m.type === 'local-ready');
@@ -256,7 +320,7 @@ test(
     const removed = await host.request({
       action: 'remove',
       expectedRevision: 3,
-      id: 'personal-claude',
+      id: 'personal-codex',
     });
     assert.equal(removed.ok, true);
     assert.equal(existsSync(f.log), false);
@@ -273,7 +337,7 @@ test(
     const restored = await restarted.request({ action: 'read' });
     assert.equal(restored.state.revision, 4);
     assert.equal(
-      restored.state.presets.some((p: any) => p.id === 'personal-claude'),
+      restored.state.presets.some((p: any) => p.id === 'personal-codex'),
       false,
     );
     assert.equal(existsSync(f.log), false);

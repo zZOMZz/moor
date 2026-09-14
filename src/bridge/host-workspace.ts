@@ -13,12 +13,13 @@ import {
 } from '../protocol';
 import { validateMutation } from './validate-mutation';
 import { RuntimeStore, type AttachmentScope } from '../runtime/store';
-import type {
-  AgentConfig,
-  AgentDriver,
-  AgentSession,
-  AgentRunBinding,
-  PermissionOutcome,
+import {
+  LOCAL_CODEX_NOT_INSTALLED,
+  type AgentConfig,
+  type AgentDriver,
+  type AgentSession,
+  type AgentRunBinding,
+  type PermissionOutcome,
 } from '../runtime/agent';
 import { runCapabilitiesSchema } from '../run-config';
 import {
@@ -343,6 +344,8 @@ export class HostWorkspace {
       .filter(
         (a) =>
           a.machineId === this.workspace.machineId &&
+          (a.customAcp !== undefined ||
+            (a.agentType === 'codex' && !!a.runtimeOverrides?.codexPath)) &&
           this.machine.get(['retiredAgent', a.id]) !== true &&
           this.machine.get(['disabledAgent', a.id]) !== true,
       )
@@ -508,8 +511,9 @@ export class HostWorkspace {
           update: () => {},
           permission: async () => ({ outcome: { outcome: 'cancelled' } }),
         });
-      } catch {
+      } catch (error) {
         current();
+        if (error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED) throw error;
         throw new AppError(502, 'Agent 能力检查失败，请在执行电脑检查本机配置');
       }
       try {
@@ -967,32 +971,19 @@ export class HostWorkspace {
   sessionEvent(id: string, run: Active, input: SessionEvent, binding: AgentRunBinding) {
     if (!this.boundRun(id, run, binding)) return;
     const parsed = sessionEventSchema.safeParse(input);
-    if (!parsed.success) return;
+    // account-rate-limit is accepted only while reading pre-Codex-only history.
+    // Current Agent callbacks cannot append new legacy Claude observations.
+    if (!parsed.success || parsed.data.kind === 'account-rate-limit') return;
     this.edit(id, run, (turn) => this.applyTurnEvent(turn, parsed.data));
   }
   applyTurnEvent(turn: InteractionTurn, event: SessionEvent) {
-    if (event.kind === 'context-usage' && event.rateLimit) {
-      // ACP combines two independent observations. Freeze each separately so a
-      // later context-only report cannot erase a quota window on history reload.
-      this.applyTurnEvent(turn, {
-        version: 1,
-        source: 'acp',
-        kind: 'account-rate-limit',
-        rateLimit: event.rateLimit,
-      });
-      const { rateLimit: _rateLimit, ...context } = event;
-      this.applyTurnEvent(turn, context);
-      return;
-    }
     const items = (turn.items ??= []);
     // Each turn freezes its latest bounded observations. Replacing an existing
     // observation keeps ordinary message/tool navigation indexes stable.
     const key = (value: SessionEvent) =>
       value.kind === 'plan' || value.kind === 'plan-removed'
         ? ['plan', value.planId ?? null]
-        : value.kind === 'account-rate-limit'
-          ? [value.kind, value.rateLimit.rateLimitType ?? null]
-          : [value.kind];
+        : [value.kind];
     const existing = items.findIndex(
       (item) => item?.type === 'session_event' && isDeepStrictEqual(key(item.event), key(event)),
     );
@@ -1041,13 +1032,6 @@ export class HostWorkspace {
           });
         for (const plan of state.plans)
           this.applyTurnEvent(turn, { version: 1, source: 'acp', kind: 'plan', ...plan });
-        for (const rateLimit of state.rateLimits ?? [])
-          this.applyTurnEvent(turn, {
-            version: 1,
-            source: 'acp',
-            kind: 'account-rate-limit',
-            rateLimit,
-          });
         if (state.contextUsage) this.applyTurnEvent(turn, state.contextUsage);
         if (state.tokenUsage) this.applyTurnEvent(turn, state.tokenUsage);
       }

@@ -54,10 +54,16 @@ const settingsFile = path.join(data, 'settings.json'),
   bridgeFile = path.join(data, 'bridge-v3.json'),
   runtimeData = path.join(data, 'runtime-v1.sqlite'),
   notificationsFile = path.join(data, 'notifications-v1.json');
+const CODEX_INSTALL_URL = 'https://learn.chatgpt.com/docs/codex/cli';
 let settings = { server: '', name: os.hostname(), projects: [], agents: ['codex'] };
 try {
   settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) };
 } catch {}
+settings.agents = Array.isArray(settings.agents)
+  ? settings.agents.includes('codex')
+    ? ['codex']
+    : []
+  : ['codex'];
 settings.notifications = notificationSettings(settings.notifications);
 let settingsWindow,
   localWindow,
@@ -573,6 +579,10 @@ ipcMain.handle('personal:settings', (event) => {
     paired: fs.existsSync(bridgeFile),
   };
 });
+ipcMain.handle('personal:open-codex-install', async (event) => {
+  trusted(event);
+  await shell.openExternal(CODEX_INSTALL_URL);
+});
 ipcMain.handle('personal:health', (event) => {
   trusted(event);
   return health();
@@ -711,7 +721,7 @@ ipcMain.handle('personal:save', async (event, value) => {
   )
     throw new Error('项目目录无效');
   const agents = value.agents;
-  if (!Array.isArray(agents) || agents.some((a) => !['codex', 'claude'].includes(a)))
+  if (!Array.isArray(agents) || agents.length > 1 || agents.some((agent) => agent !== 'codex'))
     throw new Error('内置 Agent 配置无效');
   const code = String(value.code ?? '').trim();
   if (code) {

@@ -42,6 +42,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     partitions = new Map<string, any>();
   const nativeTimers = new Map<number, () => void>();
   const cookieWrites: { url: string; value: string }[] = [];
+  const openedExternal: string[] = [];
   let clearGate: ReturnType<typeof gate> | undefined,
     cookieGate: ReturnType<typeof gate> | undefined;
   let timerId = 0;
@@ -132,6 +133,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     app: application,
     BrowserWindow: Window,
     Notification: NativeNotification,
+    shell: { openExternal: async (url: string) => void openedExternal.push(url) },
     ipcMain: { handle: (name: string, fn: any) => handlers.set(name, fn) },
     dialog: {
       showSaveDialog: async () => dialogResult,
@@ -303,6 +305,15 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     state: { revision: 0, presets: [], privateMetadata: 'not-public' },
   });
   assert.deepEqual(await agentReading, { revision: 0, presets: [] });
+  await invoke('personal:open-codex-install');
+  assert.deepEqual(openedExternal, ['https://learn.chatgpt.com/docs/codex/cli']);
+  await assert.rejects(
+    invoke('personal:open-codex-install', undefined, {
+      sender: {},
+      senderFrame: settingsWindow.webContents.mainFrame,
+    }),
+    /无效的本机设置请求/,
+  );
   const mcpReading = invoke('personal:mcp-config', { action: 'read' });
   const mcpRequest = children[0].sent.at(-1);
   assert.equal(mcpRequest.type, 'mcp-config');
@@ -631,7 +642,13 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       assert.deepEqual(saved.agents, []);
       assert.equal(children.at(-1).args.includes('--builtin-agent'), false);
       assert.equal(children.at(-1).args.includes(projectDirectory), true);
-      for (const agents of [null, 'codex', ['custom'], ['codex', '/synthetic/program']]) {
+      for (const agents of [
+        null,
+        'codex',
+        ['claude'],
+        ['custom'],
+        ['codex', '/synthetic/program'],
+      ]) {
         await assert.rejects(invoke('personal:save', { ...saved, agents, code: '' }), /Agent/);
       }
     },

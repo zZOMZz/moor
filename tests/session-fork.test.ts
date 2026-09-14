@@ -94,6 +94,7 @@ function fixture(t: { after(fn: () => unknown): void }) {
     machineId: 'machine',
     cliType: 'builtin',
     agentType: 'codex',
+    runtimeOverrides: { codexPath: process.execPath },
   });
   store.saveMachine();
   let count = 0,
@@ -364,6 +365,53 @@ function history(store: RuntimeStore, id: string) {
   return result;
 }
 
+function persistForkAsLegacyClaude(f: ReturnType<typeof fixture>, request: SessionFork) {
+  const record = f.store.forks.record(request.operationId)!;
+  const {
+    runtimeOverrides: _runtimeOverrides,
+    customAcp: _customAcp,
+    ...legacyBase
+  } = record.agent;
+  const legacyAgent: AgentConfig = {
+    ...legacyBase,
+    name: 'Legacy Claude',
+    cliType: 'builtin',
+    agentType: 'claude',
+  };
+  const legacyCapabilities = {
+    ...record.capabilities,
+    adapter: 'claude-agent-acp',
+    adapterVersion: '0.76.0',
+  } as unknown as AgentForkCapabilities;
+  f.store.journal.db
+    .prepare('UPDATE session_agent_version SET config=? WHERE id=?')
+    .run(JSON.stringify(legacyAgent), legacyAgent.id);
+  f.store.machine.set(['agentConfig', legacyAgent.id], legacyAgent);
+  f.store.saveMachine();
+  putMeta(f.store.meta, 'session-' + request.sessionId, { agentType: 'claude' });
+  f.store.save('meta', f.store.meta.exportFile());
+  f.store.forks.save({ ...record, agent: legacyAgent, capabilities: legacyCapabilities });
+}
+
+function observeForkRecoveryCalls(f: ReturnType<typeof fixture>) {
+  const execution = f.host.executionManager as any,
+    action = execution.action.bind(execution),
+    operations = execution.operations.bind(execution);
+  let actions = 0,
+    operationReads = 0;
+  execution.action = (...args: any[]) => {
+    actions++;
+    return action(...args);
+  };
+  execution.operations = (...args: any[]) => {
+    operationReads++;
+    return operations(...args);
+  };
+  return {
+    counts: () => ({ actions, operationReads }),
+  };
+}
+
 test('native Fork confirms one independent context with frozen provenance and an empty child activity history', async (t) => {
   const f = fixture(t);
   await f.prompt();
@@ -554,6 +602,126 @@ test('a failed acceptance transaction keeps the known native result durable and 
   assert.equal(accepted.origin!.sourceVersion, request.expectedSourceVersion);
   assert.equal(f.forks.length, 1);
   assert.equal(f.store.nativeSession('child'), 'fork-native-1');
+});
+
+test('upgrade gates every persisted legacy Claude Fork phase before Git, execution or driver work', async (t) => {
+  await t.test('preparing is inspectable without writes and explicit retry seals it', async (t) => {
+    const f = fixture(t);
+    await f.prompt();
+    const branch = 'moor/legacy-claude-preparing',
+      request = await f.request({
+        kind: 'worktree',
+        baseBranch: 'main',
+        expectedOid: f.git('rev-parse', 'HEAD'),
+        newBranch: branch,
+      });
+    f.store.journal.db.exec(
+      "CREATE TRIGGER fail_legacy_git_receipt BEFORE UPDATE ON operation WHEN NEW.phase='git-accepted' BEGIN SELECT RAISE(ABORT,'Synthetic legacy Git receipt failure'); END",
+    );
+    assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+    f.store.journal.db.exec('DROP TRIGGER fail_legacy_git_receipt');
+    assert.equal(f.store.forks.record(request.operationId)!.phase, 'preparing');
+    const execution = f.store.executions.get({
+        ...f.scope('child'),
+        userId: 'local:synthetic',
+        machineId: 'machine',
+      })!,
+      branchBefore = f.git('branch', '--format=%(refname:short)', '--list', branch);
+    assert.equal(branchBefore, branch);
+    assert.equal(existsSync(execution.plan.targetPath), true);
+
+    persistForkAsLegacyClaude(f, request);
+    f.restart();
+    const calls = observeForkRecoveryCalls(f),
+      opens = f.opens.length,
+      forks = f.forks.length,
+      journalBefore = f.store.journal.db
+        .prepare('SELECT phase,result FROM operation WHERE id=?')
+        .get(request.operationId),
+      recordBefore = f.store.forks.record(request.operationId);
+    const inspected = await f.host.forkOperations({ action: 'inspect', request });
+    assert.equal(inspected.found, true);
+    if (inspected.found) assert.equal(inspected.receipt.phase, 'unknown');
+    assert.deepEqual(
+      f.store.journal.db
+        .prepare('SELECT phase,result FROM operation WHERE id=?')
+        .get(request.operationId),
+      journalBefore,
+    );
+    assert.deepEqual(f.store.forks.record(request.operationId), recordBefore);
+    assert.deepEqual(calls.counts(), { actions: 0, operationReads: 0 });
+    assert.equal(f.opens.length, opens);
+    assert.equal(f.forks.length, forks);
+
+    const sealed = await f.host.forkSession(request);
+    assert.equal(sealed.phase, 'abandoned');
+    assert.match(sealed.message!, /已停止支持/);
+    assert.equal(sealed.execution?.status, 'unknown');
+    assert.equal(f.store.forks.record(request.operationId)!.phase, 'abandoned');
+    assert.deepEqual(calls.counts(), { actions: 0, operationReads: 0 });
+    assert.equal(f.opens.length, opens);
+    assert.equal(f.forks.length, forks);
+    assert.equal(f.git('branch', '--format=%(refname:short)', '--list', branch), branchBefore);
+    assert.equal(existsSync(execution.plan.targetPath), true);
+  });
+
+  await t.test('dispatched remains unknown without loading a known native child', async (t) => {
+    const f = fixture(t);
+    await f.prompt();
+    f.afterNative = () => {
+      throw new Error('Synthetic legacy response loss');
+    };
+    const request = await f.request();
+    assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+    assert.equal(f.store.forks.record(request.operationId)!.phase, 'dispatched');
+    assert.equal(f.store.forks.record(request.operationId)!.nativeId, 'fork-native-1');
+
+    persistForkAsLegacyClaude(f, request);
+    f.restart();
+    const calls = observeForkRecoveryCalls(f),
+      opens = f.opens.length,
+      forks = f.forks.length;
+    const result = await f.host.forkSession(request);
+    assert.equal(result.phase, 'unknown');
+    assert.match(result.message!, /不会启动或载入/);
+    assert.equal(f.store.forks.record(request.operationId)!.phase, 'dispatched');
+    assert.deepEqual(calls.counts(), { actions: 0, operationReads: 0 });
+    assert.equal(f.opens.length, opens);
+    assert.equal(f.forks.length, forks);
+    assert.equal(f.store.nativeSession('child'), undefined);
+  });
+
+  await t.test('returned is accepted locally without reopening the retired provider', async (t) => {
+    const f = fixture(t);
+    await f.prompt();
+    f.store.journal.db.exec(
+      "CREATE TRIGGER fail_legacy_accept BEFORE UPDATE ON operation WHEN NEW.phase='fork-accepted' BEGIN SELECT RAISE(ABORT,'Synthetic legacy acceptance failure'); END",
+    );
+    const request = await f.request();
+    assert.equal((await f.host.forkSession(request)).phase, 'unknown');
+    assert.equal(f.store.forks.record(request.operationId)!.phase, 'returned');
+    f.store.journal.db.exec('DROP TRIGGER fail_legacy_accept');
+
+    persistForkAsLegacyClaude(f, request);
+    f.restart();
+    const calls = observeForkRecoveryCalls(f),
+      opens = f.opens.length,
+      forks = f.forks.length;
+    const result = await f.host.forkSession(request);
+    assert.equal(result.phase, 'accepted');
+    assert.equal(f.store.nativeSession('child'), 'fork-native-1');
+    assert.equal(
+      f.store.agents.binding({
+        ...f.scope('child'),
+        userId: 'local:synthetic',
+        machineId: 'machine',
+      })?.agentType,
+      'claude',
+    );
+    assert.deepEqual(calls.counts(), { actions: 0, operationReads: 0 });
+    assert.equal(f.opens.length, opens);
+    assert.equal(f.forks.length, forks);
+  });
 });
 
 test('fork staging rollback, busy source, changed source version, duplicate child and cross-scope requests never reach native', async (t) => {

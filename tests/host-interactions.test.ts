@@ -55,6 +55,7 @@ function fixture(
     cliType: 'builtin',
     agentType: 'codex',
     machineId: 'machine',
+    runtimeOverrides: { codexPath: process.execPath },
   });
   store.saveMachine();
   let callbacks!: AgentCallbacks,
@@ -268,8 +269,24 @@ test('actual Host freezes validated initialization and exact-turn events without
   );
   f.callbacks.event!(event, binding);
   f.callbacks.event!({ ...event, used: 30 }, binding);
+  f.callbacks.event!(
+    {
+      version: 1,
+      source: 'acp',
+      kind: 'account-rate-limit',
+      rateLimit: {
+        source: 'claude-agent-acp',
+        adapterVersion: '0.76.0',
+        status: 'allowed',
+        rateLimitType: 'five_hour',
+        utilization: 0.5,
+      },
+    },
+    binding,
+  );
   items = f.turn().items as any[];
   assert.equal(items.filter((item) => item.event?.kind === 'context-usage').length, 1);
+  assert.equal(items.filter((item) => item.event?.kind === 'account-rate-limit').length, 0);
   assert.equal(items.find((item) => item.event?.kind === 'context-usage').event.used, 30);
   const oldCallbacks = f.callbacks;
   await f.finish();
@@ -287,90 +304,6 @@ test('actual Host freezes validated initialization and exact-turn events without
   await f.finish();
 });
 
-test('Host history reload retains separate account windows after context-only and sparse quota reports', async (t) => {
-  const f = fixture(t),
-    binding = await f.start();
-  const base = {
-    version: 1 as const,
-    source: 'acp' as const,
-    kind: 'context-usage' as const,
-    used: 10,
-    size: 100,
-  };
-  const rateLimit = {
-    source: 'claude-agent-acp' as const,
-    adapterVersion: '0.76.0' as const,
-    status: 'allowed_warning' as const,
-    rateLimitType: 'five_hour' as const,
-    utilization: 0.8,
-  };
-  f.callbacks.event!({ ...base, rateLimit }, binding);
-  f.callbacks.event!(
-    {
-      ...base,
-      used: 20,
-      rateLimit: { ...rateLimit, rateLimitType: 'seven_day', utilization: 0.4 },
-    },
-    binding,
-  );
-  f.callbacks.event!({ ...base, used: 30 }, binding);
-  f.callbacks.event!(
-    {
-      ...base,
-      used: 40,
-      rateLimit: {
-        source: rateLimit.source,
-        adapterVersion: rateLimit.adapterVersion,
-        status: 'rejected',
-        rateLimitType: 'five_hour',
-      },
-    },
-    binding,
-  );
-  f.callbacks.event!({ ...base, used: 50 }, binding);
-  await f.finish();
-  const items = f.turn().items as any[];
-  assert.equal(items.filter((item) => item.event?.kind === 'context-usage').length, 1);
-  assert.equal(items.filter((item) => item.event?.kind === 'account-rate-limit').length, 2);
-  const state = sessionInformation(items);
-  assert.equal(state.contextUsage?.used, 50);
-  assert.equal(state.rateLimits?.length, 2);
-  assert.equal(
-    state.rateLimits?.find((limit) => limit.rateLimitType === 'five_hour')?.utilization,
-    undefined,
-  );
-  assert.equal(
-    state.rateLimits?.find((limit) => limit.rateLimitType === 'five_hour')?.status,
-    'rejected',
-  );
-  assert.equal(
-    state.rateLimits?.find((limit) => limit.rateLimitType === 'seven_day')?.utilization,
-    0.4,
-  );
-});
-test('Host freezes every reported quota window from Agent initialization with the latest context', async (t) => {
-  const rateLimit = {
-    source: 'claude-agent-acp' as const,
-    adapterVersion: '0.76.0' as const,
-    status: 'allowed' as const,
-    rateLimitType: 'five_hour' as const,
-    utilization: 0,
-  };
-  const f = fixture(t, true, {
-    version: 1,
-    plans: [],
-    rateLimits: [rateLimit, { ...rateLimit, rateLimitType: 'seven_day', utilization: 0.3 }],
-    contextUsage: { version: 1, source: 'acp', kind: 'context-usage', used: 99, size: 1000 },
-  });
-  await f.start();
-  await f.finish();
-  const state = sessionInformation(f.turn().items!);
-  assert.equal(state.contextUsage?.used, 99);
-  assert.deepEqual(
-    state.rateLimits?.map((value) => value.utilization),
-    [0, 0.3],
-  );
-});
 test('actual Host question commits answer and receipt before resolving native callback and original retries resolve once', async (t) => {
   const f = fixture(t),
     binding = await f.start(),

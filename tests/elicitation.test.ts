@@ -15,7 +15,6 @@ import {
   normalizeElicitation,
   elicitationResponse,
   bridgeElicitation,
-  claudeSteerParams,
   type ElicitationBinding,
 } from '../src/runtime/elicitation';
 
@@ -364,7 +363,7 @@ test('extension metadata is excluded from shared questions and never overrides s
   assert.equal(bounds.kind === 'text' && bounds.maxLength, QUESTION_LIMITS.text);
 });
 
-test('steer contracts require the exact active turn and safe Claude idle behavior', () => {
+test('steer request and receipt contracts require the exact active turn', () => {
   const request = {
     operationId: 'steer-op',
     workspaceId: binding.workspaceId,
@@ -386,9 +385,4 @@ test('steer contracts require the exact active turn and safe Claude idle behavio
   assert.throws(() =>
     steerReceiptSchema.parse({ ...scope, accepted: true, delivered: true, activityBound: false }),
   );
-  assert.deepEqual(claudeSteerParams(binding.nativeSessionId, request.prompt), {
-    sessionId: binding.nativeSessionId,
-    prompt: [{ type: 'text', text: request.prompt }],
-    _meta: { steering: { idleBehavior: 'promptRequired' } },
-  });
 });

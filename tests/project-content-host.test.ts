@@ -68,6 +68,7 @@ function fixture(
       cliType: 'builtin',
       agentType: 'codex',
       machineId: 'machine-a',
+      runtimeOverrides: { codexPath: process.execPath },
     });
     store.saveMachine();
   }

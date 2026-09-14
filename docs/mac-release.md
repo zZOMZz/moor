@@ -40,7 +40,7 @@ node scripts/mac-release.mjs plan \
 
 `release-report.json` 只记录步骤、源摘要、公证状态和最终归档摘要，通过同目录独占临时文件、文件同步、原子替换和目录同步保存；写入失败不会截断上次完整记录。凭据、命令输出、任务正文与原始服务器诊断不会被写入报告。只有全部步骤通过才报告 `complete`；不能把中间的 `submission.zip` 或目录存在当作正式分发成功。
 
-权限模板位于 `scripts/mac-entitlements/`。Electron 仅允许 JIT；固定路径的 Codex 原生程序另允许未签名可执行内存；Claude 固定模板保留锁定二进制所声明的 JIT、未签名可执行内存、关闭库验证、Apple Events 与音频输入权限。普通原生程序使用空模板，库不附加应用权限。模板不会从输入应用的任意签名自动继承。原生 Agent 的权限需求和 Apple 审核仍须用实际锁定版本验证，不能因合成命令通过就宣称可正常启动模型。
+权限模板位于 `scripts/mac-entitlements/`。Electron 仅使用应用运行所需的 JIT 权限；普通 Mach-O 使用空模板，库不附加应用权限。Codex CLI runtime 位于 Moor 应用包之外，不会被复制、重签名或继承 Moor 权限。模板不会从输入应用的任意签名自动继承。Codex 的权限需求和 Apple 审核仍须用实际版本验证，不能因合成命令通过就宣称可正常启动模型。
 
 ## 失败与人工验收
 

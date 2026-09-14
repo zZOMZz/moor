@@ -4,7 +4,7 @@
 
 **代码留在自己的电脑，工作从任意设备继续。**
 
-Moor 是独立的本地 Agent 执行主机，通过标准 [ACP](https://agentclientprotocol.com/) 连接 Codex 和 Claude，提供个人多设备访问、macOS 客户端和可自托管的移动 Web/PWA。手机或另一台电脑可以查看、继续和停止目标电脑上的 Agent 会话。
+Moor 是独立的本地 Agent 执行主机，通过标准 [ACP](https://agentclientprotocol.com/) 连接用户已经安装并登录的本机 Codex，提供个人多设备访问、macOS 客户端和可自托管的移动 Web/PWA。手机或另一台电脑可以查看、继续和停止目标电脑上的 Agent 会话。开发预览版不内置、下载或静默安装 Codex runtime。
 
 当前是个人使用的开发预览版：macOS Apple Silicon + Web/PWA。Windows、团队权限和公司 SSO 留待后续版本；macOS 安装包尚未完成开发者签名与公证。
 
@@ -31,7 +31,7 @@ Agent 返回的嵌入文件可从历史卡片预览或下载；PNG/JPEG/GIF/WebP
 
 “项目文件”提供只读文件列表及文本/Markdown 预览，“会话变更”按回合显示主机保存的新增、删除、修改、重命名和二进制变化。后续回合不会改写旧 diff；原有回合没有基线时显示未记录。扫描覆盖已登记项目中的受限文件集合，同目录的外部修改也可能进入差异。过滤、大小限制和离线范围见[项目文件与历史变更](docs/file-changes.md)。[正文搜索](docs/search.md)的索引留在主机，离线只搜索当前浏览器已保存的缓存，并明确标注未覆盖内容。
 
-Agent 可以提出表单问题，提供命令、计划、上下文与用量；页面只展示实际收到的能力和数据。选择命令只填入草稿，仍需手动发送。问题回答绑定原活动回合，与工具权限审批分开处理。“回合内追加”目前仅对实际报告兼容能力的内置 Claude ACP 0.76.0 开放，Codex、自定义和未知适配器不启用。响应丢失时保留原操作编号，刷新和重连均不自动提交。详细行为见[Agent 交互](docs/agent-interactions.md)。
+Agent 可以提出表单问题，提供命令、计划、上下文与用量；页面只展示实际收到的能力和数据。选择命令只填入草稿，仍需手动发送。问题回答绑定原活动回合，与工具权限审批分开处理。当前 Codex 适配器不启用“回合内追加”，也不会用创建新回合的行为冒充追加。响应丢失时保留原操作编号，刷新和重连均不自动提交。详细行为见[Agent 交互](docs/agent-interactions.md)。
 
 任务通知涵盖完成、失败和待处理权限请求，默认关闭。Mac 在连接设置中开启本机通知；远端浏览器/PWA 在账号菜单打开通知设置，中转需先配置 Web Push。提醒不含会话正文，点击只重新读取会话，旧提醒不能批准请求。去重、关闭和账号切换已接通，真实系统与 PWA 后台送达仍待专项验收。详见[任务通知](docs/notifications.md)。
 
@@ -45,13 +45,13 @@ GitHub 面板可读取已登记仓库的分支、Issue、PR、会话评论和指
 
 ## 使用
 
-1. 在 Mac 打开 **Moor → 连接设置**，添加本机项目，在本机 Agent 配置中添加并启用 Codex、Claude 或自定义 ACP，并完成相应 Agent 的本机登录。
+1. 按 [Codex CLI 官方安装说明](https://learn.chatgpt.com/docs/codex/cli)在 Mac 安装并登录 Codex，再打开 **Moor → 连接设置**，添加本机项目，在本机 Agent 配置中添加、检查并启用 Codex。Moor 不会替你执行安装命令。
 2. 打开**本机工作区**。它通过本地连接使用执行组件，不依赖中转服务或远程账号。
 3. 部署中转服务，在 Web 页面创建个人账号，选择工作区，点击**添加电脑**，将服务地址和一次性配对码填入 Mac。
 4. 第二台 Mac 使用同一工作区的配对码连接。在**我的所有电脑**或手机浏览器中登录同一账号，即可汇总查看会话，并选择明确的执行电脑、项目副本和 Agent。
 5. iPhone 使用 Safari 访问 HTTPS 地址，再选择**添加到主屏幕**。
 
-输入框支持选择**模型、Effort、审批与权限**。选项来自执行电脑上 Agent 的运行时能力；切换模型会清除不兼容的 effort。内置 Agent 首次使用会尝试读取选项；自定义 ACP 需明确点击**刷新选项**读取，此操作会启动 Agent 读取能力但不发送指令。主机尚未提供有效能力时，可留空沿用 Agent 设置。
+输入框支持选择**模型、Effort、审批与权限**。选项来自执行电脑上 Codex 的运行时能力；切换模型会清除不兼容的 effort。内置 Codex 首次使用会尝试读取选项；此操作会启动 Agent 读取能力但不发送指令。主机尚未提供有效能力时，可留空沿用 Agent 设置。
 
 这些设置会保存在当前设备，并随下一条指令发送；已有会话也可调整。Codex 的审批模式包含主机实际支持的只读、工作区权限、自动审批审查和完全访问，选择时会显示权限说明。已发出的审批请求仍需按原请求处理；送达结果待确认时，所有执行设置锁定，重试使用原始指令和设置。
 
@@ -122,7 +122,7 @@ corepack pnpm build
 corepack pnpm format:check
 ```
 
-无需准备外部运行时仓库。ACP SDK、Codex/Claude 适配器和 Electron 直接锁定在 `package.json` / `pnpm-lock.yaml` 中。Agent 登录凭据仍由 Agent 在本机管理。
+无需准备外部运行时源码仓库。ACP SDK、Codex ACP 适配器和 Electron 直接锁定在 `package.json` / `pnpm-lock.yaml` 中；Codex CLI runtime 不进入 Moor 依赖或安装包。登录凭据仍由 Codex 在本机管理。
 
 ```text
 src/relay/     个人账号、设备绑定、临时消息转发
@@ -144,16 +144,15 @@ scripts/       构建、打包与合成验证
 
 可信 GitHub 面板已接通仓库、分支、Issue/PR、评论、精确提交 CI、PR diff 与行评论读取、会话关联，以及九类审阅写入和原操作恢复。网页预览支持服务选择、视口、截图、元素定位和交互，标注可保存、编辑、选择、删除并查看图片。发送固定用户看到的标注、附件和 MCP，主机确认只消费原回合对应的选择；“将截图作为附件”仍需单独点击，保存标注不上传图片。两类面板通过有限加密入口通信，要求主机报告对应的安全授权能力，断线和重开不重放原操作。使用与恢复边界见[可信 GitHub](docs/github.md#桌面加密工作区)、[审阅写入](docs/github-writes.md#桌面加密工作区)和[可信网页预览](docs/preview.md#桌面加密工作区)。
 
-Codex 执行时优先使用 `/Applications/Codex.app` 附带的 CLI，其次查找 Homebrew 的 `codex`，未找到时使用锁定的 Codex ACP 包附带的 CLI。可在启动 Moor 前通过 `MOOR_CODEX_PATH` 指定可执行文件的绝对路径；已有 Agent 配置中的显式路径保持不变。模型提示需要更新 Codex 时，应更新实际选中的本机 Codex。执行错误详情会直接显示在会话中。
+Codex 执行时依次检查 `MOOR_CODEX_PATH`、`~/.local/bin/codex`、`/Applications/Codex.app` 附带的 CLI、常见 Homebrew 路径和绝对 `PATH` 目录。`MOOR_CODEX_PATH` 必须在启动 Moor 前设置为可执行文件的绝对路径。未找到时会显示“未发现本机 Codex，Moor 不内置 runtime”，并提供[官方安装说明](https://learn.chatgpt.com/docs/codex/cli)；不会回退到包内 CLI，也不会执行安装命令。模型提示需要更新 Codex 时，应更新实际选中的本机 Codex。执行错误详情会直接显示在会话中。
 
 在目标架构的 Mac 上构建：
 
 ```sh
-ELECTRON_CACHE=/tmp/moor-electron-cache node node_modules/electron/install.js
 corepack pnpm package:mac
 ```
 
-结果位于 `release/macos-arm64/Moor.app` 与同目录 ZIP。客户端附带 Electron、Node、Moor 执行服务和锁定的 ACP 适配器，运行时不需要源码目录、Node 或 pnpm。当前打包流程只构建本机架构，不生成 Windows 安装包。
+打包器会显式运行锁定 Electron 版本的官方安装入口，并校验版本、平台与本机架构后再复制。结果位于 `release/macos-arm64/Moor.app` 与同目录 ZIP。客户端附带 Electron、Node、Moor 执行服务和锁定的 Codex ACP 适配器，运行时不需要源码目录、Node 或 pnpm；它不附带 Codex CLI runtime，执行电脑需另行安装。当前打包流程只构建本机架构，不生成 Windows 安装包。
 
 包采用本地 ad-hoc 签名供开发验证，正式分发需使用开发者证书和公证；独立工具的计划、执行与失败核查见[macOS 签名与公证](docs/mac-release.md)。同一 Moor 数据库由独占锁保护，每个数据目录只允许一个执行主机。意外退出会由操作系统释放锁，恢复不会重放指令。
 
@@ -208,7 +207,7 @@ docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay 
 
 当前 ACP 适配层支持文本、思考、工具输出、审批、取消、原生会话恢复，以及能力允许的图片、音频和嵌入文件输入、嵌入生成文件回传；不声明文件系统或终端代理能力。模型 effort 只显示 Agent 明确报告的当前模型选项，不推测其他模型能力。附件选择和粘贴已由 React/jsdom 合成测试验证，实际浏览器已验证合成 Agent 返回文件的卡片与文本预览；原生文件选择、iPhone 相册/文件选择和真实 Agent 附件兼容性仍待设备验收；M4.5 已另行验证网页标注 PNG 的浏览器上传。
 
-M2/M3 的当前实现已通过 `pnpm check`、419 项自动测试、`pnpm build` 和 `pnpm format:check`。实际 Moor 主机与合成 ACP 的浏览器检查覆盖文件浏览、各类 diff、旧基线不变、问题回答、命令草稿、计划与上报用量、正文搜索，以及通知设置、只读定位和过期提示；390×844 视口未发现横向溢出或页面错误。追加指令由固定适配器的合成 stdio 与主机测试验证，实际浏览器没有执行追加。真实 Agent、Mac 安装包、系统通知及附件落盘、iPhone/Safari/PWA 后台送达仍待第二轮设备验收。具体通过和未测范围见[设备验收记录](docs/validation.md#结果与通过口径)，后续进展按[roadmap](docs/roadmap.md)记录。
+M2/M3 的当前实现已通过 `pnpm check`、419 项自动测试、`pnpm build` 和 `pnpm format:check`。实际 Moor 主机与合成 ACP 的浏览器检查覆盖文件浏览、各类 diff、旧基线不变、问题回答、命令草稿、计划与上报用量、正文搜索，以及通知设置、只读定位和过期提示；390×844 视口未发现横向溢出或页面错误。真实 Codex、Mac 安装包、系统通知及附件落盘、iPhone/Safari/PWA 后台送达仍待第二轮设备验收。具体通过和未测范围见[设备验收记录](docs/validation.md#结果与通过口径)，后续进展按[roadmap](docs/roadmap.md)记录。
 
 M4.1 已接通本地 Git 状态、新会话独立 worktree 和手动安全清理，四项仓库检查与 479 项自动测试通过。浏览器验证覆盖刷新后恢复目录、首条指令隔离、脏目录保护和清理后历史/diff 保留；真实 Agent、Mac 安装包与 iPhone 仍待专项验收。使用方式、保守限制与代码备份范围见[Git 与会话工作目录](docs/git-workspaces.md)。
 

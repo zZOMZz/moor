@@ -8,6 +8,10 @@ import type {
   AgentForkInput,
   AgentForkResult,
 } from './agent-fork';
+
+export const LOCAL_CODEX_NOT_INSTALLED =
+  '未找到可用的本机 Codex；请先安装 Codex CLI 或配置 MOOR_CODEX_PATH';
+
 export type AgentConfig = {
   id: string;
   name: string;

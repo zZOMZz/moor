@@ -90,7 +90,7 @@ node dist/bridge.mjs --config /absolute/private-moor/bridge-v3.json \
 
 ## 兼容与验证
 
-当前锁定的 Codex ACP 1.11.0 支持 stdio 与 HTTP，Claude ACP 0.76.0 支持三种传输。Moor 对 HTTP/SSE 仍核对本次实际初始化报告，未知或缺失能力会拒绝，不能用名称代替报告。内置 Codex 在当前回合有明确 MCP 授权时使用其配置合并选项，保证选中的 Moor 描述不被原生同名服务替换；普通回合、检查和 Fork 不设置该选项。
+当前锁定的 Codex ACP 1.11.0 支持 stdio 与 HTTP。Moor 仍核对本次实际初始化报告，未知或缺失能力会拒绝，不能用名称代替报告；未报告 SSE 时不会开放 SSE 配置。内置 Codex 在当前回合有明确 MCP 授权时使用其配置合并选项，保证选中的 Moor 描述不被原生同名服务替换；普通回合、检查和 Fork 不设置该选项。
 
 合成验证覆盖私有配置、真实本机 CLI/IPC、主机事务与撤权、中转归属变化、Web/IndexedDB 草稿竞争，以及实际 stdio ACP 的 new/load、传输能力和私有值回显处理。若权限选项或问题绑定含私有值而无法原样安全交付，取消或拒绝该请求，不改写身份后提交答案。真实 Agent 登录、实际第三方 MCP 服务、外部写动作、双 Mac 与 iPhone/Safari/PWA 仍需[设备专项验收](validation.md)。
 

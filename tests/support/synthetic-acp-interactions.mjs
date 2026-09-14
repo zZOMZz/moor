@@ -2,7 +2,7 @@
 import readline from 'node:readline';
 const send = (message) =>
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
-let promptId, heldSteerId;
+let promptId;
 const nativeId = 'native-synthetic';
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
@@ -13,8 +13,8 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       result: {
         protocolVersion: 1,
         agentInfo: {
-          name: process.argv[2] ?? '@agentclientprotocol/claude-agent-acp',
-          version: process.argv[3] ?? '0.76.0',
+          name: process.argv[2] ?? '@agentclientprotocol/codex-acp',
+          version: process.argv[3] ?? '1.11.0',
         },
         agentCapabilities: {
           loadSession: true,
@@ -25,7 +25,6 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
           },
           sessionCapabilities: { fork: {} },
         },
-        _meta: { steering: { supported: true } },
       },
     });
   if (message.method === 'session/new' || message.method === 'session/load') {
@@ -73,22 +72,6 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     promptId = undefined;
     return;
   }
-  if (message.method === '_session/steering') {
-    const text = message.params.prompt[0].text;
-    if (text === 'hold-steer') {
-      heldSteerId = message.id;
-      return;
-    }
-    return send({
-      id: message.id,
-      result:
-        text === 'native-race'
-          ? { outcome: 'promptRequired', reason: 'noRunningTurn' }
-          : text === 'violated-contract'
-            ? { outcome: 'startedNewTurn' }
-            : { outcome: 'injected' },
-    });
-  }
   if (message.method && message.id !== undefined)
     send({
       id: message.id,
@@ -120,8 +103,5 @@ process.on('message', (control) => {
         },
       });
     promptId = undefined;
-  } else if (control.kind === 'finish-steer') {
-    send({ id: heldSteerId, result: { outcome: 'injected' } });
-    heldSteerId = undefined;
   }
 });

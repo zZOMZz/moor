@@ -4,7 +4,53 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { acpDriver } from '../src/runtime/acp';
+import { acpDriver, createAcpDriver } from '../src/runtime/acp';
+import { LOCAL_CODEX_NOT_INSTALLED } from '../src/runtime/agent';
+import { AppError } from '../src/protocol';
+
+test('builtin ACP rejects missing or unsupported local providers before adapter launch', async () => {
+  let launches = 0;
+  const driver = createAcpDriver(() => {
+    launches++;
+    throw new Error('must not launch');
+  });
+  const callbacks = {
+    update: () => {},
+    permission: async () => ({ outcome: { outcome: 'cancelled' as const } }),
+  };
+  await assert.rejects(
+    driver.open(
+      {
+        id: 'personal-codex',
+        machineId: 'synthetic',
+        name: 'Codex',
+        cliType: 'builtin',
+        agentType: 'codex',
+      },
+      process.cwd(),
+      undefined,
+      callbacks,
+    ),
+    (error: unknown) => error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED,
+  );
+  await assert.rejects(
+    driver.open(
+      {
+        id: 'legacy-claude',
+        machineId: 'synthetic',
+        name: 'Legacy',
+        cliType: 'builtin',
+        agentType: 'claude',
+        runtimeOverrides: { codexPath: process.execPath },
+      },
+      process.cwd(),
+      undefined,
+      callbacks,
+    ),
+    /仅支持本机 Codex/,
+  );
+  assert.equal(launches, 0);
+});
 
 test('real stdio ACP new and native load remove inherited Git routing while preserving configured execution and authentication', async (t) => {
   const temp = realpathSync(mkdtempSync(join(tmpdir(), 'moor-acp-environment-'))),

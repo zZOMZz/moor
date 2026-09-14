@@ -58,10 +58,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
     const scenario = params.prompt[0].text;
     if (scenario === 'foreign') update('foreign-session', assistant('foreign-message'));
     else if (scenario === 'subagent')
-      update(
-        params.sessionId,
-        assistant('child-message', { _meta: { claudeCode: { parentToolUseId: 'child-tool' } } }),
-      );
+      update(params.sessionId, assistant('child-message', { _meta: { subagent: true } }));
     else
       update(
         params.sessionId,

@@ -1,9 +1,13 @@
-import { cp, mkdir, readFile, writeFile, realpath, readdir, stat, rm } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
-import { createRequire } from 'node:module';
+import { cp, mkdir, readFile, writeFile, readdir, stat, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { archiveRelay } from './relay-package.mjs';
-const require = createRequire(import.meta.url);
+import {
+  copyCodexAdapter,
+  copyPackage,
+  packageDir,
+  prepareElectronMacApp,
+} from './package-dependencies.mjs';
 const mode = process.argv[2] ?? 'relay';
 const desktopFiles = [
   'entry.cjs',
@@ -32,60 +36,6 @@ const desktopFiles = [
   'settings.html',
   'settings.js',
 ];
-async function packageDir(name, from = process.cwd()) {
-  let entry;
-  try {
-    // A resolved manifest is authoritative even for npm aliases (native Codex packages).
-    entry = require.resolve(name + '/package.json', { paths: [from] });
-    return dirname(await realpath(entry));
-  } catch {
-    entry = require.resolve(name, { paths: [from] });
-  }
-  let dir = dirname(await realpath(entry));
-  while (true) {
-    try {
-      if (JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')).name === name) return dir;
-    } catch {}
-    const parent = dirname(dir);
-    if (parent === dir) throw new Error('Cannot locate ' + name);
-    dir = parent;
-  }
-}
-async function copyPackage(name, dest, from) {
-  await cp(await packageDir(name, from), join(dest, 'node_modules', name), {
-    recursive: true,
-    dereference: true,
-    filter: (path) => !path.includes('/node_modules/.cache/'),
-  });
-}
-// Preserve each package's dependency resolution and bundled licenses, without copying
-// unrelated workspace modules, source checkouts or operator data.
-async function copyDependencyTree(name, dest, from = process.cwd(), ancestors = new Set()) {
-  const directory = await packageDir(name, from);
-  if (ancestors.has(directory)) throw new Error('Dependency cycle while packaging ' + name);
-  const target = join(dest, 'node_modules', name);
-  await cp(directory, target, {
-    recursive: true,
-    dereference: true,
-    filter: (path) =>
-      path === directory ||
-      !path
-        .slice(directory.length + 1)
-        .split('/')
-        .includes('node_modules'),
-  });
-  const manifest = JSON.parse(await readFile(join(directory, 'package.json'), 'utf8'));
-  const next = new Set(ancestors).add(directory);
-  for (const dep of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) {
-    try {
-      await packageDir(dep, directory);
-    } catch (error) {
-      if (dep in (manifest.optionalDependencies ?? {})) continue;
-      throw error;
-    }
-    await copyDependencyTree(dep, target, directory, next);
-  }
-}
 async function copyRuntime(dest) {
   await mkdir(dest, { recursive: true });
   for (const file of [
@@ -159,7 +109,7 @@ if (mode === 'relay') {
   const dest = resolve(process.env.MOOR_RELEASE_DIR ?? 'release', 'macos-' + process.arch),
     app = join(dest, 'Moor.app');
   await mkdir(dest, { recursive: true });
-  const electron = join(await packageDir('electron'), 'dist/Electron.app');
+  const electron = await prepareElectronMacApp();
   await rm(app, { recursive: true, force: true });
   await cp(electron, app, { recursive: true, verbatimSymlinks: true });
   const resources = join(app, 'Contents', 'Resources'),
@@ -176,11 +126,10 @@ if (mode === 'relay') {
   await licenses(root);
   const runtime = join(root, 'runtime');
   await copyRuntime(runtime);
-  for (const name of ['@agentclientprotocol/codex-acp', '@agentclientprotocol/claude-agent-acp'])
-    await copyDependencyTree(name, runtime);
+  await copyCodexAdapter(runtime);
   await writeFile(
     join(root, 'THIRD-PARTY.txt'),
-    'Moor includes Electron and pinned ACP adapters. See licenses/ and the license files alongside runtime/node_modules packages.\n',
+    "Moor includes Electron and the pinned Codex ACP adapter. Codex itself is supplied by the user's local installation. See licenses/ and the license files alongside runtime/node_modules packages.\n",
   );
   const plist = join(app, 'Contents', 'Info.plist');
   let xml = await readFile(plist, 'utf8');

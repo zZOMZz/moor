@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('personal', {
   skillsDirectory: () => ipcRenderer.invoke('personal:skills-directory'),
   agentConfig: (value) => ipcRenderer.invoke('personal:agent-config', value),
   agentExecutable: () => ipcRenderer.invoke('personal:agent-executable'),
+  openCodexInstall: () => ipcRenderer.invoke('personal:open-codex-install'),
   mcpConfig: (value) => ipcRenderer.invoke('personal:mcp-config', value),
   mcpExecutable: () => ipcRenderer.invoke('personal:mcp-executable'),
   open: (mode) => ipcRenderer.invoke('personal:open', mode),

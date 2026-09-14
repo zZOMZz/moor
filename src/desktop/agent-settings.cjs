@@ -7,6 +7,8 @@ const string = (value, max, empty = false) =>
   value.length <= max &&
   !value.includes('\0');
 const identifier = (value) => string(value, 160) && /^[A-Za-z0-9_:-]+$/.test(value);
+const LOCAL_CODEX_NOT_INSTALLED =
+  '未找到可用的本机 Codex；请先安装 Codex CLI 或配置 MOOR_CODEX_PATH';
 const revision = (value) =>
   Number.isSafeInteger(value) && value >= 0 && value < Number.MAX_SAFE_INTEGER;
 const args = (value) =>
@@ -37,7 +39,7 @@ function validateAction(value) {
       continue;
     const valid =
       field === 'agentType'
-        ? ['codex', 'claude'].includes(value[field])
+        ? value[field] === 'codex'
         : field === 'enabled'
           ? typeof value[field] === 'boolean'
           : field === 'args'
@@ -143,7 +145,14 @@ function publicState(value) {
         ok: value.ok,
         ...(value.runConfig === undefined ? {} : { runConfig: capabilities(value.runConfig) }),
         ...(inputCapabilities ? { inputCapabilities } : {}),
-        ...(!value.ok ? { error: 'Agent 连接检查失败，请检查本机程序与登录状态。' } : {}),
+        ...(!value.ok
+          ? {
+              error:
+                value.error === LOCAL_CODEX_NOT_INSTALLED
+                  ? LOCAL_CODEX_NOT_INSTALLED
+                  : 'Agent 连接检查失败，请检查本机程序与登录状态。',
+            }
+          : {}),
       };
     }
     return {
@@ -207,7 +216,12 @@ class DesktopAgentSettings {
       return true;
     }
     if (message.ok !== true) {
-      this.fail(message.requestId, 'Agent 本机设置未确认，请刷新后检查配置与版本');
+      this.fail(
+        message.requestId,
+        message.error === LOCAL_CODEX_NOT_INSTALLED
+          ? LOCAL_CODEX_NOT_INSTALLED
+          : 'Agent 本机设置未确认，请刷新后检查配置与版本',
+      );
       return true;
     }
     try {

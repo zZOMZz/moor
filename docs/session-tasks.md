@@ -82,6 +82,6 @@ Web 人工读取和恢复使用副本范围内的 `tasks-read`、`tasks-action` 
 
 定向合成测试覆盖协议限制与结果归属、事务回滚、真实临时 Git worktree、空会话后首次发送、预算、精确停止、未知结果核查与孤立目录清理。HTTP MCP 和合成 stdio ACP 测试覆盖实际初始化、能力拒绝、prompt 前禁止工具执行、私有凭据脱敏与端点关闭；Web/app 与 IndexedDB 测试覆盖审查不执行、原发送事务、刷新恢复、晚响应和新会话编号。
 
-这些测试使用合成 Agent、临时项目和确定性信号，没有调用真实模型或读取真实账号。最终仓库检查、图形浏览器记录与人工设备结果分别在[设备验收](validation.md)登记。真实 Codex/Claude 或第三方 ACP 的 HTTP MCP 行为、双 Mac、iPhone/Safari/PWA、安装包和系统生命周期仍需专项验收；M5.4 的合成验证不表示条件性 M6 或全部 roadmap 已完成。
+这些测试使用合成 Agent、临时项目和确定性信号，没有调用真实模型或读取真实账号。最终仓库检查、图形浏览器记录与人工设备结果分别在[设备验收](validation.md)登记。真实 Codex 或第三方 ACP 的 HTTP MCP 行为、双 Mac、iPhone/Safari/PWA、安装包和系统生命周期仍需专项验收；M5.4 的合成验证不表示条件性 M6 或全部 roadmap 已完成。
 
 实现入口：[任务协议](../src/task-protocol.ts)、[主机任务管理](../src/runtime/session-tasks.ts)、[私有 MCP](../src/runtime/task-mcp.ts)、[Web 状态与草稿](../src/web/tasks.ts)、[任务面板](../src/web/tasks-ui.tsx)。返回[文档目录](README.md)。

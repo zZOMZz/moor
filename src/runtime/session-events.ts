@@ -38,7 +38,6 @@ const rateLimitWindow = z.enum([
   'seven_day_overage_included',
   'overage',
 ]);
-const resetTime = z.number().int().nonnegative().max(253402300799);
 const overageDisabledReason = z.enum([
   'overage_not_provisioned',
   'org_level_disabled',
@@ -54,32 +53,22 @@ const overageDisabledReason = z.enum([
   'fetch_error',
   'unknown',
 ]);
-// Claude ACP 0.76.0 forwards SDKRateLimitInfo through this one extension.
-// Its utilization is a 0..1 fraction; reset times are Unix seconds. This is
-// distinct from prompt _meta.quota, which contains token counts, not balances.
-// https://code.claude.com/docs/en/agent-sdk/python#ratelimitinfo
-const claudeRateLimitSchema = z.object({
-  status: rateLimitStatus,
-  rateLimitType: rateLimitWindow.optional(),
-  utilization: z.number().finite().min(0).max(1).optional(),
-  resetsAt: resetTime.optional(),
-  overageStatus: rateLimitStatus.optional(),
-  overageResetsAt: resetTime.optional(),
-  overageDisabledReason: overageDisabledReason.optional(),
-});
-export const accountRateLimitSchema = claudeRateLimitSchema
-  .extend({
+const resetTime = z.number().int().nonnegative().max(253402300799);
+/** Historical display schema only. Current ACP normalization never creates it. */
+export const accountRateLimitSchema = z
+  .object({
     source: z.literal('claude-agent-acp'),
     adapterVersion: z.literal('0.76.0'),
+    status: rateLimitStatus,
+    rateLimitType: rateLimitWindow.optional(),
+    utilization: z.number().finite().min(0).max(1).optional(),
+    resetsAt: resetTime.optional(),
+    overageStatus: rateLimitStatus.optional(),
+    overageResetsAt: resetTime.optional(),
+    overageDisabledReason: overageDisabledReason.optional(),
   })
   .strict();
 export type AccountRateLimit = z.infer<typeof accountRateLimitSchema>;
-/** Supply launch identity and the actual initialize response, never event metadata. */
-export type SessionEventSource = {
-  agentType?: string;
-  custom: boolean;
-  agentInfo?: { name: string; version?: string };
-};
 const planContent = z.discriminatedUnion('format', [
   z.object({ format: z.literal('items'), entries }),
   z.object({ format: z.literal('markdown'), text: z.string().max(256 * 1024) }),
@@ -104,7 +93,6 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     used: count,
     size: count,
     cost: cost.optional(),
-    rateLimit: accountRateLimitSchema.optional(),
   }),
   z.object({
     ...base,
@@ -119,6 +107,7 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     cachedReadTokens: optionalCount,
     cachedWriteTokens: optionalCount,
   }),
+  // Read compatibility for sessions written before Claude execution was removed.
   z.object({ ...base, kind: z.literal('account-rate-limit'), rateLimit: accountRateLimitSchema }),
 ]);
 export type SessionEvent = z.infer<typeof sessionEventSchema>;
@@ -140,10 +129,7 @@ function result(value: unknown): SessionEventResult {
 }
 
 /** Normalize only M3 informational updates; other handlers may process text/tools. */
-export function normalizeSessionEvent(
-  value: unknown,
-  source?: SessionEventSource,
-): SessionEventResult {
+export function normalizeSessionEvent(value: unknown): SessionEventResult {
   const update = object(value);
   if (!update) return { status: 'ignored', reason: 'invalid-event' };
   const common = { version: 1, source: 'acp' };
@@ -177,29 +163,12 @@ export function normalizeSessionEvent(
     case 'plan_removed':
       return result({ ...common, kind: 'plan-removed', planId: update.planId });
     case 'usage_update': {
-      const allowed =
-        source?.custom === false &&
-        source.agentType === 'claude' &&
-        source.agentInfo?.name === '@agentclientprotocol/claude-agent-acp' &&
-        source.agentInfo.version === '0.76.0';
-      const rateLimit = allowed
-        ? claudeRateLimitSchema.safeParse(object(update._meta)?.['_claude/rateLimit'])
-        : undefined;
       return result({
         ...common,
         kind: 'context-usage',
         used: update.used,
         size: update.size,
         ...(update.cost == null ? {} : { cost: update.cost }),
-        ...(rateLimit?.success
-          ? {
-              rateLimit: {
-                ...rateLimit.data,
-                source: 'claude-agent-acp',
-                adapterVersion: '0.76.0',
-              },
-            }
-          : {}),
       });
     }
     default:
@@ -260,27 +229,18 @@ export function applySessionEvent(
         plans: state.plans.filter((plan) => plan.planId !== event.planId),
         planObserved: true,
       };
+    case 'context-usage':
+      return { ...state, contextUsage: event };
     case 'account-rate-limit':
-    case 'context-usage': {
-      const rateLimit = event.rateLimit;
       return {
         ...state,
-        ...(event.kind === 'context-usage' ? { contextUsage: event } : {}),
-        ...(rateLimit
-          ? {
-              // Each of the six known windows (plus an unspecified window) has
-              // its own latest snapshot. Omitted counters never inherit a value
-              // from the prior report. Ordinary context updates are independent.
-              rateLimits: [
-                ...(state.rateLimits ?? []).filter(
-                  (previous) => previous.rateLimitType !== rateLimit.rateLimitType,
-                ),
-                rateLimit,
-              ],
-            }
-          : {}),
+        rateLimits: [
+          ...(state.rateLimits ?? []).filter(
+            (previous) => previous.rateLimitType !== event.rateLimit.rateLimitType,
+          ),
+          event.rateLimit,
+        ],
       };
-    }
     case 'token-usage':
       return { ...state, tokenUsage: event };
   }

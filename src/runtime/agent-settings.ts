@@ -11,7 +11,12 @@ import {
   promptInputCapabilitiesSchema,
   type PromptInputCapabilities,
 } from '../attachment-protocol';
-import type { AgentConfig, AgentDriver, AgentSession } from './agent';
+import {
+  LOCAL_CODEX_NOT_INSTALLED,
+  type AgentConfig,
+  type AgentDriver,
+  type AgentSession,
+} from './agent';
 import type { RuntimeStore } from './store';
 import { localCodexPath, withLocalCodex } from '../bridge/local-codex';
 
@@ -27,7 +32,7 @@ export const agentSettingsActionSchema = z.discriminatedUnion('action', [
     .object({
       action: z.literal('builtin'),
       expectedRevision: revision,
-      agentType: z.enum(['codex', 'claude']),
+      agentType: z.literal('codex'),
     })
     .strict(),
   z
@@ -112,6 +117,7 @@ export class AgentSettings {
     private store: RuntimeStore,
     private driver: AgentDriver,
     private changed: () => void = () => {},
+    private discoverCodex: () => string | undefined = localCodexPath,
   ) {
     this.identity = this.currentIdentity();
   }
@@ -183,10 +189,26 @@ export class AgentSettings {
         enabled: this.store.machine.get(['disabledAgent', versionId]) !== true,
       });
     }
-    return presets;
+    return presets.filter((preset) => {
+      const config = this.store.agents.get(preset.versionId);
+      // Development builds could persist bundled Claude or pathless Codex
+      // presets. They are not launchable providers in the Codex-only product.
+      return (
+        !config ||
+        config.customAcp !== undefined ||
+        (config.agentType === 'codex' && config.runtimeOverrides?.codexPath !== undefined)
+      );
+    });
   }
   wasConfigured(presetId: string) {
-    return this.load().presets.some((p) => p.id === presetId);
+    // Startup must honor hidden legacy rows, removed tombstones and the oldest
+    // pointerless agentConfig layout. Only an explicit settings action may
+    // replace them; automatic discovery never does.
+    return (
+      this.load().presets.some((preset) => preset.id === presetId) ||
+      typeof this.store.machine.get(['agentPreset', presetId]) === 'string' ||
+      this.store.machine.get(['agentConfig', presetId]) !== undefined
+    );
   }
   read(): AgentSettingsState {
     const saved = this.load();
@@ -299,21 +321,23 @@ export class AgentSettings {
         409,
         '此内置 Agent 已登记',
       );
-      let config: AgentConfig;
+      let codexPath: string | undefined;
       try {
-        config = withLocalCodex(
-          {
-            id: presetId,
-            name: action.agentType === 'codex' ? 'Codex' : 'Claude',
-            cliType: 'builtin',
-            agentType: action.agentType,
-            machineId: this.identity.machineId,
-          },
-          action.agentType === 'codex' ? localCodexPath() : undefined,
-        );
+        codexPath = this.discoverCodex();
       } catch {
-        throw new AppError(400, '内置 Agent 程序配置不可用，请检查本机安装');
+        throw new AppError(409, LOCAL_CODEX_NOT_INSTALLED);
       }
+      if (!codexPath) throw new AppError(409, LOCAL_CODEX_NOT_INSTALLED);
+      const config: AgentConfig = withLocalCodex(
+        {
+          id: presetId,
+          name: 'Codex',
+          cliType: 'builtin',
+          agentType: 'codex',
+          machineId: this.identity.machineId,
+        },
+        codexPath,
+      );
       this.store.registerAgent(presetId, config, (next) => {
         this.expected(action.expectedRevision);
         saved.presets = saved.presets.filter((p) => p.id !== presetId);
@@ -392,7 +416,8 @@ export class AgentSettings {
     let directory: string | undefined, session: AgentSession | undefined;
     let runConfig: RunCapabilities | undefined,
       inputs: PromptInputCapabilities | undefined,
-      ok = false;
+      ok = false,
+      checkError: string | undefined;
     try {
       directory = realpathSync(mkdtempSync(join(tmpdir(), 'moor-agent-check-')));
       session = await this.driver.open(config, directory, undefined, {
@@ -406,8 +431,10 @@ export class AgentSettings {
           ? undefined
           : promptInputCapabilitiesSchema.parse(session.inputCapabilities);
       ok = true;
-    } catch {
+    } catch (error) {
       ok = false;
+      if (error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED)
+        checkError = error.message;
     } finally {
       try {
         await session?.close();
@@ -430,7 +457,7 @@ export class AgentSettings {
         ok,
         ...(ok
           ? { runConfig, ...(inputs ? { inputCapabilities: inputs } : {}) }
-          : { error: failure }),
+          : { error: checkError ?? failure }),
       };
       if (ok) {
         this.store.machine.set(['capabilities', action.versionId], runConfig as never);

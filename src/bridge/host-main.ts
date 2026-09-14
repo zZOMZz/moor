@@ -551,21 +551,26 @@ async function refresh() {
     if (!projectsRegistered) {
       for (const project of values.project ?? []) runtime.registerProject(resolve(project));
       for (const agentType of values['builtin-agent'] ?? []) {
-        assert(['codex', 'claude'].includes(agentType), 400, '仅支持 Codex 或 Claude');
+        assert(agentType === 'codex', 400, '仅支持 Codex');
         const id = 'personal-' + agentType;
-        // A local toggle/removal takes precedence over repeated startup flags.
-        if (agentSettings.wasConfigured(id)) continue;
         const base = {
           id,
-          name: agentType === 'codex' ? 'Codex' : 'Claude',
+          name: 'Codex',
           machineId,
           cliType: 'builtin',
           agentType,
         };
-        runtime.registerAgent(
-          id,
-          withLocalCodex(base, agentType === 'codex' ? localCodexPath() : undefined),
-        );
+        let codexPath: string | undefined;
+        try {
+          codexPath = localCodexPath();
+        } catch {
+          // Invalid or missing local configuration is a preset-level condition.
+          // Keep the host ready so the user can install Codex and add it later.
+        }
+        if (!codexPath) continue;
+        // A local toggle/removal takes precedence over repeated startup flags.
+        if (agentSettings.wasConfigured(id)) continue;
+        runtime.registerAgent(id, withLocalCodex(base, codexPath));
       }
       runtime.saveMachine();
       projectsRegistered = true;

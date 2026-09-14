@@ -62,8 +62,8 @@ async function fixture(
       process.execPath,
       [
         resolve('tests/support/synthetic-acp-interactions.mjs'),
-        variant.name ?? '@agentclientprotocol/claude-agent-acp',
-        variant.version ?? '0.76.0',
+        variant.name ?? '@agentclientprotocol/codex-acp',
+        variant.version ?? '1.11.0',
       ],
       {
         ...options,
@@ -82,8 +82,9 @@ async function fixture(
       machineId: 'synthetic',
       name: 'Synthetic',
       cliType: 'builtin',
-      agentType: variant.agentType ?? 'claude',
+      agentType: variant.agentType ?? 'codex',
       ...(variant.custom ? { customAcp: { command: process.execPath, args: [] } } : {}),
+      ...(!variant.custom ? { runtimeOverrides: { codexPath: process.execPath } } : {}),
     },
     cwd,
     variant.nativeId,
@@ -122,15 +123,14 @@ async function fixture(
 }
 
 test(
-  'actual ACP limit updates use the initialized adapter identity and exact active session before entering shared reports',
+  'actual ACP usage updates ignore private extension metadata and require the exact active session',
   { timeout: 15000 },
   async (t) => {
     for (const variant of [
       {},
       { custom: true },
-      { agentType: 'codex' },
       { name: 'unverified-adapter' },
-      { version: '0.76.1' },
+      { version: '1.11.1' },
       { nativeId: 'synthetic-resumed-native' },
     ]) {
       const events: { event: SessionEvent; binding: AgentRunBinding }[] = [];
@@ -172,20 +172,13 @@ test(
       const report = events[0]!.event;
       assert.equal(report.kind, 'context-usage');
       if (report.kind !== 'context-usage') throw new Error('Expected actual context report');
-      assert.equal(
-        !!report.rateLimit,
-        !(
-          'custom' in variant ||
-          'agentType' in variant ||
-          'name' in variant ||
-          'version' in variant
-        ),
-      );
-      if (report.rateLimit) {
-        assert.equal(report.rateLimit.utilization, 0.9);
-        assert.equal(report.rateLimit.resetsAt, 1893456000);
-        assert.deepEqual(f.session.currentEvents?.rateLimits, [report.rateLimit]);
-      }
+      assert.deepEqual(report, {
+        version: 1,
+        source: 'acp',
+        kind: 'context-usage',
+        used: 12,
+        size: 100,
+      });
       assert.doesNotMatch(JSON.stringify(events), /synthetic-limit-secret|PaymentMethod/);
       await f.session.close();
     }
@@ -220,7 +213,8 @@ test('real ACP initializes capability discovery, preserves attachments and binds
     f.session.currentEvents?.commands?.map((command) => command.name),
     ['review'],
   );
-  assert.equal(f.session.interactionCapabilities?.steer, true);
+  assert.equal(f.session.interactionCapabilities?.steer, false);
+  assert.equal(f.session.steer, undefined);
   assert.equal(
     f.session.runtimeFeatures?.steer,
     false,
@@ -406,113 +400,17 @@ test('cancellation settles an unresolved native question once and rejects late h
     f.messages.filter((message) => message.id === 'cancelled-question' && message.result).length,
     1,
   );
-  await assert.rejects(
-    f.session.steer!({
-      expectedTurnId: binding.expectedTurnId,
-      prompt: 'Too late',
-    }),
-    /已失效/,
-  );
 });
 
-test('verified Claude steering binds the current turn and never falls back to a new prompt', async (t) => {
-  const f = await fixture(t),
-    prompt = f.start();
-  await f.waitFor((message) => message.method === 'session/prompt');
-  await assert.rejects(
-    f.session.steer!({ expectedTurnId: 'wrong-turn', prompt: 'Synthetic' }),
-    /已失效/,
-  );
-  assert.deepEqual(
-    await f.session.steer!({
-      expectedTurnId: binding.expectedTurnId,
-      prompt: 'Inject synthetic instruction',
-    }),
-    { outcome: 'injected' },
-  );
-  const wire = await f.waitFor((message) => message.method === '_session/steering');
-  assert.deepEqual(wire.params._meta, {
-    steering: { idleBehavior: 'promptRequired' },
-  });
-  assert.equal(wire.params.sessionId, 'native-synthetic');
-  assert.deepEqual(
-    await f.session.steer!({
-      expectedTurnId: binding.expectedTurnId,
-      prompt: 'native-race',
-    }),
-    { outcome: 'promptRequired', reason: 'noRunningTurn' },
-  );
-  assert.equal(f.messages.filter((message) => message.method === 'session/prompt').length, 1);
-  f.control({ kind: 'finish' });
-  await prompt;
-  await assert.rejects(
-    f.session.steer!({
-      expectedTurnId: binding.expectedTurnId,
-      prompt: 'After finish',
-    }),
-    /已失效/,
-  );
-});
-
-test('Codex, custom commands and unmeasured Claude versions cannot expose the safe steer action', async (t) => {
-  for (const variant of [
-    {
-      agentType: 'codex',
-      name: '@agentclientprotocol/codex-acp',
-      version: '1.11.0',
-    },
-    { custom: true },
-    { version: '0.77.0' },
-    { name: 'other-agent' },
-  ]) {
+test('Codex and custom ACP do not expose a non-standard steer action', async (t) => {
+  for (const variant of [{}, { custom: true }]) {
     const f = await fixture(t, {}, variant);
     assert.equal(f.session.interactionCapabilities?.steer, false);
     assert.ok(f.session.interactionCapabilities?.steerUnavailableReason);
-    await assert.rejects(
-      f.session.steer!({
-        expectedTurnId: binding.expectedTurnId,
-        prompt: 'Unsupported',
-      }),
-    );
+    assert.equal(f.session.steer, undefined);
     assert.equal(
       f.messages.some((message) => message.method === '_session/steering'),
       false,
     );
   }
-});
-
-test('unconfirmed steering prevents another prompt from replacing its native turn', async (t) => {
-  const f = await fixture(t),
-    prompt = f.start();
-  await f.waitFor((message) => message.method === 'session/prompt');
-  const steer = f.session.steer!({
-    expectedTurnId: binding.expectedTurnId,
-    prompt: 'hold-steer',
-  });
-  await f.waitFor((message) => message.method === '_session/steering');
-  f.control({ kind: 'finish' });
-  await prompt;
-  await assert.rejects(
-    f.session.prompt({ prompt: 'Wrong replacement' }, { ...binding, expectedTurnId: 'new-turn' }),
-    /待确认追加指令/,
-  );
-  f.control({ kind: 'finish-steer' });
-  assert.deepEqual(await steer, { outcome: 'injected' });
-  assert.equal(f.messages.filter((message) => message.method === 'session/prompt').length, 1);
-});
-
-test('an invalid native steering outcome stops the owned process instead of confirming wrong-turn delivery', async (t) => {
-  const f = await fixture(t),
-    prompt = f.start();
-  await f.waitFor((message) => message.method === 'session/prompt');
-  await assert.rejects(
-    f.session.steer!({
-      expectedTurnId: binding.expectedTurnId,
-      prompt: 'violated-contract',
-    }),
-    /未确认/,
-  );
-  await assert.rejects(prompt);
-  assert.notEqual(f.child.exitCode === null && f.child.signalCode === null, true);
-  assert.equal(f.messages.filter((message) => message.method === 'session/prompt').length, 1);
 });

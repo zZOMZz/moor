@@ -25,7 +25,11 @@ function signal<T = void>() {
   });
   return { promise, resolve };
 }
-function fixture(t: TestContext, open?: AgentDriver['open']) {
+function fixture(
+  t: TestContext,
+  open?: AgentDriver['open'],
+  discoverCodex?: () => string | undefined,
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-agent-settings-'))),
     file = join(root, 'runtime.sqlite'),
     command = join(root, 'synthetic-acp');
@@ -45,6 +49,7 @@ function fixture(t: TestContext, open?: AgentDriver['open']) {
     () => {
       changes++;
     },
+    discoverCodex ?? (() => command),
   );
   t.after(() => {
     service.close();
@@ -371,15 +376,15 @@ test('builtin registration is explicit, starts disabled, cannot be edited as cus
   const saved = await f.service.handle({
     action: 'builtin',
     expectedRevision: 0,
-    agentType: 'claude',
+    agentType: 'codex',
   });
   const preset = saved.presets[0];
-  assert.equal(preset.id, 'personal-claude');
+  assert.equal(preset.id, 'personal-codex');
   assert.equal(preset.enabled, false);
   assert.equal(preset.command, undefined);
   assert.equal(f.service.wasConfigured(preset.id), true);
   await assert.rejects(
-    f.service.handle({ action: 'builtin', expectedRevision: 1, agentType: 'claude' }),
+    f.service.handle({ action: 'builtin', expectedRevision: 1, agentType: 'codex' }),
     /已登记/,
   );
   await assert.rejects(f.service.handle(f.save({ expectedRevision: 1, id: preset.id })), /内置/);
@@ -388,12 +393,76 @@ test('builtin registration is explicit, starts disabled, cannot be edited as cus
   const restored = await f.service.handle({
     action: 'builtin',
     expectedRevision: 2,
-    agentType: 'claude',
+    agentType: 'codex',
   });
   assert.equal(restored.presets[0].enabled, false);
   assert.equal(restored.presets[0].versionId, preset.versionId);
   assert.equal(f.store.machine.get(['retiredAgent', preset.versionId]), false);
   assert.equal(f.counts().opens, 0);
+});
+
+test('missing local Codex rejects builtin registration without persisting a broken preset', async (t) => {
+  const f = fixture(t, undefined, () => undefined);
+  await assert.rejects(
+    f.service.handle({ action: 'builtin', expectedRevision: 0, agentType: 'codex' }),
+    /未找到可用的本机 Codex/,
+  );
+  await assert.rejects(
+    f.service.handle({ action: 'builtin', expectedRevision: 0, agentType: 'claude' }),
+    (error: unknown) => error instanceof AppError && error.status === 400,
+  );
+  assert.deepEqual(f.service.read(), { revision: 0, presets: [] });
+  assert.equal(f.counts().opens, 0);
+});
+
+test('legacy bundled Claude and pathless Codex presets stay hidden and can be replaced locally', async (t) => {
+  const f = fixture(t);
+  f.store.registerAgent('personal-claude', {
+    id: 'personal-claude',
+    name: 'Legacy Claude',
+    cliType: 'builtin',
+    agentType: 'claude',
+    machineId: f.store.workspace.machineId,
+  });
+  f.store.registerAgent('personal-codex', {
+    id: 'personal-codex',
+    name: 'Legacy Codex',
+    cliType: 'builtin',
+    agentType: 'codex',
+    machineId: f.store.workspace.machineId,
+  });
+  assert.deepEqual(f.service.read(), { revision: 0, presets: [] });
+  assert.equal(f.service.wasConfigured('personal-claude'), true);
+  assert.equal(f.service.wasConfigured('personal-codex'), true);
+  const replaced = await f.service.handle({
+    action: 'builtin',
+    expectedRevision: 0,
+    agentType: 'codex',
+  });
+  assert.equal(replaced.presets.length, 1);
+  assert.equal(replaced.presets[0].id, 'personal-codex');
+  assert.notEqual(replaced.presets[0].versionId, 'personal-codex');
+  assert.equal(
+    f.store.agents.get(replaced.presets[0].versionId)?.runtimeOverrides?.codexPath,
+    f.command,
+  );
+});
+
+test('a disabled pointerless personal Codex config remains a startup tombstone', (t) => {
+  const f = fixture(t),
+    config = {
+      id: 'personal-codex',
+      name: 'Legacy pointerless Codex',
+      cliType: 'builtin',
+      agentType: 'codex',
+      machineId: f.store.workspace.machineId,
+    };
+  f.store.machine.set(['agentConfig', config.id], config);
+  f.store.machine.set(['disabledAgent', config.id], true);
+  f.store.saveMachine();
+  assert.equal(f.store.machine.get(['agentPreset', config.id]), undefined);
+  assert.deepEqual(f.service.read(), { revision: 0, presets: [] });
+  assert.equal(f.service.wasConfigured(config.id), true);
 });
 
 test('legacy Agent configs without preset pointers remain manageable and shared version aliases combine their enable state', async (t) => {

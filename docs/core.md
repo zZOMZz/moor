@@ -14,7 +14,7 @@ flowchart LR
   Local <--> Host
   Host --> Store["Moor SQLite：会话与送达凭据"]
   Host --> Driver["AgentDriver"]
-  Driver <-->|stdio ACP| Agent["Codex / Claude 适配器"]
+  Driver <-->|stdio ACP| Agent["Codex ACP 适配器"]
   Agent --> Project["已登记的本地项目"]
 ```
 
@@ -101,7 +101,7 @@ type AgentSession = {
 
 `callbacks` 接收输出与审批。主机把这些更新写成 Moor 的会话内容；界面不依赖某个 Agent 的私有历史格式。
 
-当前实现通过 stdio ACP 启动锁定的 Codex/Claude 适配器，使用已登记目录作为 `cwd`。可执行路径来自本机配置，Agent 登录也由本机 Agent 管理。远程输入只能选择已报告的模型与运行选项，不能携带命令、环境变量或 MCP 连接参数。额外 MCP 仅接收本机登记的不可变版本编号，主机核对项目范围并随原回合授权，见[本机 MCP](mcp.md)。Moor 当前不向 ACP 声明文件系统或终端代理能力；Agent 仍可在自身权限范围内操作本地项目。
+当前实现通过 stdio ACP 启动锁定的 Codex 适配器，并连接用户已安装的本机 Codex CLI，使用已登记目录作为 `cwd`。Moor 安装包不内置 Codex runtime，也不会自动安装；可执行路径由执行主机从明确环境变量和本机路径中发现，登录由 Codex 自身管理。远程输入只能选择已报告的模型与运行选项，不能携带命令、环境变量或 MCP 连接参数。额外 MCP 仅接收本机登记的不可变版本编号，主机核对项目范围并随原回合授权，见[本机 MCP](mcp.md)。Moor 当前不向 ACP 声明文件系统或终端代理能力；Codex 仍可在自身权限范围内操作本地项目。
 
 这里的 [ACP](acp.md) 是 Agent Client Protocol，用来约定客户端与 Agent 的会话、输出和权限交互。`stdio` 表示双方通过子进程的标准输入输出通信。它与浏览器到 Moor 主机的桥接协议是两层不同的协议。
 

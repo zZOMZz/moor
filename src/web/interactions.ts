@@ -364,12 +364,12 @@ export function sessionInformation(items: unknown[]): SessionEventState {
 }
 const count = (value: number | undefined) =>
   value === undefined ? '未提供' : esc(value.toLocaleString());
-const rateLimitStatuses = {
+const legacyRateLimitStatuses = {
   allowed: '可用',
   allowed_warning: '接近限额',
   rejected: '已受限',
 };
-const rateLimitWindows = {
+const legacyRateLimitWindows = {
   five_hour: '5 小时',
   seven_day: '7 天',
   seven_day_opus: '7 天 · Opus',
@@ -377,7 +377,7 @@ const rateLimitWindows = {
   seven_day_overage_included: '7 天 · 包含的额外用量',
   overage: '额外用量',
 };
-const overageReasons = {
+const legacyOverageReasons = {
   overage_not_provisioned: '未开通额外用量',
   org_level_disabled: '组织已停用',
   org_level_disabled_until: '组织暂时停用',
@@ -389,21 +389,22 @@ const overageReasons = {
   member_zero_credit_limit: '成员额度上限为零',
   org_service_level_disabled: '组织服务已停用',
   no_limits_configured: '未配置额度',
-  fetch_error: 'Agent 未能读取额外用量',
+  fetch_error: 'Agent 当时未能读取额外用量',
   unknown: 'Agent 未提供具体原因',
 };
-const resetTime = (seconds: number | undefined) =>
+const legacyResetTime = (seconds: number | undefined) =>
   seconds === undefined ? '未提供' : esc(new Date(seconds * 1000).toISOString());
-function rateLimitHtml(value: AccountRateLimit) {
+function legacyRateLimitHtml(value: AccountRateLimit) {
   const overage =
     value.overageStatus !== undefined ||
     value.overageResetsAt !== undefined ||
     value.overageDisabledReason !== undefined;
-  return `<section class="agent-rate-limit"><h4>${value.rateLimitType ? rateLimitWindows[value.rateLimitType] : '窗口未提供'}</h4><p class="muted">来源：Claude ACP ${esc(value.adapterVersion)} · Agent 最近一次上报</p><dl class="agent-usage"><dt>上报状态</dt><dd>${rateLimitStatuses[value.status]}</dd><dt>已用比例</dt><dd>${value.utilization === undefined ? '未提供' : `${esc((value.utilization * 100).toLocaleString(undefined, { maximumSignificantDigits: 15 }))}%`}</dd><dt>窗口重置时间（UTC）</dt><dd>${resetTime(value.resetsAt)}</dd>${overage ? `<dt>额外用量状态</dt><dd>${value.overageStatus ? rateLimitStatuses[value.overageStatus] : '未提供'}</dd><dt>额外用量重置时间（UTC）</dt><dd>${resetTime(value.overageResetsAt)}</dd><dt>额外用量不可用原因</dt><dd>${value.overageDisabledReason ? overageReasons[value.overageDisabledReason] : '未提供'}</dd>` : ''}</dl></section>`;
+  return `<section class="agent-rate-limit"><h4>${value.rateLimitType ? legacyRateLimitWindows[value.rateLimitType] : '窗口未提供'}</h4><p class="muted">历史来源：Claude ACP ${esc(value.adapterVersion)} · 仅展示已保存记录</p><dl class="agent-usage"><dt>上报状态</dt><dd>${legacyRateLimitStatuses[value.status]}</dd><dt>已用比例</dt><dd>${value.utilization === undefined ? '未提供' : `${esc((value.utilization * 100).toLocaleString(undefined, { maximumSignificantDigits: 15 }))}%`}</dd><dt>窗口重置时间（UTC）</dt><dd>${legacyResetTime(value.resetsAt)}</dd>${overage ? `<dt>额外用量状态</dt><dd>${value.overageStatus ? legacyRateLimitStatuses[value.overageStatus] : '未提供'}</dd><dt>额外用量重置时间（UTC）</dt><dd>${legacyResetTime(value.overageResetsAt)}</dd><dt>额外用量不可用原因</dt><dd>${value.overageDisabledReason ? legacyOverageReasons[value.overageDisabledReason] : '未提供'}</dd>` : ''}</dl></section>`;
 }
 export function informationHtml(state: SessionEventState) {
   const context = state.contextUsage,
-    tokens = state.tokenUsage;
+    tokens = state.tokenUsage,
+    legacyRateLimits = state.rateLimits?.map(legacyRateLimitHtml).join('') ?? '';
   const plans = state.plans
     .map(
       (plan) =>
@@ -423,7 +424,7 @@ export function informationHtml(state: SessionEventState) {
     .map(([label, value]) => `<dt>${label}</dt><dd>${count(value)}</dd>`)
     .join(
       '',
-    )}</dl><p class="muted">token 范围由 Agent 报告，未推断为本回合增量；费用仅显示上报币种与金额。</p><h3>账号额度</h3>${state.rateLimits?.length ? state.rateLimits.map(rateLimitHtml).join('') : '<p>Agent 未提供可验证的账号额度报告</p>'}<p class="muted">各窗口分别保留最后一次上报，不代表当前实时余额，也不跨窗口相加。重置时间到达后不会推断额度已恢复；离线时仅显示已读历史。</p></section>`;
+    )}</dl><p class="muted">token 范围由 Agent 报告，未推断为本回合增量；费用仅显示上报币种与金额。</p>${legacyRateLimits ? `<h3>历史账号额度</h3>${legacyRateLimits}<p class="muted">这是旧会话的只读兼容数据，不代表当前实时余额；Moor 不再从 Agent 生成此类报告。</p>` : ''}</section>`;
 }
 export function renderInteractionItem(item: unknown, key: string): string | undefined {
   const value = item as any;

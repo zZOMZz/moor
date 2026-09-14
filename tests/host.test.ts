@@ -30,7 +30,11 @@ function fixture(file = ':memory:') {
   Object.assign(store.workspace, structuredClone(ws));
   store.save('identity', Buffer.from(JSON.stringify(store.workspace)));
   store.machine.set(['localProject', 'project-a'], ws.projects[0]);
-  store.machine.set(['agentConfig', 'agent-a'], { ...ws.agents[0], machineId: ws.machineId });
+  store.machine.set(['agentConfig', 'agent-a'], {
+    ...ws.agents[0],
+    machineId: ws.machineId,
+    runtimeOverrides: { codexPath: process.execPath },
+  });
   store.saveMachine();
   let dispatches = 0;
   const dispatched: any[] = [];

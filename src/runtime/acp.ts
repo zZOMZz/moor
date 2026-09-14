@@ -1,5 +1,6 @@
 import { spawn, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { accessSync, constants, statSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import * as nodeModule from 'node:module';
 import { isAbsolute } from 'node:path';
@@ -11,7 +12,12 @@ import {
   type CreateElicitationResponse,
 } from '@agentclientprotocol/sdk';
 import { capabilities } from './capabilities';
-import type { AgentDriver, AgentMcpServer, AgentRunBinding, AgentSteerResult } from './agent';
+import {
+  LOCAL_CODEX_NOT_INSTALLED,
+  type AgentDriver,
+  type AgentMcpServer,
+  type AgentRunBinding,
+} from './agent';
 import { resolveRunSelection, selectionFromInput } from '../run-config';
 import { promptContent } from './attachment-input';
 import { AppError, assert } from '../protocol';
@@ -24,7 +30,7 @@ import {
   validateForkInput,
 } from './agent-fork';
 import { steerRequestSchema } from '../interaction-protocol';
-import { bridgeElicitation, claudeSteerParams } from './elicitation';
+import { bridgeElicitation } from './elicitation';
 import {
   applySessionEvent,
   normalizePromptUsage,
@@ -32,10 +38,8 @@ import {
   runtimeFeatureReport,
   type SessionEvent,
   type SessionEventState,
-  type SessionEventSource,
 } from './session-events';
 const agentRequire = nodeModule.createRequire(import.meta.url);
-const steerInputSchema = steerRequestSchema.pick({ expectedTurnId: true, prompt: true }).strict();
 const runBindingSchema = steerRequestSchema.omit({ operationId: true, prompt: true }).strict();
 export const MCP_UNSUPPORTED_TRANSPORT = '此 Agent 未报告支持所选 MCP 传输，请更换配置或 Agent';
 export const MCP_AUTHORIZATION_EXPIRED = 'MCP 会话授权已失效，未继续执行';
@@ -166,7 +170,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         );
         extraServers = parsed.data;
       }
-      let eventSource: SessionEventSource | undefined;
       let cleanTaskValue = <T>(value: T): T => value;
       if (taskTools || mcp) {
         // Native adapters can include MCP connection diagnostics in updates or
@@ -362,19 +365,27 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       }
       const custom = config.customAcp;
       if (custom && !isAbsolute(custom.command)) throw new Error('ACP 启动程序必须为本机绝对路径');
-      const entry =
-        config.agentType === 'codex'
-          ? '@agentclientprotocol/codex-acp'
-          : config.agentType === 'claude'
-            ? '@agentclientprotocol/claude-agent-acp/dist/index.js'
-            : undefined;
-      if (!custom && !entry) throw new Error('不支持的 Agent');
+      const configuredCodexPath = config.runtimeOverrides?.codexPath,
+        codexPath = !custom ? configuredCodexPath : undefined;
+      if (!custom) {
+        assert(config.agentType === 'codex', 409, '仅支持本机 Codex Agent');
+        let usable = false;
+        try {
+          if (codexPath && isAbsolute(codexPath)) {
+            accessSync(codexPath, constants.X_OK);
+            usable = statSync(codexPath).isFile();
+          }
+        } catch {
+          usable = false;
+        }
+        if (!usable) throw new AppError(409, LOCAL_CODEX_NOT_INSTALLED);
+      }
       let child: ReturnType<typeof launch>;
       try {
         currentTaskTools();
         child = launch(
           custom?.command ?? process.execPath,
-          custom?.args ?? [agentRequire.resolve(entry!)],
+          custom?.args ?? [agentRequire.resolve('@agentclientprotocol/codex-acp')],
           {
             cwd,
             env: {
@@ -385,9 +396,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                   ([key]) => !key.toUpperCase().startsWith('GIT_'),
                 ),
               ),
-              ...(config.runtimeOverrides?.codexPath
-                ? { CODEX_PATH: config.runtimeOverrides.codexPath }
-                : {}),
+              ...(configuredCodexPath ? { CODEX_PATH: configuredCodexPath } : {}),
               // Codex ACP 1.11.0 otherwise drops explicitly supplied names that
               // also exist in native settings. The switch only selects the supplied
               // descriptor; it does not alter approval or sandbox policy.
@@ -413,7 +422,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         forkAnchor: ForkAnchorObservation;
       };
       let activeRun: Run | undefined,
-        steeringPending = false,
         forking = false,
         eventState: SessionEventState | undefined,
         observedQuestion = false;
@@ -479,7 +487,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         () => ({
           sessionUpdate: async (value) => {
             if (stopped || !currentCallback()) return;
-            const normalized = normalizeSessionEvent(value.update, eventSource);
+            const normalized = normalizeSessionEvent(value.update);
             if (!activeSessionId) {
               // Session creation can emit command choices before its response. Keep
               // bounded snapshots and bind them only after the actual ID is known.
@@ -620,11 +628,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             },
           }),
         );
-        eventSource = {
-          agentType: config.agentType,
-          custom: !!config.customAcp,
-          ...(init.agentInfo ? { agentInfo: init.agentInfo } : {}),
-        };
         currentTaskTools();
         if (
           extraServers.some(
@@ -665,23 +668,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
           audio: init.agentCapabilities?.promptCapabilities?.audio === true,
           embeddedContext: init.agentCapabilities?.promptCapabilities?.embeddedContext === true,
         };
-        const supportedSteer =
-          !custom &&
-          config.agentType === 'claude' &&
-          init.agentInfo?.name === '@agentclientprotocol/claude-agent-acp' &&
-          init.agentInfo.version === '0.76.0' &&
-          (init._meta?.steering as { supported?: unknown } | undefined)?.supported === true;
         const interactionCapabilities = {
           questions: !!callbacks.question,
-          steer: supportedSteer,
-          ...(supportedSteer
-            ? {}
-            : {
-                steerUnavailableReason:
-                  config.agentType === 'codex'
-                    ? '当前 Codex 适配器不能保证追加指令只进入活动回合，请等待当前回合结束后发送'
-                    : '该 Agent 尚未验证支持活动回合追加指令',
-              }),
+          steer: false,
+          steerUnavailableReason:
+            '当前 Codex 适配器不能保证追加指令只进入活动回合，请等待当前回合结束后发送',
         };
         const nativeForkCapabilities = forkCapabilities(config, init);
         return {
@@ -703,7 +694,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             if (
               stopped ||
               activeRun ||
-              steeringPending ||
               forking ||
               input.sourceNativeId !== id ||
               input.sourceCwd !== cwd ||
@@ -731,22 +721,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               );
               if (input.onNativeId)
                 await bounded(() => Promise.resolve(input.onNativeId!(result.nativeId)));
-              if (
-                nativeForkCapabilities.adapter === 'claude-agent-acp' &&
-                input.targetCwd !== cwd
-              ) {
-                // Claude stores the new native transcript under the source cwd.
-                // Load only its returned child ID at the target before confirming
-                // the full operation. No prompt, replay callbacks or source move.
-                input.assertCurrent?.();
-                await bounded(() =>
-                  conn.loadSession({
-                    sessionId: result.nativeId,
-                    cwd: input.targetCwd,
-                    mcpServers: [],
-                  }),
-                );
-              }
+              input.assertCurrent?.();
               return result;
             } catch {
               throw new AppError(
@@ -761,7 +736,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
           async prompt(input, binding) {
             currentTaskTools();
             assert(!stopped, 409, 'Agent 已停止');
-            assert(!activeRun && !steeringPending, 409, 'Agent 已有活动回合或待确认追加指令');
+            assert(!activeRun, 409, 'Agent 已有活动回合');
             assert(!forking, 409, 'Agent 的原生 Fork 尚未确认');
             const content = promptContent(input, inputCapabilities);
             resolveRunSelection(selectionFromInput(input, choices), choices);
@@ -838,50 +813,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               acceptingUpdates = false;
               cancelQuestions(run);
               if (activeRun === run) activeRun = undefined;
-            }
-          },
-          async steer(input): Promise<AgentSteerResult> {
-            currentTaskTools();
-            const request = steerInputSchema.parse(input),
-              run = activeRun;
-            assert(
-              supportedSteer,
-              409,
-              interactionCapabilities.steerUnavailableReason ?? 'Agent 不支持追加指令',
-            );
-            assert(
-              !stopped &&
-                acceptingUpdates &&
-                run &&
-                !run.cancelled &&
-                run.binding?.expectedTurnId === request.expectedTurnId,
-              409,
-              '追加指令的活动回合已失效',
-            );
-            assert(!steeringPending, 409, '上一条追加指令尚未确认');
-            steeringPending = true;
-            try {
-              const response = await bounded(() =>
-                conn.request<Record<string, unknown>>(
-                  '_session/steering',
-                  claudeSteerParams(id, request.prompt),
-                ),
-              );
-              currentTaskTools();
-              if (response.outcome === 'injected') return { outcome: 'injected' };
-              if (response.outcome === 'promptRequired' && response.reason === 'noRunningTurn')
-                return { outcome: 'promptRequired', reason: 'noRunningTurn' };
-              // A violated extension contract cannot be presented as delivery into
-              // the requested turn. Stop the owned process to bound unexpected work.
-              await close();
-              throw new Error('Agent 未确认追加指令进入指定活动回合');
-            } catch (error) {
-              if (mcp) throw safeError(error, 'MCP Agent 尚未确认追加指令，请检查原回合');
-              if (taskTools && !(error instanceof AppError))
-                throw new AppError(502, '任务工具 Agent 尚未确认追加指令，请检查原回合');
-              throw error;
-            } finally {
-              steeringPending = false;
             }
           },
           async cancel() {
