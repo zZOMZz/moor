@@ -116,6 +116,37 @@ app
     });
     ipcMain.handle('moor:secure-client', (event, value) => bridge.request(event, value));
     ipcMain.handle('moor:secure-account', (event, value) => account.request(event, value));
+    // The packaged application now enters one workspace shell. This fixture has
+    // no local execution host; expose only that explicit native context while
+    // exercising the real encrypted account/device bridge below.
+    const currentWorkspace = (event) => {
+      assert.equal(registry.get(event.sender)?.window, window);
+      assert.equal(event.senderFrame, event.sender.mainFrame);
+      assert.equal(event.senderFrame.url, CLIENT_URL);
+      assert.equal(event.senderFrame.origin, CLIENT_ORIGIN);
+    };
+    ipcMain.handle('moor:cancel-attachment-save', (event) => {
+      currentWorkspace(event);
+      return { cancelled: true };
+    });
+    ipcMain.handle('moor:workspace-context', (event, value) => {
+      currentWorkspace(event);
+      assert.equal(value, undefined);
+      return { localReady: false, view: 'remote', notification: null, revision: 1 };
+    });
+    ipcMain.handle('moor:workspace-client', (event) => {
+      currentWorkspace(event);
+      return {
+        ok: false,
+        error: {
+          code: 'unavailable',
+          status: null,
+          rejected: false,
+          message: 'Synthetic host unavailable',
+        },
+      };
+    });
+
     const initialized = security({
       action: 'initialize',
       identity: {

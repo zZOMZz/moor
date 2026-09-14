@@ -1010,6 +1010,43 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
       currentPid = currentHost.child.pid,
       beforeDisconnect = readFileSync(aggregateFile, 'utf8'),
       originalConnection = readFileSync(connectionFile);
+    const addedProjectPath = join(root, 'ADDED_SYNTHETIC_PROJECT');
+    mkdirSync(addedProjectPath, { mode: 0o700 });
+    const registrationIdentity = {
+      workspaceId: workspace.id,
+      userId: workspace.userId,
+      machineId: workspace.machineId,
+    };
+    const register = async (requestId: string, identity = registrationIdentity) => {
+      const receipt = currentHost.wait(
+        (message) => message.type === 'register-project-result' && message.requestId === requestId,
+      );
+      currentHost.child.send({
+        type: 'register-project',
+        requestId,
+        action: { path: addedProjectPath, identity },
+      });
+      return receipt;
+    };
+    const addedProject = await register('add-while-active');
+    assert.equal(addedProject.ok, true);
+    assert.equal(addedProject.state.path, addedProjectPath);
+    assert.equal((await register('add-duplicate')).state.projectId, addedProject.state.projectId);
+    assert.equal(
+      (
+        await register('add-wrong-host', {
+          ...registrationIdentity,
+          machineId: 'different-machine',
+        })
+      ).ok,
+      false,
+    );
+    assert.equal(currentHost.child.pid, currentPid);
+    assert.equal(
+      readFileSync(aggregateFile, 'utf8'),
+      beforeDisconnect,
+      'registering a project never executes or interrupts a prompt',
+    );
     writeFileSync(connectionFile, '{}\n', { mode: 0o600 });
     const renamed = currentHost.wait(
       (message) => message.type === 'device-metadata-result' && message.requestId === 'shared-host',
@@ -1050,8 +1087,16 @@ if(m.id!==undefined)send({id:m.id,error:{code:-32601,message:'Unsupported synthe
     });
     assert.equal(nativeCatalog.ok, true);
     const available = desktopWorkspaceCatalogSchema.parse(nativeCatalog.value);
-    assert.equal(available.targets.length, 1);
-    const nativeTarget = { ...available.targets[0]!.target, sessionId: localStillActive.meta.id };
+    assert.equal(available.targets.length, 2);
+    assert(
+      available.targets.some(
+        (entry) => entry.target.localProjectId === addedProject.state.projectId,
+      ),
+    );
+    const nativeTarget = {
+      ...available.targets.find((entry) => entry.target.localProjectId === projectId)!.target,
+      sessionId: localStillActive.meta.id,
+    };
     const stopResult: any = await desktopConnection.request({
       action: 'execute',
       source: 'local',
