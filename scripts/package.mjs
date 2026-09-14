@@ -17,6 +17,7 @@ const desktopFiles = [
   'secure-preload.cjs',
   'secure-client.cjs',
   'workspace-bridge.cjs',
+  'project-registration.cjs',
   'legacy-cache.cjs',
   'legacy-cache-keys.cjs',
   'legacy-cache-preload.cjs',

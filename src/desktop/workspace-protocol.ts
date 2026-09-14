@@ -71,3 +71,23 @@ export const desktopWorkspaceCatalogSchema = z
   })
   .strict();
 export type DesktopWorkspaceCatalog = z.infer<typeof desktopWorkspaceCatalogSchema>;
+
+export const desktopAddProjectResultSchema = z.discriminatedUnion('canceled', [
+  z.object({ canceled: z.literal(true) }).strict(),
+  z
+    .object({
+      canceled: z.literal(false),
+      projectId: id,
+      settingsSaved: z.boolean(),
+      identity: z
+        .object({
+          owner: z.string().min(1).max(1000),
+          deviceId: id,
+          workspaceId: id,
+          machineId: id,
+          userId: z.string().min(1).max(1000),
+        })
+        .strict(),
+    })
+    .strict(),
+]);

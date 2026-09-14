@@ -1,3 +1,14 @@
+import { createPortal } from 'react-dom';
+import { WorkspaceToolMenu } from './workspace-layout';
+import {
+  SessionTimeline,
+  SessionInformation,
+  hasTurnFileChanges,
+  turnFileChanges,
+} from './session-timeline';
+import { GitFork } from 'lucide-react';
+import { SESSION_FORK_FEATURE } from '../fork-protocol';
+import { PROJECT_DIFF_FEATURE } from '../project-content-protocol';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleStart } from './google-login';
@@ -708,8 +719,10 @@ function Composer({
   onProjectPreview,
   onGit,
   onFork,
+  toolContainer,
 }: {
   state: SecureWorkspaceState;
+  toolContainer?: HTMLElement | null;
   controller: SecureUiController;
   run: Run;
   onDirty: (value: boolean) => void;
@@ -837,6 +850,109 @@ function Composer({
       await controller.send(text, review);
     });
   }
+  const composerTools = (
+    <div className="secure-actions">
+      <button
+        type="button"
+        disabled={
+          !shownTarget ||
+          state.busy ||
+          !contentContext.online ||
+          !workspace?.features?.includes(SKILLS_FEATURE)
+        }
+        onClick={() => {
+          if (!shownTarget) return;
+          const target = structuredClone(shownTarget);
+          run(async () => {
+            if (
+              productCanonicalJson(target) !==
+                productCanonicalJson(controller.contentContext.target) ||
+              controller.contentContext.generation !== contentContext.generation
+            )
+              throw Error('Skills 所属会话已改变，请重新打开。');
+            await controller.saveDraft(text);
+            await onSkills(target);
+          });
+        }}
+      >
+        Skills
+      </button>
+      <button
+        type="button"
+        disabled={!shownTarget || state.busy || !state.mcpDraft}
+        onClick={() => shownTarget && run(() => onMcp(structuredClone(shownTarget)))}
+      >
+        额外 MCP
+      </button>
+      <button
+        type="button"
+        disabled={!shownTarget || state.busy}
+        onClick={() => {
+          if (!shownTarget) return;
+          const target = structuredClone(shownTarget);
+          run(async () => {
+            if (
+              productCanonicalJson(target) !==
+                productCanonicalJson(controller.contentContext.target) ||
+              controller.contentContext.generation !== contentContext.generation
+            )
+              throw Error('GitHub 所属会话已改变，请重新打开。');
+            await controller.saveDraft(text);
+            await onGithub(target);
+          });
+        }}
+      >
+        GitHub
+      </button>
+      <button
+        type="button"
+        disabled={!shownTarget || state.busy}
+        onClick={() => shownTarget && run(() => onProjectPreview(structuredClone(shownTarget)))}
+      >
+        网页预览
+      </button>
+      <button
+        type="button"
+        disabled={!shownTarget || state.busy}
+        onClick={() => {
+          if (!shownTarget) return;
+          const target = structuredClone(shownTarget);
+          run(async () => {
+            if (
+              productCanonicalJson(target) !==
+                productCanonicalJson(controller.contentContext.target) ||
+              controller.contentContext.generation !== contentContext.generation
+            )
+              throw Error('Git 所属会话已改变，请重新打开。');
+            await controller.saveDraft(text);
+            await onGit(target);
+          });
+        }}
+      >
+        Git 工作目录
+      </button>
+      <button
+        type="button"
+        disabled={!shownTarget || state.busy}
+        onClick={() => {
+          if (!shownTarget) return;
+          const target = structuredClone(shownTarget);
+          run(async () => {
+            if (
+              productCanonicalJson(target) !==
+                productCanonicalJson(controller.contentContext.target) ||
+              controller.contentContext.generation !== contentContext.generation
+            )
+              throw Error('Fork 所属会话已改变，请重新打开。');
+            await controller.saveDraft(text);
+            await onFork(target);
+          });
+        }}
+      >
+        Fork 会话
+      </button>
+    </div>
+  );
   return (
     <form className="secure-composer" onSubmit={submit}>
       <label htmlFor="secure-prompt">
@@ -858,107 +974,11 @@ function Composer({
           disabled={state.busy}
         />
       </label>
-      <div className="secure-actions">
-        <button
-          type="button"
-          disabled={
-            !shownTarget ||
-            state.busy ||
-            !contentContext.online ||
-            !workspace?.features?.includes(SKILLS_FEATURE)
-          }
-          onClick={() => {
-            if (!shownTarget) return;
-            const target = structuredClone(shownTarget);
-            run(async () => {
-              if (
-                productCanonicalJson(target) !==
-                  productCanonicalJson(controller.contentContext.target) ||
-                controller.contentContext.generation !== contentContext.generation
-              )
-                throw Error('Skills 所属会话已改变，请重新打开。');
-              await controller.saveDraft(text);
-              await onSkills(target);
-            });
-          }}
-        >
-          Skills
-        </button>
-        <button
-          type="button"
-          disabled={!shownTarget || state.busy || !state.mcpDraft}
-          onClick={() => shownTarget && run(() => onMcp(structuredClone(shownTarget)))}
-        >
-          额外 MCP
-        </button>
-        <button
-          type="button"
-          disabled={!shownTarget || state.busy}
-          onClick={() => {
-            if (!shownTarget) return;
-            const target = structuredClone(shownTarget);
-            run(async () => {
-              if (
-                productCanonicalJson(target) !==
-                  productCanonicalJson(controller.contentContext.target) ||
-                controller.contentContext.generation !== contentContext.generation
-              )
-                throw Error('GitHub 所属会话已改变，请重新打开。');
-              await controller.saveDraft(text);
-              await onGithub(target);
-            });
-          }}
-        >
-          GitHub
-        </button>
-        <button
-          type="button"
-          disabled={!shownTarget || state.busy}
-          onClick={() => shownTarget && run(() => onProjectPreview(structuredClone(shownTarget)))}
-        >
-          网页预览
-        </button>
-        <button
-          type="button"
-          disabled={!shownTarget || state.busy}
-          onClick={() => {
-            if (!shownTarget) return;
-            const target = structuredClone(shownTarget);
-            run(async () => {
-              if (
-                productCanonicalJson(target) !==
-                  productCanonicalJson(controller.contentContext.target) ||
-                controller.contentContext.generation !== contentContext.generation
-              )
-                throw Error('Git 所属会话已改变，请重新打开。');
-              await controller.saveDraft(text);
-              await onGit(target);
-            });
-          }}
-        >
-          Git 工作目录
-        </button>
-        <button
-          type="button"
-          disabled={!shownTarget || state.busy}
-          onClick={() => {
-            if (!shownTarget) return;
-            const target = structuredClone(shownTarget);
-            run(async () => {
-              if (
-                productCanonicalJson(target) !==
-                  productCanonicalJson(controller.contentContext.target) ||
-                controller.contentContext.generation !== contentContext.generation
-              )
-                throw Error('Fork 所属会话已改变，请重新打开。');
-              await controller.saveDraft(text);
-              await onFork(target);
-            });
-          }}
-        >
-          Fork 会话
-        </button>
-      </div>
+      {toolContainer ? (
+        createPortal(composerTools, toolContainer)
+      ) : (
+        <WorkspaceToolMenu>{composerTools}</WorkspaceToolMenu>
+      )}
       {state.extensionBlock && <p className="secure-warning">{state.extensionBlock}</p>}
       <SecurePreviewDraftCards
         items={state.previewAnnotations}
@@ -1142,6 +1162,7 @@ export function SecureApp({
     onNavigationBlocked?.(dirty || localBusy || state.busy);
   }, [dirty, localBusy, state.busy, onNavigationBlocked]);
   const [agentId, setAgentId] = useState('');
+  const [composerTools, setComposerTools] = useState<HTMLDivElement | null>(null);
   const active = useRef(true);
   const actionLock = useRef(false);
   useEffect(() => controller.subscribe(setState), [controller]);
@@ -1479,22 +1500,25 @@ export function SecureApp({
                     <h1>{session.meta.title || '未命名会话'}</h1>
                   </div>
                   <div className="secure-actions">
-                    <button
-                      disabled={busy || !controller.contentContext.target}
-                      onClick={() =>
-                        run(() => contentUi.current?.openProject('tree') ?? Promise.resolve())
-                      }
-                    >
-                      项目文件
-                    </button>
-                    <button
-                      disabled={busy || !controller.contentContext.target}
-                      onClick={() =>
-                        run(() => contentUi.current?.openProject('changes') ?? Promise.resolve())
-                      }
-                    >
-                      会话变更
-                    </button>
+                    <WorkspaceToolMenu>
+                      <div ref={setComposerTools} className="secure-composer-tool-slot" />
+                      <button
+                        disabled={busy || !controller.contentContext.target}
+                        onClick={() =>
+                          run(() => contentUi.current?.openProject('tree') ?? Promise.resolve())
+                        }
+                      >
+                        项目文件
+                      </button>
+                      <button
+                        disabled={busy || !controller.contentContext.target}
+                        onClick={() =>
+                          run(() => contentUi.current?.openProject('changes') ?? Promise.resolve())
+                        }
+                      >
+                        会话变更
+                      </button>
+                    </WorkspaceToolMenu>
                     <button
                       disabled={busy || !connection || dirty}
                       onClick={() => run(() => controller.refreshSession())}
@@ -1512,6 +1536,29 @@ export function SecureApp({
                       停止回合
                     </button>
                   </div>
+                  <SessionInformation
+                    key={scopeKey}
+                    history={session.history}
+                    disabled={busy || dirty || !controller.contentContext.target}
+                    onCommand={(command) =>
+                      run(() =>
+                        controller.appendInstruction(checkedSessionTarget(), command, () => {
+                          checkedSessionTarget();
+                        }),
+                      )
+                    }
+                    onFiles={
+                      runtime?.features?.includes(PROJECT_DIFF_FEATURE)
+                        ? (turnId) => {
+                            run(
+                              () =>
+                                contentUi.current?.openProject('changes', turnId) ??
+                                Promise.resolve(),
+                            );
+                          }
+                        : undefined
+                    }
+                  />
                 </header>
                 {session.meta.forkOrigin && (
                   <section className="secure-card" aria-label="Fork 来源">
@@ -1590,48 +1637,57 @@ export function SecureApp({
                     </button>
                   </div>
                 </details>
-                <section className="secure-history" aria-label="会话内容">
-                  {session.history.length === 0 ? (
-                    <p className="secure-empty">会话已创建。写下第一条指令开始。</p>
-                  ) : (
-                    session.history.map((turn) => (
-                      <article className={'secure-turn secure-turn-' + turn.role} key={turn.id}>
-                        <div className="secure-turn-label">
-                          {turn.role === 'user' ? '你' : 'Agent'}
-                          {turn.role === 'assistant' && !turn.finished ? ' · 进行中' : ''}
-                        </div>
-                        {turn.role === 'assistant' && turn.finished && (
+                <SessionTimeline
+                  history={session.history}
+                  variant="secure"
+                  renderItem={(item, turn, index) => (
+                    <HistoryItem
+                      key={scopeKey + ':' + turn.id + ':' + index}
+                      value={item}
+                      onAttachment={(reference) =>
+                        run(() => contentUi.current?.openAttachment(reference) ?? Promise.resolve())
+                      }
+                      finished={turn.finished}
+                      turnId={turn.id}
+                      state={state}
+                      busy={busy}
+                      controller={controller}
+                      run={run}
+                    />
+                  )}
+                  actions={(turn) => (
+                    <>
+                      {hasTurnFileChanges(turn) &&
+                        runtime?.features?.includes(PROJECT_DIFF_FEATURE) && (
                           <button
-                            disabled={busy || dirty || !controller.contentContext.target}
-                            onClick={() => {
-                              run(() => openFork(checkedSessionTarget(), turn.id));
-                            }}
-                          >
-                            从此回合 Fork
-                          </button>
-                        )}
-                        {(turn.items ?? []).map((item: unknown, index: number) => (
-                          <HistoryItem
-                            key={scopeKey + ':' + turn.id + ':' + index}
-                            value={item}
-                            onAttachment={(reference) =>
+                            type="button"
+                            disabled={busy || dirty}
+                            onClick={() =>
                               run(
                                 () =>
-                                  contentUi.current?.openAttachment(reference) ?? Promise.resolve(),
+                                  contentUi.current?.openProject('changes', turn.id) ??
+                                  Promise.resolve(),
                               )
                             }
-                            finished={turn.finished}
-                            turnId={turn.id}
-                            state={state}
-                            busy={busy}
-                            controller={controller}
-                            run={run}
-                          />
-                        ))}
-                      </article>
-                    ))
+                          >
+                            查看回合文件变更 · {turnFileChanges(turn)!.changeCount}
+                          </button>
+                        )}
+                      {turn.finished && runtime?.features?.includes(SESSION_FORK_FEATURE) && (
+                        <button
+                          type="button"
+                          className="session-fork-action"
+                          aria-label="从此回合创建副本"
+                          title="从此回合创建副本"
+                          disabled={busy || dirty || !controller.contentContext.target}
+                          onClick={() => run(() => openFork(checkedSessionTarget(), turn.id))}
+                        >
+                          <GitFork size={15} />
+                        </button>
+                      )}
+                    </>
                   )}
-                </section>
+                />
                 <Composer
                   key={scopeKey}
                   state={state}
@@ -1643,6 +1699,7 @@ export function SecureApp({
                   onGithub={(target) => githubUi.current?.open(target) ?? Promise.resolve()}
                   onGit={openGit}
                   onFork={(target) => openFork(target)}
+                  toolContainer={composerTools}
                   onProjectPreview={(target) =>
                     previewUi.current?.open(target) ?? Promise.resolve()
                   }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createRequire as createPackageRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -781,6 +781,80 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       ]) {
         await assert.rejects(invoke('personal:save', { ...saved, agents, code: '' }), /Agent/);
       }
+    },
+  );
+  await t.test(
+    'main window adds a native folder without replacing the execution host and rejects stale pickers',
+    async () => {
+      const canonicalProject = await realpath(projectDirectory);
+      const child = children.at(-1),
+        count = children.length;
+      const identity = {
+        owner: 'local-desktop',
+        deviceId: 'local-device',
+        userId: 'local-user',
+        machineId: 'local-machine',
+        workspaceId: 'local-workspace',
+      };
+      await emitMessage(child, {
+        type: 'local-ready',
+        origin: 'http://127.0.0.1:4530',
+        secret: 'a'.repeat(43),
+        identity,
+      });
+      const event = () => ({
+        sender: reopened.webContents,
+        senderFrame: reopened.webContents.mainFrame,
+      });
+      const canceled = await invoke('moor:add-project', undefined, event());
+      assert.equal(canceled.canceled, true);
+      const choosing = gate(),
+        submitted = gate();
+      directoryGate = choosing;
+      directoryResult = projectDirectory;
+      const send = child.send;
+      child.send = function (value: any) {
+        send.call(this, value);
+        if (value.type === 'register-project') submitted.enter();
+      };
+      const adding = invoke('moor:add-project', undefined, event());
+      await choosing.entered;
+      await assert.rejects(invoke('moor:add-project', undefined, event()), /正在选择/);
+      choosing.release();
+      await submitted.entered;
+      const request = child.sent.at(-1);
+      assert.equal(request.action.path, canonicalProject);
+      assert.deepEqual(request.action.identity, {
+        workspaceId: identity.workspaceId,
+        userId: identity.userId,
+        machineId: identity.machineId,
+      });
+      const projectId =
+        'project_' + createHash('sha256').update(canonicalProject).digest('hex').slice(0, 24);
+      await emitMessage(child, {
+        type: 'register-project-result',
+        requestId: request.requestId,
+        ok: true,
+        state: { identity: request.action.identity, path: canonicalProject, projectId },
+      });
+      const added = await adding;
+      assert.equal(added.projectId, projectId);
+      assert.equal(added.settingsSaved, true);
+      assert.equal(children.length, count);
+      assert.deepEqual(
+        JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).projects,
+        [projectDirectory],
+      );
+      const stale = gate();
+      directoryGate = stale;
+      const obsolete = invoke('moor:add-project', undefined, event());
+      await stale.entered;
+      const rejection = assert.rejects(obsolete, /已变化/);
+      reopened.webContents.mainFrame = { ...reopened.webContents.mainFrame };
+      stale.release();
+      await rejection;
+      assert.equal(child.sent.filter((value: any) => value.type === 'register-project').length, 1);
+      child.send = send;
     },
   );
   // A replaced child cannot deliver events or receive acknowledgements.

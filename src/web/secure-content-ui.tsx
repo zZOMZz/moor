@@ -348,7 +348,7 @@ type ContentController = Pick<
   'contentContext' | 'contentRequest' | 'readAttachment'
 >;
 export type SecureContentUiHandle = {
-  openProject(mode: 'tree' | 'changes'): Promise<void>;
+  openProject(mode: 'tree' | 'changes', turnId?: string): Promise<void>;
   openAttachment(reference: AttachmentReference): Promise<void>;
   openDraft(item: SecureAttachmentDraft): void;
   close(): void;
@@ -508,7 +508,7 @@ export const SecureContentUI = forwardRef<
     }
   };
   useImperativeHandle(ref, () => ({
-    async openProject(mode) {
+    async openProject(mode, turnId) {
       if (!currentContext.target || contextKey !== productCanonicalJson(controller.contentContext))
         throw Error('内容显示范围已改变，请重新打开当前会话。');
       clearPreview();
@@ -525,6 +525,7 @@ export const SecureContentUI = forwardRef<
         })
         .reverse();
       await project.open(mode, turns, state.session?.meta.title ?? '项目内容');
+      if (turnId) await project.turn(turnId);
     },
     openAttachment,
     openDraft(item) {

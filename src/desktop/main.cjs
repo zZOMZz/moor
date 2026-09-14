@@ -34,6 +34,7 @@ const {
 } = require('./device-metadata.cjs');
 const { DesktopGoogleAuth } = require('./google-auth.cjs');
 const { DesktopSecureBridge } = require('./secure-client.cjs');
+const { DesktopProjectRegistration } = require('./project-registration.cjs');
 const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
 const { DesktopLegacyCache } = require('./legacy-cache.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
@@ -98,6 +99,7 @@ const skillsSettings = new DesktopSkillsSettings({ bridge: () => bridge });
 const agentSettings = new DesktopAgentSettings({ bridge: () => bridge });
 const mcpSettings = new DesktopMcpSettings({ bridge: () => bridge });
 const deviceMetadata = new DesktopDeviceMetadata({ bridge: () => bridge });
+const projectRegistration = new DesktopProjectRegistration({ bridge: () => bridge });
 let deviceNameState;
 let localConnection;
 const contentRoot = path.join(__dirname, 'runtime');
@@ -401,6 +403,7 @@ function startBridge() {
     if (agentSettings.receive(child, message)) return;
     if (mcpSettings.receive(child, message)) return;
     if (deviceMetadata.receive(child, message)) return;
+    if (projectRegistration.receive(child, message)) return;
     if (message?.type === 'notification') {
       let status = 'failed';
       try {
@@ -519,6 +522,7 @@ function startBridge() {
     skillsSettings.disconnect(child);
     agentSettings.disconnect(child);
     deviceMetadata.disconnect(child);
+    projectRegistration.disconnect(child);
     if (deviceNameState) deviceNameState = { ...deviceNameState, sync: 'pending' };
     mcpSettings.disconnect(child);
     if (bridge !== child) return;
@@ -560,6 +564,7 @@ async function restartBridgeOnce() {
   if (old) skillsSettings.disconnect(old);
   if (old) agentSettings.disconnect(old);
   if (old) deviceMetadata.disconnect(old);
+  if (old) projectRegistration.disconnect(old);
   if (deviceNameState) deviceNameState = { ...deviceNameState, sync: 'pending' };
   if (old) mcpSettings.disconnect(old);
   bridge = null;
@@ -852,6 +857,72 @@ ipcMain.handle('moor:workspace-context', (event, value) => {
     revision: navigationRevision,
   };
 });
+let choosingProject = false;
+ipcMain.handle('moor:add-project', async (event, value) => {
+  trustedWorkspaceDocument(event, value);
+  if (choosingProject) throw Error('正在选择项目文件夹。');
+  const connection = localConnection,
+    child = bridge;
+  const current = () => {
+    try {
+      trustedWorkspaceDocument(event, value);
+      return (
+        !quitting &&
+        !!connection &&
+        localConnection === connection &&
+        bridge === child &&
+        child?.connected
+      );
+    } catch {
+      return false;
+    }
+  };
+  if (!current()) throw Error('本机执行组件尚未就绪，请稍后添加项目。');
+  choosingProject = true;
+  try {
+    const selection = await dialog.showOpenDialog(secureWindow, {
+      properties: ['openDirectory'],
+      title: '添加本机项目',
+      buttonLabel: '添加项目',
+    });
+    if (!current()) throw Error('本机连接或窗口已变化，请重新选择项目。');
+    if (selection.canceled) return { canceled: true };
+    if (selection.filePaths?.length !== 1) throw Error('请选择一个本机项目文件夹。');
+    const result = await projectRegistration.request(
+      selection.filePaths[0],
+      connection.identity,
+      current,
+    );
+    if (!current()) throw Error('本机连接已变化，请刷新项目列表确认登记结果。');
+    const alreadyListed = settings.projects.some((path) => {
+      try {
+        return fs.realpathSync(path) === result.path;
+      } catch {
+        return path === result.path;
+      }
+    });
+    const next = {
+      ...settings,
+      projects: alreadyListed ? settings.projects : [...settings.projects, result.path],
+    };
+    let settingsSaved = true;
+    try {
+      write(settingsFile, next);
+      settings = next;
+    } catch {
+      settingsSaved = false;
+    }
+    notifyWorkspaceChanged();
+    return {
+      canceled: false,
+      projectId: result.projectId,
+      identity: connection.identity,
+      settingsSaved,
+    };
+  } finally {
+    choosingProject = false;
+  }
+});
 ipcMain.handle('moor:open-settings', (event, value) => {
   trustedWorkspaceDocument(event, value);
   showSettings();
@@ -915,6 +986,7 @@ else {
     skillsSettings.close();
     agentSettings.close();
     deviceMetadata.close();
+    projectRegistration.close();
     mcpSettings.close();
     secureClient.close();
     workspaceClient.close();

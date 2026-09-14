@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('moorWorkspace', {
   request: (value) => ipcRenderer.invoke('moor:workspace-client', value),
   legacy: (value) => ipcRenderer.invoke('moor:legacy-cache', value),
   context: () => ipcRenderer.invoke('moor:workspace-context'),
+  addProject: () => ipcRenderer.invoke('moor:add-project'),
   onChange: (listener) => {
     if (typeof listener !== 'function') throw new TypeError('Expected workspace listener');
     const receive = () => listener();

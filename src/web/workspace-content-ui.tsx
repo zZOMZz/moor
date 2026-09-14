@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
 import { FolderOpen, GitCompareArrows } from 'lucide-react';
 import { ProjectContentPanel } from './project-content-ui';
 import type { WorkspaceController } from './workspace-controller';
+
+export type WorkspaceContentHandle = { open(mode: 'tree' | 'changes', turnId?: string): boolean };
 
 export function WorkspaceContentUI({
   controller,
   busy,
   run,
+  controlRef,
 }: {
   controller: WorkspaceController;
+  controlRef?: Ref<WorkspaceContentHandle>;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
 }) {
@@ -24,13 +28,14 @@ export function WorkspaceContentUI({
       panel.current = null;
     };
   }, [controller, controller.contextRevision]);
-  const open = (mode: 'tree' | 'changes') =>
+  const open = (mode: 'tree' | 'changes', turnId?: string) =>
     run(async () => {
       panel.current?.dispose();
       panel.current = null;
-      panel.current = await controller.openProjectContent(() => render((n) => n + 1), mode);
+      panel.current = await controller.openProjectContent(() => render((n) => n + 1), mode, turnId);
       render((n) => n + 1);
     });
+  useImperativeHandle(controlRef, () => ({ open }));
   const value = panel.current?.state;
   return (
     <>

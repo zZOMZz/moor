@@ -176,6 +176,7 @@ export type WorkspaceClientState = {
   draft?: WorkspaceDraft;
   modelError?: string;
   searchFocus?: SearchHit;
+  focusedTurnId?: string;
 };
 const resultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), value: z.unknown() }).strict(),
@@ -403,8 +404,9 @@ export class WorkspaceController {
       this.#emit();
     }
   }
-  async openSession(sessionId: string) {
+  async openSession(sessionId: string, turnId?: string) {
     this.#state.searchFocus = undefined;
+    this.#state.focusedTurnId = undefined;
     await this.#draftWrites;
     const scope = this.#context(sessionId).scope;
     this.#generation++;
@@ -424,6 +426,11 @@ export class WorkspaceController {
     this.#emit();
     await this.refreshSession();
     await this.refreshAgentOptions();
+    current();
+    if (turnId && this.#state.session?.history.some((turn) => turn.id === turnId)) {
+      this.#state.focusedTurnId = turnId;
+      this.#emit();
+    }
   }
   async refreshSession() {
     const context = this.#context();
@@ -935,13 +942,13 @@ export class WorkspaceController {
         open = false;
         controller.configure(undefined);
       },
-      openSession: async (route: AttentionRoute, sessionId: string) => {
+      openSession: async (route: AttentionRoute, sessionId: string, turnId?: string) => {
         const context = scoped(route, sessionId);
         await this.#draftWrites;
         current();
         if (!same(context.scope, this.#state.scope))
           await this.selectProject(context.scope.source, context.scope.target);
-        await this.openSession(sessionId);
+        await this.openSession(sessionId, turnId);
       },
     };
   }

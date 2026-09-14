@@ -209,6 +209,15 @@ test('packaged workspace opens local projects without an account and preserves d
       state.catalogs.local = catalog;
       emit();
     },
+    async createSession(agentId: string) {
+      assert.equal(agentId, 'agent');
+      calls.push('create');
+      return 'session';
+    },
+    async refreshSessions() {
+      calls.push('sessions');
+      emit();
+    },
     async selectProject() {
       calls.push('project');
       state.project = catalog.targets[0]!;
@@ -235,7 +244,22 @@ test('packaged workspace opens local projects without an account and preserves d
             role: 'assistant',
             timestamp: '2026-01-01T00:00:00.000Z',
             finished: true,
-            items: [{ type: 'text', text: 'Hello <script>unsafe()</script>' }],
+            items: [
+              { type: 'text', text: 'Hello <script>unsafe()</script>' },
+              {
+                type: 'session_event',
+                event: {
+                  version: 1,
+                  source: 'acp',
+                  kind: 'commands',
+                  commands: [{ name: 'review', description: 'Review the project' }],
+                },
+              },
+              {
+                type: 'session_event',
+                event: { version: 1, source: 'acp', kind: 'context-usage', used: 32, size: 256 },
+              },
+            ],
             status: 'completed',
             fileDiff: null,
           },
@@ -1030,6 +1054,21 @@ test('packaged workspace opens local projects without an account and preserves d
           openSettings: async () => {
             calls.push('settings');
           },
+          addLocalProject: async () => {
+            calls.push('add-project');
+            return {
+              canceled: false,
+              projectId: 'project',
+              settingsSaved: true,
+              identity: {
+                owner: 'local-desktop',
+                deviceId: 'device',
+                workspaceId: 'runtime',
+                userId: 'user',
+                machineId: 'machine',
+              },
+            };
+          },
           readDesktopContext: async () => structuredClone(desktop),
           subscribeDesktopChanges: (listener) => {
             desktopChanged = listener;
@@ -1050,6 +1089,11 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(dom.window.document.querySelectorAll('iframe').length, 0);
     const project = dom.window.document.querySelector<HTMLButtonElement>('.workspace-project')!;
     assert.match(project.textContent!, /Local project.*My Mac/s);
+    await act(async () => visibleButton('添加项目').click());
+    assert.equal(calls.includes('add-project'), true);
+    assert.equal(state.project?.projectName, 'Local project');
+    assert.equal(calls.includes('settings'), false);
+    assert.match(dom.window.document.body.textContent!, /项目已添加/);
     await act(async () => project.click());
     await act(async () => visibleButton('Local sessionsynthetic').click());
     assert.match(
@@ -1061,6 +1105,30 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.run-controls')!.textContent!,
       /Installed model/,
     );
+    const information =
+      dom.window.document.querySelector<HTMLDetailsElement>('.session-information')!;
+    assert.equal(information.open, false);
+    assert.doesNotMatch(
+      dom.window.document.querySelector('.workspace-history')!.textContent!,
+      /Review the project|用量|命令快照/,
+    );
+    assert.equal(
+      dom.window.document.querySelector('.workspace-history button[title="从此回合创建副本"]')
+        ?.textContent,
+      '',
+    );
+    assert.doesNotMatch(
+      dom.window.document.querySelector('.workspace-history')!.textContent!,
+      /查看回合文件变更/,
+    );
+    await act(async () => information.querySelector('summary')!.click());
+    const sendsBeforeCommand = calls.filter((call) => call === 'send').length;
+    await act(async () => visibleButton('/review').click());
+    assert.equal(state.draft!.text, '/review');
+    assert.equal(calls.filter((call) => call === 'send').length, sendsBeforeCommand);
+    await act(async () => controller.saveDraft('', {}));
+    await act(async () => visibleButton('关闭会话信息').click());
+    assert.equal(information.open, false);
     let textarea = dom.window.document.querySelector('textarea')!;
     let release!: () => void;
     hold = new Promise<void>((resolve) => {

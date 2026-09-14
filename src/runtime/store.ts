@@ -307,9 +307,20 @@ export class RuntimeStore {
     const rootPath = realpathSync(path);
     if (!statSync(rootPath).isDirectory()) throw new Error('项目必须是本机目录');
     const id = 'project_' + createHash('sha256').update(rootPath).digest('hex').slice(0, 24);
-    this.machine.set(['localProject', id], { id, name: basename(rootPath), rootPath });
-    this.saveMachine();
-    return id;
+    const previous = this.machine;
+    this.machine = Flock.fromFile(previous.exportFile());
+    try {
+      return this.transaction(() => {
+        if (!this.machine.get(['localProject', id])) {
+          this.machine.set(['localProject', id], { id, name: basename(rootPath), rootPath });
+          this.saveMachine();
+        }
+        return id;
+      });
+    } catch (error) {
+      this.machine = previous;
+      throw error;
+    }
   }
   saveMachine() {
     this.rememberAgents();

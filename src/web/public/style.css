@@ -4210,3 +4210,472 @@ dialog pre {
   flex: 1;
   min-height: 0;
 }
+
+.workspace-add-project {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 600;
+}
+
+/* Shared message presentation keeps operational details outside the reading flow. */
+.session-timeline .session-turn-label {
+  margin-bottom: 8px;
+}
+.session-timeline .session-message-text > :first-child {
+  margin-top: 0;
+}
+.session-timeline .session-message-text > :last-child {
+  margin-bottom: 0;
+}
+.session-timeline .session-message-text pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.session-item {
+  min-width: 0;
+}
+.session-tool-details {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-tool-details > summary {
+  cursor: pointer;
+}
+.session-turn-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.session-turn-actions:empty {
+  display: none;
+}
+.session-turn-actions > button {
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.session-turn-actions .session-fork-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+.session-information {
+  position: relative;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.session-information > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.session-information > summary::-webkit-details-marker {
+  display: none;
+}
+.session-information > summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.session-information-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(72dvh, 720px);
+  overflow: auto;
+  z-index: 30;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 28px #0002;
+  font-size: 13px;
+}
+.session-information-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.session-information-panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.session-information-panel label select {
+  min-width: 0;
+  flex: 1;
+}
+.session-information-panel h3 {
+  margin: 18px 0 8px;
+}
+.session-information-panel p {
+  overflow-wrap: anywhere;
+}
+.session-information-panel .agent-usage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px 10px;
+}
+.session-information-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.session-command {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.session-command p {
+  margin: 4px 0;
+}
+@media (max-width: 700px) {
+  .session-information > summary span {
+    display: none;
+  }
+  .session-information-panel {
+    position: fixed;
+    top: 72px;
+    right: 12px;
+    max-height: calc(100dvh - 100px);
+  }
+}
+
+.workspace-app {
+  grid-template-columns: var(--workspace-sidebar-width, 260px) minmax(0, 1fr);
+}
+.workspace-sidebar {
+  padding: 10px 8px 8px;
+  gap: 6px;
+  overflow: hidden;
+}
+.workspace-sidebar > header {
+  min-height: 28px;
+}
+.workspace-sidebar > header img {
+  width: 72px;
+  height: 24px;
+  object-fit: contain;
+}
+.workspace-sidebar > form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-sidebar > form select {
+  min-width: 0;
+  flex: 1;
+  padding: 5px;
+  font-size: 12px;
+}
+.workspace-sidebar > form button {
+  flex-shrink: 0;
+  padding: 5px 8px;
+}
+.workspace-navigation-actions > .workspace-add-project {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 7px 8px;
+}
+.workspace-sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-sidebar-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.workspace-sidebar-search > button {
+  flex-shrink: 0;
+  padding: 6px;
+}
+.workspace-projects {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  gap: 4px;
+}
+.workspace-project-group {
+  min-width: 0;
+}
+.workspace-project-heading {
+  display: flex;
+  align-items: center;
+}
+.workspace-project-heading > .workspace-project {
+  flex: 1;
+  min-width: 0;
+}
+.workspace-project-heading > button:last-child:not(.workspace-project) {
+  flex-shrink: 0;
+  padding: 4px 6px;
+}
+.workspace-project {
+  padding: 6px;
+  font-size: 12px;
+}
+.workspace-project > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-project small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.workspace-session-list {
+  min-height: 0;
+  gap: 2px;
+  padding-left: 8px;
+}
+.workspace-list-title {
+  padding: 2px 4px;
+}
+.workspace-list-title select {
+  padding: 3px 4px;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+}
+.workspace-list-title button {
+  padding: 3px;
+}
+.workspace-session-list ul {
+  flex: none;
+  overflow: visible;
+}
+.workspace-session-list li > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 6px;
+  font-size: 12px;
+}
+.workspace-session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.workspace-session-list li > button small {
+  max-width: 70px;
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10px;
+}
+.workspace-sidebar footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.workspace-sidebar footer button {
+  padding: 5px;
+  font-size: 11px;
+}
+.workspace-sidebar footer button:last-child {
+  margin-left: auto;
+}
+.workspace-sidebar-sizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--workspace-sidebar-width, 260px) - 3px);
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 15;
+}
+.workspace-sidebar-sizer:hover,
+.workspace-sidebar-sizer:focus-visible {
+  background: var(--selected);
+  outline: 1px solid var(--border);
+}
+.workspace-session-header {
+  gap: 8px;
+  padding: 12px 20px;
+}
+.workspace-session-header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.workspace-session-header h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+}
+.workspace-tool-menu {
+  position: relative;
+}
+.workspace-tool-menu > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  padding: 6px;
+}
+.workspace-tool-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.workspace-tool-menu-items {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 25;
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+  max-height: 65dvh;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 28px #0002;
+}
+.workspace-tool-menu-items > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  text-align: left;
+}
+.workspace-tool-menu-items > button[aria-label]::after {
+  content: attr(aria-label);
+  font-size: 12px;
+}
+@media (max-width: 700px) {
+  .workspace-app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-sidebar-sizer {
+    display: none;
+  }
+  .workspace-session-header {
+    padding: 10px 12px;
+  }
+  .workspace-tool-menu-items {
+    position: fixed;
+    top: 72px;
+    right: 12px;
+  }
+}
+
+.workspace-sidebar button,
+.workspace-tool-menu-items > button,
+.workspace-session-header > button,
+.session-turn-actions > button,
+.workspace-navigation-bar button {
+  border-color: transparent;
+  background: transparent;
+  border-radius: 6px;
+}
+.workspace-sidebar button:hover:not(:disabled),
+.workspace-tool-menu-items > button:hover:not(:disabled),
+.workspace-session-header > button:hover:not(:disabled),
+.session-turn-actions > button:hover:not(:disabled) {
+  background: var(--surface-muted);
+}
+.workspace-sidebar [aria-current='page'] {
+  background: var(--selected);
+}
+.workspace-sidebar .workspace-add-project {
+  background: var(--surface-muted);
+}
+.workspace-sidebar select,
+.workspace-sidebar-search input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.workspace-list-title select {
+  border: 0;
+  background: transparent;
+}
+.workspace-tool-menu-items > button {
+  justify-content: flex-start;
+  padding: 6px 8px;
+}
+.workspace-session-header > div:first-child > small {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.workspace-interactions {
+  padding: 0 20px;
+}
+.workspace-interactions > button {
+  font-size: 12px;
+  padding: 4px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.workspace-attach-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.workspace-attach-trigger input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  cursor: pointer;
+}
+.workspace-attach-trigger:focus-within {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.secure-composer-tool-slot .secure-actions {
+  display: grid;
+  gap: 4px;
+}
+.secure-composer-tool-slot button {
+  text-align: left;
+  padding: 6px 8px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+}
+.secure-session-header > .secure-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+@media (max-width: 700px) {
+  .secure-session-header {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+}

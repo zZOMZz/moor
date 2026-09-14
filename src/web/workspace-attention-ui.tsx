@@ -73,10 +73,10 @@ export function WorkspaceAttentionUI({
               </Dialog.Description>
               <AttentionWorkbench
                 controller={panel.current.controller}
-                onOpenSession={async (route, sessionId) => {
+                onOpenSession={async (route, sessionId, turnId) => {
                   const value = panel.current;
                   if (value) {
-                    await value.openSession(route, sessionId);
+                    await value.openSession(route, sessionId, turnId);
                     close();
                   }
                 }}

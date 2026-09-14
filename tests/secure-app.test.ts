@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import type { SecureAccountApi, SecureUiController } from '../src/web/secure-app';
 import type { SecureWorkspaceState } from '../src/web/secure-controller';
 import { sessionPermissionReviews } from '../src/session-client';
+import { SESSION_FORK_FEATURE } from '../src/fork-protocol';
 import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 import { ATTACHMENTS_FEATURE } from '../src/attachment-protocol';
 import { ATTACHMENT_OPERATIONS_FEATURE } from '../src/session-control-protocol';
@@ -428,7 +429,7 @@ async function mount(
   });
   const button = (text: string) => {
     const element = [...dom.window.document.querySelectorAll('button')].find(
-      (entry) => entry.textContent === text,
+      (entry) => entry.textContent === text || entry.getAttribute('aria-label') === text,
     );
     assert.ok(element, `Missing button: ${text}`);
     return element;
@@ -676,6 +677,7 @@ for (const label of ['Git 工作目录', 'Fork 会话', 'GitHub'])
 
 function forkHistoryState() {
   const state = connected();
+  state.catalog!.workspaces[0]!.features!.push(SESSION_FORK_FEATURE);
   state.session!.meta.forkOrigin = {
     version: 1,
     sourceSessionId: 'original-source',
@@ -704,7 +706,7 @@ function forkHistoryState() {
   return state;
 }
 
-for (const label of ['从此回合 Fork', '打开源会话'])
+for (const label of ['从此回合创建副本', '打开源会话'])
   test(`history ${label} keeps its rendered target and refuses stale scope or connection generation`, async () => {
     for (const changed of ['session', 'mapping', 'generation', 'offline'] as const) {
       const view = await mount(forkHistoryState());
@@ -744,14 +746,14 @@ test('history Fork and source navigation wait for manual draft persistence and s
     const field = view.document.querySelector<HTMLTextAreaElement>('#secure-prompt')!;
     await view.input(field, '先保留当前会话的手工草稿');
     const before = structuredClone(view.calls);
-    for (const label of ['从此回合 Fork', '打开源会话']) {
+    for (const label of ['从此回合创建副本', '打开源会话']) {
       assert.equal(view.button(label).disabled, true);
       await view.click(label);
     }
     assert.deepEqual(view.calls, before);
     assert.equal(field.value, '先保留当前会话的手工草稿');
     await view.click('保存草稿');
-    assert.equal(view.button('从此回合 Fork').disabled, false);
+    assert.equal(view.button('从此回合创建副本').disabled, false);
     assert.equal(view.button('打开源会话').disabled, false);
     await view.click('打开源会话');
     assert.deepEqual(view.calls.at(-1), {

@@ -41,6 +41,7 @@ import { createPreviewRenderer } from '../runtime/preview-renderer';
 import { SkillsConfig } from '../runtime/skills-config';
 import { McpSettings } from '../runtime/mcp-settings';
 import { AgentSettings } from '../runtime/agent-settings';
+import { registerDesktopProject } from '../runtime/project-registration';
 import { HostDeviceMetadata } from '../runtime/device-metadata';
 import {
   deviceMetadataSchema,
@@ -1170,6 +1171,49 @@ if (values.desktop) {
     return true;
   });
   process.on('message', (message) => {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'type' in message &&
+      message.type === 'register-project'
+    ) {
+      const request = message as { requestId?: unknown; action?: unknown };
+      if (
+        typeof request.requestId !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
+        stopped ||
+        !ready ||
+        !process.connected
+      )
+        return;
+      try {
+        requireRuntimeBoundary();
+        const state = registerDesktopProject(runtime, request.action, [
+          dirname(runtimeFile),
+          dirname(configPath),
+          resolve(values['github-config-dir'] ?? dirname(runtimeFile)),
+          ...(secureMode
+            ? [dirname(values['secure-endpoint']!), dirname(values['secure-connection']!)]
+            : []),
+        ]);
+        for (const host of workspaces.values()) host.updateCatalogue();
+        hello();
+        reportHealth();
+        process.send?.({
+          type: 'register-project-result',
+          requestId: request.requestId,
+          ok: true,
+          state,
+        });
+      } catch {
+        process.send?.({
+          type: 'register-project-result',
+          requestId: request.requestId,
+          ok: false,
+        });
+      }
+      return;
+    }
     if (
       message &&
       typeof message === 'object' &&

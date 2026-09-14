@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
 import { GitFork } from 'lucide-react';
 import { SessionForkPanel } from './session-fork-ui';
 import { GitWorkspacePanel } from './git-workspace-ui';
@@ -6,13 +6,17 @@ import { SESSION_FORK_FEATURE, SECURE_FORK_OPERATIONS_FEATURE } from '../fork-pr
 import { GIT_WORKTREE_FEATURE, SECURE_GIT_OPERATIONS_FEATURE } from '../git-protocol';
 import type { WorkspaceController, WorkspaceClientState } from './workspace-controller';
 
+export type WorkspaceForkHandle = { open(turnId?: string): boolean };
+
 export function WorkspaceForkUI({
   controller,
   state,
   busy,
   run,
+  controlRef,
 }: {
   controller: WorkspaceController;
+  controlRef?: Ref<WorkspaceForkHandle>;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
@@ -60,6 +64,14 @@ export function WorkspaceForkUI({
         render((n) => n + 1);
       }
     });
+  const open = (turnId?: string) =>
+    run(async () => {
+      close();
+      panel.current = await controller.openFork(() => render((n) => n + 1));
+      render((n) => n + 1);
+      if (!reason) await panel.current.refresh(turnId);
+    });
+  useImperativeHandle(controlRef, () => ({ open }));
   return (
     <>
       <button
@@ -67,14 +79,7 @@ export function WorkspaceForkUI({
         aria-label="创建会话副本"
         title="创建会话副本"
         disabled={busy}
-        onClick={() =>
-          run(async () => {
-            close();
-            panel.current = await controller.openFork(() => render((n) => n + 1));
-            render((n) => n + 1);
-            if (!reason) await panel.current.refresh();
-          })
-        }
+        onClick={() => open()}
       >
         <GitFork size={16} />
       </button>

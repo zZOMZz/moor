@@ -436,6 +436,7 @@ test('the trusted preload exposes finite application entry points', async () => 
   await exposed.get('moorSecure').request({ action: 'status' });
   await exposed.get('moorSecure').account({ action: 'status' });
   assert.deepEqual(Object.keys(exposed.get('moorWorkspace')).sort(), [
+    'addProject',
     'context',
     'legacy',
     'onChange',
@@ -445,6 +446,9 @@ test('the trusted preload exposes finite application entry points', async () => 
   await exposed.get('moorWorkspace').request({ action: 'catalog', source: 'local' });
   await exposed.get('moorDesktop').openSettings();
   await exposed.get('moorWorkspace').context();
+  await exposed
+    .get('moorWorkspace')
+    .addProject({ path: '/untrusted-renderer-path', source: 'remote' });
   await exposed.get('moorWorkspace').legacy({ action: 'list' });
   let signals = 0;
   const unsubscribe = exposed.get('moorWorkspace').onChange((...args: unknown[]) => {
@@ -461,6 +465,7 @@ test('the trusted preload exposes finite application entry points', async () => 
     ['moor:workspace-client', { action: 'catalog', source: 'local' }],
     ['moor:open-settings'],
     ['moor:workspace-context'],
+    ['moor:add-project'],
     ['moor:legacy-cache', { action: 'list' }],
   ]);
   assert.deepEqual(Object.keys(exposed.get('moorDesktop')).sort(), [
