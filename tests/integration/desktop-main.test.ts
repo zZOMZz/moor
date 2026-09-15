@@ -1,0 +1,880 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { createRequire as createPackageRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+import { runInNewContext } from 'node:vm';
+import { JSDOM } from 'jsdom';
+import { notificationIdentity } from '@moor/protocol/notification-protocol';
+import { CLIENT_URL, CLIENT_ORIGIN } from '../../apps/desktop/src/main/client-assets.cjs';
+
+function gate() {
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { enter, release, entered, waiting };
+}
+
+// Execute the actual desktop main/preload/settings sources with synthetic Electron
+// objects. No system notification, dialog, child process or user file is touched.
+test('actual desktop main limits IPC, acknowledges native events, keeps notifications after window close and opens only scoped read links', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'moor-desktop-main-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const projectDirectory = await mkdtemp(join(tmpdir(), 'moor-desktop-project-'));
+  t.after(() => rm(projectDirectory, { recursive: true, force: true }));
+  await writeFile(
+    join(directory, 'settings.json'),
+    JSON.stringify({ server: '', name: 'Synthetic desktop', projects: [], agents: [] }),
+    { mode: 0o600 },
+  );
+  const localRequire = createPackageRequire(resolve('apps/desktop/src/main/main.cjs'));
+  const handlers = new Map<string, (...args: any[]) => any>(),
+    windows: any[] = [],
+    children: any[] = [],
+    notices: any[] = [],
+    partitions = new Map<string, any>();
+  const nativeTimers = new Map<number, () => void>();
+  const cookieWrites: { url: string; value: string }[] = [];
+  const openedExternal: string[] = [];
+  const clientPreparation = gate(),
+    clientCreated = gate();
+  let menu: any[] = [];
+  let clientLoaded: ((window: any) => void) | undefined;
+  let timerId = 0;
+  const paths = new Map([
+    ['userData', directory],
+    ['appData', directory],
+    ['downloads', directory],
+  ]);
+  const application = Object.assign(new EventEmitter(), {
+    setName() {},
+    setPath: (key: string, value: string) => paths.set(key, value),
+    getPath: (key: string) => paths.get(key),
+    requestSingleInstanceLock: () => true,
+    whenReady: () => Promise.resolve(),
+    quit() {},
+  });
+  class Window extends EventEmitter {
+    destroyed = false;
+    private contents: any;
+    get webContents() {
+      // Electron throws when the BrowserWindow getter is accessed after destruction,
+      // including from its own `closed` callback.
+      if (this.destroyed) throw new Error('Object has been destroyed');
+      return this.contents;
+    }
+    urls: string[] = [];
+    constructor(readonly options: any) {
+      super();
+      this.contents = Object.assign(new EventEmitter(), {
+        mainFrame: { url: 'about:blank', origin: 'null' },
+        isDestroyed: () => this.destroyed,
+        setWindowOpenHandler: (fn: unknown) => {
+          this.webContents.openHandler = fn;
+        },
+        stop() {},
+        session: options.webPreferences.session,
+        messages: [] as unknown[],
+        send(channel: string, value: unknown) {
+          this.messages.push({ channel, value });
+        },
+      });
+      windows.push(this);
+      if (options.webPreferences.preload.endsWith('secure-preload.cjs')) clientCreated.enter();
+    }
+    isDestroyed() {
+      return this.destroyed;
+    }
+    loadURL(url: string) {
+      this.webContents.emit('did-start-navigation', {}, url, false, true);
+      this.urls.push(url);
+      this.webContents.mainFrame = {
+        url,
+        origin: url === CLIENT_URL ? CLIENT_ORIGIN : new URL(url).origin,
+      };
+      if (url === CLIENT_URL) clientLoaded?.(this);
+      return Promise.resolve();
+    }
+    loadFile(path: string) {
+      return this.loadURL(pathToFileURL(path).href);
+    }
+    show() {}
+    focus() {}
+    close() {
+      this.destroyed = true;
+      this.emit('closed');
+    }
+    static getFocusedWindow() {
+      return windows.at(-1);
+    }
+  }
+  let nativeStarted: (() => void) | undefined;
+  class NativeNotification extends EventEmitter {
+    static isSupported() {
+      return true;
+    }
+    constructor(readonly options: any) {
+      super();
+      notices.push(this);
+      nativeStarted?.();
+    }
+    show() {}
+    close() {
+      this.emit('close');
+    }
+  }
+  let dialogResult: any = { canceled: true };
+  let directoryGate: ReturnType<typeof gate> | undefined,
+    directoryResult = directory;
+  const electron = {
+    protocol: {
+      registerSchemesAsPrivileged: (values: any[]) => {
+        assert.equal(values.length, 1);
+        assert.equal(values[0].scheme, 'moor-client');
+        assert.equal(values[0].privileges.bypassCSP, false);
+        assert.equal(values[0].privileges.allowServiceWorkers, false);
+      },
+    },
+    app: application,
+    nativeTheme: { themeSource: 'system' },
+    BrowserWindow: Window,
+    Notification: NativeNotification,
+    shell: { openExternal: async (url: string) => void openedExternal.push(url) },
+    ipcMain: { handle: (name: string, fn: any) => handlers.set(name, fn) },
+    dialog: {
+      showSaveDialog: async () => dialogResult,
+      showOpenDialog: async () => {
+        const waiting = directoryGate;
+        directoryGate = undefined;
+        if (waiting) {
+          waiting.enter();
+          await waiting.waiting;
+        }
+        return { canceled: !waiting, filePaths: [directoryResult] };
+      },
+      showMessageBox: async () => ({ response: 0 }),
+    },
+    Menu: {
+      setApplicationMenu(value: any) {
+        menu = value;
+      },
+      buildFromTemplate: (value: any) => value,
+    },
+    session: {
+      fromPartition: (name: string) => {
+        if (!partitions.has(name))
+          partitions.set(
+            name,
+            Object.assign(new EventEmitter(), {
+              cookies: {
+                set: async (value: { url: string; value: string }) => {
+                  cookieWrites.push({ url: value.url, value: value.value });
+                },
+              },
+              setPermissionRequestHandler(this: any, fn: any) {
+                this.requestPermission = fn;
+              },
+              setPermissionCheckHandler(this: any, fn: any) {
+                this.checkPermission = fn;
+              },
+            }),
+          );
+        return partitions.get(name);
+      },
+    },
+  };
+  class Recovery {
+    constructor(readonly options: any) {}
+    start() {
+      this.options.launch();
+    }
+    stop() {}
+    ready() {}
+  }
+  const spawn = (_command: string, args: string[]) => {
+    const child = Object.assign(new EventEmitter(), {
+      stderr: new EventEmitter(),
+      connected: true,
+      exitCode: 0,
+      signalCode: null,
+      sent: [] as any[],
+      args: [...args],
+      send(value: any) {
+        this.sent.push(value);
+      },
+      kill() {},
+    });
+    children.push(child);
+    return child;
+  };
+  const fakeProcess = Object.assign(new EventEmitter(), {
+    env: { MOOR_DESKTOP_DATA_DIR: directory },
+    execPath: '/synthetic/electron',
+    connected: true,
+  });
+  const context = {
+    __dirname: resolve('apps/desktop/src/main'),
+    process: fakeProcess,
+    Buffer,
+    URL,
+    structuredClone,
+    setTimeout: (fn: () => void) => {
+      nativeTimers.set(++timerId, fn);
+      return timerId;
+    },
+    clearTimeout: (id: number) => nativeTimers.delete(id),
+    require: (name: string) => {
+      if (name === 'electron') return electron;
+      if (name === 'node:child_process') return { spawn };
+      if (name === './recovery.cjs') return { ProcessRecovery: Recovery };
+      if (name === './client-window.cjs')
+        return {
+          ...localRequire(name),
+          // Asset integrity has dedicated tests. Hold only the asynchronous Electron
+          // session setup here, while using the production window constructor.
+          prepareClientSession: async (clientSession: any) => {
+            clientSession.setPermissionRequestHandler(
+              (_: unknown, __: unknown, callback: (allowed: boolean) => void) => callback(false),
+            );
+            clientSession.setPermissionCheckHandler(() => false);
+            clientSession.on('will-download', (event: { preventDefault(): void }) =>
+              event.preventDefault(),
+            );
+            await clientPreparation.waiting;
+          },
+        };
+      if (name === './page-loader.cjs')
+        return {
+          loadPage: (window: any, url: string) => window.loadURL(url),
+        };
+      if (name === './notifications.cjs') {
+        const original = localRequire(name);
+        return {
+          ...original,
+          DesktopNotifications: class extends original.DesktopNotifications {
+            constructor(options: any) {
+              super({ ...options, schedule: context.setTimeout, cancel: context.clearTimeout });
+            }
+          },
+        };
+      }
+      return localRequire(name);
+    },
+  };
+  runInNewContext(await readFile(resolve('apps/desktop/src/main/main.cjs'), 'utf8'), context);
+  await Promise.resolve();
+  assert.deepEqual(
+    Array.from(menu[0].submenu)
+      .filter((item: any) => item.label)
+      .map((item: any) => item.label),
+    ['打开 Moor', '连接设置…'],
+  );
+  menu[0].submenu.find((item: any) => item.label === '连接设置…').click();
+  clientPreparation.release();
+  await clientCreated.entered;
+  const settingsWindow = windows[0],
+    settingsEvent = () => ({
+      sender: settingsWindow.webContents,
+      senderFrame: settingsWindow.webContents.mainFrame,
+    });
+  const invoke = (name: string, value?: unknown, event = settingsEvent()) =>
+    handlers.get(name)!(event, value);
+  for (const event of [
+    { sender: {}, senderFrame: settingsWindow.webContents.mainFrame },
+    {
+      sender: settingsWindow.webContents,
+      senderFrame: { ...settingsWindow.webContents.mainFrame },
+    },
+  ])
+    for (const method of [
+      'personal:appearance',
+      'personal:skills-config',
+      'personal:agent-config',
+      'personal:mcp-config',
+    ])
+      assert.throws(() => invoke(method, { action: 'read' }, event), /无效的本机设置请求/);
+  await t.test(
+    'saving only the reviewed computer name preserves the running desktop host',
+    async () => {
+      const reading = invoke('personal:device-metadata', { action: 'read' });
+      const request = children[0].sent.at(-1);
+      children[0].emit('message', {
+        type: 'device-metadata-result',
+        requestId: request.requestId,
+        ok: true,
+        state: {
+          metadata: { version: 1, name: 'Synthetic desktop', revision: 1 },
+          sync: 'unpaired',
+        },
+      });
+      assert.equal((await reading).metadata.revision, 1);
+      const count = children.length;
+      const saving = invoke('personal:save', {
+        server: '',
+        name: 'Renamed desktop',
+        nameRevision: 1,
+        projects: [],
+        agents: [],
+        code: '',
+      });
+      const rename = children[0].sent.at(-1);
+      assert.equal(rename.type, 'device-metadata');
+      assert.equal(rename.action.name, 'Renamed desktop');
+      children[0].emit('message', {
+        type: 'device-metadata-result',
+        requestId: rename.requestId,
+        ok: true,
+        state: { metadata: { version: 1, name: 'Renamed desktop', revision: 2 }, sync: 'pending' },
+      });
+      assert.equal((await saving).deviceMetadata.metadata.revision, 2);
+      assert.equal(children.length, count, 'name-only save cannot restart execution');
+      assert.equal(
+        JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).name,
+        'Renamed desktop',
+      );
+      await assert.rejects(
+        invoke('personal:device-metadata', { action: 'read' }, { sender: {}, senderFrame: {} }),
+        /无效的本机设置请求/,
+      );
+    },
+  );
+  assert.equal(handlers.has('personal:preview-config'), false);
+  assert.equal(invoke('personal:appearance'), 'system');
+  assert.equal(invoke('personal:appearance', 'dark'), 'dark');
+  assert.equal((await invoke('personal:settings')).appearance, 'dark');
+  assert.throws(() => invoke('personal:appearance', 'blue'), /外观/);
+  const skillsReading = invoke('personal:skills-config', { action: 'read' });
+  const skillsRequest = children[0].sent.at(-1);
+  assert.equal(skillsRequest.type, 'skills-config');
+  children[0].emit('message', {
+    type: 'skills-config-result',
+    requestId: skillsRequest.requestId,
+    ok: true,
+    state: { revision: 0, sources: [], privateMetadata: 'not-public' },
+  });
+  const skillsState = await skillsReading;
+  assert.equal(skillsState.revision, 0);
+  assert.equal('privateMetadata' in skillsState, false);
+  const agentReading = invoke('personal:agent-config', { action: 'read' });
+  const agentRequest = children[0].sent.at(-1);
+  assert.equal(agentRequest.type, 'agent-config');
+  children[0].emit('message', {
+    type: 'agent-config-result',
+    requestId: agentRequest.requestId,
+    ok: true,
+    state: { revision: 0, presets: [], privateMetadata: 'not-public' },
+  });
+  assert.deepEqual(await agentReading, { revision: 0, presets: [] });
+  await invoke('personal:open-codex-install');
+  assert.deepEqual(openedExternal, ['https://learn.chatgpt.com/docs/codex/cli']);
+  await assert.rejects(
+    invoke('personal:open-codex-install', undefined, {
+      sender: {},
+      senderFrame: settingsWindow.webContents.mainFrame,
+    }),
+    /无效的本机设置请求/,
+  );
+  const mcpReading = invoke('personal:mcp-config', { action: 'read' });
+  const mcpRequest = children[0].sent.at(-1);
+  assert.equal(mcpRequest.type, 'mcp-config');
+  children[0].emit('message', {
+    type: 'mcp-config-result',
+    requestId: mcpRequest.requestId,
+    ok: true,
+    state: { revision: 0, projects: [], presets: [], privateMetadata: 'not-public' },
+  });
+  assert.deepEqual(await mcpReading, { revision: 0, projects: [], presets: [] });
+  assert.equal(await invoke('personal:mcp-executable'), null);
+  const mcpPickerGate = gate();
+  directoryGate = mcpPickerGate;
+  const mcpExecutable = invoke('personal:mcp-executable');
+  const staleMcpExecutable = assert.rejects(mcpExecutable, /无效的本机设置请求/);
+  await mcpPickerGate.entered;
+  const mcpFrame = settingsWindow.webContents.mainFrame;
+  settingsWindow.webContents.mainFrame = { ...mcpFrame };
+  mcpPickerGate.release();
+  await staleMcpExecutable;
+  settingsWindow.webContents.mainFrame = mcpFrame;
+  assert.equal(await invoke('personal:agent-executable'), null);
+  const executableGate = gate();
+  directoryGate = executableGate;
+  const executable = invoke('personal:agent-executable');
+  const staleExecutable = assert.rejects(executable, /无效的本机设置请求/);
+  await executableGate.entered;
+  const executableFrame = settingsWindow.webContents.mainFrame;
+  settingsWindow.webContents.mainFrame = { ...executableFrame };
+  executableGate.release();
+  await staleExecutable;
+  settingsWindow.webContents.mainFrame = executableFrame;
+  assert.equal(await invoke('personal:skills-directory'), null);
+  const choosingGate = gate();
+  directoryGate = choosingGate;
+  const choosing = invoke('personal:skills-directory');
+  const staleChoice = assert.rejects(choosing, /无效的本机设置请求/);
+  await choosingGate.entered;
+  const originalSettingsFrame = settingsWindow.webContents.mainFrame;
+  settingsWindow.webContents.mainFrame = { ...originalSettingsFrame };
+  choosingGate.release();
+  await staleChoice;
+  settingsWindow.webContents.mainFrame = originalSettingsFrame;
+  await t.test(
+    'project picker discards its path when the settings frame changes while open',
+    async () => {
+      assert.equal(await invoke('personal:project'), null);
+      const choosing = gate();
+      directoryGate = choosing;
+      const result = invoke('personal:project');
+      const stale = assert.rejects(result, /无效的本机设置请求/);
+      await choosing.entered;
+      const frame = settingsWindow.webContents.mainFrame;
+      settingsWindow.webContents.mainFrame = { ...frame };
+      choosing.release();
+      await stale;
+      settingsWindow.webContents.mainFrame = frame;
+    },
+  );
+  assert.throws(
+    () =>
+      invoke(
+        'personal:github-config',
+        { action: 'read' },
+        { sender: {}, senderFrame: settingsWindow.webContents.mainFrame },
+      ),
+    /无效的本机设置请求/,
+  );
+  assert.throws(
+    () =>
+      invoke(
+        'personal:github-config',
+        { action: 'read' },
+        {
+          sender: settingsWindow.webContents,
+          senderFrame: { ...settingsWindow.webContents.mainFrame },
+        },
+      ),
+    /无效的本机设置请求/,
+  );
+  assert.equal((await invoke('personal:settings')).notifications.enabled, false);
+  assert.equal(notices.length, 0);
+  const event = {
+    notificationVersion: 1,
+    userId: 'user',
+    machineId: 'machine',
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    sessionId: 'session',
+    turnId: 'turn',
+    kind: 'completed',
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 100000,
+    eventId: '',
+  };
+  event.eventId =
+    'notification_' +
+    createHash('sha256')
+      .update(notificationIdentity(event as any))
+      .digest('hex');
+  const emitMessage = async (child: any, value: any) => {
+    for (const listener of child.listeners('message')) await listener(value);
+  };
+  await emitMessage(children[0], { type: 'cli-unavailable', message: 'SYNTHETIC_PRIVATE_PATH' });
+  const cliHealth = await invoke('personal:health');
+  assert.equal(cliHealth.cli.state, 'unavailable');
+  assert.match(cliHealth.cli.message, /私有配置目录/);
+  assert.doesNotMatch(JSON.stringify(cliHealth), /SYNTHETIC_PRIVATE_PATH/);
+  await emitMessage(children[0], {
+    type: 'local-ready',
+    origin: 'http://127.0.0.1:4521',
+    secret: 'synthetic-secret',
+  });
+  await emitMessage(children[0], {
+    type: 'health',
+    local: 'ready',
+    relay: 'unavailable',
+    workspaces: 1,
+  });
+  const sharedHealth = await invoke('personal:health');
+  assert.equal(sharedHealth.local.state, 'ready');
+  assert.equal(sharedHealth.relay.state, 'unavailable');
+  assert.match(sharedHealth.relay.message, /本机任务可以继续/);
+  const localWindow = windows.at(-1),
+    localEvent = () => ({
+      sender: localWindow.webContents,
+      senderFrame: localWindow.webContents.mainFrame,
+    });
+  assert.match(localWindow.options.webPreferences.preload, /secure-preload\.cjs$/);
+  assert.equal(localWindow.options.webPreferences.sandbox, true);
+  assert.equal(localWindow.options.webPreferences.nodeIntegration, false);
+  assert.throws(
+    () =>
+      invoke(
+        'personal:notification-settings',
+        { enabled: true, completed: true, failed: true, approvals: true },
+        localEvent(),
+      ),
+    /无效的本机设置请求/,
+  );
+  await emitMessage(children[0], { type: 'notification', event });
+  assert.equal(children[0].sent.at(-1).status, 'ignored');
+  assert.equal(notices.length, 0);
+  // Run real settings.js and its actual preload bridge. Permission/native display
+  // happens only after the user-facing enable button is clicked.
+  const dom = new JSDOM(
+    await readFile(resolve('apps/desktop/src/settings/settings.html'), 'utf8'),
+    {
+      runScripts: 'outside-only',
+      url: pathToFileURL(resolve('apps/desktop/src/settings/settings.html')).href,
+    },
+  );
+  const exposed = new Map<string, any>();
+  runInNewContext(await readFile(resolve('apps/desktop/src/preload/preload.cjs'), 'utf8'), {
+    require: () => ({
+      contextBridge: { exposeInMainWorld: (key: string, value: any) => exposed.set(key, value) },
+      ipcRenderer: {
+        on() {},
+        removeListener() {},
+        invoke: (name: string, value: unknown) => Promise.resolve(invoke(name, value)),
+      },
+    }),
+  });
+  Object.assign(dom.window, {
+    personal: exposed.get('personal'),
+    setInterval: () => 1,
+    clearInterval() {},
+  });
+  dom.window.eval(await readFile(resolve('apps/desktop/src/settings/settings.js'), 'utf8'));
+  await Promise.resolve();
+  await Promise.resolve();
+  const initialNameRead = children[0].sent.findLast(
+    (message: any) => message.type === 'device-metadata',
+  );
+  children[0].emit('message', {
+    type: 'device-metadata-result',
+    requestId: initialNameRead.requestId,
+    ok: true,
+    state: { metadata: { version: 1, name: 'Renamed desktop', revision: 2 }, sync: 'unpaired' },
+  });
+  await Promise.resolve();
+  assert.equal(notices.length, 0);
+  const enable = dom.window.document.querySelector<HTMLButtonElement>('#notifications-enable')!;
+  const started = new Promise<void>((resolve) => {
+    nativeStarted = resolve;
+  });
+  const enabling = (enable.onclick as any)(new dom.window.MouseEvent('click'));
+  await Promise.race([
+    started,
+    enabling.then(() => {
+      assert.fail(dom.window.document.querySelector('#notifications-status')!.textContent!);
+    }),
+  ]);
+  assert.equal(notices.length, 1);
+  notices[0].emit('failed', 'Synthetic OS denial');
+  await enabling;
+  assert.match(
+    dom.window.document.querySelector('#notifications-status')!.textContent!,
+    /系统未确认/,
+  );
+  assert.equal((await invoke('personal:settings')).notifications.enabled, true);
+  const next = { ...event, turnId: 'next-turn', eventId: '' };
+  next.eventId =
+    'notification_' +
+    createHash('sha256')
+      .update(notificationIdentity(next as any))
+      .digest('hex');
+  await t.test(
+    'closing a content window never reads its destroyed BrowserWindow properties',
+    () => {
+      assert.doesNotThrow(() => localWindow.close());
+      assert.throws(() => localWindow.webContents, /Object has been destroyed/);
+    },
+  );
+  const sending = emitMessage(children[0], { type: 'notification', event: next });
+  assert.equal(notices.length, 2);
+  assert.equal(
+    children[0].sent.filter((message: any) => message.type === 'notification-ack').length,
+    1,
+  );
+  notices[1].emit('show');
+  await sending;
+  assert.equal(children[0].sent.at(-1).status, 'shown');
+  const opening = new Promise<any>((resolve) => {
+    clientLoaded = resolve;
+  });
+  notices[1].emit('click');
+  const reopened = await opening,
+    url = new URL(reopened.urls.at(-1));
+  assert.equal(url.href, CLIENT_URL);
+  const mainEvent = () => ({
+    sender: reopened.webContents,
+    senderFrame: reopened.webContents.mainFrame,
+  });
+  assert.deepEqual(invoke('moor:workspace-context', undefined, mainEvent()).notification, next);
+  assert.throws(() => invoke('moor:workspace-context', {}, mainEvent()), /当前 Moor 主窗口/);
+  assert.throws(
+    () =>
+      invoke('moor:workspace-context', undefined, {
+        ...mainEvent(),
+        senderFrame: { ...reopened.webContents.mainFrame },
+      }),
+    /当前 Moor 主窗口/,
+  );
+  const openCount = windows.length;
+  for (const mode of ['local', 'remote', 'secure']) await invoke('personal:open', mode);
+  assert.equal(windows.length, openCount);
+  assert.equal(invoke('moor:open-settings', undefined, mainEvent()).opened, true);
+  assert.equal(url.searchParams.has('approve'), false);
+  for (const partition of partitions.values()) {
+    let allowed = true;
+    partition.requestPermission({}, 'notifications', (value: boolean) => (allowed = value));
+    assert.equal(allowed, false);
+    assert.equal(partition.checkPermission(), false);
+    let prevented = false;
+    partition.emit('will-download', { preventDefault: () => (prevented = true) });
+    assert.equal(prevented, true);
+  }
+  const webBridge = new Map<string, any>();
+  runInNewContext(await readFile(resolve('apps/desktop/src/preload/web-preload.cjs'), 'utf8'), {
+    require: () => ({
+      contextBridge: { exposeInMainWorld: (key: string, value: any) => webBridge.set(key, value) },
+      ipcRenderer: {
+        on() {},
+        removeListener() {},
+        invoke: (name: string, value: unknown) =>
+          Promise.resolve(
+            invoke(name, value, {
+              sender: reopened.webContents,
+              senderFrame: reopened.webContents.mainFrame,
+            }),
+          ),
+      },
+    }),
+  });
+  assert.deepEqual(Object.keys(webBridge.get('moorDesktop')).sort(), [
+    'cancelAttachmentSave',
+    'googleAuth',
+    'saveAttachment',
+    'version',
+  ]);
+  assert.equal(webBridge.has('personal'), false);
+  assert.equal(webBridge.has('moorSecure'), false);
+  for (const senderFrame of [
+    reopened.webContents.mainFrame,
+    { ...reopened.webContents.mainFrame },
+  ]) {
+    const secure = await invoke(
+      'moor:secure-client',
+      { action: 'connect' },
+      {
+        sender: reopened.webContents,
+        senderFrame,
+      },
+    );
+    assert.equal(secure.ok, false);
+    assert.equal(secure.error.rejected, false);
+    assert.equal(secure.error.code, 'unavailable');
+  }
+  await t.test(
+    'Google handoff IPC rejects local content and unregistered sender frames',
+    async () => {
+      await assert.rejects(
+        webBridge.get('moorDesktop').googleAuth.begin({ mode: 'login' }),
+        /Google/,
+      );
+      for (const action of ['begin', 'complete', 'cancel']) {
+        await assert.rejects(
+          invoke('moor:google-auth-' + action, action === 'begin' ? { mode: 'login' } : undefined, {
+            sender: reopened.webContents,
+            senderFrame: { ...reopened.webContents.mainFrame },
+          }),
+          /Google/,
+        );
+      }
+    },
+  );
+  const bytes = Buffer.from('Synthetic native save');
+  const value = {
+    scope: {
+      owner: 'owner',
+      deviceId: 'device',
+      workspaceId: 'workspace',
+      localProjectId: 'project',
+      sessionId: 'session',
+    },
+    reference: {
+      contentVersion: 1,
+      attachmentId: 'attachment',
+      name: 'output.txt',
+      content: {
+        version: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+        byteLength: bytes.length,
+        mediaType: 'text/plain',
+      },
+    },
+    data: bytes.toString('base64'),
+  };
+  assert.deepEqual(await webBridge.get('moorDesktop').saveAttachment(value), {
+    status: 'cancelled',
+  });
+  dialogResult = { canceled: false, filePath: join(directory, 'synthetic-output.txt') };
+  assert.deepEqual(await webBridge.get('moorDesktop').saveAttachment(value), { status: 'saved' });
+  assert.deepEqual(await readFile(dialogResult.filePath), bytes);
+  await assert.rejects(
+    invoke('moor:save-attachment', value, {
+      sender: reopened.webContents,
+      senderFrame: { ...reopened.webContents.mainFrame },
+    }),
+    /保存来源/,
+  );
+  await t.test(
+    'actual settings form saves a project with no builtin Agents and does not add one',
+    async () => {
+      assert.deepEqual(Array.from((await invoke('personal:settings')).agents), []);
+      const choosing = gate();
+      directoryGate = choosing;
+      directoryResult = projectDirectory;
+      const add = dom.window.document.querySelector<HTMLButtonElement>('#add')!;
+      const adding = (add.onclick as any)(new dom.window.MouseEvent('click'));
+      await choosing.entered;
+      choosing.release();
+      await adding;
+      assert.equal(
+        dom.window.document.querySelector('#projects')!.textContent,
+        projectDirectory + '移除',
+      );
+      const form = dom.window.document.querySelector<HTMLFormElement>('#settings')!;
+      await (form.onsubmit as any)(new dom.window.Event('submit', { cancelable: true }));
+      assert.match(dom.window.document.querySelector('#status')!.textContent!, /设置已保存/);
+      const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
+      assert.deepEqual(saved.projects, [projectDirectory]);
+      assert.deepEqual(saved.agents, []);
+      assert.equal(children.at(-1).args.includes('--builtin-agent'), false);
+      assert.equal(children.at(-1).args.includes(projectDirectory), true);
+      for (const agents of [
+        null,
+        'codex',
+        ['claude'],
+        ['custom'],
+        ['codex', '/synthetic/program'],
+      ]) {
+        await assert.rejects(invoke('personal:save', { ...saved, agents, code: '' }), /Agent/);
+      }
+    },
+  );
+  await t.test(
+    'main window adds a native folder without replacing the execution host and rejects stale pickers',
+    async () => {
+      const canonicalProject = await realpath(projectDirectory);
+      const child = children.at(-1),
+        count = children.length;
+      const identity = {
+        owner: 'local-desktop',
+        deviceId: 'local-device',
+        userId: 'local-user',
+        machineId: 'local-machine',
+        workspaceId: 'local-workspace',
+      };
+      await emitMessage(child, {
+        type: 'local-ready',
+        origin: 'http://127.0.0.1:4530',
+        secret: 'a'.repeat(43),
+        identity,
+      });
+      const event = () => ({
+        sender: reopened.webContents,
+        senderFrame: reopened.webContents.mainFrame,
+      });
+      const canceled = await invoke('moor:add-project', undefined, event());
+      assert.equal(canceled.canceled, true);
+      const choosing = gate(),
+        submitted = gate();
+      directoryGate = choosing;
+      directoryResult = projectDirectory;
+      const send = child.send;
+      child.send = function (value: any) {
+        send.call(this, value);
+        if (value.type === 'register-project') submitted.enter();
+      };
+      const adding = invoke('moor:add-project', undefined, event());
+      await choosing.entered;
+      await assert.rejects(invoke('moor:add-project', undefined, event()), /正在选择/);
+      choosing.release();
+      await submitted.entered;
+      const request = child.sent.at(-1);
+      assert.equal(request.action.path, canonicalProject);
+      assert.deepEqual(request.action.identity, {
+        workspaceId: identity.workspaceId,
+        userId: identity.userId,
+        machineId: identity.machineId,
+      });
+      const projectId =
+        'project_' + createHash('sha256').update(canonicalProject).digest('hex').slice(0, 24);
+      await emitMessage(child, {
+        type: 'register-project-result',
+        requestId: request.requestId,
+        ok: true,
+        state: { identity: request.action.identity, path: canonicalProject, projectId },
+      });
+      const added = await adding;
+      assert.equal(added.projectId, projectId);
+      assert.equal(added.settingsSaved, true);
+      assert.equal(children.length, count);
+      assert.deepEqual(
+        JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).projects,
+        [projectDirectory],
+      );
+      const stale = gate();
+      directoryGate = stale;
+      const obsolete = invoke('moor:add-project', undefined, event());
+      await stale.entered;
+      const rejection = assert.rejects(obsolete, /已变化/);
+      reopened.webContents.mainFrame = { ...reopened.webContents.mainFrame };
+      stale.release();
+      await rejection;
+      assert.equal(child.sent.filter((value: any) => value.type === 'register-project').length, 1);
+      child.send = send;
+    },
+  );
+  // A replaced child cannot deliver events or receive acknowledgements.
+  const previousCount = notices.length,
+    ackCount = children[0].sent.length;
+  await emitMessage(children[0], { type: 'notification', event: { ...next, turnId: 'wrong' } });
+  assert.equal(notices.length, previousCount);
+  assert.equal(children[0].sent.length, ackCount);
+  // Restart invalidates pending settings requests without recreating retired browser partitions.
+  const skillsBeforeRestart = invoke('personal:skills-config', { action: 'read' });
+  const skillsRestartRejection = assert.rejects(skillsBeforeRestart, /已重启/);
+  const mcpBeforeRestart = invoke('personal:mcp-config', { action: 'read' });
+  const mcpRestartRejection = assert.rejects(mcpBeforeRestart, /已重启/);
+  await invoke('personal:recover');
+  await skillsRestartRejection;
+  await mcpRestartRejection;
+  await emitMessage(children.at(-1), {
+    type: 'local-ready',
+    origin: 'http://127.0.0.1:4532',
+    secret: 's'.repeat(43),
+  });
+  assert.deepEqual(cookieWrites, []);
+  assert.equal(partitions.has('persist:personal-local'), false);
+  assert.equal(partitions.has('persist:personal-remote'), false);
+  assert.equal(handlers.has('moor:legacy-cache'), false);
+  assert.equal(reopened.urls.at(-1), CLIENT_URL);
+  assert.equal(
+    windows.filter(
+      (window) =>
+        !window.isDestroyed() &&
+        window.options.webPreferences.preload.endsWith('secure-preload.cjs'),
+    ).length,
+    1,
+  );
+  dom.window.close();
+  application.emit('before-quit');
+  assert.equal(nativeTimers.size, 0);
+});

@@ -463,10 +463,10 @@ corepack pnpm exec tsx --test tests/acp.test.ts
 
 建议按以下顺序阅读代码：
 
-1. [合成 Agent](../scripts/synthetic-agent.mjs)：先看最小 JSON-RPC 分发器怎样处理 `initialize`、`session/new`、`session/prompt`、权限响应和取消。
-2. [ACP 专项测试](../tests/acp.test.ts)：看 Client 侧怎样收集 updates、回应权限并恢复会话。
-3. [Moor ACP 适配层](../src/runtime/acp.ts)：再看生产代码怎样启动子进程、协商能力、绑定活动回合、过滤私有信息、处理超时和关闭进程。
-4. [AgentDriver 边界](../src/runtime/agent.ts)：最后看 ACP 如何被收敛成 Moor 内部的 `open`、`prompt`、`cancel` 与回调接口。
+1. [合成 Agent](../scripts/validation/synthetic-agent.mjs)：先看最小 JSON-RPC 分发器怎样处理 `initialize`、`session/new`、`session/prompt`、权限响应和取消。
+2. [ACP 专项测试](../tests/integration/acp.test.ts)：看 Client 侧怎样收集 updates、回应权限并恢复会话。
+3. [Moor ACP 适配层](../packages/host/src/agents/acp/driver.ts)：再看生产代码怎样启动子进程、协商能力、绑定活动回合、过滤私有信息、处理超时和关闭进程。
+4. [AgentDriver 边界](../packages/host/src/agents/driver.ts)：最后看 ACP 如何被收敛成 Moor 内部的 `open`、`prompt`、`cancel` 与回调接口。
 
 第一次阅读 `synthetic-agent.mjs` 时，可以只追踪四个编号：
 

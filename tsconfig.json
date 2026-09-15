@@ -1,17 +1,8 @@
 {
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2023",
-    "jsx": "react-jsx",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "strict": true,
-    "skipLibCheck": true,
     "noEmit": true,
-    "esModuleInterop": true,
-    "allowImportingTsExtensions": true,
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node"],
-    "allowJs": true
+    "allowImportingTsExtensions": true
   },
-  "include": ["src", "tests"]
+  "include": ["tests", "apps/*/src/**/*.d.ts"]
 }

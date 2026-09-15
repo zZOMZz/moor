@@ -1,6 +1,6 @@
 # macOS 签名与公证
 
-日常 `pnpm package:mac` 继续生成 ad-hoc 签名的开发预览包。正式分发流程由 `scripts/mac-release.mjs` 单独执行：先检查明确指定的 `Moor.app`，再复制到一个不存在的新输出目录，逐层签名、验证、提交公证并装订票据。源程序包保留原样，失败时保留工作副本与最小步骤报告。
+日常 `pnpm package:mac` 继续生成 ad-hoc 签名的开发预览包。正式分发流程由 `scripts/release/mac-release.mjs` 单独执行：先检查明确指定的 `Moor.app`，再复制到一个不存在的新输出目录，逐层签名、验证、提交公证并装订票据。源程序包保留原样，失败时保留工作副本与最小步骤报告。
 
 工具准备完成不代表某个包已经取得 Developer ID 签名或通过公证。真实身份、凭据、目标系统与 Agent 兼容性由发布操作者验收；没有这些证据时继续标为开发预览版。
 
@@ -15,7 +15,7 @@ pnpm build
 pnpm format:check
 pnpm package:mac
 
-node scripts/mac-release.mjs plan \
+node scripts/release/mac-release.mjs plan \
   --app /absolute/release/macos-arm64/Moor.app \
   --output /absolute/release/notarized-candidate \
   --identity 'Developer ID Application: YOUR NAME (YOURTEAMID)' \
@@ -40,7 +40,7 @@ node scripts/mac-release.mjs plan \
 
 `release-report.json` 只记录步骤、源摘要、公证状态和最终归档摘要，通过同目录独占临时文件、文件同步、原子替换和目录同步保存；写入失败不会截断上次完整记录。凭据、命令输出、任务正文与原始服务器诊断不会被写入报告。只有全部步骤通过才报告 `complete`；不能把中间的 `submission.zip` 或目录存在当作正式分发成功。
 
-权限模板位于 `scripts/mac-entitlements/`。Electron 仅使用应用运行所需的 JIT 权限；普通 Mach-O 使用空模板，库不附加应用权限。Codex CLI runtime 位于 Moor 应用包之外，不会被复制、重签名或继承 Moor 权限。模板不会从输入应用的任意签名自动继承。Codex 的权限需求和 Apple 审核仍须用实际版本验证，不能因合成命令通过就宣称可正常启动模型。
+权限模板位于 `scripts/release/mac-entitlements/`。Electron 仅使用应用运行所需的 JIT 权限；普通 Mach-O 使用空模板，库不附加应用权限。Codex CLI runtime 位于 Moor 应用包之外，不会被复制、重签名或继承 Moor 权限。模板不会从输入应用的任意签名自动继承。Codex 的权限需求和 Apple 审核仍须用实际版本验证，不能因合成命令通过就宣称可正常启动模型。
 
 ## 失败与人工验收
 

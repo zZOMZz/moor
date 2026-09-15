@@ -98,4 +98,4 @@ JSON
 - 合成测试覆盖私有 CLI/IPC、默认停用与显式检查、固定版本和旧会话恢复、角色目录版本竞争、未知操作封存，以及真实 React/app 的草稿事务、晚响应、原编号重试和项目隔离。测试不使用真实 Agent 账户或模型。
 - 本批不据此宣称完成真实 Codex、第三方 ACP 程序、双 Mac、iPhone/Safari/PWA 或最终安装包验收。完整真机安排仍见[设备验收](validation.md)，不能用合成测试替代。
 
-实现入口：[Agent 本机配置](../src/runtime/agent-settings.ts)、[固定版本存储](../src/runtime/session-agent.ts)、[角色协议](../src/role-protocol.ts)、[角色主机](../src/runtime/session-roles.ts)、[Web 角色](../src/web/roles.ts)、[草稿事务](../src/web/cache.ts)。返回[文档目录](README.md)。
+实现入口：[Agent 本机配置](../packages/host/src/agents/settings.ts)、[固定版本存储](../packages/host/src/sessions/agent.ts)、[角色协议](../packages/protocol/src/role-protocol.ts)、[角色主机](../packages/host/src/sessions/roles.ts)、[Web 角色](../apps/web/src/features/roles/roles.ts)、[草稿事务](../apps/web/src/platform/cache.ts)。返回[文档目录](README.md)。

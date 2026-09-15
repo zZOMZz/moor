@@ -81,7 +81,7 @@ M0.2 只修复复现出的故障和缺少的恢复入口，保留已经通过验
 
 **第一轮完整真机测试放在 M0 实现基线与 M1 完成后，优先在 M2 开始前进行。** 第二轮在 M2/M3 的可交付流程完成后分别验收附件、通知和 Agent 能力。休眠、退出、签名、PWA 后台等系统相关改动完成时提前做专项检查；无需等完整里程碑。设备暂不可用时可继续协议与合成验证，但相关能力保持待真机验收状态。
 
-主要入口：[恢复控制](../src/desktop/recovery.cjs)、[页面加载](../src/desktop/page-loader.cjs)、[ACP](../src/runtime/acp.ts)、[主机](../src/bridge/host-workspace.ts)、[运行与恢复](runtime.md)、[部署说明](../deploy/README.md)。
+主要入口：[恢复控制](../apps/desktop/src/main/recovery.cjs)、[页面加载](../apps/desktop/src/main/page-loader.cjs)、[ACP](../packages/host/src/agents/acp/driver.ts)、[主机](../packages/host/src/sessions/workspace.ts)、[运行与恢复](runtime.md)、[部署说明](../deploy/README.md)。
 
 ## M1：管理日常会话
 
@@ -98,7 +98,7 @@ M0.2 只修复复现出的故障和缺少的恢复入口，保留已经通过验
 
 主机被移到另一产品工作区时，手动重试可以使用重新验证的工作区/副本路由，但必须先确认账号、设备、执行工作区、本地项目和会话身份均未改变。原操作内容、预期版本和 operationId 保持不变；组织归属调整不能把待确认操作转交另一执行目标。合成测试覆盖待确认请求跨刷新恢复、归属隔离、版本竞争与原编号重试。
 
-主要入口：[元数据模型](../src/model.ts)、[操作校验](../src/bridge/validate-mutation.ts)、[主机](../src/bridge/host-workspace.ts)、[HTTP](../src/relay/http.ts)、[导航](../src/web/navigation.ts)、[界面](../src/web/ui.tsx)。
+主要入口：[元数据模型](../packages/session/src/model.ts)、[操作校验](../packages/host/src/commands/validate-mutation.ts)、[主机](../packages/host/src/sessions/workspace.ts)、[HTTP](../packages/gateway/src/http.ts)、[导航](../apps/web/src/features/sessions/navigation.ts)、[界面](../apps/web/src/components/ui.tsx)。
 
 ## M2：提交材料、检查结果
 
@@ -124,7 +124,7 @@ M2.2 支持只发送附件的首条指令；未确认上传阻止依赖它的指
 
 M2.4 使用执行主机自己的 SQLite 索引，在用户手动搜索时刷新有范围的已保存内容；消息、工具输出和冻结 diff 可作为结果来源。项目范围只包含当前执行电脑的同一项目，不自动扩展到其他电脑副本。离线查询只读取当前浏览器缓存，并显示缓存覆盖数量和不完整提示；在线请求失败不自动换成旧缓存。索引重建不执行 Agent，也不读取当前目录补造历史。查询语义和限制见[正文搜索](search.md)；四项检查及合成页面定位验证通过，设备专项验收仍待完成。
 
-主要入口：[会话格式](../src/session-schema.ts)、[Agent 接口](../src/runtime/agent.ts)、[持久化](../src/runtime/store.ts)、[主机](../src/bridge/host-workspace.ts)、[内容展示](../src/web/content.ts)、[浏览器缓存](../src/web/cache.ts)。
+主要入口：[会话格式](../packages/session/src/session-schema.ts)、[Agent 接口](../packages/host/src/agents/driver.ts)、[持久化](../packages/host/src/persistence/store.ts)、[主机](../packages/host/src/sessions/workspace.ts)、[内容展示](../apps/web/src/components/content.ts)、[浏览器缓存](../apps/web/src/platform/cache.ts)。
 
 ## M3：完善 Agent 交互
 
@@ -141,7 +141,7 @@ M2.4 使用执行主机自己的 SQLite 索引，在用户手动搜索时刷新�
 
 当前每轮结束会关闭 Agent 进程。保持后台任务、定时唤醒或 Goals 需要另行设计进程驻留与恢复语义，放入 M6；不得因增加事件展示而默认延长执行生命周期。
 
-主要入口：[能力发现](../src/runtime/capabilities.ts)、[运行设置](../src/run-config.ts)、[Agent 接口](../src/runtime/agent.ts)、[ACP](../src/runtime/acp.ts)、[主机](../src/bridge/host-workspace.ts)。
+主要入口：[能力发现](../packages/host/src/agents/capabilities.ts)、[运行设置](../packages/protocol/src/run-config.ts)、[Agent 接口](../packages/host/src/agents/driver.ts)、[ACP](../packages/host/src/agents/acp/driver.ts)、[主机](../packages/host/src/sessions/workspace.ts)。
 
 ## M4：完成编码工作流
 

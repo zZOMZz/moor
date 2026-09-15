@@ -42,6 +42,6 @@
 
 Mac/iPhone 的输入、结果定位、大列表反馈以及真实网络下的离线恢复，仍须按照[设备验收](validation.md#后续阶段的专项验收)核对。合成数据和桌面窄视口不能替代真实设备验收。
 
-实现入口：[请求与结果协议](../src/search-protocol.ts)、[内容投影](../src/session-search-document.ts)、[主机刷新与授权](../src/bridge/host-search.ts)、[SQLite 索引](../src/runtime/session-search.ts)、[离线与在线查询](../src/web/session-search.ts)。
+实现入口：[请求与结果协议](../packages/protocol/src/search-protocol.ts)、[内容投影](../packages/session/src/session-search-document.ts)、[主机刷新与授权](../packages/host/src/sessions/search.ts)、[SQLite 索引](../packages/host/src/sessions/search-index.ts)、[离线与在线查询](../apps/web/src/features/sessions/session-search.ts)。
 
 返回[项目文件与历史变更](file-changes.md) · [文件与内容协议](content.md) · [文档目录](README.md)。

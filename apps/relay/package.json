@@ -1,0 +1,33 @@
+{
+  "name": "@moor/app-relay",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/main.ts",
+      "import": "./dist/main.js"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "import": "./dist/*.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build/build-package.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @moor/app-relay... run build && node ../../scripts/validation/test.mjs apps/relay"
+  },
+  "dependencies": {
+    "@moor/e2ee": "workspace:*",
+    "@moor/gateway": "workspace:*",
+    "@moor/protocol": "workspace:*",
+    "jose": "6.2.12",
+    "web-push": "3.6.7",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

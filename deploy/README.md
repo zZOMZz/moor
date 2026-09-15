@@ -80,7 +80,7 @@ docker compose -p moor --env-file deploy/.env -f deploy/compose.yaml exec relay 
 Web Push 默认未配置；桌面本机通知不依赖此配置。需要远端浏览器或 PWA 通知时，在私有配置目录生成一次 VAPID 密钥，使用真实的操作者联系地址替换示例：
 
 ```sh
-node scripts/create-web-push-keys.mjs --output .data/web-push.env --subject mailto:operator@example.com
+node scripts/release/create-web-push-keys.mjs --output .data/web-push.env --subject mailto:operator@example.com
 docker compose -p moor --env-file deploy/.env --env-file .data/web-push.env -f deploy/compose.yaml up -d --build
 ```
 

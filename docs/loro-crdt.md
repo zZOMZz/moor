@@ -4,7 +4,7 @@ CRDT 解决多个副本怎样合并修改；Loro 把这些规则实现成可读�
 
 本文适合了解 JavaScript/TypeScript、准备学习 CRDT 的读者。如果此前没有接触过分布式数据同步，建议先读[分布式数据同步入门](distributed-sync.md)，了解常见问题和主要方案。本文再从 CRDT 原理进入可运行实验，最后沿 Moor 的源码理解一次真实发送。
 
-核对日期：2026-09-14。示例对应仓库锁定的 `loro-crdt 1.15.1`、`loro-mirror 2.3.1`、`@loro-dev/flock-wasm 0.4.3`，会话格式为 Moor v1，见 [package.json](../package.json) 和 [session-schema.ts](../src/session-schema.ts)。上游在线文档可能包含较新接口；本文实验使用这些已安装版本验证。
+核对日期：2026-09-14。示例对应仓库锁定的 `loro-crdt 1.15.1`、`loro-mirror 2.3.1`、`@loro-dev/flock-wasm 0.4.3`，会话格式为 Moor v1，见 [package.json](../package.json) 和 [session-schema.ts](../packages/session/src/session-schema.ts)。上游在线文档可能包含较新接口；本文实验使用这些已安装版本验证。
 
 阅读路线：
 
@@ -180,7 +180,7 @@ Frontiers 往往较短，但不是固定只有一个元素；理解它覆盖的�
 
 普通 `toJSON()` 结果与 Loro 专用的 JSON 操作导出格式也不同。把可见 JSON 装进一个新文档，会生成新的操作身份，不能据此恢复原来的同步关系。
 
-完整快照并不是“自动清除历史”的压缩包。Loro 另有 shallow snapshot，可截断较老历史，但会限制与更早版本或并发旧历史的同步。Moor 当前 `RuntimeStore.persist()` 使用完整快照。编码语义见 [Export Mode](https://www.loro.dev/docs/tutorial/encoding)，实际保存入口见 [store.ts](../src/runtime/store.ts)。
+完整快照并不是“自动清除历史”的压缩包。Loro 另有 shallow snapshot，可截断较老历史，但会限制与更早版本或并发旧历史的同步。Moor 当前 `RuntimeStore.persist()` 使用完整快照。编码语义见 [Export Mode](https://www.loro.dev/docs/tutorial/encoding)，实际保存入口见 [store.ts](../packages/host/src/persistence/store.ts)。
 
 还有一个重要区别：把主机快照导入已有客户端文档，通常不能消除客户端独有、已被主机拒绝的操作。需要恢复到纯主机状态时，应在新文档实例加载可信数据，并由业务层处理待确认请求与草稿。
 
@@ -196,7 +196,7 @@ SQLite COMMIT     → Moor 数据库事务成功
 主机送达回执      → 对特定原请求的持久接受确认
 ```
 
-只有第一步完成时，数据可能仍只在内存中。数据库提交也不能让外部 Agent 调用或文件修改自动变成同一个事务。Loro 的操作提交机制见 [Operations and Changes](https://www.loro.dev/docs/concepts/operations_changes)；Moor 的事务与送达行为由 [RuntimeStore](../src/runtime/store.ts) 和 [HostWorkspace](../src/bridge/host-workspace.ts) 实现。
+只有第一步完成时，数据可能仍只在内存中。数据库提交也不能让外部 Agent 调用或文件修改自动变成同一个事务。Loro 的操作提交机制见 [Operations and Changes](https://www.loro.dev/docs/concepts/operations_changes)；Moor 的事务与送达行为由 [RuntimeStore](../packages/host/src/persistence/store.ts) 和 [HostWorkspace](../packages/host/src/sessions/workspace.ts) 实现。
 
 ### 5.3 收到更新，不一定已经应用完
 
@@ -342,11 +342,11 @@ JS
 
 ### 7.1 三个库的职责
 
-| 组件   | 在 Moor 中负责什么                       | 阅读入口                                                             |
-| ------ | ---------------------------------------- | -------------------------------------------------------------------- |
-| Loro   | 正文容器、操作历史、版本与增量           | [model.ts](../src/model.ts)                                          |
-| Mirror | 将 Loro 容器映射成可按 schema 读写的对象 | [session-schema.ts](../src/session-schema.ts)                        |
-| Flock  | 按键保存会话元数据与独立的本机注册数据   | [model.ts](../src/model.ts)、[RuntimeStore](../src/runtime/store.ts) |
+| 组件   | 在 Moor 中负责什么                       | 阅读入口                                                                                                |
+| ------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Loro   | 正文容器、操作历史、版本与增量           | [model.ts](../packages/session/src/model.ts)                                                            |
+| Mirror | 将 Loro 容器映射成可按 schema 读写的对象 | [session-schema.ts](../packages/session/src/session-schema.ts)                                          |
+| Flock  | 按键保存会话元数据与独立的本机注册数据   | [model.ts](../packages/session/src/model.ts)、[RuntimeStore](../packages/host/src/persistence/store.ts) |
 
 Mirror 的 `view.getState()` 提供对象视图，`view.setState()` 将对象修改转为底层容器操作。它的 schema 决定读写映射，不提供账号授权、跨项目隔离或“是否允许执行”的判断。见 [Loro Mirror 官方说明](https://github.com/loro-dev/loro-mirror/blob/main/packages/core/README.md)。
 
@@ -381,7 +381,7 @@ history 中的回合 → LoroMap
 其中的 text     → 普通 string
 ```
 
-因此，业务代码可以整项替换内容，但不能据此断言底层所有嵌套字段都是原子值；同时，普通 `text` 字段也不会自动获得 `LoroText` 的字符合并能力。阅读时以实际容器和锁定版本行为为准。相关推导可在已安装包的 `loro-mirror/src/schema/types.ts` 中核对；产品合法性仍由 [validate-mutation.ts](../src/bridge/validate-mutation.ts) 判断。
+因此，业务代码可以整项替换内容，但不能据此断言底层所有嵌套字段都是原子值；同时，普通 `text` 字段也不会自动获得 `LoroText` 的字符合并能力。阅读时以实际容器和锁定版本行为为准。相关推导可在已安装包的 `loro-mirror/src/schema/types.ts` 中核对；产品合法性仍由 [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts) 判断。
 
 ### 7.3 持久历史与活动进程分开
 
@@ -422,7 +422,7 @@ sequenceDiagram
 
 图中省略了具体传输层。客户端收到回执与 Agent 实际开始运行的时间先后可能受异步调度和网络影响；必须满足的是先持久接受，再允许执行副作用。
 
-在 [buildSessionTurn](../src/session-client.ts) 中，关键步骤是先从主机读取结果建立新文档，然后保存 `before = vv(doc)`，通过 Mirror 追加输入，最后导出 `delta(doc, before)`。同时，它为 Flock 保存单独的基线并导出 `metaBundle`。
+在 [buildSessionTurn](../packages/session/src/session-operations.ts) 中，关键步骤是先从主机读取结果建立新文档，然后保存 `before = vv(doc)`，通过 Mirror 追加输入，最后导出 `delta(doc, before)`。同时，它为 Flock 保存单独的基线并导出 `metaBundle`。
 
 Mutation 是业务请求封套，主要字段包括：
 
@@ -435,11 +435,11 @@ Mutation 是业务请求封套，主要字段包括：
 | `update`                   | 本次候选 Loro 操作是什么？             |
 | `metaBundle`               | 是否包含允许的 Flock 元数据变化？      |
 
-这不是完整鉴权封套。账号、设备、项目等上下文还由传输入口和主机范围校验绑定，不能因为 Mutation 没列出全部身份，就省掉这些检查。入口见 [host-command.ts](../src/bridge/host-command.ts)。
+这不是完整鉴权封套。账号、设备、项目等上下文还由传输入口和主机范围校验绑定，不能因为 Mutation 没列出全部身份，就省掉这些检查。入口见 [host-command.ts](../packages/host/src/commands/host-command.ts)。
 
 ### 8.3 为什么主机不能直接 import 到正式文档
 
-客户端能生成可解码的 CRDT 操作，也能生成不符合业务要求的操作。主机在 [validateMutation](../src/bridge/validate-mutation.ts) 中复制原文档和 Flock，在隔离副本导入，比较修改前后的业务状态。
+客户端能生成可解码的 CRDT 操作，也能生成不符合业务要求的操作。主机在 [validateMutation](../packages/host/src/commands/validate-mutation.ts) 中复制原文档和 Flock，在隔离副本导入，比较修改前后的业务状态。
 
 普通发送要求只追加一个用户回合，原历史保持不变，并核对执行目标、内容、Agent 配置和状态。审批只允许改变指定请求的合法决定，并由 HostWorkspace 核对仍存在的活动请求。通过后才持久接受这份候选结果。Mirror 忽略未知属性的映射选项不能当成安全保证。
 
@@ -465,7 +465,7 @@ Mutation 是业务请求封套，主要字段包括：
 
 两台设备都基于 U1 构造新指令。主机按会话串行接受：第一条合法请求改变最近用户回合并建立活动回合，第二条随后因旧上下文或已有活动任务被拒绝。客户端需要刷新并让用户决定下一步。
 
-文档列表可以合并两个条目，与此刻是否应该执行两条指令，是不同的约束。验证见 [host.test.ts](../tests/host.test.ts) 中的 `concurrent and offline turns never start a second prompt`。
+文档列表可以合并两个条目，与此刻是否应该执行两条指令，是不同的约束。验证见 [host.test.ts](../tests/integration/host.test.ts) 中的 `concurrent and offline turns never start a second prompt`。
 
 ### 9.3 已接受，但回执丢失
 
@@ -493,15 +493,15 @@ CRDT 库可以支持离线编辑，但 Moor 的未发送草稿不会因为恢复
 
 按下面顺序阅读，每读一处回答一个问题：
 
-| 顺序 | 源码                                                                                | 要回答的问题                                 |
-| ---- | ----------------------------------------------------------------------------------- | -------------------------------------------- |
-| 1    | [session-schema.ts](../src/session-schema.ts)                                       | 哪些字段是明确容器，哪些由运行时推导？       |
-| 2    | [model.ts](../src/model.ts)                                                         | `vv`、`delta` 和 Flock 的版本为什么分开？    |
-| 3    | [session-client.ts](../src/session-client.ts)                                       | 编辑前版本在哪里保存，原请求怎样构造？       |
-| 4    | [validate-mutation.ts](../src/bridge/validate-mutation.ts)                          | 主机如何证明候选变更符合允许的业务范围？     |
-| 5    | [host-workspace.ts](../src/bridge/host-workspace.ts)                                | 去重、串行、活动审批和派发分别发生在哪里？   |
-| 6    | [runtime/store.ts](../src/runtime/store.ts)、[journal.ts](../src/bridge/journal.ts) | 快照、元数据、原请求凭据如何一起持久化？     |
-| 7    | [host.test.ts](../tests/host.test.ts)                                               | 并发、回执丢失和持久化失败怎样被确定性复现？ |
+| 顺序 | 源码                                                                                                                     | 要回答的问题                                 |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)                                                           | 哪些字段是明确容器，哪些由运行时推导？       |
+| 2    | [model.ts](../packages/session/src/model.ts)                                                                             | `vv`、`delta` 和 Flock 的版本为什么分开？    |
+| 3    | [session-client.ts](../packages/session/src/session-operations.ts)                                                       | 编辑前版本在哪里保存，原请求怎样构造？       |
+| 4    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                               | 主机如何证明候选变更符合允许的业务范围？     |
+| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                          | 去重、串行、活动审批和派发分别发生在哪里？   |
+| 6    | [runtime/store.ts](../packages/host/src/persistence/store.ts)、[journal.ts](../packages/host/src/persistence/journal.ts) | 快照、元数据、原请求凭据如何一起持久化？     |
+| 7    | [host.test.ts](../tests/integration/host.test.ts)                                                                        | 并发、回执丢失和持久化失败怎样被确定性复现？ |
 
 在仓库根目录运行已有的合成测试：
 

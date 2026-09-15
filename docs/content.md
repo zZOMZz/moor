@@ -85,7 +85,7 @@ Mac 客户端通过独立的附件保存接口再次校验范围、大小和摘�
 
 附件读取缓存按完整执行身份、附件 ID 和摘要隔离。离线时只有曾在当前浏览器读取并保存的版本可用，界面标明“离线缓存”；未缓存的文件明确不可用。在线读取失败不会把旧缓存当作当前主机确认。上传草稿和读取缓存分别管理，浏览器缓存不构成主机数据备份。
 
-实现入口：[内容协议](../src/content-protocol.ts)、[附件协议](../src/attachment-protocol.ts)、[文件读取](../src/runtime/project-files.ts)、[主机范围校验](../src/bridge/host-workspace.ts)、[中转](../src/relay/http.ts)、[版本缓存](../src/web/file-content.ts)、[附件草稿与读取](../src/web/attachments.ts)、[ACP 附件输入](../src/runtime/attachment-input.ts)、[Agent 生成附件](../src/runtime/agent-attachments.ts)。
+实现入口：[内容协议](../packages/protocol/src/content-protocol.ts)、[附件协议](../packages/protocol/src/attachment-protocol.ts)、[文件读取](../packages/host/src/projects/files.ts)、[主机范围校验](../packages/host/src/sessions/workspace.ts)、[中转](../packages/gateway/src/http.ts)、[版本缓存](../apps/web/src/features/files/file-content.ts)、[附件草稿与读取](../apps/web/src/features/attachments/attachments.ts)、[ACP 附件输入](../packages/host/src/sessions/attachment-input.ts)、[Agent 生成附件](../packages/host/src/agents/attachments.ts)。
 
 合成测试覆盖协议边界、事务与去重、容量限制、输入能力、原请求手动重试、切换目标、缓存完整性及生成附件。真实 app 与 React/jsdom 测试验证文件选择、图片粘贴、空文本附件指令和刷新恢复；实际 Moor 主机与合成 ACP 的浏览器检查验证生成文件卡片及文本预览，不代表完成了真实浏览器文件选择、iPhone 或真实 Agent 验收。设备与网络文件系统行为仍需按[设备验收](validation.md)验证。
 

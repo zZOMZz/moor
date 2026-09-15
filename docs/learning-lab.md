@@ -22,7 +22,7 @@ corepack pnpm install --frozen-lockfile
 
 **先预测：** `delivered: true` 返回时，应该已经保存哪些数据？Agent 是否一定已经完成？同一原请求再次到达会发生什么？
 
-阅读 [host.test.ts](../tests/host.test.ts) 的 `fixture`、`request` 和测试 `delivery commits document, metadata and receipt atomically before Agent prompt`，再运行：
+阅读 [host.test.ts](../tests/integration/host.test.ts) 的 `fixture`、`request` 和测试 `delivery commits document, metadata and receipt atomically before Agent prompt`，再运行：
 
 ```sh
 corepack pnpm exec tsx --test --test-name-pattern='delivery commits document' tests/host.test.ts
@@ -30,7 +30,7 @@ corepack pnpm exec tsx --test --test-name-pattern='delivery commits document' te
 
 **观察点：** 回执 `delivered=true`；已保存历史包含用户与助手两个条目；Journal 中 phase 为 `accepted`；确定性 `started` 信号之后派发计数为 1；再提交相同请求，返回原结果且计数仍为 1。
 
-**解释：** 送达确认主机持久接受。它不要求 Agent 已完成，更不证明输出正确。沿 [HostWorkspace](../src/bridge/host-workspace.ts) 找到事务后的 `this.execute`，将测试断言与实现顺序对应起来。
+**解释：** 送达确认主机持久接受。它不要求 Agent 已完成，更不证明输出正确。沿 [HostWorkspace](../packages/host/src/sessions/workspace.ts) 找到事务后的 `this.execute`，将测试断言与实现顺序对应起来。
 
 **完成产出：** 自己画一条时间线，明确标出持久接受、开始执行、正常结束三个时刻。
 
@@ -46,7 +46,7 @@ corepack pnpm exec tsx --test --test-name-pattern='failed persistence rolls back
 
 测试在自己的合成 SQLite 上创建 `fail_snapshot` 触发器，让保存操作确定性失败。不要把触发器复制到真实主机数据库。
 
-**观察点：** Mutation 被拒绝，Journal 没有该编号，会话元数据不存在，派发计数为 0。阅读 [RuntimeStore.transaction](../src/runtime/store.ts) 的 `BEGIN IMMEDIATE/COMMIT/ROLLBACK` 和主机异常路径，解释数据库回滚与内存元数据恢复。
+**观察点：** Mutation 被拒绝，Journal 没有该编号，会话元数据不存在，派发计数为 0。阅读 [RuntimeStore.transaction](../packages/host/src/persistence/store.ts) 的 `BEGIN IMMEDIATE/COMMIT/ROLLBACK` 和主机异常路径，解释数据库回滚与内存元数据恢复。
 
 **解释：** 事务失败不能留下“收到送达凭据但没有会话”的局部结果，也不能派发 Agent。若把执行放在事务前，数据库失败时已经发生的文件修改无法由 SQLite 撤回。
 
@@ -66,7 +66,7 @@ corepack pnpm exec tsx --test --test-name-pattern='concurrent and offline turns|
 
 **解释：** 文档可合并与操作可执行是两个判断。主机按会话串行，校验最近用户回合及活动状态。查询旧凭据不提供绕过身份与项目范围的通道。
 
-继续看[目录测试](../tests/catalog.test.ts)，找出同名项目与副本归组的行为；需要实际运行时使用：
+继续看[目录测试](../tests/integration/catalog.test.ts)，找出同名项目与副本归组的行为；需要实际运行时使用：
 
 ```sh
 corepack pnpm exec tsx --test tests/catalog.test.ts
@@ -116,7 +116,7 @@ corepack pnpm exec tsx --test --test-name-pattern='restart retains receipt' test
 corepack pnpm exec tsx --test tests/acp.test.ts tests/runtime.test.ts
 ```
 
-阅读 [synthetic-agent.mjs](../scripts/synthetic-agent.mjs)、[acp.test.ts](../tests/acp.test.ts) 和 [runtime.test.ts](../tests/runtime.test.ts)。后者使用真实 ACP driver，与合成 stdio Agent 跑两轮会话，中间关闭并重开主机存储。
+阅读 [synthetic-agent.mjs](../scripts/validation/synthetic-agent.mjs)、[acp.test.ts](../tests/integration/acp.test.ts) 和 [runtime.test.ts](../tests/integration/runtime.test.ts)。后者使用真实 ACP driver，与合成 stdio Agent 跑两轮会话，中间关闭并重开主机存储。
 
 **观察点：** 原生会话编号保留；审批只交给当前请求；历史长度随两轮输入增长；旧历史回放文本没有混进新回复；主机重开时没有活动执行。
 
@@ -132,7 +132,7 @@ corepack pnpm exec tsx --test tests/acp.test.ts tests/runtime.test.ts
 corepack pnpm exec tsx --test tests/host.test.ts tests/catalog.test.ts tests/acp.test.ts tests/runtime.test.ts
 ```
 
-进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/cli-host.test.ts)；显式加密链路见 [encrypted-cli-host.test.ts](../tests/encrypted-cli-host.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。
+进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/integration/cli-host.test.ts)；显式加密链路见 [encrypted-cli-host.test.ts](../tests/integration/encrypted-cli-host.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。
 
 ## 三、闭卷自测与参考答案
 

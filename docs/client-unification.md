@@ -15,14 +15,14 @@
 
 ## 制定计划时确认的问题
 
-| 问题       | 已确认的现状                                                                                                              | 主要入口                                                                                                     |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 添加项目   | 原生文件夹选择位于连接设置；主界面空状态仅要求选择项目，缺少首次添加路径                                                  | `src/desktop/main.cjs`、`src/desktop/settings.js`、`src/web/ui.tsx`                                          |
-| 模型发现   | 程序发现优先 Codex.app；自动探测主要在无缓存时触发；主机能力缓存按 Agent 配置版本保存；当前模型没有作为明确字段投影给界面 | `src/bridge/local-codex.ts`、`src/runtime/capabilities.ts`、`src/bridge/host-workspace.ts`、`src/web/app.ts` |
-| 消息展示   | 历史事件逐项显示快照；文件变更入口只检查主机能力，没有检查本轮变更数量                                                    | `src/web/interactions.ts`、`src/web/app.ts`、`src/web/secure-app.tsx`                                        |
-| 侧栏       | Logo、工作区、待办、新会话、搜索、筛选及底部状态分别占据空间；没有会话的项目分组不显示                                    | `src/web/ui.tsx`、`src/web/public/style.css`                                                                 |
-| 客户端入口 | 三种窗口、不同存储分区和两套主要页面；加密主机启动模式与桌面模式互斥                                                      | `src/desktop/main.cjs`、`src/desktop/client-window.cjs`、`src/web/entry.ts`、`src/bridge/host-main.ts`       |
-| 电脑名称   | 本机保存设置会重启执行组件；远端名称在配对时写入，后续绑定与目录发布未更新该字段                                          | `src/desktop/main.cjs`、`src/relay/accounts.ts`、`src/relay/catalog.ts`                                      |
+| 问题       | 已确认的现状                                                                                                              | 主要入口                                                                                                                                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 添加项目   | 原生文件夹选择位于连接设置；主界面空状态仅要求选择项目，缺少首次添加路径                                                  | `apps/desktop/src/main/main.cjs`、`apps/desktop/src/settings/settings.js`、`apps/web/src/components/ui.tsx`                                                     |
+| 模型发现   | 程序发现优先 Codex.app；自动探测主要在无缓存时触发；主机能力缓存按 Agent 配置版本保存；当前模型没有作为明确字段投影给界面 | `packages/host/src/agents/acp/local-codex.ts`、`packages/host/src/agents/capabilities.ts`、`packages/host/src/sessions/workspace.ts`、`apps/web/src/app/app.ts` |
+| 消息展示   | 历史事件逐项显示快照；文件变更入口只检查主机能力，没有检查本轮变更数量                                                    | `apps/web/src/features/interactions/interactions.ts`、`apps/web/src/app/app.ts`、`apps/web/src/app/secure-app.tsx`                                              |
+| 侧栏       | Logo、工作区、待办、新会话、搜索、筛选及底部状态分别占据空间；没有会话的项目分组不显示                                    | `apps/web/src/components/ui.tsx`、`apps/web/public/style.css`                                                                                                   |
+| 客户端入口 | 三种窗口、不同存储分区和两套主要页面；加密主机启动模式与桌面模式互斥                                                      | `apps/desktop/src/main/main.cjs`、`apps/desktop/src/main/client-window.cjs`、`apps/web/src/app/entry.ts`、`apps/host/src/main.ts`                               |
+| 电脑名称   | 本机保存设置会重启执行组件；远端名称在配对时写入，后续绑定与目录发布未更新该字段                                          | `apps/desktop/src/main/main.cjs`、`packages/gateway/src/accounts.ts`、`packages/gateway/src/catalog.ts`                                                         |
 
 模型元数据缺失、版本过旧和 ChatGPT 账号不支持模型的错误，还需要通过实际启动来源与版本诊断区分。源码依赖版本不能证明已经安装的 Moor 包或该包启动的 Codex 程序版本；不能仅凭错误消息归因于某个程序。
 
