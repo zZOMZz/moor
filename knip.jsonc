@@ -1,0 +1,53 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+
+  "entry": [
+    // Production entry points. The suffix keeps them in production mode.
+    "src/relay/main.ts!",
+    "src/bridge/host-main.ts!",
+    "src/cli/main.ts!",
+    "src/security/{main,desktop-client}.ts!",
+    "src/desktop/workspace-client.ts!",
+    "src/desktop/{entry,preload,web-preload,secure-preload,preview-renderer}.cjs!",
+    "src/desktop/settings.js!",
+    "src/web/{entry,notification-worker}.ts!",
+    "src/web/public/{startup,sw}.js!",
+    "src/{desktop,web,web/public}/*.css!",
+
+    // Build, release and deterministic validation entry points.
+    "scripts/{build,test,package,deploy-relay,mac-release,create-web-push-keys,synthetic-agent}.mjs",
+    "scripts/check-*.cjs",
+    "scripts/prepare-validation.ts",
+    "tests/**/*.test.ts",
+    "tests/support/synthetic-*.mjs",
+    "tests/support/secure-desktop-host.ts",
+    "tests/support/{secure-layout-fixture,workspace-layout-fixture}.tsx",
+  ],
+
+  "project": [
+    "src/**/*.{ts,tsx,js,cjs,mjs,css}!",
+    "scripts/**/*.{ts,tsx,js,cjs,mjs}",
+    "tests/**/*.{ts,tsx,js,cjs,mjs}",
+  ],
+
+  "includeEntryExports": true,
+
+  // These commands are provided by the operating system, not npm packages.
+  "ignoreBinaries": ["ditto", "mkfifo"],
+
+  // The pinned adapter is resolved at runtime and copied into the packaged app.
+  // Ignore it only in production mode, where development and test references are absent.
+  "ignoreDependencies": ["@agentclientprotocol/codex-acp!"],
+
+  // The desktop runtime path is created during packaging and the web token is
+  // replaced with the hashed browser entry during the build.
+  "ignoreUnresolved": ["./runtime/preview-renderer.cjs", "__ENTRY__"],
+
+  // Keep existing export debt visible without blocking structural refactors.
+  "rules": {
+    "exports": "warn",
+    "types": "warn",
+    "enumMembers": "warn",
+    "namespaceMembers": "warn",
+  },
+}
