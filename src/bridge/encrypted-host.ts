@@ -104,6 +104,8 @@ export async function openSecureHostEndpoint(options: {
 type Channel = {
   connectionId: string;
   active: boolean;
+  // Explicit client retirement, distinct from failed receiver authentication.
+  clientClosed: boolean;
   receiver: Promise<EncryptedHostCommands>;
   channel?: E2eeChannel;
 };
@@ -262,7 +264,12 @@ export class EncryptedHostTransport {
       this.close();
       return fail();
     }
-    const entry: Channel = { connectionId, active: true, receiver: undefined! };
+    const entry: Channel = {
+      connectionId,
+      active: true,
+      clientClosed: false,
+      receiver: undefined!,
+    };
     // Reserve before the first crypto await so parallel records share one receiver.
     this.#channels.set(key, entry);
     this.#clients.set(connectionId, entry);
@@ -296,6 +303,7 @@ export class EncryptedHostTransport {
   }
   async #message(raw: RawData, binary: boolean) {
     let reserved = false;
+    let entry: Channel | undefined;
     const byteLength = Array.isArray(raw)
       ? raw.reduce((total, chunk) => total + chunk.byteLength, 0)
       : raw.byteLength;
@@ -329,13 +337,18 @@ export class EncryptedHostTransport {
       const retired = clientClosedSchema.safeParse(value);
       if (retired.success) {
         const entry = this.#clients.get(retired.data.clientConnectionId);
-        if (entry) this.#retire(entry);
+        if (entry) {
+          entry.clientClosed = true;
+          this.#retire(entry);
+        }
         return;
       }
       const message = incomingRecordSchema.parse(value);
-      const entry = this.#receiver(message.clientConnectionId, message.record);
+      entry = this.#receiver(message.clientConnectionId, message.record);
       const receiver = await entry.receiver;
+      if (entry.clientClosed) return;
       const response = await receiver.execute(message.record);
+      if (entry.clientClosed) return;
       entry.channel!.assertCurrent();
       if (this.#clients.get(message.clientConnectionId) !== entry) fail();
       this.#send({
@@ -345,6 +358,10 @@ export class EncryptedHostTransport {
         record: response,
       });
     } catch {
+      // Work already bound to an explicitly disconnected client may finish or
+      // reject after retirement. Suppress that reply without dropping other
+      // clients. Fresh traffic on its tombstoned route still fails in #receiver.
+      if (entry?.clientClosed) return;
       // Invalid or expired traffic cannot reveal diagnostics. Retiring the whole
       // connection is safe: the host never replays a possibly accepted command.
       this.close();
