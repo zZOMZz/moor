@@ -2,9 +2,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const files = execFileSync('rg', ['--files', '-g', '*.md'], { encoding: 'utf8' })
-  .trim()
-  .split('\n')
+const files = execFileSync(
+  'git',
+  ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '*.md'],
+  { encoding: 'utf8' },
+)
+  .split('\0')
   .filter(Boolean);
 const missing = [];
 for (const file of files) {
