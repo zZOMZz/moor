@@ -22,6 +22,7 @@ const desktopFiles = [
   'main/secure-input.cjs',
   'main/content-authority.cjs',
   'main/client-assets.cjs',
+  'main/client-policy.cjs',
   'main/appearance.cjs',
   'main/preview-renderer.cjs',
   'main/notifications.cjs',
@@ -53,7 +54,7 @@ async function copyRuntime(dest) {
     'preview-renderer.cjs',
   ])
     await cp('dist/' + file, join(dest, file));
-  await cp('dist/public', join(dest, 'public'), { recursive: true });
+  await cp('dist/desktop/runtime/public', join(dest, 'public'), { recursive: true });
   for (const pkg of ['ws', 'loro-crdt']) await copyPackage(pkg, dest);
 }
 async function licenses(dest) {
@@ -129,6 +130,9 @@ if (mode === 'relay') {
     await mkdir(dirname(join(root, file)), { recursive: true });
     await cp(join('apps/desktop/src', file), join(root, file));
   }
+  // Development and release use the same compiled shell and finite preloads.
+  await cp('dist/desktop/main/main.cjs', join(root, 'main/main.cjs'));
+  await cp('dist/desktop/preload', join(root, 'preload'), { recursive: true });
   await cp('apps/web/public/icon-192.png', join(root, 'icon-192.png'));
   await cp('apps/web/public/moor-logo.png', join(root, 'moor-logo.png'));
   await cp('assets/brand/moor.icns', join(resources, 'moor.icns'));

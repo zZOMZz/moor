@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" href="/favicon.ico" />
+    <title>Moor</title>
+  </head>
+  <body>
+    <div id="app">
+      <div class="startup-shell" aria-busy="true" aria-label="Moor">
+        <aside class="startup-sidebar" aria-hidden="true">
+          <div class="startup-brand">
+            <img class="moor-logo" src="/moor-logo.png" alt="Moor" width="96" height="32" />
+          </div>
+          <div class="startup-line"></div>
+          <div class="startup-line short"></div>
+          <div class="startup-line"></div>
+        </aside>
+        <main class="startup-main">
+          <div class="startup-toolbar" aria-hidden="true"></div>
+          <div class="startup-message">
+            <span class="startup-mark" aria-hidden="true">M</span>
+            <p id="startup-status" role="status">正在连接工作区…</p>
+          </div>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="/src/app/desktop-entry.ts"></script>
+  </body>
+</html>

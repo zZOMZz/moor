@@ -3,10 +3,7 @@ import { firstStartupSource } from './bootstrap';
 
 // Fetch identity alongside the UI. Signing in never needs the session WASM runtime.
 export async function start() {
-  if (
-    location.protocol === 'moor-client:' &&
-    (window as unknown as { moorSecure?: { version: number } }).moorSecure?.version === 1
-  ) {
+  if ((window as unknown as { moorSecure?: { version: number } }).moorSecure?.version === 1) {
     if (
       (window as unknown as { moorWorkspace?: { version: number } }).moorWorkspace?.version === 1
     ) {

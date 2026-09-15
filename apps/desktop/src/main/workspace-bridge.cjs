@@ -1,5 +1,5 @@
 const { snapshotSecureInput } = require('./secure-input.cjs');
-const { CLIENT_ORIGIN, isTrustedClientUrl } = require('./client-assets.cjs');
+const { clientDocumentMatches } = require('./client-policy.cjs');
 
 const ERROR = Object.freeze({
   ok: false,
@@ -73,8 +73,7 @@ class DesktopWorkspaceBridge {
         !contents.isDestroyed() &&
         registered.window.webContents === contents &&
         frame === contents.mainFrame &&
-        frame.origin === CLIENT_ORIGIN &&
-        isTrustedClientUrl(frame.url),
+        clientDocumentMatches(registered, frame),
     );
     return { contents, frame, registered };
   }

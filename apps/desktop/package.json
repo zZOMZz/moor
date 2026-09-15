@@ -6,6 +6,7 @@
   "main": "src/entry.cjs",
   "scripts": {
     "build": "node ../../scripts/build/build-package.mjs",
+    "dev": "node ../../scripts/build/dev-desktop.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm --filter @moor/app-desktop... run build && node ../../scripts/validation/test.mjs apps/desktop"
   },

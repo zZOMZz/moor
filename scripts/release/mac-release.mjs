@@ -36,6 +36,7 @@ const desktopFiles = new Set([
   'main/secure-input.cjs',
   'main/content-authority.cjs',
   'main/client-assets.cjs',
+  'main/client-policy.cjs',
   'main/appearance.cjs',
   'main/preview-renderer.cjs',
   'main/notifications.cjs',

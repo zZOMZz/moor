@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('moorWorkspace', {
   },
 });
 
-// This preload belongs only to the packaged trusted client document. The main
+// This preload belongs only to the registered desktop client document. The main
 // process still validates every sender/frame and the closed request schema.
 contextBridge.exposeInMainWorld('moorSecure', {
   version: 1,

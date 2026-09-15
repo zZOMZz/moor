@@ -16,6 +16,7 @@
         "tests/**/*.test.ts",
         "tests/fixtures/synthetic-*.mjs",
         "tests/fixtures/secure-desktop-host.ts",
+        "tests/fixtures/vite-desktop.cjs",
         "tests/fixtures/{secure-layout-fixture,workspace-layout-fixture}.tsx",
       ],
       "project": ["scripts/**/*.{ts,tsx,js,cjs,mjs}", "tests/**/*.{ts,tsx,js,cjs,mjs}"],

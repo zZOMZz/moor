@@ -40,17 +40,25 @@ const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
 const { removeRetiredClientData } = require('./retired-client-data.cjs');
 const { createAppearance } = require('./appearance.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
-const {
-  CLIENT_SCHEME,
-  CLIENT_PRIVILEGES,
-  CLIENT_URL,
-  CLIENT_ORIGIN,
-} = require('./client-assets.cjs');
+const { CLIENT_SCHEME, CLIENT_PRIVILEGES } = require('./client-assets.cjs');
 const {
   CLIENT_PARTITION,
   prepareClientSession,
   createClientWindow,
 } = require('./client-window.cjs');
+const {
+  PACKAGED_CLIENT,
+  developmentClientPolicy,
+  clientDocumentMatches,
+} = require('./client-policy.cjs');
+const clientPolicy =
+  developmentClientPolicy({
+    enabled:
+      typeof __MOOR_DESKTOP_DEVELOPMENT__ !== 'undefined' && __MOOR_DESKTOP_DEVELOPMENT__ === true,
+    isPackaged: app.isPackaged,
+    rendererUrl: process.env.ELECTRON_RENDERER_URL,
+    token: process.env.MOOR_DESKTOP_DEV_TOKEN,
+  }) ?? PACKAGED_CLIENT;
 protocol.registerSchemesAsPrivileged([{ scheme: CLIENT_SCHEME, privileges: CLIENT_PRIVILEGES }]);
 app.setName('Moor');
 const customDataDir = process.env.MOOR_DESKTOP_DATA_DIR ?? process.env.PERSONAL_DESKTOP_DATA_DIR;
@@ -213,7 +221,7 @@ function endpoint(value) {
 }
 function openPage(window, origin) {
   const registered = contentWindows.get(window.webContents);
-  if (registered?.trustedClient !== true || origin !== CLIENT_URL) return;
+  if (registered?.trustedClient !== true || origin !== clientPolicy.url) return;
   loadPage(window, origin, () => {
     void dialog
       .showMessageBox(window, {
@@ -252,7 +260,11 @@ async function showSecure() {
   const origin = settings.server;
   try {
     const clientSession = session.fromPartition(CLIENT_PARTITION);
-    clientPreparation ??= prepareClientSession(clientSession, path.join(contentRoot, 'public'));
+    clientPreparation ??= prepareClientSession(
+      clientSession,
+      path.join(contentRoot, 'public'),
+      clientPolicy,
+    );
     await clientPreparation;
     if (quitting || settings.server !== origin) return;
     if (secureWindow && !secureWindow.isDestroyed()) {
@@ -266,6 +278,7 @@ async function showSecure() {
       origin,
       preloadPath: path.join(appRoot, 'preload/secure-preload.cjs'),
       registry: contentWindows,
+      clientPolicy,
       invalidate: (contents) => {
         workspaceClient.invalidate(contents);
         secureClient.invalidate(contents);
@@ -275,15 +288,21 @@ async function showSecure() {
       },
     });
     secureWindow = window;
+    if (clientPolicy.development)
+      window.webContents.on('did-finish-load', () =>
+        console.log('[desktop] Renderer document ready'),
+      );
     window.on('closed', () => {
       if (secureWindow === window) secureWindow = null;
     });
-    openPage(window, CLIENT_URL);
+    openPage(window, clientPolicy.url);
   } catch {
     void dialog.showMessageBox({
       type: 'error',
       title: 'Moor 工作区未能打开',
-      message: '安装包中的可信客户端资源不可用，请重新安装当前版本。',
+      message: clientPolicy.development
+        ? '开发页面不可用，请检查终端中的 Vite 输出并重新运行 pnpm dev:desktop。'
+        : '安装包中的可信客户端资源不可用，请重新安装当前版本。',
     });
   }
 }
@@ -431,6 +450,8 @@ function startBridge() {
         ['ready', 'unavailable'].includes(message.local) &&
         ['unpaired', 'connected', 'reconnecting', 'unavailable', 'revoked'].includes(message.relay)
       ) {
+        if (clientPolicy.development && message.local === 'ready' && bridgeHealth.local !== 'ready')
+          console.log('[desktop] Execution host ready');
         const catalogChanged =
           bridgeHealth.local !== message.local ||
           bridgeHealth.workspaces !== (Number(message.workspaces) || 0) ||
@@ -530,6 +551,14 @@ function makeRecovery() {
   });
 }
 let hostRecovery = makeRecovery();
+const hostWatcher = clientPolicy.development
+  ? require('./dev-runtime.cjs').watchHostRuntime({
+      directory: appRoot,
+      fs,
+      restart: () => restartBridge(),
+      onError: () => console.error('[desktop] Host reload failed; restart desktop development.'),
+    })
+  : undefined;
 let restartChain = Promise.resolve();
 function restartBridge() {
   const task = restartChain.then(restartBridgeOnce);
@@ -817,8 +846,7 @@ function trustedWorkspaceDocument(event, value) {
     secureWindow.webContents !== event.sender ||
     !event.senderFrame ||
     event.senderFrame !== event.sender.mainFrame ||
-    event.senderFrame.url !== CLIENT_URL ||
-    event.senderFrame.origin !== CLIENT_ORIGIN
+    !clientDocumentMatches(registered, event.senderFrame)
   )
     throw Error('本机设置只能从当前 Moor 主窗口打开。');
 }
@@ -959,6 +987,10 @@ else {
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => app.quit());
   app.on('before-quit', () => {
     quitting = true;
+    // electron-vite starts the replacement immediately after SIGTERM. Release
+    // the application lock before closing windows and stopping the old host.
+    if (clientPolicy.development) app.releaseSingleInstanceLock();
+    hostWatcher?.close();
     nativeNotifications.close();
     githubSettings.close();
     skillsSettings.close();

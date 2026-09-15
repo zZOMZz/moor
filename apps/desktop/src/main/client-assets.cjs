@@ -35,7 +35,7 @@ const fixed = Object.freeze({
   'apple-touch-icon.png': 'image/png',
   'favicon.ico': 'image/x-icon',
 });
-const hashed = /^[A-Za-z0-9_-]{1,100}-[A-Z0-9]{8}\.(js|wasm)$/;
+const hashed = /^[A-Za-z0-9_-]{1,100}-[A-Za-z0-9_-]{8}\.(js|wasm)$/;
 const MAX_FILE = 32 * 1024 * 1024,
   MAX_TOTAL = 96 * 1024 * 1024,
   MAX_FILES = 256,
@@ -152,7 +152,7 @@ async function createClientAssetHandler({
     check(entries.length <= MAX_ENTRIES);
     const names = entries.filter((name) => hashed.test(name)).sort();
     check(names.length > 0 && names.length + Object.keys(fixed).length <= MAX_FILES);
-    check(names.some((name) => /^entry-[A-Z0-9]{8}\.js$/.test(name)));
+    check(names.some((name) => /^entry-[A-Za-z0-9_-]{8}\.js$/.test(name)));
     let total = 0;
     const inventory = [];
     async function directoriesCurrent() {

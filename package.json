@@ -7,13 +7,17 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "pnpm build:workspaces && node scripts/build/build.mjs",
+    "build": "pnpm build:workspaces && node scripts/build/build.mjs && pnpm build:desktop",
     "build:workspaces": "pnpm --filter './packages/*' --filter './apps/*' --if-present run build",
     "start": "node dist/server.mjs",
     "bridge": "node dist/bridge.mjs",
     "cli": "node dist/cli.mjs",
     "security": "node dist/security.mjs",
     "dev": "tsx apps/relay/src/main.ts",
+    "dev:desktop": "node scripts/build/dev-desktop.mjs",
+    "build:desktop": "node scripts/build/build-desktop.mjs",
+    "preview:desktop": "node scripts/build/preview-desktop.mjs",
+    "check:desktop:electron": "node scripts/validation/check-desktop-vite.mjs",
     "deploy:check": "node scripts/release/deploy-relay.mjs check",
     "deploy:relay": "node scripts/release/deploy-relay.mjs deploy",
     "check": "pnpm check:workspaces && tsc --noEmit && pnpm boundaries && pnpm docs:check",
@@ -25,8 +29,8 @@
     "test": "pnpm build:workspaces && node scripts/validation/test.mjs",
     "package:relay": "npm run build && node scripts/release/package.mjs relay",
     "package:mac": "npm run build && node scripts/release/package.mjs mac",
-    "format": "prettier --write apps packages scripts tests deploy docs package.json pnpm-workspace.yaml tsconfig.json tsconfig.base.json knip.jsonc README.md AGENTS.md",
-    "format:check": "prettier --check apps packages scripts tests deploy docs package.json pnpm-workspace.yaml tsconfig.json tsconfig.base.json knip.jsonc README.md AGENTS.md"
+    "format": "prettier --write apps packages scripts tests deploy docs electron.vite.config.mjs package.json pnpm-workspace.yaml tsconfig.json tsconfig.base.json knip.jsonc README.md AGENTS.md",
+    "format:check": "prettier --check apps packages scripts tests deploy docs electron.vite.config.mjs package.json pnpm-workspace.yaml tsconfig.json tsconfig.base.json knip.jsonc README.md AGENTS.md"
   },
   "devDependencies": {
     "@agentclientprotocol/codex-acp": "1.11.0",
@@ -44,6 +48,9 @@
     "@types/react-dom": "19.3.0",
     "@types/ws": "8.18.1",
     "esbuild": "0.25.12",
+    "electron-vite": "5.0.0",
+    "vite": "7.3.6",
+    "@vitejs/plugin-react": "5.2.0",
     "jsdom": "30.0.1",
     "jose": "6.2.12",
     "knip": "6.35.1",

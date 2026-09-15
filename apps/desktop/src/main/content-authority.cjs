@@ -1,4 +1,4 @@
-const { CLIENT_ORIGIN, isTrustedClientUrl } = require('./client-assets.cjs');
+const { clientDocumentMatches } = require('./client-policy.cjs');
 
 // This establishes only a current content document. Callers must separately
 // authorize its business role, configured service, account and operation scope.
@@ -18,7 +18,7 @@ function isCurrentContentDocument(registered, contents, frame) {
     // A packaged local-only window may have no configured relay. Non-empty
     // registrations still require a canonical HTTP service origin below.
     if (registered.trustedClient === true && registered.origin === '')
-      return isTrustedClientUrl(frame.url) && frame.origin === CLIENT_ORIGIN;
+      return clientDocumentMatches(registered, frame);
     const target = new URL(registered.origin);
     if (
       !['https:', 'http:'].includes(target.protocol) ||
@@ -27,8 +27,7 @@ function isCurrentContentDocument(registered, contents, frame) {
       target.password
     )
       return false;
-    if (registered.trustedClient === true)
-      return isTrustedClientUrl(frame.url) && frame.origin === CLIENT_ORIGIN;
+    if (registered.trustedClient === true) return clientDocumentMatches(registered, frame);
     // A custom scheme's Node URL.origin is "null". It is never HTTP authority,
     // and accepting it here would authorize unrelated opaque documents.
     const document = new URL(frame.url);
