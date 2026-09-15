@@ -158,7 +158,7 @@
   "ignoreExportsUsedInFile": true,
 
   // These commands are provided by the operating system, not npm packages.
-  "ignoreBinaries": ["ditto", "mkfifo", "rg"],
+  "ignoreBinaries": ["ditto", "mkfifo"],
 
   // Reject new unused exports and types after the audited cleanup.
   "rules": {
