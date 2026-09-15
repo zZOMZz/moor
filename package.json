@@ -16,11 +16,13 @@
     "deploy:check": "node scripts/deploy-relay.mjs check",
     "deploy:relay": "node scripts/deploy-relay.mjs deploy",
     "check": "tsc --noEmit",
+    "knip": "knip --cache",
+    "knip:production": "knip --production --cache",
     "test": "node scripts/test.mjs",
     "package:relay": "npm run build && node scripts/package.mjs relay",
     "package:mac": "npm run build && node scripts/package.mjs mac",
-    "format": "prettier --write src scripts tests deploy docs package.json tsconfig.json README.md AGENTS.md",
-    "format:check": "prettier --check src scripts tests deploy docs package.json tsconfig.json README.md AGENTS.md"
+    "format": "prettier --write src scripts tests deploy docs package.json tsconfig.json knip.jsonc README.md AGENTS.md",
+    "format:check": "prettier --check src scripts tests deploy docs package.json tsconfig.json knip.jsonc README.md AGENTS.md"
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",
@@ -47,6 +49,7 @@
     "@types/ws": "8.18.1",
     "esbuild": "0.25.12",
     "jsdom": "30.0.1",
+    "knip": "6.35.1",
     "postcss": "8.5.28",
     "prettier": "3.7.4",
     "tailwindcss": "4.3.3",
