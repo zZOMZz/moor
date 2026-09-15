@@ -10,7 +10,6 @@ import {
   encryptedProductTargetSchema,
 } from './encrypted-product-catalog';
 
-export const ENCRYPTED_BRIDGE_PROTOCOL = 4;
 export const ENCRYPTED_BRIDGE_PATHS = Object.freeze({
   host: '/bridge/v4/host',
   client: '/bridge/v4/client',
@@ -106,12 +105,6 @@ export const encryptedBridgeUnavailableSchema = z
     code: z.literal('unavailable'),
   })
   .strict();
-export const encryptedBridgeHostMessageSchema = z.union([
-  encryptedBridgeHostReadySchema,
-  encryptedBridgeHostRecordSchema,
-  encryptedBridgeClientClosedSchema,
-  encryptedBridgeUnavailableSchema,
-]);
 export const encryptedBridgeClientMessageSchema = z.union([
   encryptedBridgeClientReadySchema,
   encryptedBridgeClientRecordSchema,

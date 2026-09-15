@@ -67,7 +67,6 @@ export const trustPublishSchema = z
     ),
   )
   .refine(withinWireLimit);
-export type TrustPublish = z.infer<typeof trustPublishSchema>;
 
 export const trustPublishReceiptSchema = z
   .object({

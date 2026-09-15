@@ -16,14 +16,29 @@ import {
   type AttentionActor,
   type AttentionItem,
 } from '../src/attention';
-import { gitWorkspaceKey } from '../src/web/git-workspace';
+import { gitWorkspaceKey, type GitTarget } from '../src/web/git-workspace';
 import { attachmentDraftKey } from '../src/web/attachments';
 import { MCP_FEATURE } from '../src/mcp-protocol';
-import { mcpKey } from '../src/web/mcp';
 import { SESSION_TASKS_FEATURE } from '../src/task-protocol';
-import { tasksKey } from '../src/web/tasks';
 import { syntheticTaskPlan } from './support/task-plan';
 import { previewAnnotationKey } from '../src/web/project-preview';
+
+// Frozen storage keys for retired HTTP-client records used by this compatibility test.
+const tasksKey = (target: GitTarget) =>
+  gitWorkspaceKey(target).replace('git-workspace-v1/', 'task-draft-v1/');
+const mcpKey = (target: GitTarget) =>
+  'mcp-draft-v1/' +
+  JSON.stringify([
+    target.owner,
+    target.deviceId,
+    target.userId,
+    target.machineId,
+    target.workspaceId,
+    target.catalogWorkspaceId,
+    target.replicaId,
+    target.localProjectId,
+    target.sessionId,
+  ]);
 
 // Exercise the real controller and React UI. Only storage and transport are
 // synthetic; deferred responses reproduce ordering races without elapsed time.

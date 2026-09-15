@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import type { GitTarget } from './git-workspace';
 import { productCanonicalJson as canonical } from '../security/encrypted-product-catalog';
 import { workspaceFeatureTarget } from './workspace-mcp';
@@ -7,9 +6,6 @@ import {
   previewStoredSchema,
   snapshotVersion,
 } from './project-preview';
-
-export type WorkspacePreview = z.infer<typeof previewStoredSchema>;
-export type WorkspaceAnnotations = z.infer<typeof previewAnnotationsStoredSchema>;
 
 export function validateWorkspacePreview(input: unknown, target: GitTarget) {
   const value = previewStoredSchema.parse(input);

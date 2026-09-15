@@ -3,12 +3,10 @@ import {
   ProjectContentController,
   type ProjectContentContext,
   type ProjectContentMethod,
-  type ProjectContentState,
 } from './project-content-controller';
 import { SecureProjectContentCache } from './secure-project-content-cache';
 export type SecureProjectContentContext = ProjectContentContext<SecureCliTarget>;
 export type SecureProjectContentMethod = ProjectContentMethod;
-export type SecureProjectContentState = ProjectContentState<SecureCliTarget>;
 
 export class SecureProjectContentController extends ProjectContentController<SecureCliTarget> {
   constructor(options: {

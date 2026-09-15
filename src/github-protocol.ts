@@ -37,7 +37,6 @@ export const githubUrlSchema = z
 export const githubRepositoryRefSchema = z
   .object({ id: githubNumberSchema, owner: githubOwnerSchema, name: githubRepoNameSchema })
   .strict();
-export type GithubRepositoryRef = z.infer<typeof githubRepositoryRefSchema>;
 export const githubRepositorySchema = githubRepositoryRefSchema
   .extend({ defaultBranch: gitBranchSchema, private: z.boolean(), url: githubUrlSchema })
   .strict();
@@ -120,7 +119,6 @@ export const githubStatusSchema = z
     updatedAt: z.string().datetime(),
   })
   .strict();
-export type GithubStatus = z.infer<typeof githubStatusSchema>;
 export function githubPageSchema<T extends z.ZodTypeAny>(item: T) {
   return z
     .object({

@@ -11,6 +11,7 @@ import { githubStoredSchema } from './github';
 import { githubWriteStoredSchema } from './github-write';
 import { validateWorkspaceGithub, validateWorkspaceGithubWrite } from './workspace-github';
 import { z } from 'zod';
+import { mutationSchema, type Mutation } from '../protocol';
 import {
   desktopWorkspaceSourceSchema,
   desktopWorkspaceTargetSchema,
@@ -33,20 +34,9 @@ import {
 import { attachmentContentSchema } from '../attachment-protocol';
 import { type AttachmentReference } from '../content-protocol';
 import { verifyAttachmentBytes } from './attachments';
-import {
-  mcpStoredSchema,
-  mcpReviewSchema,
-  mcpMutationVersion,
-  type McpSaved,
-  type McpReview,
-} from './mcp';
+import { mcpStoredSchema, mcpReviewSchema, type McpSaved, type McpReview } from './mcp';
 import { validateWorkspaceMcp } from './workspace-mcp';
-import {
-  tasksStoredSchema,
-  taskReviewedSchema,
-  taskMutationVersion,
-  type ReviewedTasks,
-} from './tasks';
+import { tasksStoredSchema, taskReviewedSchema, type ReviewedTasks } from './tasks';
 import { validateWorkspaceTasks } from './workspace-tasks';
 import { rolesStoredSchema, roleAppliedSchema, roleInstruction } from './roles';
 import { roleViewSchema, type RoleView } from '../role-protocol';
@@ -70,6 +60,17 @@ import {
   interactionScope,
   type InteractionSaved,
 } from './interactions';
+async function mutationVersion(mutation: Mutation) {
+  const bytes = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(JSON.stringify(mutationSchema.parse(mutation))),
+  );
+  return (
+    'sha256:' +
+    Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  );
+}
+
 const interactionDocumentSchema = z
   .object({ revision: z.number().int().nonnegative().safe(), value: interactionSavedSchema })
   .strict();
@@ -215,7 +216,7 @@ export class WorkspaceStore {
           operation.original.value.kind !== 'turn' ||
           operation.original.value.sessionId !== sessionId ||
           !same(operation.taskReview ?? null, document.delivery.review) ||
-          (await taskMutationVersion(operation.original.value)) !== document.delivery.requestVersion
+          (await mutationVersion(operation.original.value)) !== document.delivery.requestVersion
         )
           throw Error('任务授权缺少匹配的原指令。');
         current();
@@ -273,7 +274,7 @@ export class WorkspaceStore {
           operation.original.value.kind !== 'turn' ||
           operation.original.value.sessionId !== sessionId ||
           !same(operation.mcpReview ?? null, document.delivery.review) ||
-          (await mcpMutationVersion(operation.original.value)) !== document.delivery.requestVersion
+          (await mutationVersion(operation.original.value)) !== document.delivery.requestVersion
         )
           throw Error('MCP 授权缺少匹配的原指令，请保留本机记录后核对。');
         current();
@@ -402,7 +403,7 @@ export class WorkspaceStore {
     if (mcpReview && (!draft || original.kind !== 'mutation' || original.value.kind !== 'turn'))
       throw Error('MCP 授权只能用于已审阅的新指令。');
     const requestVersion =
-      original.kind === 'mutation' && draft ? await mcpMutationVersion(original.value) : undefined;
+      original.kind === 'mutation' && draft ? await mutationVersion(original.value) : undefined;
     return this.#change(scope, current, (state) => {
       const found = state.operations.find(
         (operation) => operation.original.value.operationId === original.value.operationId,

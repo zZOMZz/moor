@@ -118,8 +118,6 @@ export type RolesReadResult = z.infer<typeof rolesReadResultSchema>;
 export type RoleAction = z.infer<typeof roleActionSchema>;
 export type RoleReceipt = z.infer<typeof roleReceiptSchema>;
 export type RoleAcceptedReceipt = Extract<RoleReceipt, { accepted: true }>;
-export type RolesInspect = z.infer<typeof rolesInspectSchema>;
-export type RolesAbandon = z.infer<typeof rolesAbandonSchema>;
 export type RolesInspectResult = z.infer<typeof rolesInspectResultSchema>;
 export type RolesActionRequest = z.infer<typeof rolesActionRequestSchema>;
 

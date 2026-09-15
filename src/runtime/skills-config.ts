@@ -61,7 +61,6 @@ export const skillsConfigActionSchema = z.discriminatedUnion('action', [
     .strict(),
   z.object({ action: z.literal('source-remove'), expectedRevision: revision, id }).strict(),
 ]);
-export type SkillsConfigAction = z.infer<typeof skillsConfigActionSchema>;
 const sourceSchema = z
   .object({
     id,

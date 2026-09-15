@@ -227,23 +227,3 @@ export const previewReceiptSchema = previewScopeSchema
       (v.phase !== 'closed' || v.closed),
   );
 export type PreviewReceipt = z.infer<typeof previewReceiptSchema>;
-
-/** User-selected page material; only explicit saving puts it into a scoped client draft. */
-export const previewAnnotationSchema = z
-  .object({
-    id,
-    version,
-    service: previewServiceSchema,
-    path: previewPathSchema,
-    title: z.string().max(200),
-    frameId: id,
-    documentId: id,
-    viewport: previewViewportSchema,
-    element: previewElementSchema,
-    note: z.string().trim().min(1).max(PREVIEW_LIMITS.text),
-    capturedAt: z.string().datetime(),
-    image: previewImageSchema.optional(),
-  })
-  .strict()
-  .refine((v) => v.frameId === v.element.frameId);
-export type PreviewAnnotation = z.infer<typeof previewAnnotationSchema>;

@@ -71,7 +71,6 @@ export const previewConfigActionSchema = z.discriminatedUnion('action', [
     })
     .strict(),
 ]);
-export type PreviewConfigAction = z.infer<typeof previewConfigActionSchema>;
 const recordSchema = z
   .object({
     id,

@@ -49,7 +49,6 @@ export const taskPlanSchema = z
     '子任务编号不能重复',
   );
 export type TaskPlan = z.infer<typeof taskPlanSchema>;
-export type TaskSpec = z.infer<typeof taskSpecSchema>;
 export const taskOriginSchema = z
   .object({
     version: z.literal(1),
@@ -63,7 +62,6 @@ export const taskOriginSchema = z
   .strict();
 export type TaskOrigin = z.infer<typeof taskOriginSchema>;
 export const taskScopeSchema = contentScopeSchema.extend({ taskVersion: z.literal(1) }).strict();
-export type TaskScope = z.infer<typeof taskScopeSchema>;
 // Canonical, unpadded base64url encoding of exactly 32 bytes. Keep the shared
 // task protocol independent of the endpoint cryptography implementation.
 const secureDigest = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
@@ -143,7 +141,6 @@ export const taskSlotViewSchema = z
     goalVerified: z.literal(false),
   })
   .strict();
-export type TaskSlotView = z.infer<typeof taskSlotViewSchema>;
 export const taskGrantViewSchema = z
   .object({
     grantId: id,
@@ -174,8 +171,6 @@ export const taskActionResultSchema = taskActionBaseSchema
   })
   .strict()
   .superRefine(checkTaskAction);
-export type TaskReadResult = z.infer<typeof taskReadResultSchema>;
-export type TaskActionResult = z.infer<typeof taskActionResultSchema>;
 function validateGrant(grant: TaskGrantView, sessionId: string) {
   assert(grant.parentSessionId === sessionId, 502, '协作结果不属于原父会话');
   const slots = new Map(grant.plan.tasks.map((task) => [task.taskId, task]));

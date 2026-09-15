@@ -20,7 +20,6 @@ import { AppError, assert, id } from '../protocol';
 import { createGitHubClient } from './github-client';
 
 // This is a local process control contract, never a relay/session document schema.
-export const GITHUB_API_VERSION = '2026-03-10';
 const ownerSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/);
 const repoSchema = z
   .string()
@@ -72,7 +71,6 @@ export const githubConfigActionSchema = z.discriminatedUnion('action', [
     .extend({ action: z.literal('project-writes'), localProjectId: id, enabled: z.boolean() })
     .strict(),
 ]);
-export type GitHubConfigAction = z.infer<typeof githubConfigActionSchema>;
 const identitySchema = z
   .object({ workspaceId: id, machineId: id, userId: z.string().min(1).max(200) })
   .strict();
@@ -549,4 +547,3 @@ export class GitHubConfig {
     this.commit(config, config.revision);
   }
 }
-export type GitHubConfigState = ReturnType<GitHubConfig['read']>;

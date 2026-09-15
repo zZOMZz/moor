@@ -1,10 +1,8 @@
-import { z } from 'zod';
 import type { GitTarget } from './git-workspace';
 import { rolesStoredSchema, roleAppliedSchema } from './roles';
 import { workspaceFeatureTarget } from './workspace-mcp';
 import { productCanonicalJson as canonical } from '../security/encrypted-product-catalog';
 
-export type WorkspaceRoles = z.infer<typeof rolesStoredSchema>;
 export function validateWorkspaceRoles(input: unknown, target: GitTarget) {
   const value = rolesStoredSchema.parse(input);
   if (
