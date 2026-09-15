@@ -17,7 +17,6 @@ import { encryptedCatalogSchema } from '../src/security/encrypted-bridge-protoco
 import type { AgentCallbacks } from '../src/runtime/agent';
 import { PERMISSION_REVIEW_FEATURE } from '../src/permission-review';
 import { SecureAttachments } from '../src/web/secure-attachments';
-import { SecureMcp } from '../src/web/secure-mcp';
 import { SecureGithubController } from '../src/web/secure-github';
 import { secureGitTarget, SecureScopedStorage } from '../src/web/secure-scoped-storage';
 import { SecureRunOptionsStore } from '../src/web/secure-run-options';

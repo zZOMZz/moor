@@ -130,8 +130,6 @@ export const fileDiffReferenceSchema = z
     return true;
   }, '文件基线来源或目标路径重复');
 export type ContentScope = z.infer<typeof contentScopeSchema>;
-export type ContentDescriptor = z.infer<typeof contentDescriptorSchema>;
 export type ProjectFileRead = z.infer<typeof projectFileReadSchema>;
 export type ProjectFileResult = z.infer<typeof projectFileResultSchema>;
 export type AttachmentReference = z.infer<typeof attachmentReferenceSchema>;
-export type FileDiffReference = z.infer<typeof fileDiffReferenceSchema>;

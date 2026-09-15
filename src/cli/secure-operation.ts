@@ -39,7 +39,6 @@ export const secureMcpReviewSchema = z
     if (!mcpServerIdsSchema.safeParse(review.servers.map((server) => server.id)).success)
       context.addIssue({ code: 'custom', message: 'Invalid immutable MCP review' });
   });
-export type SecureMcpReview = z.infer<typeof secureMcpReviewSchema>;
 export const securePreviewReviewSchema = z
   .object({ annotations: z.array(previewAnnotationSchema).min(1).max(PREVIEW_ANNOTATION_LIMIT) })
   .strict()
@@ -54,7 +53,6 @@ export const securePreviewReviewSchema = z
     )
       context.addIssue({ code: 'custom', message: 'Invalid immutable preview annotation review' });
   });
-export type SecurePreviewReview = z.infer<typeof securePreviewReviewSchema>;
 export const secureOperationSchema = z
   .object({
     operationId: id,
@@ -239,7 +237,6 @@ export const secureCatalogOperationSchema = z
       context.addIssue({ code: 'custom', message: 'Invalid original encrypted catalog operation' });
     }
   });
-export type SecureCatalogTarget = z.infer<typeof secureCatalogTargetSchema>;
 export type SecureCatalogOperation = z.infer<typeof secureCatalogOperationSchema>;
 export function secureCatalogOriginal(operation: SecureCatalogOperation) {
   return encryptedProductActionSchema.parse(JSON.parse(operation.body));

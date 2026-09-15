@@ -59,7 +59,10 @@ function sequenceSignal() {
   };
 }
 
-/** Native GUI fixture: production Relay, Host, encrypted transport and private device files. */
+/**
+ * Native GUI fixture: production Relay, Host, encrypted transport and private device files.
+ * @public Bundled to a temporary host-fixture.mjs and dynamically imported by secure-native-client.cjs.
+ */
 export async function createSecureDesktopHost(
   root: string,
   options: {

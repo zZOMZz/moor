@@ -42,7 +42,6 @@ export const mcpReadResultSchema = base
 export type McpRead = z.infer<typeof mcpReadSchema>;
 export type McpReadResult = z.infer<typeof mcpReadResultSchema>;
 export type McpServerView = z.infer<typeof mcpServerViewSchema>;
-export type McpTransport = z.infer<typeof mcpTransportSchema>;
 
 export function validateMcpRead(value: unknown, request: McpRead): McpReadResult {
   const result = mcpReadResultSchema.parse(value);

@@ -1,10 +1,8 @@
-import { z } from 'zod';
 import type { GitTarget } from './git-workspace';
 import { tasksStoredSchema } from './tasks';
 import { taskPlanSchema } from '../task-protocol';
 import { workspaceFeatureTarget } from './workspace-mcp';
 import { productCanonicalJson as canonical } from '../security/encrypted-product-catalog';
-export type WorkspaceTasks = z.infer<typeof tasksStoredSchema>;
 export function validateWorkspaceTasks(input: unknown, target: GitTarget) {
   const value = tasksStoredSchema.parse(input);
   if (

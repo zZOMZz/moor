@@ -39,7 +39,6 @@ export const forkCapabilitiesSchema = z
     turnCutoffReason: reason.optional(),
   })
   .strict();
-export type ForkCapabilities = z.infer<typeof forkCapabilitiesSchema>;
 const scope = contentScopeSchema.extend({ forkVersion: z.literal(1) });
 export const forkOptionsReadSchema = scope.extend({ turnId: id.optional() }).strict();
 export type ForkOptionsRead = z.infer<typeof forkOptionsReadSchema>;

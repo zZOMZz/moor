@@ -72,7 +72,6 @@ export type GithubSessionReview<T> = {
   /** Immutable snapshot of the data actually presented by this render. */
   material: string;
 };
-export type SecureGithubReview = GithubSessionReview<SecureCliTarget>;
 type Recovery<T> = {
   id: string;
   target: T;
@@ -88,7 +87,6 @@ export type GithubSessionRecovery<T> = {
   receipt?: GithubWriteController['receipt'];
   error: string;
 };
-export type SecureGithubRecovery = GithubSessionRecovery<SecureCliTarget>;
 export type GithubSessionState<T> = {
   target: T;
   online: boolean;

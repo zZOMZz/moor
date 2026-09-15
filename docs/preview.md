@@ -104,4 +104,4 @@ JSON
 
 本批自动化使用合成项目和页面；响应式视口不等于真实手机浏览器。真实设备、真实项目服务和最终发行包体验尚未验收，最新状态见[设备验收](validation.md)。主机私有数据与草稿不进入源码仓库、relay 归档或 Docker 构建上下文。
 
-实现入口：[协议](../src/preview-protocol.ts)、[私有登记](../src/runtime/preview-config.ts)、[主机生命周期](../src/runtime/session-preview.ts)、[渲染器](../src/desktop/preview-renderer.cjs)、[客户端与标注](../src/web/project-preview.ts)、[可信桌面控制器](../src/web/secure-preview.ts)与[面板](../src/web/secure-preview-ui.tsx)。返回[文档目录](README.md)。
+现存实现入口：[协议](../src/preview-protocol.ts)、[私有登记](../src/runtime/preview-config.ts)、[主机生命周期](../src/runtime/session-preview.ts)、[渲染器](../src/desktop/preview-renderer.cjs)、[旧标注数据格式](../src/web/project-preview.ts)与[工作区兼容校验](../src/web/workspace-preview.ts)。旧客户端交互控制器和面板已随界面移除，兼容行为由[预览数据回归](../tests/project-preview-compatibility.test.ts)验证。返回[文档目录](README.md)。

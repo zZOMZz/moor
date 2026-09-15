@@ -1,12 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CliState } from '../src/cli/state';
 import {
   IndexedSecureStorage,
   SecureStore,
+  secureBrowserRequestVersion,
   type SecureStorageBackend,
 } from '../src/web/secure-store';
-import { secureTargetSchema, type SecureCliTarget } from '../src/cli/secure-operation';
+import {
+  secureTargetSchema,
+  secureOperationSchema,
+  secureOriginal,
+  type SecureCliTarget,
+} from '../src/cli/secure-operation';
 
 class TestOperationLocks {
   queues = new Map<string, Promise<void>>();
@@ -118,6 +128,103 @@ test('browser ledger preserves exact original bytes and CLI-compatible digest ac
   assert.deepEqual(await store.list(target), [op]);
   assert.deepEqual(await store.list({ ...target, owner: 'other' }), []);
   assert.deepEqual(await store.list({ ...target, clientDeviceId: 'other' }), []);
+});
+
+test('historical MCP and preview reviews stay digest-bound and CLI-compatible after their UI retires', async (t) => {
+  const memory = new Memory(),
+    store = new SecureStore(memory);
+  const snapshot = {
+    serviceId: 'service',
+    serviceLabel: 'Synthetic preview',
+    pagePath: '/',
+    frameId: 'frame',
+    capturedAt: now,
+    viewport: { width: 390, height: 844 },
+    element: {
+      elementId: 'element',
+      tagName: 'button',
+      role: 'button',
+      name: 'Save',
+      text: 'Synthetic',
+      bounds: { x: 0, y: 0, width: 100, height: 40 },
+    },
+    note: 'Original reviewed annotation',
+  };
+  const originalInput = {
+    operationId: 'historical-turn',
+    kind: 'turn' as const,
+    target,
+    userTurnId: 'original-user-turn',
+    body: JSON.stringify({
+      method: 'mutate',
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      params: {
+        kind: 'turn',
+        operationId: 'historical-turn',
+        workspaceId: target.workspaceId,
+        sessionId: target.sessionId,
+        expectedTurnId: null,
+        update: 'c3ludGhldGlj',
+        metaBundle: {},
+      },
+    }),
+    mcpReview: {
+      reviewId: 'original-review',
+      servers: [
+        {
+          id: 'server',
+          name: 'Synthetic MCP',
+          description: 'Original metadata',
+          transport: 'http' as const,
+        },
+      ],
+    },
+    previewReview: {
+      annotations: [
+        {
+          id: 'annotation',
+          createdAt: now,
+          selectionId: 'original-selection',
+          snapshot,
+          version: 'sha256:' + createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),
+        },
+      ],
+    },
+  };
+  const original = await store.stage(originalInput, now, current);
+  assert.deepEqual(await new SecureStore(memory).list(target), [original]);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-retired-review-'))),
+    cli = new CliState(root);
+  t.after(() => {
+    cli.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  assert.equal(cli.secureStage(originalInput, now).requestVersion, original.requestVersion);
+  assert.deepEqual(cli.secureOperation(original.operationId), original);
+  assert.equal(secureOriginal(original).kind, 'mutation');
+  for (const field of ['mcp', 'preview', 'turn'] as const) {
+    const changed = structuredClone(originalInput);
+    if (field === 'mcp') changed.mcpReview.servers[0]!.description = 'Changed metadata';
+    if (field === 'preview')
+      changed.previewReview.annotations[0]!.snapshot.note = 'Changed annotation';
+    if (field === 'turn') changed.userTurnId = 'other-user-turn';
+    assert.notEqual(await secureBrowserRequestVersion(changed), original.requestVersion);
+    await assert.rejects(store.stage(changed, now, current));
+    assert.throws(() => cli.secureStage(changed, now));
+  }
+  assert.equal(secureOperationSchema.safeParse({ ...original, kind: 'permission' }).success, false);
+  assert.equal(
+    secureOperationSchema.safeParse({ ...original, userTurnId: undefined }).success,
+    false,
+  );
+  const entry = [...memory.values.entries()].find(([key]) =>
+    key.includes('moor-secure-operations-v1'),
+  )!;
+  const corrupted = structuredClone(entry[1]) as { operations: (typeof original)[] };
+  corrupted.operations[0]!.previewReview!.annotations[0]!.snapshot.note = 'Corrupted on disk';
+  memory.values.set(entry[0], corrupted);
+  await assert.rejects(store.list(target), /原操作校验失败/);
 });
 
 test('pending and ending ledger entries block new product revisions while exact stopping remains possible', async () => {

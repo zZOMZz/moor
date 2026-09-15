@@ -81,7 +81,6 @@ export const gitCommitFileSchema = z
     truncated: z.boolean(),
   })
   .strict();
-export type GitCommitFile = z.infer<typeof gitCommitFileSchema>;
 const paths = z
   .array(projectFilePathSchema)
   .min(1)

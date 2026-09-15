@@ -32,6 +32,14 @@
 
   "includeEntryExports": true,
 
+  // Report unused definitions, not just exports whose definitions are still
+  // needed inside the same file (for example schemas and UI helpers).
+  "ignoreExportsUsedInFile": true,
+
+  // build.mjs replaces this import with the hashed bundle. Resolve its source
+  // so startup.js -> entry.start remains part of the dependency graph.
+  "paths": { "__ENTRY__": ["./src/web/entry.ts"] },
+
   // These commands are provided by the operating system, not npm packages.
   "ignoreBinaries": ["ditto", "mkfifo"],
 
@@ -39,14 +47,13 @@
   // Ignore it only in production mode, where development and test references are absent.
   "ignoreDependencies": ["@agentclientprotocol/codex-acp!"],
 
-  // The desktop runtime path is created during packaging and the web token is
-  // replaced with the hashed browser entry during the build.
-  "ignoreUnresolved": ["./runtime/preview-renderer.cjs", "__ENTRY__"],
+  // The desktop runtime path is created during packaging.
+  "ignoreUnresolved": ["./runtime/preview-renderer.cjs"],
 
-  // Keep existing export debt visible without blocking structural refactors.
+  // Reject new unused exports and types after the audited cleanup.
   "rules": {
-    "exports": "warn",
-    "types": "warn",
+    "exports": "error",
+    "types": "error",
     "enumMembers": "warn",
     "namespaceMembers": "warn",
   },

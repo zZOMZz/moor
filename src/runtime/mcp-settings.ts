@@ -120,7 +120,6 @@ export const mcpSettingsActionSchema = z.discriminatedUnion('action', [
     .strict(),
   z.object({ action: z.literal('remove'), expectedRevision: revision, id }).strict(),
 ]);
-export type McpSettingsAction = z.infer<typeof mcpSettingsActionSchema>;
 type Connection = z.infer<typeof connectionSchema>;
 export type McpSettingsPreset = {
   id: string;
