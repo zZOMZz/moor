@@ -86,6 +86,7 @@ async function fixture(
   t: TestContext,
   options: {
     list?: () => unknown;
+    read?: () => unknown;
     catalog?: () => typeof catalog | Promise<typeof catalog>;
     ready?: boolean;
     deadline?: (ms: number) => AbortSignal;
@@ -157,6 +158,12 @@ async function fixture(
       assert.equal(projectId, 'project');
       calls++;
       return options.list?.() ?? [{ id: 'SYNTHETIC_PRIVATE_SESSION' }];
+    },
+    read(sessionId: string, _version: string | undefined, projectId: string) {
+      assert.equal(sessionId, 'session');
+      assert.equal(projectId, 'project');
+      calls++;
+      return options.read?.();
     },
   } as unknown as HostCommandWorkspace;
   const dispatcher = new HostCommandDispatcher({
@@ -448,7 +455,7 @@ test('a newly registered private directory closes the live Host before another c
   assert.equal(f.calls(), 0);
 });
 
-test('client closure while catalogue work is pending suppresses the encrypted response', async (t) => {
+test('client closure while catalogue work is pending suppresses only its response and preserves the Host connection', async (t) => {
   let release!: (value: typeof catalog) => void, entered!: () => void;
   const started = new Promise<void>((resolve) => {
     entered = resolve;
@@ -467,23 +474,149 @@ test('client closure while catalogue work is pending suppresses the encrypted re
   f.relay.send(
     JSON.stringify({ protocol: 4, type: 'client-closed', clientConnectionId: f.connectionId }),
   );
-  // A second catalogue on a separate route acknowledges that the close frame has
+  // A request on a separate route acknowledges that the close frame has
   // been processed, without timing assumptions or sleeps.
   const channel = await f.makeClient();
   t.after(() => channel.close());
-  const encrypted = await f.record(
-    { method: 'sessions', workspaceId: 'workspace', localProjectId: 'project', params: {} },
-    projectResource,
-    channel,
-  );
-  const delivered = once(f.relay, 'message');
-  f.send(encrypted, newChannelChallenge());
-  await delivered;
+  const survivorId = newChannelChallenge();
+  const observe = () =>
+    f.response(
+      { method: 'sessions', workspaceId: 'workspace', localProjectId: 'project', params: {} },
+      projectResource,
+      channel,
+      survivorId,
+    );
+  assert.equal((await observe()).ok, true);
   const before = f.transcript.length,
-    closed = once(f.relay, 'close');
+    closed = once(f.relay, 'close').then(() => {
+      throw Error('A disconnected client closed the Host connection for another client');
+    });
   release(catalog);
+  assert.equal((await Promise.race([observe(), closed])).ok, true);
+  assert.equal(f.transcript.length, before + 1);
+  assert.equal(f.transport.ready, true);
+});
+
+for (const completion of ['resolve', 'reject'] as const)
+  test(`disconnect during a pending session read preserves another client when the old read ${completion}s`, async (t) => {
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await fixture(t, {
+      async read() {
+        entered();
+        await pending;
+        if (completion === 'reject') throw Error('Synthetic ended read');
+        return { private: 'SYNTHETIC_PRIVATE_OLD_RESPONSE' };
+      },
+    });
+    const original = await f.record(
+      {
+        method: 'session',
+        workspaceId: 'workspace',
+        localProjectId: 'project',
+        params: { sessionId: 'session' },
+      },
+      { ...projectResource, kind: 'session', sessionId: 'session' },
+    );
+    f.send(original);
+    await started;
+    f.relay.send(
+      JSON.stringify({ protocol: 4, type: 'client-closed', clientConnectionId: f.connectionId }),
+    );
+    const survivor = await f.makeClient(),
+      survivorId = newChannelChallenge();
+    t.after(() => survivor.close());
+    const observe = () =>
+      f.response({ method: 'catalog', params: {} }, catalogResource, survivor, survivorId);
+    assert.equal((await observe()).ok, true);
+    const closed = once(f.relay, 'close').then(() => {
+      throw Error('The old session read disconnected the surviving client');
+    });
+    release();
+    assert.equal((await Promise.race([observe(), closed])).ok, true);
+    assert.equal(f.transport.ready, true);
+    assert.equal(
+      f.transcript.some(
+        (frame) => JSON.parse(frame).record?.header.requestId === original.header.requestId,
+      ),
+      false,
+    );
+  });
+
+test('client closure during receiver creation suppresses late work without dropping another client', async (t) => {
+  const f = await fixture(t);
+  const original = await f.record(
+    {
+      method: 'session',
+      workspaceId: 'workspace',
+      localProjectId: 'project',
+      params: { sessionId: 'session' },
+    },
+    { ...projectResource, kind: 'session', sessionId: 'session' },
+  );
+  const create = E2eeChannel.create;
+  let entered!: () => void, release!: () => void, settled!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const completed = new Promise<void>((resolve) => {
+    settled = resolve;
+  });
+  t.mock.method(E2eeChannel, 'create', async (options: Parameters<typeof create>[0]) => {
+    if (
+      options.side !== 'host' ||
+      options.clientChallenge !== original.header.binding.clientChallenge
+    )
+      return create(options);
+    entered();
+    await pending;
+    try {
+      return await create(options);
+    } finally {
+      settled();
+    }
+  });
+  f.send(original);
+  await started;
+  f.relay.send(
+    JSON.stringify({ protocol: 4, type: 'client-closed', clientConnectionId: f.connectionId }),
+  );
+  const survivor = await f.makeClient(),
+    survivorId = newChannelChallenge();
+  t.after(() => survivor.close());
+  const observe = () =>
+    f.response({ method: 'catalog', params: {} }, catalogResource, survivor, survivorId);
+  assert.equal((await observe()).ok, true);
+  const closed = once(f.relay, 'close').then(() => {
+    throw Error('A retired receiver closed the surviving connection');
+  });
+  release();
+  await completed;
+  assert.equal((await Promise.race([observe(), closed])).ok, true);
+  assert.equal(f.calls(), 0);
+  assert.equal(f.transport.ready, true);
+});
+
+test('receiver authentication failure without client retirement still closes the Host connection', async (t) => {
+  const f = await fixture(t),
+    create = E2eeChannel.create;
+  t.mock.method(E2eeChannel, 'create', async (options: Parameters<typeof create>[0]) => {
+    if (options.side === 'host') throw Error('Synthetic receiver authentication failure');
+    return create(options);
+  });
+  const closed = once(f.relay, 'close');
+  f.send(await f.record({ method: 'catalog', params: {} }));
   await closed;
-  assert.equal(f.transcript.length, before);
+  assert.equal(f.transport.ready, false);
+  assert.equal(f.calls(), 0);
 });
 
 test('binary and malformed relay frames cannot dispatch Host work', async (t) => {
