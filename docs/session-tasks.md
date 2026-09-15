@@ -86,4 +86,4 @@ Web 人工读取和恢复使用副本范围内的 `tasks-read`、`tasks-action` 
 
 这些测试使用合成 Agent、临时项目和确定性信号，没有调用真实模型或读取真实账号。最终仓库检查、图形浏览器记录与人工设备结果分别在[设备验收](validation.md)登记。真实 Codex 或第三方 ACP 的 HTTP MCP 行为、双 Mac、iPhone/Safari/PWA、安装包和系统生命周期仍需专项验收；M5.4 的合成验证不表示条件性 M6 或全部 roadmap 已完成。
 
-现存实现入口：[任务协议](../src/task-protocol.ts)、[主机任务管理](../src/runtime/session-tasks.ts)、[私有 MCP](../src/runtime/task-mcp.ts)、[旧任务数据格式](../src/web/tasks.ts)与[原操作恢复](../src/web/workspace-controller.ts)。旧客户端任务控制器和面板已随界面移除，旧记录兼容由[工作区回归](../tests/workspace-feature-compatibility.test.ts)验证。返回[文档目录](README.md)。
+现存实现入口：[任务协议](../packages/protocol/src/task-protocol.ts)、[主机任务管理](../packages/host/src/sessions/tasks.ts)、[私有 MCP](../packages/host/src/integrations/task-mcp.ts)、[旧任务数据格式](../apps/web/src/features/tasks/tasks.ts)与[原操作恢复](../apps/web/src/features/workspace/workspace-controller.ts)。旧客户端任务控制器和面板已随界面移除，旧记录兼容由[工作区回归](../tests/integration/workspace-feature-compatibility.test.ts)验证。返回[文档目录](README.md)。

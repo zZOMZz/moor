@@ -79,7 +79,7 @@ flowchart LR
 
 **理解检查：** 新增一个平板客户端，应该复用哪一层？为什么它不能直接写主机数据库？
 
-源码入口：[中转 HTTP](../src/relay/http.ts)、[主机启动](../src/bridge/host-main.ts)、[HostWorkspace](../src/bridge/host-workspace.ts)、[AgentDriver](../src/runtime/agent.ts)。专题：[核心架构](core.md)。
+源码入口：[中转 HTTP](../packages/gateway/src/http.ts)、[主机启动](../apps/host/src/main.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[AgentDriver](../packages/host/src/agents/driver.ts)。专题：[核心架构](core.md)。
 
 ## 4. 身份模型：组织位置与执行位置
 
@@ -123,7 +123,7 @@ flowchart TD
 
 **理解检查：** 两台 Mac 有相同目录名，能否互相处理同一个会话的重试？把主机移入另一工作区后，哪些关系改变、哪些保持不变？
 
-源码入口：[产品目录类型](../src/catalog.ts)、[中转目录](../src/relay/catalog.ts)、[运行协议](../src/protocol.ts)。专题：[概念与身份](concepts.md)。
+源码入口：[产品目录类型](../packages/protocol/src/catalog.ts)、[中转目录](../packages/gateway/src/catalog.ts)、[运行协议](../packages/protocol/src/protocol.ts)。专题：[概念与身份](concepts.md)。
 
 ## 5. 数据模型：历史、元数据与活动状态
 
@@ -170,7 +170,7 @@ CRDT 可以使文档副本合并，但不会判断一条指令是否应该运行
 
 **理解检查：** 历史里仍有审批卡片，为什么重启后不能直接批准？只备份中转，能恢复哪些东西？
 
-源码入口：[会话 schema](../src/session-schema.ts)、[文档操作](../src/model.ts)、[RuntimeStore](../src/runtime/store.ts)。专题：[会话与回合](session.md)、[核心架构](core.md)。
+源码入口：[会话 schema](../packages/session/src/session-schema.ts)、[文档操作](../packages/session/src/model.ts)、[RuntimeStore](../packages/host/src/persistence/store.ts)。专题：[会话与回合](session.md)、[核心架构](core.md)。
 
 ## 6. 一条指令的完整路径
 
@@ -248,7 +248,7 @@ Agent 回调进入主机，由主机将内容写入 Moor 历史。`changed` 是�
 
 **理解检查：** 应该在写数据库之前还是之后启动 Agent？若反过来，写入失败会造成什么不可解释的状态？
 
-源码入口：[Web 的 `sendTurn`、`prepareTurnMutation`、`submit`](../src/web/app.ts)、[共享会话构造器](../src/session-client.ts)、[HTTP](../src/relay/http.ts)、[HostWorkspace](../src/bridge/host-workspace.ts)、[变更校验](../src/bridge/validate-mutation.ts)、[Journal](../src/bridge/journal.ts)。专题：[同步、送达与重试](sync.md)。
+源码入口：[Web 的 `sendTurn`、`prepareTurnMutation`、`submit`](../apps/web/src/app/app.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
 
 ## 7. 断线、重试与一致性
 
@@ -299,7 +299,7 @@ Moor 把这种状态显示为结果待确认。手动重试继续使用 op-1 和
 
 **理解检查：** 主机事务已成功、但 Agent 尚未启动时断电，重试会不会补跑？为什么“有凭据”与“完成工作”不能合并成一个状态？
 
-行为证据：[host 测试](../tests/host.test.ts)中的原子送达、保存失败、并发提交、重启保留凭据用例。专题：[同步文档](sync.md)。
+行为证据：[host 测试](../tests/integration/host.test.ts)中的原子送达、保存失败、并发提交、重启保留凭据用例。专题：[同步文档](sync.md)。
 
 ## 8. 审批、停止与 Agent 上下文
 
@@ -333,7 +333,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 
 **理解检查：** 为什么不能从 Moor 历史复制文本就宣称恢复了原生上下文？为什么改变审批模式不能回应旧审批？
 
-源码入口：[AgentDriver](../src/runtime/agent.ts)、[ACP](../src/runtime/acp.ts)、[固定 Agent 绑定](../src/runtime/session-agent.ts)。证据：[runtime 测试](../tests/runtime.test.ts)、[ACP 测试](../tests/acp.test.ts)。
+源码入口：[AgentDriver](../packages/host/src/agents/driver.ts)、[ACP](../packages/host/src/agents/acp/driver.ts)、[固定 Agent 绑定](../packages/host/src/sessions/agent.ts)。证据：[runtime 测试](../tests/integration/runtime.test.ts)、[ACP 测试](../tests/integration/acp.test.ts)。
 
 ## 9. 进程恢复与任务恢复
 
@@ -353,7 +353,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 
 理解恢复时分别问：服务能否访问？原操作是否接受？本轮是否结束？文件是什么状态？不要用一个“已恢复”覆盖所有答案。
 
-源码入口：[主机存储恢复](../src/runtime/store.ts)、[所有权锁](../src/runtime/lock.ts)、[桌面恢复控制](../src/desktop/recovery.cjs)。专题：[运行与恢复](runtime.md)。
+源码入口：[主机存储恢复](../packages/host/src/persistence/store.ts)、[所有权锁](../packages/e2ee/src/node/exclusive-lock.ts)、[桌面恢复控制](../apps/desktop/src/main/recovery.cjs)。专题：[运行与恢复](runtime.md)。
 
 ## 10. 扩展功能怎样接回核心流程
 
@@ -407,7 +407,7 @@ MCP 的空选择只表示没有添加 Moor 管理的服务。原生 Agent 可能
 
 这些预算限制工具派发，不是 token 或模型费用硬上限。正常完成状态也不验证用户目标，结果仍需人工检查。
 
-专题：[有限协作](session-tasks.md)。实现：[任务管理](../src/runtime/session-tasks.ts)、[私有任务 MCP](../src/runtime/task-mcp.ts)。
+专题：[有限协作](session-tasks.md)。实现：[任务管理](../packages/host/src/sessions/tasks.ts)、[私有任务 MCP](../packages/host/src/integrations/task-mcp.ts)。
 
 **理解检查：** 用“读取、草稿、接受、执行、核查”描述一个扩展功能。哪些步骤可以安全重读，哪些步骤可能首次产生副作用？
 
@@ -471,26 +471,26 @@ MCP 的空选择只表示没有添加 Moor 管理的服务。原生 Agent 可能
 
 先读短的数据定义，再跟一条请求，最后读专题模块。不要一开始顺序通读大型 UI 文件。
 
-| 顺序 | 入口                                                                               | 本轮只找什么                                                    |
-| ---- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 1    | [session-schema.ts](../src/session-schema.ts)、[model.ts](../src/model.ts)         | `history`、用户/助手关联、版本向量与增量                        |
-| 2    | [protocol.ts](../src/protocol.ts)、[catalog.ts](../src/catalog.ts)                 | RuntimeWorkspace、Mutation、产品目标与本地目标的区别            |
-| 3    | [validate-mutation.ts](../src/bridge/validate-mutation.ts)                         | 导入前后比较、允许字段、`expectedTurnId`、历史不可改            |
-| 4    | [journal.ts](../src/bridge/journal.ts)、[store.ts](../src/runtime/store.ts)        | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`       |
-| 5    | [host-workspace.ts](../src/bridge/host-workspace.ts)                               | `mutate`、`mutateAccepted`、事务之后的 `execute`、审批与停止    |
-| 6    | [agent.ts](../src/runtime/agent.ts)、[acp.ts](../src/runtime/acp.ts)               | `open/prompt/cancel/close`，new/load、能力与回调                |
-| 7    | [app.ts](../src/web/app.ts)、[cache.ts](../src/web/cache.ts)                       | `sendTurn`、`prepareTurnMutation`、`submit`，先存原请求再发网络 |
-| 8    | [http.ts](../src/relay/http.ts)、[host-command.ts](../src/bridge/host-command.ts)  | 路由与响应范围、共同方法校验和分发                              |
-| 9    | [host.test.ts](../tests/host.test.ts)、[runtime.test.ts](../tests/runtime.test.ts) | 用断言核验自己对顺序与恢复的解释                                |
-| 10   | [开发文档](development.md#从行为找到实现)                                          | 按感兴趣的功能查专门实现及测试                                  |
+| 顺序 | 入口                                                                                                             | 本轮只找什么                                                    |
+| ---- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)     | `history`、用户/助手关联、版本向量与增量                        |
+| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)           | RuntimeWorkspace、Mutation、产品目标与本地目标的区别            |
+| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                       | 导入前后比较、允许字段、`expectedTurnId`、历史不可改            |
+| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts) | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`       |
+| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                  | `mutate`、`mutateAccepted`、事务之后的 `execute`、审批与停止    |
+| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)           | `open/prompt/cancel/close`，new/load、能力与回调                |
+| 7    | [app.ts](../apps/web/src/app/app.ts)、[cache.ts](../apps/web/src/platform/cache.ts)                              | `sendTurn`、`prepareTurnMutation`、`submit`，先存原请求再发网络 |
+| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)     | 路由与响应范围、共同方法校验和分发                              |
+| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)       | 用断言核验自己对顺序与恢复的解释                                |
+| 10   | [开发文档](development.md#从行为找到实现)                                                                        | 按感兴趣的功能查专门实现及测试                                  |
 
 可在仓库根目录使用以下只读搜索。文件以符号定位，比记住容易变化的行号更可靠。
 
 ```sh
-rg -n 'mutateAccepted|transaction\(|journal\.accept|run.done = this.execute' src/bridge/host-workspace.ts
-rg -n 'expectedTurnId|仅允许追加|原执行|不允许远程' src/bridge/validate-mutation.ts
-rg -n 'async function (submit|sendTurn|prepareTurnMutation)' src/web/app.ts
-rg -n 'fingerprint|lookup\(|stage\(|accept\(' src/bridge/journal.ts
+rg -n 'mutateAccepted|transaction\(|journal\.accept|run.done = this.execute' packages/host/src/sessions/workspace.ts
+rg -n 'expectedTurnId|仅允许追加|原执行|不允许远程' packages/host/src/commands/validate-mutation.ts
+rg -n 'async function (submit|sendTurn|prepareTurnMutation)' apps/web/src/app/app.ts
+rg -n 'fingerprint|lookup\(|stage\(|accept\(' packages/host/src/persistence/journal.ts
 ```
 
 源码名称不等于行为保证。每次阅读写出“前置条件、持久变化、外部效果、失败出口”，再到测试中找相应断言。

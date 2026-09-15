@@ -1,8 +1,8 @@
 # 目录与分包重构计划
 
-本文规划把 Moor 从单包仓库迁移为 pnpm monorepo，以应用入口、公共契约和数据所有权建立可检查的模块边界。目标结构分为 `apps/` 与 `packages/`，通过 8 个依次合并的 PR 落地；每个 PR 合并后，主分支都应能完整检查、测试、构建和运行。
+本文记录 Moor 从单包仓库迁移为 pnpm monorepo 的实施结果，以应用入口、公共契约和数据所有权建立可检查的模块边界。目标结构分为 `apps/` 与 `packages/`；原定 8 个依次合并的阶段保留为下文的审阅单元，当前分支已按相同顺序完成迁移。
 
-状态：方案已确定，8 个实施 PR 均待开始。本文中的目标目录、包名和检查规则描述计划，不表示这些能力已迁移或验收完成。
+状态：实现已完成（2026-09-15）。类型与边界检查、完整合成测试、构建、格式、Knip、relay 归档及当前 arm64 Mac 的 ad-hoc 包装均已验证；真实账号、多设备、系统权限、休眠恢复、Developer ID 签名和公证仍未在本次结构迁移中执行。
 
 本轮覆盖目录组织、依赖解耦、包级构建与测试、发布路径调整。已有产品行为以[项目首页](../README.md)、[客户端统一计划](client-unification.md)和各功能文档为准；既有客户端统一成果继续保留。大文件内部的深入职责拆分安排在包边界稳定后的功能级 PR 中。
 
@@ -240,7 +240,7 @@ ACP 暂留主机包内部；出现多个宿主复用或独立发布需求时，�
 
 ### 发行与资源
 
-- 各 PR 更新受影响的 `scripts/build.mjs`、`scripts/package.mjs` 等脚本；脚本目录最终整理为 build、release、validation。
+- 各阶段更新受影响的 `scripts/build/build.mjs`、`scripts/release/package.mjs` 等脚本；脚本已整理为 build、release、validation。
 - 桌面发行继续包含需要的 Web 资源、主机入口、CLI/安全辅助入口、锁定 ACP 适配器与 native/WASM 依赖。Codex runtime 仍由用户本机提供。
 - 路径验证覆盖 CJS/ESM 加载、子进程入口、preload、preview worker、`import.meta.url`、CSS 扫描源、静态资源占位符与服务工作线程缓存清单。
 - 第三方许可证收集改为覆盖真实 workspace 依赖和产物，保留已有 notices 与来源信息；不能只扫描迁移后的根包依赖。
@@ -252,14 +252,14 @@ PR 编号表示合并顺序，不是 GitHub PR 编号。建议顺序为 1 → 2 
 
 | PR  | 建议标题                                                      | 主要交付                  | 前置 | 状态   |
 | --- | ------------------------------------------------------------- | ------------------------- | ---- | ------ |
-| 1   | `refactor(protocol): establish workspace contract boundaries` | workspace 基础与 protocol | 无   | 待开始 |
-| 2   | `refactor(session): extract versioned session model`          | session                   | 1    | 待开始 |
-| 3   | `refactor(e2ee): isolate trust and endpoint capabilities`     | e2ee                      | 1、2 | 待开始 |
-| 4   | `refactor(client): extract shared clients and CLI app`        | client、apps/cli          | 1–3  | 待开始 |
-| 5   | `refactor(gateway): separate shared ingress and relay app`    | gateway、apps/relay       | 1–4  | 待开始 |
-| 6   | `refactor(host): consolidate execution and host app`          | host、apps/host           | 1–5  | 待开始 |
-| 7   | `refactor(web): organize the client by feature`               | apps/web                  | 1–6  | 待开始 |
-| 8   | `refactor(desktop): complete workspace and release migration` | apps/desktop、迁移收尾    | 1–7  | 待开始 |
+| 1   | `refactor(protocol): establish workspace contract boundaries` | workspace 基础与 protocol | 无   | 已完成 |
+| 2   | `refactor(session): extract versioned session model`          | session                   | 1    | 已完成 |
+| 3   | `refactor(e2ee): isolate trust and endpoint capabilities`     | e2ee                      | 1、2 | 已完成 |
+| 4   | `refactor(client): extract shared clients and CLI app`        | client、apps/cli          | 1–3  | 已完成 |
+| 5   | `refactor(gateway): separate shared ingress and relay app`    | gateway、apps/relay       | 1–4  | 已完成 |
+| 6   | `refactor(host): consolidate execution and host app`          | host、apps/host           | 1–5  | 已完成 |
+| 7   | `refactor(web): organize the client by feature`               | apps/web                  | 1–6  | 已完成 |
+| 8   | `refactor(desktop): complete workspace and release migration` | apps/desktop、迁移收尾    | 1–7  | 已完成 |
 
 下列定向验证均附加在第八节的共同门禁之上。
 
@@ -418,14 +418,21 @@ pnpm format:check
 
 ### 整体完成清单
 
-- [ ] 五个应用与六个公共包均有明确的职责、依赖、入口和检查方式。
-- [ ] 应用之间无源码交叉引用，公共包无反向依赖，包级依赖无环。
-- [ ] 旧路径与临时过渡清单清理完成，根脚本和文档指向现行入口。
-- [ ] 已迁移测试全部被发现，原有行为与关键故障回归通过。
-- [ ] 当前会话、草稿、操作、身份与私有存储格式保持兼容。
-- [ ] Web、主机、CLI、中转和桌面产物均完成对应构建与装配验证。
-- [ ] 中转归档与 Docker context 仅含程序，第三方许可证与来源完整。
-- [ ] 真实账号、双 Mac、iPhone/PWA、系统权限、休眠恢复和签名公证的验证状态分别列明。
+- [x] 五个应用与六个公共包均有明确的职责、依赖、入口和检查方式。
+- [x] 应用之间无源码交叉引用，公共包无反向依赖，包级依赖无环。
+- [x] 旧路径与临时过渡清单清理完成，根脚本和文档指向现行入口。
+- [x] 已迁移测试全部被发现，原有行为与关键故障回归通过。
+- [x] 当前会话、草稿、操作、身份与私有存储格式保持兼容。
+- [x] Web、主机、CLI、中转和桌面产物均完成对应构建与装配验证。
+- [x] 中转归档与 Docker context 仅含程序，第三方许可证与来源完整。
+- [x] 真实账号、双 Mac、iPhone/PWA、系统权限、休眠恢复和签名公证的验证状态分别列明。
+
+### 当前分支验证记录
+
+- 根 `check` 同时执行各 workspace 的环境类型检查和包边界/依赖环检查；浏览器入口另由真实 esbuild browser bundle 验证。
+- 根测试递归发现包内、应用内和 `tests/integration` 测试；迁移后的发现集合保持完整，使用合成身份、数据、Agent、服务和确定性信号。
+- 根构建、relay 归档以及当前 arm64 Mac 的 Electron ad-hoc 包装通过；成品清单检查覆盖嵌套 desktop 资源、Web、Host、CLI、安全辅助入口、worker、ACP 适配器、native/WASM 与 workspace 许可证。
+- 未执行真实 Google/GitHub/Agent 账号、双 Mac、iPhone/PWA、系统权限弹窗、休眠恢复、Developer ID 签名或 Apple 公证。它们继续按[设备验收](validation.md)单独记录，不能由上述合成结果推定为通过。
 
 ## 九、回退与后续治理
 
@@ -441,6 +448,6 @@ pnpm format:check
 
 分包方式参考 [pi 的 packages 目录](https://github.com/earendil-works/pi/tree/main/packages)及其 [client 包定义](https://github.com/earendil-works/pi/blob/main/packages/client/package.json)：公共能力有自己的依赖、公开导出和测试。Moor 的实际边界按客户端、执行主机、中转和数据所有权设计；本计划不引入 pi 运行时或外部源码检出依赖。
 
-制定本文时完成的是仓库结构与依赖审阅。本文不代表实施 PR、合成运行验收、真实 Agent/GitHub/Google 账号、双 Mac、iPhone/PWA 或签名公证已经通过；相应结果应在实施 PR 和[设备验收](validation.md)中如实记录。
+本文最初基于仓库结构与依赖审阅制定；当前分支已经完成代码迁移和上述合成/包装验证。真实 Agent/GitHub/Google 账号、双 Mac、iPhone/PWA、系统权限及签名公证仍以[设备验收](validation.md)中的独立结果为准。
 
 相关文档：[核心架构](core.md) · [同步与送达](sync.md) · [运行与恢复](runtime.md) · [开发与验证](development.md) · [客户端统一计划](client-unification.md) · [文档目录](README.md)。

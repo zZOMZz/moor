@@ -122,16 +122,17 @@ corepack pnpm build
 corepack pnpm format:check
 ```
 
-无需准备外部运行时源码仓库。ACP SDK、Codex ACP 适配器和 Electron 直接锁定在 `package.json` / `pnpm-lock.yaml` 中；Codex CLI runtime 不进入 Moor 依赖或安装包。登录凭据仍由 Codex 在本机管理。
+无需准备外部运行时源码仓库。ACP SDK、Codex ACP 适配器和 Electron 直接锁定在各 workspace 的 `package.json` 与根 `pnpm-lock.yaml` 中；Codex CLI runtime 不进入 Moor 依赖或安装包。登录凭据仍由 Codex 在本机管理。
 
 ```text
-src/relay/     个人账号、设备绑定、临时消息转发
-src/bridge/    主机校验、执行生命周期、请求去重
-src/runtime/   Moor 数据库、独占锁、ACP 适配层
-src/session-schema.ts  Moor 会话格式
-src/web/       桌面与移动浏览器共用界面
-src/desktop/   Electron 壳、项目选择、连接诊断
-scripts/       构建、打包与合成验证
+apps/web/       Web/PWA 与桌面共用界面
+apps/desktop/   Electron 主进程、preload 与本机设置
+apps/cli/       CLI 参数、状态和终端入口
+apps/host/      执行主机启动与组件装配
+apps/relay/     中转启动、Google OIDC 与 Web Push
+packages/       protocol、session、client、host、gateway、e2ee
+tests/          跨包与跨进程集成测试及合成 fixtures
+scripts/        构建、发布与确定性验证
 ```
 
 ### macOS 安装包
@@ -164,7 +165,7 @@ corepack pnpm package:mac
 node dist/bridge.mjs --server https://moor.example.com --pair PAIR_CODE --project /absolute/project --builtin-agent codex
 ```
 
-`--runtime-data /absolute/host.sqlite`（或 `MOOR_RUNTIME_DATA`）指定主机数据库。只有本机设置可选择可执行程序，远程请求不能传入命令、环境变量或 MCP 连接参数；额外 MCP 只能选择本机登记的配置版本并逐回合授权。合成验证可在独立目录运行 `pnpm exec tsx scripts/prepare-validation.ts /tmp/moor-synthetic/host.sqlite /tmp/synthetic-project`，然后启动桥接时指定同一数据库。该脚本要求主机已停止。
+`--runtime-data /absolute/host.sqlite`（或 `MOOR_RUNTIME_DATA`）指定主机数据库。只有本机设置可选择可执行程序，远程请求不能传入命令、环境变量或 MCP 连接参数；额外 MCP 只能选择本机登记的配置版本并逐回合授权。合成验证可在独立目录运行 `pnpm exec tsx scripts/validation/prepare-validation.ts /tmp/moor-synthetic/host.sqlite /tmp/synthetic-project`，然后启动桥接时指定同一数据库。该脚本要求主机已停止。
 
 ### 中转服务包
 

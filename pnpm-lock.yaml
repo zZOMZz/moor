@@ -10,53 +10,34 @@ overrides:
 importers:
 
   .:
-    dependencies:
+    devDependencies:
       '@agentclientprotocol/codex-acp':
         specifier: 1.11.0
         version: 1.11.0
       '@agentclientprotocol/sdk':
         specifier: 1.4.0
         version: 1.4.0(zod@3.25.76)
-      '@base-ui/react':
-        specifier: 1.8.0
-        version: 1.8.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@hpke/core':
-        specifier: 1.9.0
-        version: 1.9.0
       '@loro-dev/flock-wasm':
         specifier: 0.4.3
         version: 0.4.3
-      jose:
-        specifier: 6.2.12
-        version: 6.2.12
-      loro-crdt:
-        specifier: 1.15.1
-        version: 1.15.1
-      loro-mirror:
-        specifier: 2.3.1
-        version: 2.3.1(loro-crdt@1.15.1)
-      lucide-react:
-        specifier: 1.44.0
-        version: 1.44.0(react@19.3.0)
-      react:
-        specifier: 19.3.0
-        version: 19.3.0
-      react-dom:
-        specifier: 19.3.0
-        version: 19.3.0(react@19.3.0)
-      web-push:
-        specifier: 3.6.7
-        version: 3.6.7
-      ws:
-        specifier: 8.18.3
-        version: 8.18.3
-      zod:
-        specifier: 3.25.76
-        version: 3.25.76
-    devDependencies:
-      '@tailwindcss/postcss':
-        specifier: 4.3.3
-        version: 4.3.3
+      '@moor/client':
+        specifier: workspace:*
+        version: link:packages/client
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:packages/e2ee
+      '@moor/gateway':
+        specifier: workspace:*
+        version: link:packages/gateway
+      '@moor/host':
+        specifier: workspace:*
+        version: link:packages/host
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:packages/protocol
+      '@moor/session':
+        specifier: workspace:*
+        version: link:packages/session
       '@types/jsdom':
         specifier: 30.0.0
         version: 30.0.0
@@ -78,24 +59,365 @@ importers:
       esbuild:
         specifier: 0.25.12
         version: 0.25.12
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
       jsdom:
         specifier: 30.0.1
         version: 30.0.1
       knip:
         specifier: 6.35.1
         version: 6.35.1
-      postcss:
-        specifier: 8.5.28
-        version: 8.5.28
+      loro-crdt:
+        specifier: 1.15.1
+        version: 1.15.1
       prettier:
         specifier: 3.7.4
         version: 3.7.4
-      tailwindcss:
-        specifier: 4.3.3
-        version: 4.3.3
+      react:
+        specifier: 19.3.0
+        version: 19.3.0
+      react-dom:
+        specifier: 19.3.0
+        version: 19.3.0(react@19.3.0)
       tsx:
         specifier: 4.20.6
         version: 4.20.6
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+
+  apps/cli:
+    dependencies:
+      '@moor/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../../packages/e2ee
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/desktop:
+    dependencies:
+      '@moor/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../../packages/e2ee
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      electron:
+        specifier: 44.3.0
+        version: 44.3.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/host:
+    dependencies:
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../../packages/e2ee
+      '@moor/gateway':
+        specifier: workspace:*
+        version: link:../../packages/gateway
+      '@moor/host':
+        specifier: workspace:*
+        version: link:../../packages/host
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@moor/session':
+        specifier: workspace:*
+        version: link:../../packages/session
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/relay:
+    dependencies:
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../../packages/e2ee
+      '@moor/gateway':
+        specifier: workspace:*
+        version: link:../../packages/gateway
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
+      web-push:
+        specifier: 3.6.7
+        version: 3.6.7
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  apps/web:
+    dependencies:
+      '@base-ui/react':
+        specifier: 1.8.0
+        version: 1.8.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@moor/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@moor/session':
+        specifier: workspace:*
+        version: link:../../packages/session
+      lucide-react:
+        specifier: 1.44.0
+        version: 1.44.0(react@19.3.0)
+      react:
+        specifier: 19.3.0
+        version: 19.3.0
+      react-dom:
+        specifier: 19.3.0
+        version: 19.3.0(react@19.3.0)
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@tailwindcss/postcss':
+        specifier: 4.3.3
+        version: 4.3.3
+      '@types/jsdom':
+        specifier: 30.0.0
+        version: 30.0.0
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      jsdom:
+        specifier: 30.0.1
+        version: 30.0.1
+      postcss:
+        specifier: 8.5.28
+        version: 8.5.28
+      tailwindcss:
+        specifier: 4.3.3
+        version: 4.3.3
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/client:
+    dependencies:
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../e2ee
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@moor/session':
+        specifier: workspace:*
+        version: link:../session
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+
+  packages/e2ee:
+    dependencies:
+      '@hpke/core':
+        specifier: 1.9.0
+        version: 1.9.0
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/gateway:
+    dependencies:
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../e2ee
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/host:
+    dependencies:
+      '@agentclientprotocol/codex-acp':
+        specifier: 1.11.0
+        version: 1.11.0
+      '@agentclientprotocol/sdk':
+        specifier: 1.4.0
+        version: 1.4.0(zod@3.25.76)
+      '@moor/e2ee':
+        specifier: workspace:*
+        version: link:../e2ee
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@moor/session':
+        specifier: workspace:*
+        version: link:../session
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/protocol:
+    dependencies:
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      esbuild:
+        specifier: 0.25.12
+        version: 0.25.12
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/session:
+    dependencies:
+      '@loro-dev/flock-wasm':
+        specifier: 0.4.3
+        version: 0.4.3
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      loro-crdt:
+        specifier: 1.15.1
+        version: 1.15.1
+      loro-mirror:
+        specifier: 2.3.1
+        version: 2.3.1(loro-crdt@1.15.1)
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
       typescript:
         specifier: 5.9.3
         version: 5.9.3

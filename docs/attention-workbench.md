@@ -200,16 +200,16 @@ Moor 当前的 `deviceId` 是已配对的**执行设备**编号，不是手机�
 
 实现基线采用已完成的 M1 会话管理行为；已集成 M1 基线 `4aeb4bb7`，保留其元数据确认、草稿和旧响应保护。
 
-| 模块                                            | 职责                                        | 接缝                              |
-| ----------------------------------------------- | ------------------------------------------- | --------------------------------- |
-| 新 `src/attention.ts`                           | DTO、事件/观察状态、上下文和能力类型        | 类型化主机和 Web 边界             |
-| 新 `src/runtime/attention-store.ts`             | 侧表迁移、投影、分页、观察和收据            | `RuntimeStore` 生命周期事务       |
-| `src/bridge/host-workspace.ts`                  | 活跃审批联结、Actor 和事件校验              | 原权限/结束/取消钩子及接受事务    |
-| `src/relay/accounts.ts` 与 `host-main.ts`       | authority 身份、配对固定、Target 可信上下文 | 现有登录与设备凭据                |
-| `src/relay/http.ts`                             | 注入可信身份、范围校验和定向失效转发        | 原项目副本路由                    |
-| 新 `src/web/attention.ts` 与 `attention-ui.tsx` | 聚合、详情、处置、窄屏交互                  | `app.ts` 保留入口、路由与草稿适配 |
-| M1 会话管理                                     | 归档/恢复、标题、置顶                       | 只读展示，发送仍走原归档校验      |
-| M2 通知                                         | 完成、异常、审批的系统提醒                  | 复用稳定事项 ID，打开后重新读取   |
+| 模块                                                                    | 职责                                        | 接缝                              |
+| ----------------------------------------------------------------------- | ------------------------------------------- | --------------------------------- |
+| 新 `packages/protocol/src/attention.ts`                                 | DTO、事件/观察状态、上下文和能力类型        | 类型化主机和 Web 边界             |
+| 新 `packages/host/src/persistence/attention-store.ts`                   | 侧表迁移、投影、分页、观察和收据            | `RuntimeStore` 生命周期事务       |
+| `packages/host/src/sessions/workspace.ts`                               | 活跃审批联结、Actor 和事件校验              | 原权限/结束/取消钩子及接受事务    |
+| `packages/gateway/src/accounts.ts` 与 `host-main.ts`                    | authority 身份、配对固定、Target 可信上下文 | 现有登录与设备凭据                |
+| `packages/gateway/src/http.ts`                                          | 注入可信身份、范围校验和定向失效转发        | 原项目副本路由                    |
+| 新 `apps/web/src/features/attention/attention.ts` 与 `attention-ui.tsx` | 聚合、详情、处置、窄屏交互                  | `app.ts` 保留入口、路由与草稿适配 |
+| M1 会话管理                                                             | 归档/恢复、标题、置顶                       | 只读展示，发送仍走原归档校验      |
+| M2 通知                                                                 | 完成、异常、审批的系统提醒                  | 复用稳定事项 ID，打开后重新读取   |
 
 用户观察记录与事项摘要只存在主机和授权访问端缓存。中转可以持久保存 authority、账号和组织元数据，但不保存事项索引、摘录、处理记录或草稿。避免在现有大型 `app.ts` 和 `ui.tsx` 中继续堆积领域逻辑。
 

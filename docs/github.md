@@ -134,6 +134,6 @@ CI 读取绑定刚刚确认的 PR head SHA。主机读取该 SHA 的 check runs 
 
 合成测试使用临时项目、虚构 token 和注入的 GitHub HTTP 响应，覆盖 token 不回显、私有文件权限、项目外目录、仓库身份变化、权限撤销、精确 SHA、分页、原操作确认和目标切换。CLI/IPC 测试运行实际主机入口，验证锁、大小限制、晚到回复和退出不重放。真实 GitHub 授权、组织限制、限流及双 Mac/iPhone 体验仍待[专项设备验收](validation.md#m43-github-只读集成专项步骤)。
 
-实现入口：[公共协议](../src/github-protocol.ts)、[主机私有配置](../src/runtime/github-config.ts)、[GitHub 客户端](../src/runtime/github-client.ts)、[会话关联](../src/runtime/session-github.ts)、[Web 控制器](../src/web/github.ts)、[可信桌面控制器](../src/web/secure-github.ts)与[面板](../src/web/secure-github-ui.tsx)。
+实现入口：[公共协议](../packages/protocol/src/github-protocol.ts)、[主机私有配置](../packages/host/src/integrations/github/config.ts)、[GitHub 客户端](../packages/host/src/integrations/github/client.ts)、[会话关联](../packages/host/src/sessions/github.ts)、[Web 控制器](../apps/web/src/features/github/github.ts)、[可信桌面控制器](../apps/web/src/features/github/secure-github.ts)与[面板](../apps/web/src/features/github/secure-github-ui.tsx)。
 
 返回[文档目录](README.md)。

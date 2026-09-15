@@ -1,0 +1,352 @@
+import { isAbsolute, resolve } from 'node:path';
+import { z } from 'zod';
+import {
+  DeviceManager,
+  deviceIdentitySchema,
+  devicePublicTrustSchema,
+} from '@moor/e2ee/node/device-manager';
+import {
+  E2EE_PAIRING_LIMITS,
+  fingerprintRequest,
+  pairingRequestSchema,
+} from '@moor/e2ee/e2ee-pairing';
+import { E2EE_RECOVERY_MAX_BYTES, generateRecoveryKey } from '@moor/e2ee/e2ee-recovery';
+import {
+  E2EE_TRUST_LIMITS,
+  e2eeDigestSchema,
+  e2eeIdSchema,
+  rootPublicJwkSchema,
+  trustPinSchema,
+} from '@moor/e2ee/e2ee-trust';
+import { PrivateEndpointFile } from '@moor/e2ee/node/private-endpoint-file';
+import {
+  TrustClient,
+  trustConnectionSchema,
+  type TrustClientOptions,
+} from '@moor/e2ee/trust-client';
+import { TRUST_PUBLICATION_LIMITS, TRUST_PUBLICATION_VERSION } from '@moor/e2ee/trust-publication';
+
+export const DEVICE_SECURITY_MAX_BYTES = 1024 * 1024;
+export const DEVICE_SECURITY_FAILED =
+  '本机设备安全操作未确认完成；请先执行 read 核对本机状态，再决定下一步。不会自动重试。';
+const pathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(isAbsolute)
+  .refine((value) => !value.includes('\0'));
+const revisionSchema = z.number().int().positive().safe();
+const rolesSchema = deviceIdentitySchema.shape.roles;
+const manifestSchema = z.string().min(1).max(E2EE_TRUST_LIMITS.signedCharacters);
+const recoveryCodeSchema = z
+  .object({ kind: z.literal('moor-e2ee-recovery-code'), code: e2eeDigestSchema })
+  .strict();
+const recoveryCapsuleSchema = z
+  .object({
+    kind: z.literal('moor-e2ee-recovery-capsule'),
+    capsule: z.string().min(1).max(E2EE_RECOVERY_MAX_BYTES),
+  })
+  .strict();
+
+/** Local operator input only. Credentials are read from private files, never command arguments. */
+export const deviceSecurityCommandSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('read') }).strict(),
+  z.object({ action: z.literal('read-publications') }).strict(),
+  z
+    .object({
+      action: z.literal('publish-trust'),
+      expectedRevision: revisionSchema,
+      connectionFile: pathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('sync-trust'),
+      expectedRevision: revisionSchema,
+      connectionFile: pathSchema,
+      limit: z.number().int().min(1).max(TRUST_PUBLICATION_LIMITS.pageEntries).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('initialize'),
+      identity: deviceIdentitySchema,
+      recoveryCodeFile: pathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('begin-pairing'),
+      pin: trustPinSchema,
+      deviceId: e2eeIdSchema,
+      roles: rolesSchema,
+    })
+    .strict(),
+  z.object({ action: z.literal('renew-pairing'), expectedRevision: revisionSchema }).strict(),
+  z.object({ action: z.literal('rotate-key'), expectedRevision: revisionSchema }).strict(),
+  z.object({ action: z.literal('cancel-rotation'), expectedRevision: revisionSchema }).strict(),
+  z
+    .object({
+      action: z.literal('approve-pairing'),
+      expectedRevision: revisionSchema,
+      request: pairingRequestSchema,
+      expectedFingerprint: e2eeDigestSchema,
+      expectedDeviceKeyId: e2eeDigestSchema.nullable(),
+      recoveryCodeFile: pathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('accept-pairing'),
+      expectedRevision: revisionSchema,
+      approval: z.string().min(1).max(E2EE_PAIRING_LIMITS.approvalCharacters),
+      rootPublicKey: rootPublicJwkSchema,
+      signedManifest: manifestSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('revoke-device'),
+      expectedRevision: revisionSchema,
+      deviceId: e2eeIdSchema,
+      expectedKeyId: e2eeDigestSchema,
+      recoveryCodeFile: pathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('install-trust'),
+      expectedRevision: revisionSchema,
+      signedManifest: manifestSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('export-recovery'),
+      recoveryCodeFile: pathSchema,
+      outputFile: pathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('recover'),
+      recoveryCodeFile: pathSchema,
+      capsuleFile: pathSchema,
+      expectedPin: trustPinSchema,
+      baseTrust: devicePublicTrustSchema,
+      deviceId: e2eeIdSchema,
+      roles: rolesSchema,
+      revokeDevices: z
+        .array(z.object({ deviceId: e2eeIdSchema, keyId: e2eeDigestSchema }).strict())
+        .max(E2EE_TRUST_LIMITS.devices)
+        .refine((items) => new Set(items.map((item) => item.deviceId)).size === items.length),
+    })
+    .strict(),
+]);
+export type DeviceSecurityCommand = z.infer<typeof deviceSecurityCommandSchema>;
+export type DeviceSecurityResult = {
+  securityVersion: 1;
+  ok: true;
+  action: DeviceSecurityCommand['action'];
+  data: unknown;
+};
+
+function fail(): never {
+  throw new Error(DEVICE_SECURITY_FAILED);
+}
+function distinctPaths(paths: string[]) {
+  const resolved = paths.map((path) => resolve(pathSchema.parse(path)));
+  if (new Set(resolved).size !== resolved.length) fail();
+  // Lock databases and their sidecars must not overlap another operation's data file either.
+  for (const path of resolved)
+    for (const suffix of ['.lock', '.lock-journal', '.lock-wal', '.lock-shm'])
+      if (resolved.includes(path + suffix)) fail();
+}
+
+/** One manual action. Only publish-trust and sync-trust contact the fixed public trust endpoints. */
+export async function runDeviceSecurityCommand(
+  input: unknown,
+  options: { dataFile: string; trust?: TrustClientOptions },
+): Promise<DeviceSecurityResult> {
+  let manager: DeviceManager | undefined;
+  const opened: PrivateEndpointFile[] = [];
+  try {
+    const command = deviceSecurityCommandSchema.parse(input);
+    const paths = [options.dataFile];
+    if ('recoveryCodeFile' in command) paths.push(command.recoveryCodeFile);
+    if ('capsuleFile' in command) paths.push(command.capsuleFile);
+    if ('outputFile' in command) paths.push(command.outputFile);
+    if ('connectionFile' in command) paths.push(command.connectionFile);
+    distinctPaths(paths);
+    manager = await DeviceManager.open(options.dataFile);
+    const open = (path: string) => {
+      const file = PrivateEndpointFile.open(path);
+      opened.push(file);
+      return file;
+    };
+    const code = (path: string, create = false) => {
+      const file = open(path),
+        saved = file.load();
+      if (saved) return recoveryCodeSchema.parse(saved.value).code;
+      if (!create) fail();
+      const value = recoveryCodeSchema.parse({
+        kind: 'moor-e2ee-recovery-code',
+        code: generateRecoveryKey(),
+      });
+      // Persist the only copy of the recovery code before initializing the vault. Keep it on failure.
+      file.save(null, value);
+      return value.code;
+    };
+    let data: unknown;
+    switch (command.action) {
+      case 'read': {
+        const status = manager.status();
+        if ('pending' in status && status.pending) {
+          const fingerprint = await fingerprintRequest(status.pending.request);
+          const current = manager.status();
+          if (current.revision !== status.revision) fail();
+          data = { ...current, fingerprint };
+        } else data = status;
+        break;
+      }
+      case 'read-publications':
+        data = manager.publications();
+        break;
+      case 'publish-trust':
+      case 'sync-trust': {
+        const publication = manager.publications();
+        if (publication.revision !== command.expectedRevision) fail();
+        const connectionFile = open(command.connectionFile);
+        const connection = trustConnectionSchema.parse(connectionFile.load()?.value);
+        if (
+          connection.owner !== publication.pin.accountId ||
+          connection.origin !== publication.pin.serverOrigin
+        )
+          fail();
+        const signal = AbortSignal.any([
+          ...(options.trust?.signal ? [options.trust.signal] : []),
+          (options.trust?.deadline ?? AbortSignal.timeout)(30000),
+        ]);
+        const current = () => {
+          options.trust?.current?.();
+          if (signal.aborted) fail();
+          connectionFile.load();
+          if (manager!.status().revision !== command.expectedRevision) fail();
+        };
+        current();
+        const client = new TrustClient(connection, {
+          ...options.trust,
+          signal,
+          deadline: () => signal,
+          current,
+        });
+        if (command.action === 'publish-trust') {
+          if (!publication.entries.length) {
+            data = { status: manager.status(), stored: [], pending: 0 };
+            break;
+          }
+          const receipt = await client.publish(publication);
+          current();
+          const status = manager.ackPublications({
+            expectedRevision: command.expectedRevision,
+            checkpoints: receipt.stored,
+          });
+          data = {
+            status,
+            stored: receipt.stored,
+            pending: manager.publications().entries.length,
+            relayHead: { checkpoint: receipt.head, verified: false },
+          };
+        } else {
+          const before = manager.status();
+          if (!('trust' in before) || !before.trust) fail();
+          const page = await client.read({
+            rootPublicKey: publication.rootPublicKey,
+            request: {
+              publicationVersion: TRUST_PUBLICATION_VERSION,
+              pin: publication.pin,
+              after: before.trust.checkpoint,
+              limit: command.limit ?? TRUST_PUBLICATION_LIMITS.pageEntries,
+            },
+          });
+          current();
+          const status = await manager.installTrustBatch(
+            { expectedRevision: command.expectedRevision, entries: page.entries },
+            { current },
+          );
+          data = {
+            status,
+            installed: page.entries.length,
+            complete: page.complete,
+            relayHead: { checkpoint: page.head, verified: page.complete },
+          };
+        }
+        break;
+      }
+      case 'initialize':
+        if (manager.status().phase !== 'empty') fail();
+        data = await manager.initialize(command.identity, code(command.recoveryCodeFile, true));
+        break;
+      case 'begin-pairing':
+        data = await manager.beginPairing(command);
+        break;
+      case 'renew-pairing':
+        data = await manager.renewPairing(command.expectedRevision);
+        break;
+      case 'rotate-key':
+        data = await manager.requestKeyRotation(command.expectedRevision);
+        break;
+      case 'cancel-rotation':
+        data = manager.cancelRotation(command.expectedRevision);
+        break;
+      case 'approve-pairing':
+        data = await manager.approvePairing({
+          ...command,
+          recoveryKey: code(command.recoveryCodeFile),
+        });
+        break;
+      case 'accept-pairing':
+        data = await manager.acceptPairing(command);
+        break;
+      case 'revoke-device':
+        data = await manager.revokeDevice({
+          ...command,
+          recoveryKey: code(command.recoveryCodeFile),
+        });
+        break;
+      case 'install-trust':
+        data = await manager.installTrust(command);
+        break;
+      case 'export-recovery': {
+        const recoveryKey = code(command.recoveryCodeFile);
+        const output = open(command.outputFile);
+        if (output.load()) fail();
+        const capsule = await manager.recoveryCapsule(recoveryKey);
+        for (const file of opened) file.load();
+        output.save(
+          null,
+          recoveryCapsuleSchema.parse({ kind: 'moor-e2ee-recovery-capsule', capsule }),
+        );
+        data = { outputFile: resolve(command.outputFile) };
+        break;
+      }
+      case 'recover': {
+        if (manager.status().phase !== 'empty') fail();
+        const recoveryKey = code(command.recoveryCodeFile);
+        const capsule = recoveryCapsuleSchema.parse(
+          open(command.capsuleFile).load()?.value,
+        ).capsule;
+        data = await manager.recover({ ...command, recoveryKey, capsule });
+        break;
+      }
+    }
+    // A replaced or changed auxiliary file makes the result uncertain; never report success for it.
+    for (const file of opened) file.load();
+    return { securityVersion: 1, ok: true, action: command.action, data };
+  } catch {
+    return fail();
+  } finally {
+    for (const file of opened.reverse()) file.close();
+    manager?.close();
+  }
+}

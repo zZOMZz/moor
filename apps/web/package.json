@@ -1,0 +1,38 @@
+{
+  "name": "@moor/app-web",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/app/entry.ts",
+      "import": "./dist/app/entry.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build/build-package.mjs && node scripts/build-styles.mjs",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "pnpm --filter @moor/app-web... run build && node ../../scripts/validation/test.mjs apps/web"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.8.0",
+    "@moor/client": "workspace:*",
+    "@moor/protocol": "workspace:*",
+    "@moor/session": "workspace:*",
+    "lucide-react": "1.44.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/jsdom": "30.0.0",
+    "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "jsdom": "30.0.1",
+    "postcss": "8.5.28",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3"
+  }
+}

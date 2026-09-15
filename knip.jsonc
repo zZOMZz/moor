@@ -1,34 +1,155 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
 
-  "entry": [
-    // Production entry points. The suffix keeps them in production mode.
-    "src/relay/main.ts!",
-    "src/bridge/host-main.ts!",
-    "src/cli/main.ts!",
-    "src/security/{main,desktop-client}.ts!",
-    "src/desktop/workspace-client.ts!",
-    "src/desktop/{entry,preload,web-preload,secure-preload,preview-renderer}.cjs!",
-    "src/desktop/settings.js!",
-    "src/web/{entry,notification-worker}.ts!",
-    "src/web/public/{startup,sw}.js!",
-    "src/{desktop,web,web/public}/*.css!",
+  "workspaces": {
+    ".": {
+      "entry": [
+        // Production entry points. The suffix keeps them in production mode.
 
-    // Build, release and deterministic validation entry points.
-    "scripts/{build,test,package,deploy-relay,mac-release,create-web-push-keys,synthetic-agent}.mjs",
-    "scripts/check-*.cjs",
-    "scripts/prepare-validation.ts",
-    "tests/**/*.test.ts",
-    "tests/support/synthetic-*.mjs",
-    "tests/support/secure-desktop-host.ts",
-    "tests/support/{secure-layout-fixture,workspace-layout-fixture}.tsx",
-  ],
-
-  "project": [
-    "src/**/*.{ts,tsx,js,cjs,mjs,css}!",
-    "scripts/**/*.{ts,tsx,js,cjs,mjs}",
-    "tests/**/*.{ts,tsx,js,cjs,mjs}",
-  ],
+        // Build, release and deterministic validation entry points.
+        "scripts/build/*.mjs",
+        "scripts/release/*.mjs",
+        "scripts/validation/{test,synthetic-agent}.mjs",
+        "scripts/validation/check-*.mjs",
+        "scripts/validation/check-*.cjs",
+        "scripts/validation/prepare-validation.ts",
+        "tests/**/*.test.ts",
+        "tests/fixtures/synthetic-*.mjs",
+        "tests/fixtures/secure-desktop-host.ts",
+        "tests/fixtures/{secure-layout-fixture,workspace-layout-fixture}.tsx",
+      ],
+      "project": ["scripts/**/*.{ts,tsx,js,cjs,mjs}", "tests/**/*.{ts,tsx,js,cjs,mjs}"],
+      // The pinned adapter is resolved at runtime and copied into the packaged app.
+      "ignoreDependencies": ["@agentclientprotocol/codex-acp"],
+    },
+    "packages/protocol": {
+      "entry": ["src/**/*.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": { "@moor/protocol/*": ["./src/*"] },
+      "includeEntryExports": false,
+    },
+    "packages/session": {
+      "entry": ["src/**/*.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/protocol/*": ["../protocol/src/*"],
+        "@moor/session/*": ["./src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "packages/e2ee": {
+      "entry": ["src/**/*.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/e2ee/*": ["./src/*"],
+        "@moor/protocol/*": ["../protocol/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "packages/client": {
+      "entry": ["src/**/*.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/client/*": ["./src/*"],
+        "@moor/e2ee/*": ["../e2ee/src/*"],
+        "@moor/protocol/*": ["../protocol/src/*"],
+        "@moor/session/*": ["../session/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "apps/cli": {
+      "entry": ["src/{main,security/main}.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/app-cli/*": ["./src/*"],
+        "@moor/client/*": ["../../packages/client/src/*"],
+        "@moor/e2ee/*": ["../../packages/e2ee/src/*"],
+        "@moor/protocol/*": ["../../packages/protocol/src/*"],
+        "@moor/session/*": ["../../packages/session/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "packages/gateway": {
+      "entry": ["src/**/*.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/e2ee/*": ["../e2ee/src/*"],
+        "@moor/gateway/*": ["./src/*"],
+        "@moor/protocol/*": ["../protocol/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "apps/relay": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": ["src/**/*.{ts,d.ts}!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/app-relay/*": ["./src/*"],
+        "@moor/e2ee/*": ["../../packages/e2ee/src/*"],
+        "@moor/gateway/*": ["../../packages/gateway/src/*"],
+        "@moor/protocol/*": ["../../packages/protocol/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "packages/host": {
+      "entry": ["src/**/*.ts!", "tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/e2ee/*": ["../e2ee/src/*"],
+        "@moor/host/*": ["./src/*"],
+        "@moor/protocol/*": ["../protocol/src/*"],
+        "@moor/session/*": ["../session/src/*"],
+      },
+      "ignoreDependencies": ["@agentclientprotocol/codex-acp!"],
+      "includeEntryExports": false,
+    },
+    "apps/host": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": ["src/**/*.ts!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/e2ee/*": ["../../packages/e2ee/src/*"],
+        "@moor/gateway/*": ["../../packages/gateway/src/*"],
+        "@moor/host/*": ["../../packages/host/src/*"],
+        "@moor/protocol/*": ["../../packages/protocol/src/*"],
+        "@moor/session/*": ["../../packages/session/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "apps/web": {
+      "entry": [
+        "src/features/notifications/notification-worker.ts!",
+        "public/{startup,sw}.js!",
+        "src/styles/*.css!",
+        "public/style.css!",
+        "tests/**/*.test.ts",
+      ],
+      "project": ["src/**/*.{ts,tsx,css}!", "public/*.{js,css}!", "tests/**/*.ts"],
+      "paths": {
+        "__ENTRY__": ["./src/app/entry.ts"],
+        "@moor/app-web/*": ["./src/*"],
+        "@moor/client/*": ["../../packages/client/src/*"],
+        "@moor/protocol/*": ["../../packages/protocol/src/*"],
+        "@moor/session/*": ["../../packages/session/src/*"],
+      },
+      "includeEntryExports": false,
+    },
+    "apps/desktop": {
+      "entry": [
+        "src/main/{desktop-client,workspace-client-entry}.ts!",
+        "src/main/preview-renderer.cjs!",
+        "src/preload/*.cjs!",
+        "src/settings/settings.js!",
+        "tests/**/*.test.ts",
+      ],
+      "project": ["src/**/*.{ts,js,cjs}!", "tests/**/*.ts"],
+      "paths": {
+        "@moor/client/*": ["../../packages/client/src/*"],
+        "@moor/e2ee/*": ["../../packages/e2ee/src/*"],
+        "@moor/protocol/*": ["../../packages/protocol/src/*"],
+      },
+      "ignoreUnresolved": ["./runtime/preview-renderer.cjs"],
+      "includeEntryExports": false,
+    },
+  },
 
   "includeEntryExports": true,
 
@@ -36,19 +157,8 @@
   // needed inside the same file (for example schemas and UI helpers).
   "ignoreExportsUsedInFile": true,
 
-  // build.mjs replaces this import with the hashed bundle. Resolve its source
-  // so startup.js -> entry.start remains part of the dependency graph.
-  "paths": { "__ENTRY__": ["./src/web/entry.ts"] },
-
   // These commands are provided by the operating system, not npm packages.
-  "ignoreBinaries": ["ditto", "mkfifo"],
-
-  // The pinned adapter is resolved at runtime and copied into the packaged app.
-  // Ignore it only in production mode, where development and test references are absent.
-  "ignoreDependencies": ["@agentclientprotocol/codex-acp!"],
-
-  // The desktop runtime path is created during packaging.
-  "ignoreUnresolved": ["./runtime/preview-renderer.cjs"],
+  "ignoreBinaries": ["ditto", "mkfifo", "rg"],
 
   // Reject new unused exports and types after the audited cleanup.
   "rules": {

@@ -46,6 +46,6 @@ Moor 不从适配器私有扩展推断或展示账号额度，也不从模型级
 
 浏览器使用自定义合成 Agent，按能力边界没有执行追加。真实 Codex 登录和模型调用、Mac 安装包、iPhone/Safari/PWA 仍须完成[第二轮设备验收](validation.md#后续阶段的专项验收)。本阶段不延长 Agent 生命周期，也不增加后台驻留、自动唤醒或离线执行队列。
 
-实现入口：[交互协议](../src/interaction-protocol.ts)、[事件模型](../src/runtime/session-events.ts)、[ACP 适配](../src/runtime/acp.ts)、[主机交互](../src/bridge/session-interactions.ts)、[浏览器草稿与确认](../src/web/interactions.ts)。
+实现入口：[交互协议](../packages/protocol/src/interaction-protocol.ts)、[事件模型](../packages/host/src/sessions/events.ts)、[ACP 适配](../packages/host/src/agents/acp/driver.ts)、[主机交互](../packages/host/src/sessions/interactions.ts)、[浏览器草稿与确认](../apps/web/src/features/interactions/interactions.ts)。
 
 返回[会话与回合](session.md) · [功能完善计划](roadmap.md) · [文档目录](README.md)。

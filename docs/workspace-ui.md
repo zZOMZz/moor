@@ -18,10 +18,10 @@ macOS 关闭、最小化和全屏按钮位于侧栏顶部的原生区域，不�
 
 已有会话与原请求不删除、不在重连时重放。会话待确认请求保留原编号核查；旧协作请求只有存在遗留记录时才显示核查与原请求重试入口，不提供新建计划或授权。差异与错误可使用语义颜色，主题表面与主操作保持黑白。
 
-这些已移除功能的客户端控制器及其专属交互测试也已清理。旧数据格式、图片与请求摘要校验、原账号和执行目标绑定继续由工作区存储和原操作账本维护；任务与 MCP 的原指令摘要共用同一实现。兼容回归见[旧工作区记录](../tests/workspace-feature-compatibility.test.ts)、[旧预览与标注](../tests/project-preview-compatibility.test.ts)和[原加密请求账本](../tests/secure-store.test.ts)。本机设置、主机协议和合成主机测试继续保留。
+这些已移除功能的客户端控制器及其专属交互测试也已清理。旧数据格式、图片与请求摘要校验、原账号和执行目标绑定继续由工作区存储和原操作账本维护；任务与 MCP 的原指令摘要共用同一实现。兼容回归见[旧工作区记录](../tests/integration/workspace-feature-compatibility.test.ts)、[旧预览与标注](../tests/integration/project-preview-compatibility.test.ts)和[原加密请求账本](../tests/integration/secure-store.test.ts)。本机设置、主机协议和合成主机测试继续保留。
 
 ## 验证范围
 
-自动测试使用合成账号、会话、主机和确定性信号。`pnpm exec electron scripts/check-workspace-layout.cjs` 检查实际 Chromium 中的深色/浅色/Auto、重载持久化、环境面板显隐、侧栏宽度持久化与 390px 抽屉布局，并将截图写入临时目录。原生标题栏配置另有平台测试。
+自动测试使用合成账号、会话、主机和确定性信号。`pnpm exec electron scripts/validation/check-workspace-layout.cjs` 检查实际 Chromium 中的深色/浅色/Auto、重载持久化、环境面板显隐、侧栏宽度持久化与 390px 抽屉布局，并将截图写入临时目录。原生标题栏配置另有平台测试。
 
 这些检查不等同于已签名安装包、真实 Agent 账号或真实多设备端到端验收。
