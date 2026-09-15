@@ -48,26 +48,16 @@ test('local diagnostics run only --version on the selected synthetic executable 
   assert.doesNotMatch(JSON.stringify(projected), /path|fingerprint|synthetic-codex|7\.8\.9/);
 });
 
-test('bundled diagnostics use the same Node launcher as ACP, with an injected version runner', async (t) => {
+test('pathless built-in Codex diagnostics fail before invoking a version runner', async (t) => {
   const f = fixture(t),
-    config = { ...f.config, runtimeOverrides: undefined },
-    calls: unknown[] = [];
-  const report = await inspectAgentProgram(
-    config,
-    f.cwd,
-    async (command, args, cwd) => {
-      calls.push({ command, args, cwd });
-      return 'codex-cli 1.2.3-test.1\n';
-    },
-    () => 123,
+    config = { ...f.config, runtimeOverrides: undefined };
+  await assert.rejects(
+    inspectAgentProgram(config, f.cwd, async () => {
+      assert.fail('must not inspect an unavailable Codex executable');
+    }),
+    /未找到可用的本机 Codex/,
   );
-  const program = localAgentProgram(config);
-  assert.equal(program.source, 'bundled');
-  assert.deepEqual(calls, [
-    { command: process.execPath, args: [program.path, '--version'], cwd: f.cwd },
-  ]);
-  assert.equal(report.version, '1.2.3-test.1');
-  assert.equal(report.observedAt, 123);
+  assert.throws(() => localAgentProgram(config), /未找到可用的本机 Codex/);
 });
 
 test('private or malformed version output remains unknown, and diagnostics reject an in-place upgrade', async (t) => {

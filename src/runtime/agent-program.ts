@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import * as nodeModule from 'node:module';
 import { dirname, join } from 'node:path';
-import type { AgentConfig } from './agent';
+import { LOCAL_CODEX_NOT_INSTALLED, type AgentConfig } from './agent';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 
@@ -24,7 +24,7 @@ export const agentProgramCheckSchema = z
   );
 export type AgentProgramCheck = z.infer<typeof agentProgramCheckSchema>;
 export type LocalAgentProgram = {
-  source: 'custom' | 'local' | 'bundled' | 'adapter';
+  source: 'custom' | 'local' | 'adapter';
   path: string;
   adapterName?: string;
   adapterVersion?: string;
@@ -67,27 +67,17 @@ function adapter(config: AgentConfig) {
 export function localAgentProgram(config: AgentConfig): LocalAgentProgram {
   const fingerprint = agentProgramFingerprint(config);
   if (config.customAcp) return { source: 'custom', path: config.customAcp.command, fingerprint };
+  const codexPath = config.agentType === 'codex' ? config.runtimeOverrides?.codexPath : undefined;
+  if (config.agentType === 'codex' && !codexPath) throw new Error(LOCAL_CODEX_NOT_INSTALLED);
   let installed: ReturnType<typeof adapter>;
   try {
     installed = adapter(config);
   } catch {}
-  if (!installed && config.agentType === 'codex' && config.runtimeOverrides?.codexPath)
-    return { source: 'local', path: config.runtimeOverrides.codexPath, fingerprint };
+  if (!installed && codexPath) return { source: 'local', path: codexPath, fingerprint };
   if (!installed) throw new Error('本机 Agent 适配器不可用');
-  const source =
-    config.agentType === 'codex'
-      ? config.runtimeOverrides?.codexPath
-        ? 'local'
-        : 'bundled'
-      : 'adapter';
-  const path =
-    config.agentType === 'codex'
-      ? (config.runtimeOverrides?.codexPath ??
-        nodeModule.createRequire(installed.path).resolve('@openai/codex/bin/codex.js'))
-      : installed.path;
   return {
-    source,
-    path,
+    source: config.agentType === 'codex' ? 'local' : 'adapter',
+    path: codexPath ?? installed.path,
     fingerprint,
     adapterName: installed.name,
     ...(installed.version ? { adapterVersion: installed.version } : {}),
@@ -148,11 +138,7 @@ export async function inspectAgentProgram(
   const applicable = config.agentType === 'codex' && !config.customAcp;
   if (applicable) {
     try {
-      const output = await run(
-        program.source === 'bundled' ? process.execPath : program.path,
-        [...(program.source === 'bundled' ? [program.path] : []), '--version'],
-        cwd,
-      );
+      const output = await run(program.path, ['--version'], cwd);
       version = /^codex-cli (\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?)\s*$/.exec(output.trim())?.[1];
     } catch {}
   }
@@ -166,8 +152,8 @@ export async function inspectAgentProgram(
   });
 }
 
-// Match the launcher shipped by the pinned @openai/codex dependency. No agent
-// account, configuration database or external application source is inspected.
+// Match a locally selected @openai/codex launcher. No agent account,
+// configuration database or external application source is inspected.
 function codexFiles(launcher: string): string[] {
   const files = [launcher];
   try {
@@ -209,13 +195,8 @@ export function agentProgramFingerprint(config: AgentConfig): string {
       try {
         const adapter = programRequire.resolve(entry);
         files.push(adapter);
-        if (config.agentType === 'codex')
-          files.push(
-            ...codexFiles(
-              config.runtimeOverrides?.codexPath ??
-                nodeModule.createRequire(adapter).resolve('@openai/codex/bin/codex.js'),
-            ),
-          );
+        if (config.agentType === 'codex' && config.runtimeOverrides?.codexPath)
+          files.push(...codexFiles(config.runtimeOverrides.codexPath));
       } catch {
         files.push(entry);
       }

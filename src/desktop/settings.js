@@ -584,7 +584,6 @@ function renderAgentPreset() {
   const sources = {
     custom: '自定义 ACP',
     local: '本机 Codex',
-    bundled: 'Moor 附带 Codex',
     adapter: '内置适配器',
   };
   $('agent-program-status').textContent = program

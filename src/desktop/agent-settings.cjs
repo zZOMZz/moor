@@ -148,7 +148,7 @@ function publicState(value) {
       const p = preset.program;
       if (
         !object(p) ||
-        !['custom', 'local', 'bundled', 'adapter'].includes(p.source) ||
+        !['custom', 'local', 'adapter'].includes(p.source) ||
         !string(p.path, 4096) ||
         !isAbsolute(p.path) ||
         !fingerprint(p.fingerprint) ||
