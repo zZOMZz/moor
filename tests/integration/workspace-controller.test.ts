@@ -420,11 +420,46 @@ test('opening a cached session models refresh separately from actual connectivit
     observed.some((state) => state.sessionLoad.status === 'refreshing' && state.offline),
     false,
   );
+  assert.equal(
+    observed.some((state) => state.sessionLoad.status === 'loading-cache'),
+    false,
+    'an in-memory session view must render without the loading screen',
+  );
   release.resolve();
   await opening;
   unsubscribe();
   assert.equal(f.controller.state.offline, false);
   assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
+});
+
+test('a fast persisted snapshot avoids the loading screen after controller restart', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create();
+  const scheduled: Array<{ milliseconds: number; canceled: boolean }> = [];
+  const restored = new WorkspaceController({
+    request: f.request,
+    store: new WorkspaceStore(f.memory),
+    schedule: (milliseconds) => {
+      const entry = { milliseconds, canceled: false };
+      scheduled.push(entry);
+      return () => {
+        entry.canceled = true;
+      };
+    },
+  });
+  t.after(() => restored.close());
+  await restored.refreshCatalog('local');
+  await restored.selectProject('local', f.catalog.targets[0]!.target);
+  const observed: WorkspaceClientState[] = [];
+  const unsubscribe = restored.subscribe(() => observed.push(restored.state));
+  await restored.openSession(sessionId);
+  unsubscribe();
+  assert.deepEqual(scheduled, [{ milliseconds: 120, canceled: true }]);
+  assert.equal(
+    observed.some((state) => state.sessionLoad.status === 'loading-cache'),
+    false,
+  );
+  assert(observed.some((state) => state.sessionLoad.status === 'refreshing' && !!state.session));
 });
 
 test('local recovery failure is distinct from an offline execution computer', async (t) => {
@@ -441,7 +476,7 @@ test('local recovery failure is distinct from an offline execution computer', as
   assert.equal(f.controller.state.offline, false);
   assert.deepEqual(f.controller.state.sessionLoad, {
     status: 'failed',
-    source: 'none',
+    source: 'cache',
     reason: 'local',
   });
   fail = false;
@@ -469,17 +504,20 @@ test('composer edits stay in UI memory, coalesce into Draft State and never rewr
   f.controller.queueDraft('AB', { modelId: 'synthetic-model' });
   assert.equal(f.controller.state.draft?.text, '');
   assert.deepEqual(
-    scheduled.map(({ milliseconds, canceled }) => ({ milliseconds, canceled })),
+    scheduled
+      .filter(({ milliseconds }) => milliseconds === 300)
+      .map(({ milliseconds, canceled }) => ({ milliseconds, canceled })),
     [
       { milliseconds: 300, canceled: true },
       { milliseconds: 300, canceled: false },
     ],
   );
-  scheduled[1]!.work();
+  const draftSave = scheduled.findLast(({ milliseconds }) => milliseconds === 300)!;
+  draftSave.work();
   await f.controller.flushDraft();
   unsubscribe();
   assert.equal(emissions, 0, 'recoverable draft commits must not publish global UI state');
-  assert.equal(scheduled[1]!.canceled, false);
+  assert.equal(draftSave.canceled, false);
   assert.deepEqual(await f.store.read(scope, () => {}), ledger);
   assert.deepEqual(await f.store.readDraft(scope, sessionId, () => {}), {
     revision: 1,

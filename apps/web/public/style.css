@@ -4062,6 +4062,15 @@ dialog pre {
 .workspace-empty .workspace-add-project {
   margin: 18px auto 0;
 }
+.workspace-session-loading {
+  display: grid;
+  place-items: center;
+}
+.workspace-session-loading .moor-logo {
+  width: 96px;
+  height: 32px;
+  opacity: 0.72;
+}
 .workspace-error,
 .workspace-status {
   margin: 0;

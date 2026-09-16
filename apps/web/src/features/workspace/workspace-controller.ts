@@ -176,6 +176,10 @@ const resultSchema = z.discriminatedUnion('ok', [
 ]);
 const same = (a: unknown, b: unknown) => productCanonicalJson(a) === productCanonicalJson(b);
 const DRAFT_SAVE_DELAY_MS = 300;
+const SESSION_LOADING_DELAY_MS = 120;
+const SESSION_VIEW_LIMIT = 30;
+const SESSION_VIEW_BYTES = 32 * 1024 * 1024;
+type SessionView = { session: Session; draft: WorkspaceDraft; bytes: number };
 
 /** Plain local/relay controller. Encrypted targets retain their own authenticated transport. */
 export class WorkspaceController {
@@ -201,6 +205,8 @@ export class WorkspaceController {
     saved?: () => void;
   };
   #cancelDraftSave?: () => void;
+  #sessionViews = new Map<string, SessionView>();
+  #sessionViewBytes = 0;
   #catalogVersions = { local: 0, remote: 0 };
   #sessionReadVersion = 0;
   #modelReadVersion = 0;
@@ -243,6 +249,59 @@ export class WorkspaceController {
   }
   #uuid() {
     return (this.options.uuid ?? (() => crypto.randomUUID()))();
+  }
+  #sessionViewKey(scope: WorkspaceScope, sessionId: string) {
+    return productCanonicalJson(['workspace-session-view-v1', scope, sessionId]);
+  }
+  #sessionView(scope: WorkspaceScope, sessionId: string) {
+    const key = this.#sessionViewKey(scope, sessionId),
+      value = this.#sessionViews.get(key);
+    if (!value) return;
+    this.#sessionViews.delete(key);
+    this.#sessionViews.set(key, value);
+    return structuredClone(value);
+  }
+  #rememberSessionView(scope: WorkspaceScope, sessionId: string) {
+    const session = this.#state.session,
+      draft = this.#state.draft;
+    if (!session || !draft || session.meta.id !== sessionId) return;
+    const key = this.#sessionViewKey(scope, sessionId),
+      previous = this.#sessionViews.get(key),
+      snapshot = structuredClone({ session, draft }),
+      bytes = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+    if (previous) this.#sessionViewBytes -= previous.bytes;
+    this.#sessionViews.delete(key);
+    if (bytes > SESSION_VIEW_BYTES) return;
+    this.#sessionViews.set(key, { ...snapshot, bytes });
+    this.#sessionViewBytes += bytes;
+    this.#trimSessionViews();
+  }
+  #rememberSessionDraft(scope: WorkspaceScope, sessionId: string) {
+    const key = this.#sessionViewKey(scope, sessionId),
+      value = this.#sessionViews.get(key),
+      draft = this.#state.draft;
+    if (!value || !draft || this.#state.sessionId !== sessionId) return;
+    this.#sessionViewBytes -= value.bytes;
+    const snapshot = structuredClone(draft),
+      bytes =
+        value.bytes -
+        new TextEncoder().encode(JSON.stringify(value.draft)).byteLength +
+        new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+    this.#sessionViews.delete(key);
+    this.#sessionViews.set(key, { ...value, draft: snapshot, bytes });
+    this.#sessionViewBytes += bytes;
+    this.#trimSessionViews();
+  }
+  #trimSessionViews() {
+    while (
+      this.#sessionViews.size > SESSION_VIEW_LIMIT ||
+      this.#sessionViewBytes > SESSION_VIEW_BYTES
+    ) {
+      const oldest = this.#sessionViews.keys().next().value!,
+        removed = this.#sessionViews.get(oldest)!;
+      this.#sessionViews.delete(oldest);
+      this.#sessionViewBytes -= removed.bytes;
+    }
   }
   #schedule(milliseconds: number, work: () => void) {
     if (this.options.schedule) return this.options.schedule(milliseconds, work);
@@ -456,34 +515,69 @@ export class WorkspaceController {
     this.#state.searchFocus = undefined;
     this.#state.focusedTurnId = undefined;
     await this.flushDraft();
-    const scope = this.#context(sessionId).scope;
+    const scope = this.#context(sessionId).scope,
+      view = this.#sessionView(scope, sessionId);
     this.#generation++;
     this.#state.sessionId = sessionId;
-    delete this.#state.session;
     delete this.#state.modelError;
-    this.#state.sessionLoad = { status: 'loading-cache' };
-    this.#emit();
     const current = this.#current();
+    let cancelLoading = () => {};
+    if (view) {
+      this.#state.session = view.session;
+      this.#state.draft = view.draft;
+      this.#state.sessionLoad = { status: 'refreshing', source: 'cache' };
+      this.#emit();
+    } else {
+      delete this.#state.session;
+      delete this.#state.draft;
+      this.#state.sessionLoad = { status: 'loading-cache' };
+      cancelLoading = this.#schedule(SESSION_LOADING_DELAY_MS, () => {
+        try {
+          current();
+          this.#emit();
+        } catch {
+          // A newer navigation owns the visible session.
+        }
+      });
+    }
     let cached: Session | null;
     try {
-      this.#state.ledger = await this.store.read(scope, current);
-      this.#state.draft = await this.store.readDraft(scope, sessionId, current, this.#state.ledger);
-      cached = await this.store.cachedSession(scope, sessionId, current);
-    } catch (error) {
+      const [ledger, storedSession] = await Promise.all([
+        this.store.read(scope, current),
+        this.store.cachedSession(scope, sessionId, current),
+      ]);
       current();
-      this.#state.sessionLoad = { status: 'failed', source: 'none', reason: 'local' };
+      this.#state.ledger = ledger;
+      this.#state.draft = await this.store.readDraft(scope, sessionId, current, ledger);
+      cached = storedSession;
+    } catch (error) {
+      cancelLoading();
+      current();
+      this.#state.sessionLoad = {
+        status: 'failed',
+        source: view ? 'cache' : 'none',
+        reason: 'local',
+      };
       this.#emit();
       throw error;
     }
-    if (cached) this.#state.session = cached;
-    this.#state.sessionLoad = { status: 'refreshing', source: cached ? 'cache' : 'none' };
+    cancelLoading();
+    current();
+    if (!view && cached) this.#state.session = cached;
+    if (this.#state.session) this.#rememberSessionView(scope, sessionId);
+    this.#state.sessionLoad = this.#state.session
+      ? { status: 'refreshing', source: 'cache' }
+      : { status: 'loading-cache' };
     this.#emit();
     await this.refreshSession({ announce: false, settle: false });
+    let optionsRefreshed = false;
     try {
       await this.refreshAgentOptions();
+      optionsRefreshed = true;
     } finally {
       current();
       this.#state.sessionLoad = { status: 'ready', source: 'host' };
+      if (!optionsRefreshed) this.#rememberSessionView(scope, sessionId);
       this.#emit();
     }
     current();
@@ -532,6 +626,7 @@ export class WorkspaceController {
       this.#state.sessionLoad = settle
         ? { status: 'ready', source: 'host' }
         : { status: 'refreshing', source: 'host' };
+      if (settle) this.#rememberSessionView(context.scope, context.sessionId);
     } catch (error) {
       context.current();
       this.#state.offline = true;
@@ -569,6 +664,7 @@ export class WorkspaceController {
       );
       // Preserve a newer timeline read which may have completed while capabilities loaded.
       this.#state.session = { ...this.#state.session!, agent };
+      this.#rememberSessionView(context.scope, context.sessionId);
       delete this.#state.modelError;
     } catch (error) {
       context.current();
@@ -646,6 +742,7 @@ export class WorkspaceController {
           current,
           pending.actor,
         );
+        this.#rememberSessionDraft(pending.scope, pending.sessionId);
         current();
       });
       // A failed recoverable draft write must not poison later explicit retries.
@@ -1755,6 +1852,7 @@ export class WorkspaceController {
     this.#cancelDraftSave = undefined;
     this.#state.ledger = await this.store.read(scope, current);
     this.#state.draft = await this.store.readDraft(scope, sessionId, current, this.#state.ledger);
+    this.#rememberSessionDraft(scope, sessionId);
     this.#draftWrites = Promise.resolve();
     this.#interactionWrites = Promise.resolve();
     this.#emit();
@@ -1768,6 +1866,7 @@ export class WorkspaceController {
         context.current,
         this.#state.ledger,
       );
+    if (this.#state.sessionId) this.#rememberSessionDraft(context.scope, this.#state.sessionId);
     this.#emit();
   }
   async createSession(agentId: string, title?: string) {
@@ -2357,6 +2456,8 @@ export class WorkspaceController {
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;
     this.#closed = true;
+    this.#sessionViews.clear();
+    this.#sessionViewBytes = 0;
     this.#generation++;
     this.#listeners.clear();
     this.store.close();

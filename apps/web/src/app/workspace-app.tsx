@@ -186,36 +186,43 @@ function WorkspaceConversation({
   const session = state.session;
   if (!session || !state.sessionId || !state.scope) {
     const loading = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
+    if (loading)
+      return (
+        <section
+          className="workspace-empty workspace-session-loading"
+          role="status"
+          aria-label="正在打开会话"
+          aria-busy="true"
+        >
+          <img className="moor-logo" src="/moor-logo.png" alt="Moor" width={96} height={32} />
+        </section>
+      );
     return (
       <section className="workspace-empty">
-        {loading ? <RefreshCw aria-hidden="true" /> : <Folder aria-hidden="true" />}
+        <Folder aria-hidden="true" />
         <h1>
-          {loading
-            ? '正在打开会话…'
-            : state.sessionLoad.status === 'failed'
-              ? state.sessionLoad.reason === 'local'
-                ? '本机会话恢复失败'
-                : '会话暂不可用'
-              : (state.project?.projectName ?? '从你的项目开始')}
+          {state.sessionLoad.status === 'failed'
+            ? state.sessionLoad.reason === 'local'
+              ? '本机会话恢复失败'
+              : '会话暂不可用'
+            : (state.project?.projectName ?? '从你的项目开始')}
         </h1>
         <p>
-          {loading
-            ? '正在读取本机缓存并与执行电脑同步。'
-            : state.sessionLoad.status === 'failed'
-              ? state.sessionLoad.reason === 'local'
-                ? '本机缓存无法读取，请重试或检查存储。'
-                : '执行电脑暂不可达，本机尚无此会话缓存。'
-              : state.project
-                ? '选择已有会话，或在侧栏新建会话。'
-                : '添加本机文件夹，开始你的第一个会话。'}
+          {state.sessionLoad.status === 'failed'
+            ? state.sessionLoad.reason === 'local'
+              ? '本机缓存无法读取，请重试或检查存储。'
+              : '执行电脑暂不可达，本机尚无此会话缓存。'
+            : state.project
+              ? '选择已有会话，或在侧栏新建会话。'
+              : '添加本机文件夹，开始你的第一个会话。'}
         </p>
-        {!loading && !state.project && addProject && (
+        {!state.project && addProject && (
           <button className="workspace-add-project" disabled={busy} onClick={addProject}>
             <Plus size={16} />
             添加项目
           </button>
         )}
-        {!loading && state.project && !state.project.runtime.agents.length && configureAgent && (
+        {state.project && !state.project.runtime.agents.length && configureAgent && (
           <>
             <p>此电脑尚未配置 Agent。</p>
             <button onClick={configureAgent} disabled={busy}>

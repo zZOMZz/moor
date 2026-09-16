@@ -857,6 +857,27 @@ test('packaged workspace opens local projects without an account and preserves d
     });
     sessionRefresh = undefined;
     assert.equal(dom.window.document.querySelector('.workspace-session-sync'), null);
+    const visibleSession = structuredClone(state.session!);
+    await act(async () => {
+      delete state.session;
+      state.sessionLoad = { status: 'loading-cache' };
+      emit();
+    });
+    const loading = dom.window.document.querySelector<HTMLElement>('.workspace-session-loading');
+    assert(loading);
+    assert.equal(loading.getAttribute('aria-label'), '正在打开会话');
+    assert.equal(
+      loading.querySelector<HTMLImageElement>('img')?.getAttribute('src'),
+      '/moor-logo.png',
+    );
+    assert.equal(loading.querySelector('svg'), null);
+    assert.equal(loading.querySelector('h1'), null);
+    assert.equal(loading.querySelector('p'), null);
+    await act(async () => {
+      state.session = visibleSession;
+      state.sessionLoad = { status: 'ready', source: 'host' };
+      emit();
+    });
     const information =
       dom.window.document.querySelector<HTMLDetailsElement>('.session-information')!;
     assert.equal(information.open, false);
