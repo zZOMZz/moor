@@ -1,8 +1,8 @@
 # 输入区模型、权限与用量面板
 
-状态：产品方案已确认，实施中。本文记录目标行为；实际交付状态与验证结果在实施后更新。审批入口保持独立，包含 Read-only、Agent、Auto review 和 Full access 四种明确权限模式。
+状态：已实现。本文记录产品行为、协议与验证范围。审批入口保持独立，包含 Read-only、Agent、Auto review 和 Full access 四种明确权限模式。
 
-当前界面见[工作区界面](workspace-ui.md)，现有能力读取与执行校验见[运行与恢复](runtime.md)。本文实施后，模型探测的触发时机与交互以本方案为准，取代[客户端统一计划](client-unification.md)中进入会话、展开选择器及切换模型时重新探测的设计。
+当前界面见[工作区界面](workspace-ui.md)，能力读取与执行校验见[运行与恢复](runtime.md)。模型探测的触发时机与交互以本文为准，取代[客户端统一计划](client-unification.md)中进入会话、展开选择器及切换模型时重新探测的设计。
 
 ## 已确认的产品行为
 
@@ -35,7 +35,7 @@
 
 能力缓存回答“有哪些模型、各自支持什么档位、默认值是什么”；会话与草稿状态回答“这个会话选择了什么模型和档位”。两者独立更新。
 
-- 一次初始化探测需要收齐各模型的推理强度及可验证默认值。当前适配层只保留当前模型的 effort，必须调整能力采集与投影，避免合并面板后仍在切换模型时补查。
+- 一次初始化探测收齐各模型的推理强度及可验证默认值。Codex 锁定补丁在初始目录中提供所有模型的 effort；其他 ACP Agent 的缺失选项在同一次初始化探测中收集，不在用户切换模型时补查。
 - 缓存按账号、执行电脑、工作区、Agent 配置和项目的实际执行范围隔离，记录来源、程序与目录指纹、读取时间。同一范围内的会话共享能力目录；会话编号不能成为重复探测的理由。
 - 工作目录或有效 Agent 配置存在差异时，先核对是否属于不同能力范围，不能把另一项目或另一电脑的目录冒充为当前能力。
 - 已保存缓存可用于展示，但需区分初始化中、已确认、过期和失败；过期数据不能伪装为本次初始化成功。
@@ -68,26 +68,27 @@
 
 - 上下文复用 ACP `session/update` 中的 `usage_update`，按 Agent 上报的当前 `used` / `size` 快照显示；补齐会话创建与恢复阶段的接收，不累计历次 token 消耗，不通过消息长度猜测，也不为读取用量发送提示词或创建临时聊天。
 - 额度按 Agent 实际登录账号读取，不能由上下文消耗推算。根据返回的额度池名称、窗口长度和模型关联展示，不硬编码五小时、每周窗口或臆造型号归属。剩余比例为 `100 - usedPercent`，展示限制在 0–100%；未知值显示暂无数据，不当成零。
-- Codex 原生接口提供 `account/rateLimits/read` 与 `account/rateLimits/updated`。锁定 ACP 适配器需暴露版本化的扩展查询 `_moor/account/rate_limits/read` 与通知 `_moor/account/rate_limits/updated`，在初始化 `_meta` 中声明支持；主机确认版本后调用，校验并投影为 Moor 自有类型，不能提供任意原生方法代理。
+- Codex 原生接口提供 `account/rateLimits/read` 与 `account/rateLimits/updated`。锁定 ACP 适配器暴露版本化的扩展查询 `_moor/account/rate_limits/read` 与通知 `_moor/account/rate_limits/updated`，在初始化 `_meta` 中声明支持；主机确认版本后调用，校验并投影为 Moor 自有类型，不能提供任意原生方法代理。
 - 上下文按会话保存；额度按执行主机、Agent 配置与实际登录账号保存主机侧快照，同范围会话复用，账号切换立即失效。请求仍经过账号、设备、工作区、项目与会话的授权边界，额度不写入每个会话的共享正文。
 - 主机与账号就绪后读取一次额度，随后优先使用推送。打开面板或应用回到前台时，若快照超过 60 秒则补查一次；短时间反复打开与切换会话复用缓存，并发请求合并。面板收起时不轮询。
 - 重置倒计时在本地计算，不为刷新文字发请求；到达重置时间不能自行将额度置为 100%。支持相对时间和具体本地时间。失败保留旧值并标明状态、时间，未登录或 Agent 未提供套餐额度时显示明确的不可用说明。
 - 设置中提供手动刷新能力与额度的入口，输入区不另增刷新按钮。查询与推送都不发送用户指令、不批准权限或恢复离线草稿。
 
-协议依据：[ACP 上下文用量](https://agentclientprotocol.com/rfds/session-usage)、[ACP 扩展机制](https://agentclientprotocol.com/protocol/v1/extensibility)、[Codex App Server](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)。扩展方法为 Moor 拟定接口，并非 ACP 标准方法。适配器变更必须锁定版本、保留许可与来源，并用合成原生接口验证。
+协议依据：[ACP 上下文用量](https://agentclientprotocol.com/rfds/session-usage)、[ACP 扩展机制](https://agentclientprotocol.com/protocol/v1/extensibility)、[Codex App Server](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)。扩展方法为 Moor 自有接口，并非 ACP 标准方法。适配器变更锁定版本、保留许可与来源，并用合成原生接口验证。
 
 ## 设置与程序路径
 
 不新增“重新检测 Codex 程序”按钮。首次配置通过现有发现流程识别本机 Codex，包括 `ChatGPT.app` 内的程序。后续路径变化通过现有设置面板重新配置；已有会话继续遵守固定 Agent 版本规则。能力刷新与程序路径重新登记是两个不同操作。
 
-## 实施时需要核对的接口
+## 实现位置
 
-- 主机能力缓存：`packages/host/src/sessions/workspace.ts`，将能力目录生命周期与会话观测分离。
-- ACP 能力投影：`packages/host/src/agents/capabilities.ts`、`packages/host/src/agents/acp/driver.ts`，核对如何在一次探测会话中收齐各模型的档位和默认值，保持锁定适配器与类型边界。
+- 主机能力缓存：`packages/host/src/sessions/workspace.ts`，目录按实际执行范围共享，单次主机生命周期内记录初始化成功或失败，并发刷新合并。
+- ACP 能力投影：`packages/host/src/agents/capabilities.ts`、`packages/host/src/agents/acp/driver.ts`，在一次探测中收齐可用档位与默认值；补丁与上游许可、版本保持可追溯。
+- 统一客户端：`apps/web/src/features/workspace/workspace-controller.ts`，工作区就绪初始化，草稿选项独立保存。
 - 普通与加密客户端：`apps/web/src/app/app.ts`、`apps/web/src/platform/secure-controller.ts`，共用就绪触发、缓存读取和手动刷新语义。
 - 共享控件：`apps/web/src/components/ui.tsx`，合并模型与推理强度入口，移除虚拟模型选项和常驻刷新。
 - 设置入口：`apps/desktop/src/settings/settings.html`、`apps/desktop/src/settings/settings.js`，接入明确的手动能力刷新；远程访问端的入口沿用目标执行主机的授权边界。
-- 审批默认配置：核对 Moor 现有配置的持久化读写链路、客户端初始化与会话创建入口，增加稳定的审批模式偏好及适配器映射；恢复已有会话与用户手动修改使用不同的更新来源，避免恢复时覆盖默认值。
+- 审批默认配置：`packages/host/src/agents/run-preferences.ts` 写入主机私有 `runtime_state` 的 `run-preferences-v1/<userId>`，使用递增 revision 比较写入。新会话将默认值冻结到 `initialModeId`；恢复只读，不反写偏好。
 
 ## 验收要点
 
@@ -107,3 +108,9 @@
 14. 相同范围的初始化、并发打开面板与前台恢复不会重复查询；60 秒缓存、账号切换、迟到响应、重置倒计时及失败保留旧值使用注入时钟和合成事件验证。
 
 使用合成能力数据、可计数的探测替身和确定性就绪信号验证，不使用真实 Agent 账号或 sleeps。真实设备与账号验证另行记录，不能用合成测试声明已完成。
+
+## 验证范围
+
+合成原生 Codex App Server 验证锁定适配器的四种审批参数、旧权限 ID 语义、全部模型档位、额度查询不创建会话与不发送 prompt，以及上下文和额度推送。主机测试覆盖重启后的默认偏好、已有会话不变、目录缓存共享、失败后手动重试、并发刷新、60 秒额度缓存、账号切换与迟到响应。
+
+实际 React 控件在浏览器中检查桌面和 390px 窄屏菜单。上下文、额度、具体重置时间、缺失状态、焦点返回与不触发模型探测使用合成数据验证。未使用真实 Agent 账号，未声明真实套餐数据或所有操作系统上的安装包已验证。
