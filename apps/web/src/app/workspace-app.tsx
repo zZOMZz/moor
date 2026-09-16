@@ -266,6 +266,16 @@ function WorkspaceConversation({
       <header className="workspace-session-header">
         <h1>{session.meta.title || '新对话'}</h1>
         <div className="workspace-header-tools">
+          {sessionRefreshing && (
+            <span
+              className="workspace-session-sync"
+              role="status"
+              aria-label="正在与执行电脑同步会话"
+              title="正在同步会话"
+            >
+              <RefreshCw className="spin" size={15} aria-hidden="true" />
+            </span>
+          )}
           <WorkspaceToolMenu>
             <WorkspaceSessionTools
               controller={controller}
@@ -362,11 +372,6 @@ function WorkspaceConversation({
             打开源会话
           </button>
         </aside>
-      )}
-      {sessionRefreshing && (
-        <p className="workspace-status" role="status">
-          正在与执行电脑同步会话…
-        </p>
       )}
       {!sessionRefreshing && (state.offline || state.sessionLoad.status === 'failed') && (
         <p className="workspace-status" role="status">

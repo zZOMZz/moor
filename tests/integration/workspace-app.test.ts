@@ -843,7 +843,12 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(project.disabled, false);
     assert.equal(visibleButton('Local sessionsynthetic').disabled, false);
     assert.equal(visibleButton('连接其他电脑').disabled, false);
-    assert.match(dom.window.document.body.textContent!, /正在与执行电脑同步会话/);
+    const sync = dom.window.document.querySelector<HTMLElement>('.workspace-session-sync');
+    assert(sync);
+    assert.equal(sync.getAttribute('role'), 'status');
+    assert.equal(sync.getAttribute('aria-label'), '正在与执行电脑同步会话');
+    assert(sync.querySelector('svg')?.classList.contains('spin'));
+    assert.doesNotMatch(dom.window.document.body.textContent!, /正在与执行电脑同步会话/);
     assert.doesNotMatch(dom.window.document.body.textContent!, /执行电脑暂不可达/);
     await act(async () => {
       finishSessionRefresh();
@@ -851,6 +856,7 @@ test('packaged workspace opens local projects without an account and preserves d
       await Promise.resolve();
     });
     sessionRefresh = undefined;
+    assert.equal(dom.window.document.querySelector('.workspace-session-sync'), null);
     const information =
       dom.window.document.querySelector<HTMLDetailsElement>('.session-information')!;
     assert.equal(information.open, false);

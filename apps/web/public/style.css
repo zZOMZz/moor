@@ -3869,6 +3869,14 @@ dialog pre {
   align-items: center;
   gap: 4px;
 }
+.workspace-session-sync {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--muted);
+}
 .workspace-history {
   flex: 1;
   min-height: 0;
