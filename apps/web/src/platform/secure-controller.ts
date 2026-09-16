@@ -1,7 +1,14 @@
+import {
+  AGENT_CONTROLS_FEATURE,
+  agentUsageResponseSchema,
+  runPreferencesResponseSchema,
+} from '@moor/protocol/agent-controls';
 import { z } from 'zod';
 import { AGENT_MODEL_OPTIONS_FEATURE } from '@moor/protocol/protocol';
 import {
   selectionFromInput,
+  initializeRunSelection,
+  approvalModeSchema,
   runSelectionSchema,
   type RunSelection,
 } from '@moor/protocol/run-config';
@@ -852,6 +859,8 @@ export class SecureWorkspaceController {
       this.#state.catalog = catalog;
     });
   }
+  #warmScopes = new Set<string>();
+  #modelAttempts = new Set<string>();
   async selectReplica(replicaId: string) {
     this.#generation++;
     this.#draftTarget = null;
@@ -866,7 +875,31 @@ export class SecureWorkspaceController {
       extensionBlock: null,
       permissionReviews: [],
     });
-    return this.refreshSessions();
+    await this.refreshSessions();
+    const target = this.#target('list'),
+      lease = this.#lease();
+    const workspace = this.#state.catalog?.workspaces.find((w) => w.id === target.workspaceId);
+    const warmKey = JSON.stringify([
+      target.hostDeviceId,
+      target.workspaceId,
+      target.localProjectId,
+      target.userId,
+    ]);
+    if (workspace?.features?.includes('agent-catalog-cache-v1') && !this.#warmScopes.has(warmKey)) {
+      this.#warmScopes.add(warmKey);
+      for (const agent of workspace.agents) {
+        void this.#execute(
+          lease,
+          target,
+          this.#command(target, 'agent-options', { agentId: agent.id }),
+        ).catch(() => {});
+        void this.#execute(
+          lease,
+          target,
+          this.#command(target, 'agent-usage', { agentId: agent.id }),
+        ).catch(() => {});
+      }
+    }
   }
   async refreshSessions() {
     return this.#run(async (current) => {
@@ -922,7 +955,15 @@ export class SecureWorkspaceController {
       const runOptions = await this.#runOptions.read(
         target,
         lastInput?.id ?? '',
-        selectionFromInput(parsedInput.data, read.agent?.runConfig),
+        initializeRunSelection(
+          selectionFromInput(parsedInput.data, read.agent?.runConfig),
+          read.agent?.runConfig,
+          {
+            fresh: !read.history.length,
+            initialModeId: read.meta.initialModeId,
+            legacyCodex: read.meta.agentType === 'codex',
+          },
+        ),
         current,
       );
       current();
@@ -953,6 +994,8 @@ export class SecureWorkspaceController {
           );
         }
       }
+      if (!this.#state.session?.accountUsage?.observedAt)
+        void this.readUsage(target).catch(() => {});
     });
   }
   async refreshSession() {
@@ -1116,12 +1159,68 @@ export class SecureWorkspaceController {
       }
     });
   }
-  async saveRunSelection(inputTarget: SecureCliTarget, selection: RunSelection) {
+  async readUsage(inputTarget: SecureCliTarget, force = false) {
+    const shown = secureTargetSchema.parse(structuredClone(inputTarget));
+    const workspace = this.#state.catalog?.workspaces.find((w) => w.id === shown.workspaceId);
+    if (!workspace?.features?.includes(AGENT_CONTROLS_FEATURE)) return;
+    const current = () => {
+      if (!same(shown, this.contentContext.target)) throw Error('额度读取目标已变化');
+    };
+    current();
+    const command = this.#command(shown, 'agent-usage', {
+      agentId: this.#state.session!.meta.agentConfigId,
+      sessionId: shown.sessionId,
+      ...(force ? { refresh: true } : {}),
+    });
+    const result = agentUsageResponseSchema.parse(
+      await validateHostResponse(await this.#execute(this.#lease(), shown, command), {
+        command,
+        workspace,
+        current,
+      }),
+    );
+    current();
+    this.#state.session = { ...this.#state.session!, accountUsage: result.usage };
+    this.#emit();
+  }
+  async saveRunSelection(
+    inputTarget: SecureCliTarget,
+    selection: RunSelection,
+    rememberMode = false,
+  ) {
     const shown = secureTargetSchema.parse(structuredClone(inputTarget)),
       selected = runSelectionSchema.parse(selection);
     return this.#run(async (current) => {
       if (!same(shown, this.#attachmentTarget()) || !this.#state.runOptions)
         throw Error('模型设置目标已改变，请重新读取会话。');
+      if (rememberMode && approvalModeSchema.safeParse(selected.modeId).success) {
+        const workspace = this.#state.catalog!.workspaces.find((w) => w.id === shown.workspaceId)!;
+        if (!workspace.features?.includes(AGENT_CONTROLS_FEATURE))
+          throw Error('执行主机尚不支持保存审批默认值，请升级主机。');
+        const params = {
+          agentId: this.#state.session!.meta.agentConfigId,
+          sessionId: shown.sessionId,
+        };
+        const readCommand = this.#command(shown, 'run-preferences', { ...params, action: 'read' });
+        const read = runPreferencesResponseSchema.parse(
+          await validateHostResponse(await this.#execute(this.#lease(), shown, readCommand), {
+            command: readCommand,
+            workspace,
+            current,
+          }),
+        );
+        const saveCommand = this.#command(shown, 'run-preferences', {
+          ...params,
+          action: 'save',
+          modeId: approvalModeSchema.parse(selected.modeId),
+          expectedRevision: read.preferences.revision,
+        });
+        await validateHostResponse(await this.#execute(this.#lease(), shown, saveCommand), {
+          command: saveCommand,
+          workspace,
+          current,
+        });
+      }
       this.#state.runOptions = await this.#runOptions.save(
         shown,
         this.#state.runOptions,
@@ -1140,18 +1239,31 @@ export class SecureWorkspaceController {
     const workspace = this.#state.catalog!.workspaces.find(
       (entry) => entry.id === target.workspaceId,
     )!;
+    const cacheKey = (agent: typeof read.agent) =>
+      JSON.stringify([
+        target.origin,
+        target.owner,
+        target.hostDeviceId,
+        target.workspaceId,
+        target.localProjectId,
+        agent?.id,
+        agent?.capabilityContext?.programFingerprint,
+        agent?.capabilityContext?.directoryFingerprint ?? target.sessionId,
+      ]);
+    const attempt = cacheKey(read.agent);
+    if (!announce && this.#modelAttempts.has(attempt)) return;
+    if (this.#modelAttempts.size >= 500) this.#modelAttempts.clear();
+    this.#modelAttempts.add(attempt);
     const command = this.#command(target, 'agent-options', {
       agentId: read.meta.agentConfigId,
       sessionId: target.sessionId,
-      ...(workspace.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) &&
-      this.#state.runOptions?.selection.modelId
-        ? { modelId: this.#state.runOptions.selection.modelId }
-        : {}),
+      ...(announce ? { refresh: true } : {}),
     });
     const raw = await this.#execute(lease, target, command);
     const updated = await validateHostResponse(raw, { command, workspace, current });
     current();
-    this.#state.session = { ...read, agent: agentSchema.parse(updated) };
+    this.#state.session = { ...this.#state.session!, agent: agentSchema.parse(updated) };
+    this.#modelAttempts.add(cacheKey(this.#state.session.agent));
     if (this.#state.runOptions?.inherited) {
       const last = read.history.findLast((turn) => turn.role === 'user');
       const input = z
@@ -1163,7 +1275,17 @@ export class SecureWorkspaceController {
         .safeParse(last?.inputConfig ?? {});
       if (input.success)
         this.#state.runOptions.selection = JSON.parse(
-          JSON.stringify(selectionFromInput(input.data, this.#state.session.agent?.runConfig)),
+          JSON.stringify(
+            initializeRunSelection(
+              selectionFromInput(input.data, this.#state.session.agent?.runConfig),
+              this.#state.session.agent?.runConfig,
+              {
+                fresh: !read.history.length,
+                initialModeId: read.meta.initialModeId,
+                legacyCodex: read.meta.agentType === 'codex',
+              },
+            ),
+          ),
         );
     }
     this.#state.modelOptionsError = undefined;

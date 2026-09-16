@@ -1,3 +1,6 @@
+import { AppearanceSettings } from '../components/appearance';
+import { changeRunSelection } from '@moor/protocol/run-config';
+import { UsagePanel, latestContextUsage } from '../components/usage-panel';
 import { createPortal } from 'react-dom';
 import { WorkspaceToolMenu } from '../features/workspace/workspace-layout';
 import {
@@ -81,6 +84,7 @@ export type SecureUiController = Pick<
   | 'openSession'
   | 'refreshSession'
   | 'refreshAgentOptions'
+  | 'readUsage'
   | 'createSession'
   | 'send'
   | 'respondPermission'
@@ -1074,6 +1078,14 @@ function Composer({
             >
               保存草稿
             </button>
+            <UsagePanel
+              context={latestContextUsage(session.history)}
+              usage={session.accountUsage}
+              onRead={() => {
+                if (shownTarget && controller.readUsage)
+                  void controller.readUsage(shownTarget).catch(() => {});
+              }}
+            />
             {running ? (
               <button
                 type="button"
@@ -1124,32 +1136,17 @@ function Composer({
         onChange={(property, value) => {
           if (!shownTarget || !controller.saveRunSelection) return;
           const target = structuredClone(shownTarget);
-          const selection = {
-            ...runSelection,
-            [property]: value || undefined,
-            ...(property === 'modelId' ? { reasoningEffort: undefined } : {}),
-          };
-          run(async () => {
-            await controller.saveRunSelection!(target, selection);
-            if (
-              property === 'modelId' &&
-              state.status?.connection &&
-              workspace?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
-            )
-              await controller.refreshAgentOptions(target);
-          });
+          const selection = changeRunSelection(
+            runSelection,
+            property,
+            value,
+            session.agent?.runConfig,
+          );
+          run(() => controller.saveRunSelection!(target, selection, property === 'modeId'));
         }}
         onRefresh={() =>
           shownTarget && run(() => controller.refreshAgentOptions(structuredClone(shownTarget)))
         }
-        onOpenModels={() => {
-          if (
-            shownTarget &&
-            state.status?.connection &&
-            workspace?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE)
-          )
-            run(() => controller.refreshAgentOptions(structuredClone(shownTarget)));
-        }}
       />
       {blocked && (
         <p className="secure-warning">原操作的结果仍待确认。请在“原操作记录”中手动核查后再发送。</p>
@@ -1179,6 +1176,7 @@ export function SecureApp({
   onNavigationBlocked?: (blocked: boolean) => void;
 }) {
   const [state, setState] = useState(controller.state);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const contentUi = useRef<SecureContentUiHandle>(null);
   const skillsUi = useRef<SecureSkillsUiHandle>(null);
   const githubUi = useRef<SecureGithubUiHandle>(null);
@@ -1654,6 +1652,23 @@ export function SecureApp({
           <main className="secure-workspace" hidden={layout === 'connections'}>
             {session ? (
               <>
+                <AppearanceSettings
+                  open={settingsOpen}
+                  onOpenChange={setSettingsOpen}
+                  agentControls={
+                    session.agent && controller.contentContext.target
+                      ? {
+                          name: session.agent.name,
+                          disabled: busy || !connection || session.meta.status?.type === 'working',
+                          refresh: async () => {
+                            const target = structuredClone(controller.contentContext.target!);
+                            await controller.refreshAgentOptions(target);
+                            await controller.readUsage?.(target, true);
+                          },
+                        }
+                      : undefined
+                  }
+                />
                 <header className="secure-session-header workspace-session-header">
                   <div>
                     <h1>{session.meta.title || '未命名会话'}</h1>
@@ -1685,6 +1700,9 @@ export function SecureApp({
                         onClick={() => run(() => controller.refreshSession())}
                       >
                         刷新会话
+                      </button>
+                      <button type="button" onClick={() => setSettingsOpen(true)}>
+                        设置
                       </button>
                       <details className="secure-session-settings">
                         <summary>会话设置</summary>

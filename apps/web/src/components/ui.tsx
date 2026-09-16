@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } fro
 import { createRoot, type Root } from 'react-dom/client';
 import { flushSync, createPortal } from 'react-dom';
 import { AppearanceSettings } from './appearance';
+import { UsagePanel } from './usage-panel';
 import { WorkspaceToolMenu } from '../features/workspace/workspace-layout';
 import { Dialog } from '@base-ui/react/dialog';
 import { Menu } from '@base-ui/react/menu';
@@ -43,7 +44,8 @@ import {
   Upload,
 } from 'lucide-react';
 import type { Workspace } from '@moor/protocol/catalog';
-import type { RunCapabilities, RunSelection } from '@moor/protocol/run-config';
+import { canonicalMode, type RunCapabilities, type RunSelection } from '@moor/protocol/run-config';
+import { ModelMenu } from './model-menu';
 import type { SessionSummary } from '../features/sessions/navigation';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import {
@@ -289,6 +291,7 @@ export function Shell({
                 >
                   <Square />
                 </button>
+                <Content name="#usage-control" />
                 <button className="send-button" id="send" aria-label="发送指令">
                   <Content name="#send" />
                 </button>
@@ -371,7 +374,7 @@ export function Picker({
   label: string;
   icon?: ReactNode;
   value?: string;
-  items: { id: string; name: string }[];
+  items: { id: string; name: string; description?: string }[];
   disabled?: boolean;
   placeholder: string;
   onChange: (value: string) => void;
@@ -430,7 +433,12 @@ export function Picker({
                   disabled={'disabled' in i && i.disabled === true}
                   className="menu-item select-option"
                 >
-                  <Select.ItemText className="select-option-text">{i.name}</Select.ItemText>
+                  <Select.ItemText className="select-option-text">
+                    {i.name}
+                    {'description' in i && i.description && (
+                      <small className="picker-description">{i.description}</small>
+                    )}
+                  </Select.ItemText>
                   <Select.ItemIndicator className="item-indicator select-check" keepMounted>
                     <Check />
                   </Select.ItemIndicator>
@@ -522,6 +530,7 @@ type NavigationProps = {
   onLogout: () => void;
   onGoogleAccount?: () => void;
   onNotifications?: () => void;
+  agentControls?: Parameters<typeof AppearanceSettings>[0]['agentControls'];
 };
 const sessionKey = (session: SessionSummary) =>
   JSON.stringify([session.replicaId ?? '', session.id]);
@@ -956,7 +965,11 @@ export function Navigation(p: NavigationProps) {
           </PopupMenu>
         </div>
       </div>
-      <AppearanceSettings open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <AppearanceSettings
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        agentControls={p.agentControls}
+      />
     </>
   );
 }
@@ -1034,75 +1047,51 @@ export type RunControlsProps = {
   onOpenModels?: () => void;
 };
 export function RunControls(p: RunControlsProps) {
-  const models = p.capabilities?.models ?? [];
   const modes = p.capabilities?.modes ?? [];
-  const labels: Record<string, string> =
-    p.agentType === 'codex'
-      ? {
-          'read-only': '只读',
-          agent: '工作区权限',
-          'agent-auto-review': '自动审批审查',
-          'agent-full-access': '完全访问',
-        }
-      : {};
-  const mode = modes.find((m) => m.id === p.selection.modeId);
-  const implicitModel = p.existing
-    ? p.capabilities?.sessionKind === 'loaded'
-      ? p.capabilities.currentModelId
-      : undefined
-    : p.capabilities?.defaultModelId;
-  const implicitName = models.find((m) => m.id === implicitModel)?.name ?? implicitModel;
-  const effectiveModel = p.selection.modelId || implicitModel;
-  const efforts = models.find((m) => m.id === effectiveModel)?.efforts ?? [];
-  const defaultLabel = implicitName ?? (p.existing ? '沿用会话模型' : 'Agent 默认模型');
+  const modeId = canonicalMode(p.selection.modeId, p.capabilities);
+  const labels: Record<string, string> = {
+    'moor-read-only': 'Read-only',
+    'moor-agent': 'Agent',
+    'moor-auto-review': 'Auto review',
+    'moor-full-access': 'Full access',
+  };
+  const descriptions: Record<string, string> = {
+    'moor-read-only': '只读文件，需要时由用户审批。',
+    'moor-agent': '读写工作区，需要时由用户审批。',
+    'moor-auto-review': '读写工作区，需要时由 Codex 自动审查。',
+    'moor-full-access': '访问文件与网络，不请求审批。',
+  };
+  const mode = modes.find((m) => m.id === modeId);
   return (
     <>
       <div className="run-controls">
         <div className="run-approval" title={mode?.description}>
           <Picker
             id={(p.idPrefix ?? '') + 'approval-mode'}
-            label="审批"
+            label="权限"
             icon={<ShieldCheck />}
-            value={p.selection.modeId}
-            items={modes.map((m) => ({ id: m.id, name: labels[m.id] || m.name }))}
+            value={modeId}
+            items={modes.map((m) => ({
+              ...m,
+              name: labels[m.id] || m.name,
+              description: descriptions[m.id] || m.description,
+            }))}
             disabled={p.disabled}
-            placeholder="Agent 默认审批"
+            allowEmpty={false}
+            placeholder="选择权限"
             onChange={(v) => p.onChange('modeId', v)}
           />
         </div>
         <div className="run-model-options">
-          {p.agentType && <span className="run-agent-name">{p.agentType}</span>}
-          <Picker
+          <ModelMenu
             id={(p.idPrefix ?? '') + 'model'}
-            label="模型"
-            icon={<Cpu />}
-            value={p.selection.modelId}
-            items={models}
+            capabilities={p.capabilities}
+            selection={p.selection}
+            existing={p.existing}
             disabled={p.disabled}
-            placeholder={defaultLabel}
-            onOpen={p.onOpenModels}
-            onChange={(v) => p.onChange('modelId', v)}
+            loading={p.loading}
+            onChange={p.onChange}
           />
-          <Picker
-            id={(p.idPrefix ?? '') + 'effort'}
-            label="思考强度"
-            value={p.selection.reasoningEffort}
-            items={efforts.map((e) => ({ id: e, name: e }))}
-            disabled={p.disabled || !efforts.length}
-            placeholder={!effectiveModel ? '先选模型' : efforts.length ? '默认强度' : '不支持'}
-            onChange={(v) => p.onChange('reasoningEffort', v)}
-          />
-          <button
-            type="button"
-            id={(p.idPrefix ?? '') + 'refresh-run-options'}
-            className="refresh-run-options icon-button"
-            aria-label="刷新可用选项"
-            title="刷新模型与权限选项"
-            disabled={!p.canRefresh || p.loading}
-            onClick={p.onRefresh}
-          >
-            <RefreshCw size={14} />
-          </button>
         </div>
       </div>
       {(p.validation || p.status || p.loading || !p.capabilities) && (
@@ -1112,14 +1101,13 @@ export function RunControls(p: RunControlsProps) {
         >
           {p.validation ||
             p.status ||
-            (p.loading
-              ? '正在读取模型与权限选项…'
-              : '暂未获取选项，可刷新模型与权限；留空沿用 Agent 设置。')}
+            (p.loading ? '正在读取模型与权限选项…' : '暂未获取选项，请在设置中刷新。')}
         </p>
       )}
     </>
   );
 }
+
 export function showShell(props: Parameters<typeof Shell>[0]) {
   disposeUI();
   paint('#app', <Shell {...props} />);
@@ -1129,6 +1117,9 @@ export function showNavigation(props: NavigationProps) {
 }
 export function showTarget(props: Parameters<typeof Target>[0]) {
   paint('#target', <Target {...props} />);
+}
+export function showUsageControl(props: Parameters<typeof UsagePanel>[0]) {
+  paint('#usage-control', <UsagePanel {...props} />);
 }
 export function showRunControls(props: RunControlsProps) {
   paint('#run-options', <RunControls {...props} />);

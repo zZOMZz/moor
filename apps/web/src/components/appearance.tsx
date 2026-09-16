@@ -78,14 +78,17 @@ export function AppearanceSettings({
   open,
   onOpenChange,
   openDesktopSettings,
+  agentControls,
 }: {
   open: boolean;
   onOpenChange(value: boolean): void;
   openDesktopSettings?: () => void;
+  agentControls?: { name: string; disabled?: boolean; refresh(): Promise<unknown> };
 }) {
   const { appearance, change } = useAppearance();
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [refreshed, setRefreshed] = useState(false);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -136,6 +139,34 @@ export function AppearanceSettings({
                 ? '始终使用深色背景和浅色文字。'
                 : '始终使用浅色背景和深色文字。'}
           </p>
+          {agentControls && (
+            <fieldset disabled={busy || agentControls.disabled} className="agent-controls-settings">
+              <legend>Agent</legend>
+              <p>{agentControls.name}</p>
+              <p className="appearance-description">
+                模型与推理选项在工作区就绪时读取并缓存。配置更新后，可在这里刷新模型与账号额度。
+              </p>
+              <button
+                type="button"
+                disabled={busy || agentControls.disabled}
+                onClick={() => {
+                  setBusy(true);
+                  setError('');
+                  setRefreshed(false);
+                  void agentControls
+                    .refresh()
+                    .then(() => setRefreshed(true))
+                    .catch((cause: unknown) =>
+                      setError(cause instanceof Error ? cause.message : '刷新失败'),
+                    )
+                    .finally(() => setBusy(false));
+                }}
+              >
+                {busy ? '正在刷新…' : '刷新模型与额度'}
+              </button>
+              {refreshed && <p role="status">已刷新当前 Agent 的模型目录与额度状态。</p>}
+            </fieldset>
+          )}
           {error && <p role="alert">{error}</p>}
           {openDesktopSettings && (
             <button className="appearance-device-settings" onClick={openDesktopSettings}>

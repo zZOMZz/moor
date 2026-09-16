@@ -62,6 +62,7 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     showNavigation,
     showNewSessionControls,
     showRunControls,
+    showUsageControl,
     closeNavigation,
     disposeUI,
   } = await import('../../apps/web/src/components/ui');
@@ -305,8 +306,9 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await act(async () => {
       showRunControls(controls);
     });
-    await click(button('模型'));
-    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+    await click(button('模型与推理强度'));
+    await click(document.querySelector<HTMLButtonElement>('.model-menu-row')!);
+    const option = [...document.querySelectorAll<HTMLElement>('[data-choice]')].find(
       (e) => e.textContent === 'Model B',
     )!;
     assert.ok(option);
@@ -315,25 +317,21 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await act(async () => {
       showRunControls({ ...controls, selection: { modelId: 'b' } });
     });
-    await click(button('思考强度'));
-    const effortList = document.getElementById(button('思考强度').getAttribute('aria-controls')!)!;
-    assert.ok(effortList);
+    await click(button('模型与推理强度'));
+    await click(document.querySelectorAll<HTMLButtonElement>('.model-menu-row')[1]!);
     assert.deepEqual(
-      [...effortList.querySelectorAll('[role="option"]')].map((e) => e.textContent),
-      ['默认强度', 'medium'],
+      [...document.querySelectorAll('[data-choice]')].map((e) => e.textContent),
+      ['Medium'],
     );
     await act(async () => {
       document.activeElement?.dispatchEvent(
         new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
       );
     });
-    assert.equal(document.activeElement, button('思考强度'));
-    await click(button('思考强度'));
-    const effortOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-      (e) => e.textContent === 'medium',
-    )!;
-    assert.ok(effortOption);
-    await click(effortOption);
+    assert.equal(document.activeElement, button('模型与推理强度'));
+    await click(button('模型与推理强度'));
+    await click(document.querySelectorAll<HTMLButtonElement>('.model-menu-row')[1]!);
+    await click(document.querySelector<HTMLElement>('[data-choice]')!);
     assert.deepEqual(changes, [
       ['modelId', 'b'],
       ['reasoningEffort', 'medium'],
@@ -346,11 +344,11 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await act(async () => {
       showRunControls({ ...controls, selection: updatedSelection });
     });
-    assert.match(button('模型').textContent ?? '', /Model B/);
-    assert.match(button('思考强度').textContent ?? '', /medium/);
-    await click(button('审批'));
+    assert.match(button('模型与推理强度').textContent ?? '', /Model B/);
+    assert.match(button('模型与推理强度').textContent ?? '', /Medium/);
+    await click(button('权限'));
     const approvalOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-      (e) => e.textContent === '完全访问',
+      (e) => e.textContent === 'Full access',
     )!;
     assert.ok(approvalOption);
     await click(approvalOption);
@@ -359,9 +357,9 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     await act(async () => {
       showRunControls({ ...controls, selection: updatedSelection });
     });
-    assert.match(button('审批').textContent ?? '', /完全访问/);
-    await click(document.querySelector<HTMLButtonElement>('#refresh-run-options')!);
-    assert.equal(refreshed, 1, 'refresh remains connected inside run settings');
+    assert.match(button('权限').textContent ?? '', /Full access/);
+    assert.equal(document.querySelector('#refresh-run-options'), null);
+    assert.equal(refreshed, 0, 'model and effort choices never query the host');
     await act(async () => {
       document.activeElement?.dispatchEvent(
         new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
@@ -376,11 +374,11 @@ test('navigation and composer pickers preserve focus, controlled selections and 
         canRefresh: false,
       });
     });
-    for (const name of ['模型', '思考强度', '审批'])
+    for (const name of ['模型与推理强度', '权限'])
       assert.equal(button(name).disabled, true, 'pending operations lock configuration');
-    assert.equal(document.querySelector<HTMLButtonElement>('#refresh-run-options')!.disabled, true);
-    assert.match(button('思考强度').textContent ?? '', /medium/);
-    assert.match(button('审批').textContent ?? '', /完全访问/);
+    assert.equal(document.querySelector('#refresh-run-options'), null);
+    assert.match(button('模型与推理强度').textContent ?? '', /Medium/);
+    assert.match(button('权限').textContent ?? '', /Full access/);
     assert.equal(sent, 0, 'settings interactions never submit the composer');
     await act(async () => {
       showRunControls({ ...controls, validation: '所选模型不再可用' });
@@ -389,6 +387,57 @@ test('navigation and composer pickers preserve focus, controlled selections and 
       (e) => e.textContent === '所选模型不再可用',
     )!;
     assert.ok(validation, 'validation is visible while settings are closed');
+    let usageReads = 0;
+    const { resetLabel } = await import('../../apps/web/src/components/usage-panel');
+    const usageEvent = { kind: 'context-usage', used: 106000, size: 258000 };
+    assert.equal(resetLabel(1000, 1000000), '已到重置时间，等待更新');
+    assert.equal(resetLabel(null, 1000000), '重置时间未提供');
+    await act(async () =>
+      showUsageControl({
+        context: usageEvent,
+        now: 1000000,
+        onRead: () => {
+          usageReads++;
+        },
+        usage: {
+          version: 1,
+          status: 'ready',
+          observedAt: 1000000,
+          buckets: [
+            {
+              id: 'core',
+              name: 'Synthetic Codex',
+              primary: { usedPercent: 23, windowDurationMins: 300, resetsAt: 1300 },
+              secondary: { usedPercent: 65, windowDurationMins: 10080 },
+            },
+            { id: 'special', primary: { usedPercent: 120 } },
+          ],
+        },
+      }),
+    );
+    assert.equal(usageReads, 0);
+    await click(button('上下文与账号额度，上下文已用 41%'));
+    assert.equal(usageReads, 1);
+    const panel = document.querySelector('.usage-panel')!;
+    assert.match(panel.textContent!, /10.6 万 \/ 25.8 万 tokens/);
+    assert.match(panel.textContent!, /剩余 77%/);
+    assert.match(panel.textContent!, /剩余 35%/);
+    assert.match(panel.textContent!, /剩余 0%/);
+    assert.match(panel.textContent!, /5 分钟后重置/);
+    assert.equal(panel.querySelector('time')?.dateTime, new Date(1300000).toISOString());
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    assert.equal(document.activeElement, button('上下文与账号额度，上下文已用 41%'));
+    await act(async () =>
+      showUsageControl({ now: 1000000, usage: { version: 1, status: 'unsupported', buckets: [] } }),
+    );
+    await click(button('上下文与账号额度'));
+    assert.match(document.querySelector('.usage-panel')!.textContent!, /暂无数据/);
+    assert.match(document.querySelector('.usage-panel')!.textContent!, /未提供套餐额度/);
+    assert.equal(document.querySelectorAll('.usage-panel progress').length, 0);
   } finally {
     await act(async () => disposeUI());
     dom.window.close();

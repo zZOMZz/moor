@@ -230,8 +230,14 @@
         <p id="agent-version"></p>
         <p id="agent-program-status" role="status"></p>
         <p id="agent-check-status" role="status"></p>
+        <label for="agent-capability-project">能力目录所属项目</label>
+        <select id="agent-capability-project" aria-label="能力目录所属项目"></select>
+        <p>
+          模型与推理选项在工作区就绪时缓存，配置变化后可手动刷新。额度来自此 Agent 实际登录的账号。
+        </p>
         <div class="actions">
           <button type="button" id="agent-save">登记自定义 ACP</button>
+          <button type="button" id="agent-capability-refresh" disabled>刷新模型与额度</button>
           <button type="button" id="agent-check" disabled>检查已保存的连接</button>
           <button type="button" id="agent-toggle" disabled>用于新会话</button>
           <button type="button" id="agent-remove" disabled>从新会话列表移除</button>

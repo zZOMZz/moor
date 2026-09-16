@@ -571,6 +571,7 @@ function renderAgentPreset() {
   $('agent-enabled').disabled = !!builtin;
   $('agent-save').textContent = preset ? '保存新版本' : '登记自定义 ACP';
   $('agent-check').disabled = !preset;
+  $('agent-capability-refresh').disabled = !preset?.enabled || !agentState?.projects?.length;
   $('agent-toggle').disabled = !preset;
   $('agent-toggle').textContent = preset?.enabled ? '不用于新会话' : '用于新会话';
   $('agent-remove').disabled = !preset;
@@ -613,6 +614,16 @@ function renderAgentPreset() {
 function renderAgents(value, action) {
   const previous = agentState?.presets.map((preset) => preset.id) ?? [];
   agentState = value;
+  const project = $('agent-capability-project').value;
+  $('agent-capability-project').replaceChildren(
+    ...(value.projects ?? []).map((item) => {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name;
+      return option;
+    }),
+  );
+  if (value.projects?.some((p) => p.id === project)) $('agent-capability-project').value = project;
   const created =
     (action.action === 'save' && !action.id) || action.action === 'builtin'
       ? value.presets.find((preset) => !previous.includes(preset.id))?.id
@@ -630,9 +641,11 @@ function renderAgents(value, action) {
   $('agent-status').textContent =
     action.action === 'read'
       ? '已读取本机配置；未启动 Agent。'
-      : action.action === 'check'
-        ? '已完成所选版本的连接检查；未发送指令。'
-        : '本机配置已保存，已有会话的 Agent 版本保持不变。';
+      : action.action === 'refresh'
+        ? '已刷新所选项目的模型目录与账号额度状态。'
+        : action.action === 'check'
+          ? '已完成所选版本的连接检查；未发送指令。'
+          : '本机配置已保存，已有会话的 Agent 版本保持不变。';
 }
 async function agentAction(action) {
   if (agentBusy || agentClosed) return;
@@ -679,6 +692,7 @@ $('agent-preset').onchange = renderAgentPreset;
 function markAgentEdited() {
   agentEdited = true;
   $('agent-check').disabled = true;
+  $('agent-capability-refresh').disabled = true;
   $('agent-check-status').textContent = '表单已修改，请先保存新版本再检查连接。';
 }
 for (const id of ['agent-name', 'agent-command', 'agent-args', 'agent-enabled'])
@@ -707,6 +721,16 @@ $('agent-save').onclick = () => {
     args,
     enabled: $('agent-enabled').checked,
   });
+};
+$('agent-capability-refresh').onclick = () => {
+  const preset = selectedAgentPreset();
+  if (preset && !agentEdited)
+    return editAgent({
+      action: 'refresh',
+      id: preset.id,
+      versionId: preset.versionId,
+      localProjectId: $('agent-capability-project').value,
+    });
 };
 $('agent-check').onclick = () => {
   const preset = selectedAgentPreset();

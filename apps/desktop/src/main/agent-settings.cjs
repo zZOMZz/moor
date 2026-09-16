@@ -21,6 +21,7 @@ function validateAction(value) {
     enabled: ['id', 'enabled'],
     remove: ['id'],
     check: ['id', 'versionId'],
+    refresh: ['id', 'versionId', 'localProjectId'],
   };
   if (!object(value) || !Object.hasOwn(fields, value.action))
     throw new Error('Agent 本机设置请求无效');
@@ -231,7 +232,17 @@ function publicState(value) {
   });
   if (new Set(presets.map((preset) => preset.id)).size !== presets.length)
     throw new Error('Agent 配置引用不可验证');
-  return { revision: value.revision, presets };
+  let projects;
+  if (value.projects !== undefined) {
+    if (
+      !Array.isArray(value.projects) ||
+      value.projects.length > 10000 ||
+      value.projects.some((p) => !object(p) || !identifier(p.id) || !string(p.name, 4096))
+    )
+      throw new Error('Agent 项目列表不可验证');
+    projects = value.projects.map((p) => ({ id: p.id, name: p.name }));
+  }
+  return { revision: value.revision, presets, ...(projects ? { projects } : {}) };
 }
 class DesktopAgentSettings {
   /** @param {{bridge: () => any, schedule?: (callback: () => void) => unknown, cancel?: (timer: unknown) => void}} options */

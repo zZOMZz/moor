@@ -599,22 +599,15 @@ test('actual app keeps an existing session on its fixed Agent version, validates
       'capability discovery never replays a user turn',
     );
     await type('Keep the model selection draft');
-    await click('模型');
-    assert.equal(
-      options().length,
-      beforeProbe + 2,
-      'opening the picker checks the actual program again',
-    );
-    const modelB = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+    await click('模型与推理强度');
+    await act(async () => document.querySelector<HTMLButtonElement>('.model-menu-row')!.click());
+    assert.equal(options().length, beforeProbe + 1, 'opening the picker reuses the catalog');
+    const modelB = [...document.querySelectorAll<HTMLElement>('[data-choice]')].find(
       (option) => option.textContent === 'Synthetic Model B',
     );
     assert.ok(modelB, 'model options stay visible while refreshed');
     await act(async () => modelB.click());
-    assert.deepEqual(options().at(-1)!.body, {
-      agentId: current.id,
-      sessionId: 'current-session',
-      modelId: 'model-b',
-    });
+    assert.equal(options().length, beforeProbe + 1, 'changing model never probes again');
     assert.equal(field().value, 'Keep the model selection draft');
     invalidOptionsScope = true;
     await act(async () => {

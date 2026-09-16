@@ -66,7 +66,17 @@ import {
   validateSessionControlReceipt,
   validateSessionOperationResult,
 } from '@moor/protocol/session-control-protocol';
-import type { RunSelection } from '@moor/protocol/run-config';
+import {
+  initializeRunSelection,
+  selectionFromInput,
+  approvalModeSchema,
+  type RunSelection,
+} from '@moor/protocol/run-config';
+import {
+  AGENT_CONTROLS_FEATURE,
+  agentUsageResponseSchema,
+  runPreferencesResponseSchema,
+} from '@moor/protocol/agent-controls';
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
 import {
   WorkspaceStore,
@@ -157,6 +167,8 @@ export type WorkspaceClientState = {
   ledger?: WorkspaceLedger;
   draft?: WorkspaceDraft;
   modelError?: string;
+  usageLoading?: boolean;
+  modelLoading?: boolean;
   searchFocus?: SearchHit;
   focusedTurnId?: string;
   syncDisconnected?: Partial<Record<DesktopWorkspaceSource, boolean>>;
@@ -186,6 +198,8 @@ type SessionView = { session: Session; draft: WorkspaceDraft; bytes: number };
 
 /** Plain local/relay controller. Encrypted targets retain their own authenticated transport. */
 export class WorkspaceController {
+  #catalogAttempts = new Map<string, string | undefined>();
+  #warmScopes = new Set<string>();
   #state: WorkspaceClientState = {
     catalogs: {},
     errors: {},
@@ -531,6 +545,26 @@ export class WorkspaceController {
     this.#state.ledger = await this.store.read(this.#state.scope, current);
     this.#emit();
     await this.refreshSessions();
+    const warmKey = JSON.stringify([source, target]);
+    if (
+      project.online &&
+      project.runtime.features?.includes('agent-catalog-cache-v1') &&
+      !this.#warmScopes.has(warmKey)
+    ) {
+      this.#warmScopes.add(warmKey);
+      const context = this.#context();
+      // Workspace readiness owns initialization; native probes are coalesced by the host.
+      for (const agent of project.runtime.agents) {
+        void this.#execute(
+          context,
+          this.#command(context.scope, 'agent-options', { agentId: agent.id }),
+        ).catch(() => {});
+        void this.#execute(
+          context,
+          this.#command(context.scope, 'agent-usage', { agentId: agent.id }),
+        ).catch(() => {});
+      }
+    }
   }
   #context(sessionId = this.#state.sessionId): Context {
     const scope = this.#state.scope,
@@ -685,6 +719,8 @@ export class WorkspaceController {
     );
   }
   async openSession(sessionId: string, turnId?: string) {
+    this.#state.usageLoading = false;
+    this.#state.modelLoading = false;
     this.#state.searchFocus = undefined;
     this.#state.focusedTurnId = undefined;
     await this.flushDraft();
@@ -747,6 +783,7 @@ export class WorkspaceController {
     try {
       await this.refreshAgentOptions();
       optionsRefreshed = true;
+      if (!this.#state.session?.accountUsage?.observedAt) await this.readUsage().catch(() => {});
     } finally {
       current();
       this.#state.sessionLoad = { status: 'ready', source: 'host' };
@@ -837,7 +874,7 @@ export class WorkspaceController {
       this.#emit();
     }
   }
-  async refreshAgentOptions() {
+  async refreshAgentOptions(force = false) {
     await this.flushDraft();
     const context = this.#context(),
       session = this.#state.session;
@@ -848,6 +885,23 @@ export class WorkspaceController {
       if (version !== this.#modelReadVersion) throw Error('模型读取已由较新的请求替代。');
     };
     if (!session || !context.sessionId) throw Error('请先读取会话。');
+    const key = (agent: typeof session.agent) =>
+      JSON.stringify([
+        context.scope,
+        agent?.id,
+        agent?.capabilityContext?.programFingerprint,
+        agent?.capabilityContext?.directoryFingerprint ?? context.sessionId,
+      ]);
+    const attempt = key(session.agent);
+    if (!force && this.#catalogAttempts.has(attempt)) {
+      this.#state.modelError = this.#catalogAttempts.get(attempt);
+      await this.#initializeSelection(context);
+      return;
+    }
+    if (this.#catalogAttempts.size >= 500) this.#catalogAttempts.clear();
+    this.#catalogAttempts.set(attempt, undefined);
+    this.#state.modelLoading = true;
+    this.#emit();
     try {
       const agent = agentSchema.parse(
         await this.#execute(
@@ -855,26 +909,123 @@ export class WorkspaceController {
           this.#command(context.scope, 'agent-options', {
             sessionId: context.sessionId,
             agentId: session.meta.agentConfigId,
-            ...(context.project.runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) &&
-            this.#state.draft?.selection.modelId
-              ? { modelId: this.#state.draft.selection.modelId }
-              : {}),
+            ...(force ? { refresh: true } : {}),
           }),
         ),
       );
       // Preserve a newer timeline read which may have completed while capabilities loaded.
       this.#state.session = { ...this.#state.session!, agent };
+      this.#catalogAttempts.set(key(agent), undefined);
+      await this.#initializeSelection(context);
       this.#rememberSessionView(context.scope, context.sessionId);
       delete this.#state.modelError;
     } catch (error) {
       context.current();
       this.#state.modelError = publicAgentFailure(
         error,
-        '模型选项暂不可读取，请刷新或检查执行电脑。',
+        '模型选项暂不可读取，请在设置中刷新或检查执行电脑。',
       );
+      this.#catalogAttempts.set(attempt, this.#state.modelError);
       throw error;
     } finally {
       context.current();
+      this.#state.modelLoading = false;
+      this.#emit();
+    }
+  }
+  async #initializeSelection(context: Context) {
+    const session = this.#state.session,
+      draft = this.#state.draft;
+    if (!session || !draft || !context.sessionId) return;
+    const latest = session.history.findLast((turn) => turn.role === 'user');
+    const inherited =
+      draft.revision === 0
+        ? selectionFromInput(latest?.inputConfig as any, session.agent?.runConfig)
+        : {};
+    const selection = initializeRunSelection(
+      { ...inherited, ...draft.selection },
+      session.agent?.runConfig,
+      {
+        fresh: !session.history.length,
+        initialModeId: session.meta.initialModeId,
+        legacyCodex: session.meta.agentType === 'codex',
+      },
+    );
+    if (same(JSON.parse(JSON.stringify(draft.selection)), selection)) return;
+    await this.store.saveDraft(
+      context.scope,
+      context.sessionId,
+      draft.revision,
+      draft.text,
+      selection,
+      context.current,
+      draft.actor,
+    );
+    this.#state.draft = await this.store.readDraft(
+      context.scope,
+      context.sessionId,
+      context.current,
+    );
+  }
+  async saveApprovalDefault(modeId: string) {
+    const parsed = approvalModeSchema.safeParse(modeId);
+    if (!parsed.success) return;
+    const context = this.#context(),
+      session = this.#state.session;
+    if (!session || !context.project.runtime.features?.includes(AGENT_CONTROLS_FEATURE))
+      throw Error('执行主机尚不支持保存审批默认值，请升级主机。');
+    const selected = parsed.data;
+    const params = {
+      agentId: session.meta.agentConfigId,
+      ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    };
+    const response = runPreferencesResponseSchema.parse(
+      await this.#execute(
+        context,
+        this.#command(context.scope, 'run-preferences', { ...params, action: 'read' }),
+      ),
+    );
+    const saved = runPreferencesResponseSchema.parse(
+      await this.#execute(
+        context,
+        this.#command(context.scope, 'run-preferences', {
+          ...params,
+          action: 'save',
+          modeId: selected,
+          expectedRevision: response.preferences.revision,
+        }),
+      ),
+    );
+    context.current();
+    return saved.preferences;
+  }
+  async readUsage(force = false) {
+    const context = this.#context(),
+      session = this.#state.session;
+    if (
+      !session ||
+      !context.sessionId ||
+      !context.project.runtime.features?.includes(AGENT_CONTROLS_FEATURE)
+    )
+      return;
+    this.#state.usageLoading = true;
+    this.#emit();
+    try {
+      const result = agentUsageResponseSchema.parse(
+        await this.#execute(
+          context,
+          this.#command(context.scope, 'agent-usage', {
+            agentId: session.meta.agentConfigId,
+            sessionId: context.sessionId,
+            ...(force ? { refresh: true } : {}),
+          }),
+        ),
+      );
+      context.current();
+      this.#state.session = { ...this.#state.session!, accountUsage: result.usage };
+    } finally {
+      context.current();
+      this.#state.usageLoading = false;
       this.#emit();
     }
   }

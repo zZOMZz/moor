@@ -1725,12 +1725,13 @@ test('checking attachment input capability binds the shown session and never upl
   try {
     const shownTarget = structuredClone(view.controller.contentContext.target!);
     assert.equal(view.button('发送').disabled, true);
-    assert.equal(view.button('刷新可用选项').disabled, false);
+    await view.click('设置');
+    assert.equal(view.button('刷新模型与额度').disabled, false);
     assert.equal(
       view.calls.some((call) => call.name === 'refreshAgentOptions'),
       false,
     );
-    await view.click('刷新可用选项');
+    await view.click('刷新模型与额度');
     assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [shownTarget] });
     assert.equal(
       view.calls.some(
@@ -1753,7 +1754,7 @@ test('checking attachment input capability binds the shown session and never upl
       if (variation === 'busy') next.busy = true;
       if (variation === 'running') next.session!.meta.status = { type: 'working' };
       await view.act(async () => view.update(next));
-      assert.equal(view.button('刷新可用选项').disabled, true, variation);
+      assert.equal(view.button('刷新模型与额度').disabled, true, variation);
     }
   } finally {
     await view.cleanup();
@@ -1776,10 +1777,16 @@ test('encrypted model controls probe the displayed target, save selections, and 
     const target = structuredClone(view.controller.contentContext.target!);
     const picker = view.document.querySelector<HTMLButtonElement>('#secure-model')!;
     assert.equal(picker.disabled, false);
-    assert.match(picker.textContent!, /沿用会话模型/);
+    assert.match(picker.textContent!, /选择模型/);
     await view.act(async () => picker.click());
-    assert.deepEqual(view.calls.at(-1), { name: 'refreshAgentOptions', args: [target] });
-    const model = [...view.document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+    assert.equal(
+      view.calls.some((call) => call.name === 'refreshAgentOptions'),
+      false,
+    );
+    await view.act(async () =>
+      view.document.querySelector<HTMLButtonElement>('.model-menu-row')!.click(),
+    );
+    const model = [...view.document.querySelectorAll<HTMLElement>('[data-choice]')].find(
       (option) => option.textContent === 'Synthetic Model B',
     );
     assert.ok(model);

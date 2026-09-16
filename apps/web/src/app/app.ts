@@ -1,3 +1,15 @@
+import {
+  changeRunSelection,
+  initializeRunSelection,
+  approvalModeSchema,
+} from '@moor/protocol/run-config';
+import {
+  AGENT_CONTROLS_FEATURE,
+  agentUsageResponseSchema,
+  runPreferencesResponseSchema,
+} from '@moor/protocol/agent-controls';
+import { accountUsageSchema, type AccountUsage } from '@moor/protocol/agent-usage';
+import { latestContextUsage } from '../components/usage-panel';
 import { GITHUB_WRITE_FEATURE } from '@moor/protocol/github-write-protocol';
 import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
 import { SkillsController, skillsKey, agentCommandText } from '../features/skills/skills';
@@ -89,6 +101,7 @@ import {
   showTarget,
   showNewSessionControls,
   showRunControls,
+  showUsageControl,
   showAuth,
   showGoogleAccountPanel,
   closeNavigation,
@@ -3551,6 +3564,16 @@ function renderNavigation() {
   configureAttention();
   showNavigation({
     catalog,
+    agentControls: currentAgent()
+      ? {
+          name: currentAgent()!.name,
+          disabled: !connected || !selected?.online || sending || !!pending,
+          refresh: async () => {
+            await refreshRunOptions(true);
+            await readUsage(true);
+          },
+        }
+      : undefined,
     space: activeWorkspace,
     projectLabels: Object.fromEntries(
       activeWorkspace?.projects.map((p) => [p.id, projectLabel(activeWorkspace!, p.id)]) ?? [],
@@ -3873,6 +3896,11 @@ async function loadSession() {
   }
   meta = data.meta;
   sessionAgent = readAgent;
+  const usage = accountUsageSchema.safeParse(data.accountUsage);
+  if (usage.success) {
+    accountUsage = usage.data;
+    accountUsageKey = usageScope();
+  }
   sessionAgentError =
     workspace?.features?.includes(AGENT_VERSIONS_FEATURE) && !readAgent
       ? '此会话缺少固定的 Agent 配置，仍可查看历史，请创建新会话继续。'
@@ -3990,9 +4018,13 @@ let runSelectionTouched = false;
 let runOptionsError = '';
 const capabilityAttempts = new Map<string, number>();
 function runOptionsScopeKey() {
-  return [runOptionsKey(), replica?.localProjectId, sessionId || 'new', supportsModelProbe()].join(
-    '/',
-  );
+  return [
+    workspace?.id,
+    currentAgent()?.id,
+    replica?.localProjectId,
+    currentAgent()?.capabilityContext?.programFingerprint,
+    currentAgent()?.capabilityContext?.directoryFingerprint ?? (sessionId || 'new'),
+  ].join('/');
 }
 function supportsModelProbe() {
   return workspace?.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) === true;
@@ -4034,8 +4066,23 @@ async function restoreRunOptions() {
     !pending && saved?.base === current.base
       ? saved.selection
       : selectionFromInput(current.input, currentAgent()?.runConfig);
+  if (!sessionId && workspace?.features?.includes(AGENT_CONTROLS_FEATURE) && currentAgent()) {
+    const response = runPreferencesResponseSchema.parse(
+      await api(prefix() + '/run-preferences', { agentId: currentAgent()!.id, action: 'read' }),
+    );
+    if (generation !== runOptionsGeneration || session !== sessionGeneration) return;
+    assertControlsScope(response.scope);
+    runSelection.modeId = response.preferences.modeId;
+  }
+  runSelection = initializeRunSelection(runSelection, currentAgent()?.runConfig, {
+    fresh: !current.base,
+    initialModeId: meta?.initialModeId,
+    legacyCodex: currentAgent()?.agentType === 'codex',
+  });
   runOptionsReady = true;
   updateComposer();
+  if (accountUsageKey !== usageScope() || !accountUsage?.observedAt)
+    void readUsage().catch(() => {});
   const attempt = runOptionsScopeKey();
   if (
     (supportsModelProbe() ||
@@ -4044,12 +4091,12 @@ async function restoreRunOptions() {
     selected?.online &&
     replica?.available &&
     !pending &&
-    (!capabilityAttempts.has(attempt) || Date.now() - capabilityAttempts.get(attempt)! >= 60_000)
+    !capabilityAttempts.has(attempt)
   ) {
     void refreshRunOptions().catch(error);
   }
 }
-async function refreshRunOptions() {
+async function refreshRunOptions(force = false) {
   const agent = currentAgent();
   if (!agent || runOptionsLoading || pending || sending) return;
   const generation = runOptionsGeneration,
@@ -4064,7 +4111,7 @@ async function refreshRunOptions() {
     const updated = agentSchema.parse(
       await api(prefix() + '/agent-options', {
         agentId: agent.id,
-        ...(supportsModelProbe() && runSelection.modelId ? { modelId: runSelection.modelId } : {}),
+        ...(force ? { refresh: true } : {}),
         ...(sessionId && workspace?.features?.includes(AGENT_VERSIONS_FEATURE)
           ? { sessionId }
           : {}),
@@ -4097,12 +4144,18 @@ async function refreshRunOptions() {
         throw new Error('模型选项不属于当前项目和会话。');
     }
     Object.assign(currentAgent()!, updated);
+    capabilityAttempts.set(runOptionsScopeKey(), Date.now());
     // Recover an effort field from the saved native turn when capabilities were initially unavailable.
     if (!runSelectionTouched && !pending && !runSelection.reasoningEffort) {
       const inherited = selectionFromInput(currentRunInput().input, updated.runConfig);
       if (inherited.modelId === runSelection.modelId)
         runSelection.reasoningEffort = inherited.reasoningEffort;
     }
+    runSelection = initializeRunSelection(runSelection, updated.runConfig, {
+      fresh: !currentRunInput().base,
+      initialModeId: meta?.initialModeId,
+      legacyCodex: updated.agentType === 'codex',
+    });
   } catch (cause) {
     if (
       generation !== runOptionsGeneration ||
@@ -4147,32 +4200,95 @@ function renderRunOptions() {
     status: runOptionsError,
     existing: !!sessionId,
     onChange: (property, value) => {
-      runSelectionTouched = true;
-      runSelection = { ...runSelection, [property]: value || undefined };
-      if (
-        property === 'modelId' &&
-        !capabilities?.models
-          .find((m) => m.id === runSelection.modelId)
-          ?.efforts.includes(runSelection.reasoningEffort ?? '')
-      )
-        runSelection.reasoningEffort = undefined;
-      void persistRunOptions(runOptionsKey(), {
-        base: currentRunInput().base,
-        selection: { ...runSelection },
-      }).catch(error);
-      updateComposer();
-      if (property === 'modelId' && supportsModelProbe()) void refreshRunOptions().catch(error);
+      const next = changeRunSelection(runSelection, property, value, capabilities);
+      const generation = sessionGeneration;
+      run(async () => {
+        if (property === 'modeId' && approvalModeSchema.safeParse(value).success) {
+          const params = { agentId: currentAgent()!.id, ...(sessionId ? { sessionId } : {}) };
+          const previous = runPreferencesResponseSchema.parse(
+            await api(prefix() + '/run-preferences', { ...params, action: 'read' }),
+          );
+          if (generation !== sessionGeneration) throw Error('审批设置目标已变化');
+          assertControlsScope(previous.scope);
+          await api(prefix() + '/run-preferences', {
+            ...params,
+            action: 'save',
+            modeId: value,
+            expectedRevision: previous.preferences.revision,
+          });
+        }
+        if (generation !== sessionGeneration) return;
+        runSelectionTouched = true;
+        runSelection = next;
+        await persistRunOptions(runOptionsKey(), { base: currentRunInput().base, selection: next });
+        updateComposer();
+      });
     },
-    onRefresh: () => run(refreshRunOptions),
-    onOpenModels: () => {
-      if (supportsModelProbe() && connected && selected?.online && replica?.available)
-        void refreshRunOptions().catch(error);
-    },
+    onRefresh: () => run(() => refreshRunOptions(true)),
   });
   return !!validation || !!runOptionsError;
 }
 
+let accountUsage: AccountUsage | undefined;
+let accountUsageKey = '';
+function assertControlsScope(scope: {
+  workspaceId: string;
+  userId: string;
+  machineId: string;
+  localProjectId: string;
+  agentId: string;
+  sessionId?: string;
+}) {
+  if (
+    scope.workspaceId !== workspace?.id ||
+    scope.userId !== workspace.userId ||
+    scope.machineId !== workspace.machineId ||
+    scope.localProjectId !== replica?.localProjectId ||
+    scope.agentId !== currentAgent()?.id ||
+    scope.sessionId !== (sessionId || undefined)
+  )
+    throw Error('Agent 设置与当前执行范围不匹配');
+}
+function usageScope() {
+  return [sessionGeneration, workspace?.id, replica?.id, currentAgent()?.id, sessionId].join('/');
+}
+async function readUsage(force = false) {
+  if (
+    !workspace?.features?.includes(AGENT_CONTROLS_FEATURE) ||
+    !currentAgent() ||
+    !connected ||
+    !selected?.online
+  )
+    return;
+  const scope = usageScope(),
+    agentId = currentAgent()!.id;
+  const result = agentUsageResponseSchema.parse(
+    await api(prefix() + '/agent-usage', {
+      agentId,
+      ...(sessionId ? { sessionId } : {}),
+      ...(force ? { refresh: true } : {}),
+    }),
+  );
+  if (scope !== usageScope()) return;
+  assertControlsScope(result.scope);
+  accountUsage = result.usage;
+  accountUsageKey = scope;
+  renderUsage();
+}
+function renderUsage() {
+  const view = mirror(volatileSessionDoc ?? doc, sessionId || 'new');
+  const context = latestContextUsage(view.getState().history);
+  view.dispose();
+  showUsageControl({
+    context,
+    usage: accountUsageKey === usageScope() ? accountUsage : undefined,
+    onRead: () => {
+      void readUsage().catch(() => {});
+    },
+  });
+}
 function updateComposer() {
+  renderUsage();
   renderSkills();
   renderGithubWrite();
   renderGithub();

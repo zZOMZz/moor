@@ -558,7 +558,8 @@ test('encrypted model selection persists with its scope, refreshes capabilities,
     (request) => request.action === 'execute' && request.command.method === 'agent-options',
   );
   assert.ok(check?.action === 'execute' && check.command.method === 'agent-options');
-  assert.equal(check.command.params.modelId, 'model-b');
+  assert.equal(check.command.params.modelId, undefined);
+  assert.equal(check.command.params.refresh, true);
   await f.controller.refreshSession();
   assert.deepEqual(f.controller.state.runOptions?.selection, selection);
   await f.controller.saveDraft('Synthetic model choice');

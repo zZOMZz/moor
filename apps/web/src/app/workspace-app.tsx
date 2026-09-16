@@ -1,3 +1,5 @@
+import { changeRunSelection } from '@moor/protocol/run-config';
+import { UsagePanel, latestContextUsage } from '../components/usage-panel';
 import { AppearanceSettings } from '../components/appearance';
 import {
   NavigationSessions,
@@ -121,6 +123,8 @@ function WorkspaceConversation({
   const [text, setText] = useState(state.draft?.text ?? ''),
     [selection, setSelection] = useState<RunSelection>(state.draft?.selection ?? {});
   const [saveError, setSaveError] = useState('');
+  const latestComposer = useRef({ text, selection });
+  latestComposer.current = { text, selection };
   const contentPanel = useRef<WorkspaceContentHandle>(null),
     forkPanel = useRef<WorkspaceForkHandle>(null),
     gitPanel = useRef<{ open(): boolean }>(null),
@@ -789,6 +793,12 @@ function WorkspaceConversation({
                 controlRef={skillsPanel}
               />
             </WorkspaceToolMenu>
+            <UsagePanel
+              context={latestContextUsage(session.history)}
+              usage={session.accountUsage}
+              loading={state.usageLoading}
+              onRead={() => run(() => controller.readUsage())}
+            />
             {activeTurns.length === 1 ? (
               <button
                 type="button"
@@ -812,19 +822,22 @@ function WorkspaceConversation({
           selection={selection}
           agentType={session.meta.agentType}
           disabled={busy}
-          loading={false}
+          loading={state.modelLoading === true}
           canRefresh={sessionWritable && !busy}
           validation={validation}
           status={state.modelError}
           existing
           onChange={(key, value) => {
-            const next = { ...selection };
-            if (value) next[key] = value;
-            else delete next[key];
-            save(text, next);
+            const next = changeRunSelection(selection, key, value, session.agent?.runConfig);
+            if (key === 'modeId')
+              run(async () => {
+                await controller.saveApprovalDefault(value);
+                const latest = latestComposer.current;
+                save(latest.text, { ...latest.selection, modeId: value });
+              });
+            else save(text, next);
           }}
           onRefresh={() => run(() => controller.refreshAgentOptions())}
-          onOpenModels={() => run(() => controller.refreshAgentOptions())}
         />
       </form>
     </>
@@ -1494,6 +1507,18 @@ export function WorkspaceApp({
       <AppearanceSettings
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
+        agentControls={
+          state.session?.agent
+            ? {
+                name: state.session.agent.name,
+                disabled: blocked,
+                refresh: async () => {
+                  await controller.refreshAgentOptions(true);
+                  await controller.readUsage(true);
+                },
+              }
+            : undefined
+        }
         openDesktopSettings={
           openSettings
             ? () => {
