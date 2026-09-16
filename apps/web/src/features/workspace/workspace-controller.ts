@@ -11,7 +11,7 @@ import {
   PROJECT_TREE_FEATURE,
   PROJECT_DIFF_FEATURE,
 } from '@moor/protocol/project-content-protocol';
-import { actorKey } from '@moor/protocol/attention';
+import { actorKey, type AttentionActor } from '@moor/protocol/attention';
 import {
   AttentionController,
   deliverAttention,
@@ -142,6 +142,16 @@ export type WorkspaceClientState = {
   sessionId?: string;
   session?: Session;
   offline: boolean;
+  sessionLoad:
+    | { status: 'idle' }
+    | { status: 'loading-cache' }
+    | { status: 'refreshing'; source: 'none' | 'cache' | 'host' }
+    | { status: 'ready'; source: 'host' }
+    | {
+        status: 'failed';
+        source: 'none' | 'cache' | 'host';
+        reason: 'connection' | 'local';
+      };
   ledger?: WorkspaceLedger;
   draft?: WorkspaceDraft;
   modelError?: string;
@@ -165,14 +175,32 @@ const resultSchema = z.discriminatedUnion('ok', [
     .strict(),
 ]);
 const same = (a: unknown, b: unknown) => productCanonicalJson(a) === productCanonicalJson(b);
+const DRAFT_SAVE_DELAY_MS = 300;
 
 /** Plain local/relay controller. Encrypted targets retain their own authenticated transport. */
 export class WorkspaceController {
-  #state: WorkspaceClientState = { catalogs: {}, errors: {}, sessions: [], offline: true };
+  #state: WorkspaceClientState = {
+    catalogs: {},
+    errors: {},
+    sessions: [],
+    offline: true,
+    sessionLoad: { status: 'idle' },
+  };
   #generation = 0;
   #closed = false;
   #listeners = new Set<() => void>();
   #draftWrites: Promise<void> = Promise.resolve();
+  #interactionWrites: Promise<void> = Promise.resolve();
+  #draftBuffer?: {
+    scope: WorkspaceScope;
+    sessionId: string;
+    text: string;
+    selection: RunSelection;
+    actor?: AttentionActor;
+    failed?: (error: unknown) => void;
+    saved?: () => void;
+  };
+  #cancelDraftSave?: () => void;
   #catalogVersions = { local: 0, remote: 0 };
   #sessionReadVersion = 0;
   #modelReadVersion = 0;
@@ -216,6 +244,11 @@ export class WorkspaceController {
   #uuid() {
     return (this.options.uuid ?? (() => crypto.randomUUID()))();
   }
+  #schedule(milliseconds: number, work: () => void) {
+    if (this.options.schedule) return this.options.schedule(milliseconds, work);
+    const timer = setTimeout(work, milliseconds);
+    return () => clearTimeout(timer);
+  }
   async #request(request: DesktopWorkspaceRequest, current: () => void) {
     current();
     const result = resultSchema.parse(await this.options.request(structuredClone(request)));
@@ -230,6 +263,7 @@ export class WorkspaceController {
     return result.value;
   }
   async refreshCatalog(source: DesktopWorkspaceSource) {
+    if (this.#state.scope?.source === source) await this.flushDraft();
     const version = ++this.#catalogVersions[source];
     const current = () => {
       if (this.#closed || this.#catalogVersions[source] !== version)
@@ -248,14 +282,16 @@ export class WorkspaceController {
           previous.owner !== catalog.owner ||
           !same(previous.actor ?? null, catalog.actor ?? null) ||
           !catalog.targets.some((entry) => same(entry.target, this.#state.scope!.target)))
-      ) {
+      )
         this.#clearSelection();
-      }
       this.#state.catalogs[source] = catalog;
-      if (this.#state.scope?.source === source)
-        this.#state.project = structuredClone(
-          catalog.targets.find((entry) => same(entry.target, this.#state.scope!.target))!,
-        );
+      if (this.#state.scope?.source === source) {
+        const active = catalog.targets.find((entry) =>
+          same(entry.target, this.#state.scope!.target),
+        )!;
+        this.#state.project = structuredClone(active);
+        this.#state.offline = !active.online;
+      }
       delete this.#state.errors[source];
     } catch (error) {
       current();
@@ -270,17 +306,22 @@ export class WorkspaceController {
     }
   }
   #clearSelection() {
+    this.#cancelDraftSave?.();
+    this.#cancelDraftSave = undefined;
+    this.#draftBuffer = undefined;
     this.#generation++;
     this.#state = {
       catalogs: this.#state.catalogs,
       errors: this.#state.errors,
       sessions: [],
       offline: true,
+      sessionLoad: { status: 'idle' },
     };
     this.#draftWrites = Promise.resolve();
+    this.#interactionWrites = Promise.resolve();
   }
   async selectProject(source: DesktopWorkspaceSource, target: Project['target']) {
-    await this.#draftWrites;
+    await this.flushDraft();
     const project = this.#state.catalogs[source]?.targets.find((entry) =>
       same(entry.target, target),
     );
@@ -288,6 +329,7 @@ export class WorkspaceController {
     this.#clearSelection();
     this.#state.scope = { source, target: structuredClone(project.target) };
     this.#state.project = structuredClone(project);
+    this.#state.offline = !project.online;
     const current = this.#current();
     this.#state.ledger = await this.store.read(this.#state.scope, current);
     this.#emit();
@@ -413,32 +455,47 @@ export class WorkspaceController {
   async openSession(sessionId: string, turnId?: string) {
     this.#state.searchFocus = undefined;
     this.#state.focusedTurnId = undefined;
-    await this.#draftWrites;
+    await this.flushDraft();
     const scope = this.#context(sessionId).scope;
     this.#generation++;
     this.#state.sessionId = sessionId;
     delete this.#state.session;
     delete this.#state.modelError;
-    const current = this.#current();
-    this.#state.ledger = await this.store.read(scope, current);
-    this.#state.draft = this.#state.ledger.drafts[sessionId] ?? {
-      revision: 0,
-      text: '',
-      selection: {},
-    };
-    const cached = await this.store.cachedSession(scope, sessionId, current);
-    if (cached) this.#state.session = cached;
-    this.#state.offline = true;
+    this.#state.sessionLoad = { status: 'loading-cache' };
     this.#emit();
-    await this.refreshSession();
-    await this.refreshAgentOptions();
+    const current = this.#current();
+    let cached: Session | null;
+    try {
+      this.#state.ledger = await this.store.read(scope, current);
+      this.#state.draft = await this.store.readDraft(scope, sessionId, current, this.#state.ledger);
+      cached = await this.store.cachedSession(scope, sessionId, current);
+    } catch (error) {
+      current();
+      this.#state.sessionLoad = { status: 'failed', source: 'none', reason: 'local' };
+      this.#emit();
+      throw error;
+    }
+    if (cached) this.#state.session = cached;
+    this.#state.sessionLoad = { status: 'refreshing', source: cached ? 'cache' : 'none' };
+    this.#emit();
+    await this.refreshSession({ announce: false, settle: false });
+    try {
+      await this.refreshAgentOptions();
+    } finally {
+      current();
+      this.#state.sessionLoad = { status: 'ready', source: 'host' };
+      this.#emit();
+    }
     current();
     if (turnId && this.#state.session?.history.some((turn) => turn.id === turnId)) {
       this.#state.focusedTurnId = turnId;
       this.#emit();
     }
   }
-  async refreshSession() {
+  async refreshSession({
+    announce = true,
+    settle = true,
+  }: { announce?: boolean; settle?: boolean } = {}) {
     const context = this.#context();
     const version = ++this.#sessionReadVersion,
       selected = context.current;
@@ -447,6 +504,18 @@ export class WorkspaceController {
       if (version !== this.#sessionReadVersion) throw Error('会话读取已由较新的请求替代。');
     };
     if (!context.sessionId) throw Error('请先选择会话。');
+    const source =
+      this.#state.sessionLoad.status === 'ready'
+        ? 'host'
+        : 'source' in this.#state.sessionLoad
+          ? this.#state.sessionLoad.source
+          : this.#state.session
+            ? 'cache'
+            : 'none';
+    if (announce) {
+      this.#state.sessionLoad = { status: 'refreshing', source };
+      this.#emit();
+    }
     try {
       const raw = await this.#execute(
         context,
@@ -460,9 +529,13 @@ export class WorkspaceController {
       context.current();
       this.#state.session = session;
       this.#state.offline = false;
+      this.#state.sessionLoad = settle
+        ? { status: 'ready', source: 'host' }
+        : { status: 'refreshing', source: 'host' };
     } catch (error) {
       context.current();
       this.#state.offline = true;
+      this.#state.sessionLoad = { status: 'failed', source, reason: 'connection' };
       throw error;
     } finally {
       context.current();
@@ -470,6 +543,7 @@ export class WorkspaceController {
     }
   }
   async refreshAgentOptions() {
+    await this.flushDraft();
     const context = this.#context(),
       session = this.#state.session;
     const version = ++this.#modelReadVersion,
@@ -508,31 +582,98 @@ export class WorkspaceController {
       this.#emit();
     }
   }
-  saveDraft(text: string, selection: RunSelection) {
+  queueDraft(
+    text: string,
+    selection: RunSelection,
+    failed?: (error: unknown) => void,
+    saved?: () => void,
+  ) {
     const scope = this.#state.scope,
-      sessionId = this.#state.sessionId,
-      current = this.#current();
-    if (!scope || !sessionId || !this.#state.draft) return Promise.reject(Error('请先打开会话。'));
-    const snapshot = structuredClone({ text, selection });
-    const write = this.#draftWrites.then(async () => {
-      current();
-      this.#state.draft = await this.store.saveDraft(
-        scope,
-        sessionId,
-        this.#state.draft!.revision,
-        snapshot.text,
-        snapshot.selection,
-        current,
-        this.#state.catalogs[scope.source]?.actor,
-      );
-      current();
-      this.#emit();
+      sessionId = this.#state.sessionId;
+    if (!scope || !sessionId || !this.#state.draft) throw Error('请先打开会话。');
+    this.#draftBuffer = {
+      scope: structuredClone(scope),
+      sessionId,
+      text,
+      selection: structuredClone(selection),
+      actor: structuredClone(this.#state.catalogs[scope.source]?.actor),
+      failed,
+      saved,
+    };
+    this.#cancelDraftSave?.();
+    this.#cancelDraftSave = this.#schedule(DRAFT_SAVE_DELAY_MS, () => {
+      this.#cancelDraftSave = undefined;
+      void this.flushDraft().catch(() => {});
     });
-    this.#draftWrites = write;
-    return write;
+  }
+  async flushDraft() {
+    this.#cancelDraftSave?.();
+    this.#cancelDraftSave = undefined;
+    for (;;) {
+      const pending = this.#draftBuffer;
+      if (!pending) {
+        const draftWrites = this.#draftWrites,
+          interactionWrites = this.#interactionWrites;
+        await draftWrites;
+        await interactionWrites;
+        if (
+          this.#draftBuffer ||
+          draftWrites !== this.#draftWrites ||
+          interactionWrites !== this.#interactionWrites
+        )
+          continue;
+        return;
+      }
+      this.#draftBuffer = undefined;
+      const current = () => {
+        if (
+          this.#closed ||
+          !same(this.#state.scope, pending.scope) ||
+          this.#state.sessionId !== pending.sessionId
+        )
+          throw Error('当前电脑、项目或会话已改变，请重新读取。');
+      };
+      const write = this.#draftWrites.then(async () => {
+        current();
+        const draft = this.#state.draft;
+        if (!draft) throw Error('请先打开会话。');
+        this.#state.draft = await this.store.saveDraft(
+          pending.scope,
+          pending.sessionId,
+          draft.revision,
+          pending.text,
+          pending.selection,
+          current,
+          pending.actor,
+        );
+        current();
+      });
+      // A failed recoverable draft write must not poison later explicit retries.
+      this.#draftWrites = write.catch(() => {});
+      try {
+        await write;
+      } catch (error) {
+        if (!this.#draftBuffer) this.#draftBuffer = pending;
+        try {
+          pending.failed?.(error);
+        } catch {
+          // UI notification callbacks never control persistence or retry state.
+        }
+        throw error;
+      }
+      try {
+        pending.saved?.();
+      } catch {
+        // UI notification callbacks never control persistence or retry state.
+      }
+    }
+  }
+  saveDraft(text: string, selection: RunSelection) {
+    this.queueDraft(text, selection);
+    return this.flushDraft();
   }
   async openFork(changed: () => void = () => {}) {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     if (!context.sessionId) throw Error('请先打开源会话。');
     const sessionId = context.sessionId,
@@ -598,7 +739,7 @@ export class WorkspaceController {
         cutoff: forkCutoffSchema.parse(input.cutoff),
         directory: forkDirectorySchema.parse(input.directory),
       };
-      await this.#draftWrites;
+      await this.flushDraft();
       current();
       return this.store.exclusiveOperation(
         context.scope,
@@ -698,7 +839,7 @@ export class WorkspaceController {
     };
   }
   async openAttention(changed: () => void = () => {}) {
-    await this.#draftWrites;
+    await this.flushDraft();
     const base = this.#context(),
       catalog = structuredClone(this.#state.catalogs[base.scope.source]!);
     if (!catalog.actor) throw Error('原连接尚未提供可核对的待办账号，请重新连接或更新主机。');
@@ -822,7 +963,7 @@ export class WorkspaceController {
           current();
           if (!authorized()) throw Error('待办原事项已改变。');
         };
-        await this.#draftWrites;
+        await this.flushDraft();
         check();
         return this.store.exclusiveOperation(
           context.scope,
@@ -852,19 +993,19 @@ export class WorkspaceController {
         );
       },
       readSessionDraft: async (route, sessionId) => {
-        await this.#draftWrites;
+        await this.flushDraft();
         const context = scoped(route, sessionId),
-          ledger = await this.store.read(context.scope, current);
-        const draft = ledger.drafts[sessionId];
+          ledger = await this.store.read(context.scope, current),
+          draft = await this.store.readDraft(context.scope, sessionId, current, ledger);
         return draft?.actor && actorKey(draft.actor) === actorKey(actor)
           ? draft.text
           : { text: '', unscoped: !!draft?.text };
       },
       prepareTurn: async (route, sessionId, text) => {
-        await this.#draftWrites;
+        await this.flushDraft();
         const context = scoped(route, sessionId);
         const ledger = await this.store.read(context.scope, current),
-          draft = ledger.drafts[sessionId];
+          draft = await this.store.readDraft(context.scope, sessionId, current, ledger);
         if (
           this.store.attentionBlocked(ledger, sessionId) ||
           this.store.githubBlocked(ledger, sessionId) ||
@@ -896,15 +1037,16 @@ export class WorkspaceController {
             }),
           ),
         );
-        const latest = await this.store.read(context.scope, current);
-        if (!same(latest.drafts[sessionId]?.selection ?? {}, draft?.selection ?? {}))
+        const latestLedger = await this.store.read(context.scope, current),
+          latest = await this.store.readDraft(context.scope, sessionId, current, latestLedger);
+        if (!same(latest.selection, draft.selection))
           throw Error('运行选项已改变，请重新查看后续要求。');
         return buildSessionTurn({
           scope: { ...context.scope.target, sessionId },
           read,
           agent,
           prompt: text,
-          selection: draft?.selection,
+          selection: draft.selection,
           operationId: this.#uuid(),
           turnId: this.#uuid(),
           peerId: this.#uuid(),
@@ -944,7 +1086,7 @@ export class WorkspaceController {
       },
       openSession: async (route: AttentionRoute, sessionId: string, turnId?: string) => {
         const context = scoped(route, sessionId);
-        await this.#draftWrites;
+        await this.flushDraft();
         current();
         if (!same(context.scope, this.#state.scope))
           await this.selectProject(context.scope.source, context.scope.target);
@@ -958,7 +1100,7 @@ export class WorkspaceController {
     reviewed = this.#state.session?.meta,
   ) {
     const shown = structuredClone(reviewed);
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     if (!shown || shown.id !== context.sessionId) throw Error('请先读取原会话。');
     if (this.#state.offline) throw Error('执行电脑离线，请连接后手动整理会话。');
@@ -1097,7 +1239,7 @@ export class WorkspaceController {
       openHit: async (hit: SearchHit) => {
         current();
         if (!result?.hits.some((item) => same(item, hit))) throw Error('此结果不属于当前搜索。');
-        await this.#draftWrites;
+        await this.flushDraft();
         current();
         try {
           await this.openSession(hit.sessionId);
@@ -1128,7 +1270,7 @@ export class WorkspaceController {
     mode: 'tree' | 'changes' = 'tree',
     turnId?: string,
   ) {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     if (!context.sessionId || !this.#state.session) throw Error('请先打开会话。');
     const sessionId = context.sessionId;
@@ -1215,7 +1357,7 @@ export class WorkspaceController {
     });
   }
   async openGithub(changed: () => void = () => {}, mode: SecureGithubMode = 'read') {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     if (!context.sessionId) throw Error('请先打开会话。');
     const sessionId = context.sessionId;
@@ -1302,7 +1444,7 @@ export class WorkspaceController {
         return this.#execute({ ...context, current }, this.#command(context.scope, method, params));
       },
       beforeWrite: async (target, current) => {
-        await this.#draftWrites;
+        await this.flushDraft();
         checkTarget(target, current);
         const ledger = await this.store.read(context.scope, current);
         if (
@@ -1318,7 +1460,7 @@ export class WorkspaceController {
           throw Error('请先核查此会话原操作，再确认新的 GitHub 操作。');
       },
       appendInstruction: async (target, text, current) => {
-        await this.#draftWrites;
+        await this.flushDraft();
         checkTarget(target, current);
         if (
           !this.#state.session?.persisted ||
@@ -1334,6 +1476,7 @@ export class WorkspaceController {
           [draft.text, text].filter(Boolean).join('\n\n'),
           draft.selection,
           current,
+          this.#state.catalogs[context.scope.source]?.actor,
         );
         await this.#reloadLedger({ ...context, current });
       },
@@ -1354,7 +1497,7 @@ export class WorkspaceController {
     return panel;
   }
   async openGit(changed: () => void = () => {}, resourceSessionId?: string) {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context(resourceSessionId ?? this.#state.sessionId);
     if (!context.sessionId) throw Error('请先打开会话。');
     if (resourceSessionId && resourceSessionId !== this.#state.sessionId) {
@@ -1431,7 +1574,7 @@ export class WorkspaceController {
     ) => {
       const reviewed = structuredClone(controller.state),
         pending = structuredClone(controller.pending);
-      await this.#draftWrites;
+      await this.flushDraft();
       current();
       const recovery = ['retry', 'inspect', 'abandon'].includes(kind);
       return this.store.exclusiveOperation(context.scope, 'git:' + sessionId, current, async () => {
@@ -1573,7 +1716,7 @@ export class WorkspaceController {
         skills.invalidate();
       },
       addToDraft: async () => {
-        await this.#draftWrites;
+        await this.flushDraft();
         current();
         const draft = structuredClone(this.#state.draft!);
         if (
@@ -1584,7 +1727,7 @@ export class WorkspaceController {
         )
           throw Error('请先读取可编辑的原会话。');
         const instruction = await skills.instructionForDraft();
-        await this.#draftWrites;
+        await this.flushDraft();
         current();
         await this.store.saveDraft(
           context.scope,
@@ -1593,6 +1736,7 @@ export class WorkspaceController {
           [draft.text, instruction].filter(Boolean).join('\n\n'),
           draft.selection,
           current,
+          this.#state.catalogs[context.scope.source]?.actor,
         );
         await this.#reloadLedger({ ...context, current });
       },
@@ -1604,22 +1748,26 @@ export class WorkspaceController {
       sessionId = this.#state.sessionId,
       current = this.#current();
     if (!scope || !sessionId) throw Error('请先打开会话。');
-    await this.#draftWrites.catch(() => {});
+    await this.flushDraft().catch(() => {});
     current();
-    const ledger = await this.store.read(scope, current);
-    this.#state.ledger = ledger;
-    this.#state.draft = ledger.drafts[sessionId] ?? { revision: 0, text: '', selection: {} };
+    this.#draftBuffer = undefined;
+    this.#cancelDraftSave?.();
+    this.#cancelDraftSave = undefined;
+    this.#state.ledger = await this.store.read(scope, current);
+    this.#state.draft = await this.store.readDraft(scope, sessionId, current, this.#state.ledger);
     this.#draftWrites = Promise.resolve();
+    this.#interactionWrites = Promise.resolve();
     this.#emit();
   }
   async #reloadLedger(context: Context) {
     this.#state.ledger = await this.store.read(context.scope, context.current);
     if (this.#state.sessionId)
-      this.#state.draft = this.#state.ledger.drafts[this.#state.sessionId] ?? {
-        revision: 0,
-        text: '',
-        selection: {},
-      };
+      this.#state.draft = await this.store.readDraft(
+        context.scope,
+        this.#state.sessionId,
+        context.current,
+        this.#state.ledger,
+      );
     this.#emit();
   }
   async createSession(agentId: string, title?: string) {
@@ -1698,16 +1846,18 @@ export class WorkspaceController {
       },
     );
   }
-  #saveInteraction(task: (controller: InteractionController) => Promise<void>) {
+  async #saveInteraction(task: (controller: InteractionController) => Promise<void>) {
     const context = this.#context();
-    const work = this.#draftWrites.then(() =>
+    await this.flushDraft();
+    context.current();
+    const work = this.#interactionWrites.then(() =>
       this.#withInteractions(context, (controller) => {
         if (controller.pending)
           throw Error('原交互尚未确认，当前输入未保存，请先核查或重新读取草稿。');
         return task(controller);
       }),
     );
-    this.#draftWrites = work;
+    this.#interactionWrites = work;
     return work;
   }
   saveQuestionDraft(input: QuestionRequest, values: QuestionDraftValues) {
@@ -1758,7 +1908,7 @@ export class WorkspaceController {
   async answerQuestion(input: QuestionRequest, answer: QuestionAnswer['answer']) {
     const request = questionRequestSchema.parse(input),
       reviewed = structuredClone(answer);
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     return this.#withInteractions(context, async (controller) => {
       const snapshot = await this.#freshInteraction(context, 'question');
@@ -1775,7 +1925,7 @@ export class WorkspaceController {
     });
   }
   async steer(expectedTurnId: string, prompt: string) {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     return this.#withInteractions(context, async (controller) => {
       const snapshot = await this.#freshInteraction(context, 'steer');
@@ -1789,7 +1939,7 @@ export class WorkspaceController {
     });
   }
   async retryInteraction() {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     return this.#withInteractions(context, async (controller) => {
       await controller.retry({ ...context.scope.target, sessionId: context.sessionId! });
@@ -1797,7 +1947,7 @@ export class WorkspaceController {
     });
   }
   async dismissInteraction() {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context();
     return this.#withInteractions(context, async (controller) => {
       await this.refreshSession();
@@ -1828,7 +1978,7 @@ export class WorkspaceController {
   async recoverRetiredTask(shown: TaskAction, mode: 'inspect' | 'retry') {
     const original = taskActionSchema.parse(structuredClone(shown));
     if (mode !== 'inspect' && mode !== 'retry') throw Error('仅支持核查或重试原操作。');
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context(),
       sessionId = context.sessionId;
     if (!sessionId) throw Error('请先打开原会话。');
@@ -1876,7 +2026,7 @@ export class WorkspaceController {
     );
   }
   async send() {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context(),
       sessionId = context.sessionId;
     if (!sessionId || !this.#state.draft) throw Error('请先打开会话。');
@@ -1935,7 +2085,7 @@ export class WorkspaceController {
     await this.retry(value.operationId);
   }
   async addAttachments(files: readonly File[], expectedCurrent: () => void = () => {}) {
-    await this.#draftWrites;
+    await this.flushDraft();
     expectedCurrent();
     const context = this.#context(),
       sessionId = context.sessionId;
@@ -2012,7 +2162,7 @@ export class WorkspaceController {
     return this.#attachmentAction(attachmentId, 'remove');
   }
   async #attachmentAction(attachmentId: string, action: 'upload' | 'remove') {
-    await this.#draftWrites;
+    await this.flushDraft();
     const context = this.#context(),
       sessionId = context.sessionId;
     if (!sessionId) throw Error('请先打开会话。');
@@ -2203,6 +2353,9 @@ export class WorkspaceController {
     await this.#reloadLedger(context);
   }
   close() {
+    this.#cancelDraftSave?.();
+    this.#cancelDraftSave = undefined;
+    this.#draftBuffer = undefined;
     this.#closed = true;
     this.#generation++;
     this.#listeners.clear();

@@ -99,6 +99,7 @@ function WorkspaceConversation({
   state,
   busy,
   run,
+  navigate,
   onDirty,
   addProject,
   configureAgent,
@@ -109,6 +110,7 @@ function WorkspaceConversation({
   state: WorkspaceClientState;
   busy: boolean;
   run: Run;
+  navigate: Run;
   onDirty(value: boolean): void;
   addProject?: () => void;
   configureAgent?: () => void;
@@ -125,7 +127,10 @@ function WorkspaceConversation({
   const [branch, setBranch] = useState<string>();
   const readBranch = useCallback(() => {
     let active = true;
-    if (!state.sessionId || state.offline) return () => {};
+    if (!state.sessionId || state.offline || state.sessionLoad.status !== 'ready') {
+      setBranch(undefined);
+      return () => {};
+    }
     void controller
       .readGitContext()
       .then((value) => {
@@ -135,16 +140,11 @@ function WorkspaceConversation({
     return () => {
       active = false;
     };
-  }, [controller, state.sessionId, state.offline]);
+  }, [controller, state.sessionId, state.offline, state.sessionLoad.status]);
   useEffect(readBranch, [readBranch]);
-  const draftVersion = useRef(0),
-    saving = useRef(false),
-    active = useRef(true);
-  const dirty = useRef({ composer: false, interaction: false });
-  const reportDirty = (kind: 'composer' | 'interaction', value: boolean) => {
-    dirty.current[kind] = value;
-    onDirty(dirty.current.composer || dirty.current.interaction);
-  };
+  const active = useRef(true),
+    draftVersion = useRef(0),
+    draftDirty = useRef(false);
   useEffect(
     () => () => {
       active.current = false;
@@ -152,7 +152,7 @@ function WorkspaceConversation({
     [],
   );
   useEffect(() => {
-    if (!saving.current && !saveError) {
+    if (!draftDirty.current && !saveError) {
       setText(state.draft?.text ?? '');
       setSelection(state.draft?.selection ?? {});
     }
@@ -160,23 +160,19 @@ function WorkspaceConversation({
   const save = (nextText: string, nextSelection: RunSelection) => {
     setText(nextText);
     setSelection(nextSelection);
-    reportDirty('composer', true);
-    saving.current = true;
+    setSaveError('');
+    draftDirty.current = true;
     const version = ++draftVersion.current;
-    void controller
-      .saveDraft(nextText, nextSelection)
-      .then(() => {
-        if (!active.current || version !== draftVersion.current) return;
-        saving.current = false;
-        setSaveError('');
-        reportDirty('composer', false);
-      })
-      .catch((error: unknown) => {
-        if (active.current && version === draftVersion.current) {
-          saving.current = false;
-          setSaveError(message(error));
-        }
-      });
+    controller.queueDraft(
+      nextText,
+      nextSelection,
+      (error) => {
+        if (active.current && version === draftVersion.current) setSaveError(message(error));
+      },
+      () => {
+        if (active.current && version === draftVersion.current) draftDirty.current = false;
+      },
+    );
   };
   useEffect(() => {
     const target = state.searchFocus;
@@ -188,23 +184,38 @@ function WorkspaceConversation({
     node?.focus({ preventScroll: true });
   }, [state.searchFocus?.turnId, state.searchFocus?.sessionId, state.sessionId]);
   const session = state.session;
-  if (!session || !state.sessionId || !state.scope)
+  if (!session || !state.sessionId || !state.scope) {
+    const loading = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
     return (
       <section className="workspace-empty">
-        <Folder aria-hidden="true" />
-        <h1>{state.project?.projectName ?? '从你的项目开始'}</h1>
+        {loading ? <RefreshCw aria-hidden="true" /> : <Folder aria-hidden="true" />}
+        <h1>
+          {loading
+            ? '正在打开会话…'
+            : state.sessionLoad.status === 'failed'
+              ? state.sessionLoad.reason === 'local'
+                ? '本机会话恢复失败'
+                : '会话暂不可用'
+              : (state.project?.projectName ?? '从你的项目开始')}
+        </h1>
         <p>
-          {state.project
-            ? '选择已有会话，或在侧栏新建会话。'
-            : '添加本机文件夹，开始你的第一个会话。'}
+          {loading
+            ? '正在读取本机缓存并与执行电脑同步。'
+            : state.sessionLoad.status === 'failed'
+              ? state.sessionLoad.reason === 'local'
+                ? '本机缓存无法读取，请重试或检查存储。'
+                : '执行电脑暂不可达，本机尚无此会话缓存。'
+              : state.project
+                ? '选择已有会话，或在侧栏新建会话。'
+                : '添加本机文件夹，开始你的第一个会话。'}
         </p>
-        {!state.project && addProject && (
+        {!loading && !state.project && addProject && (
           <button className="workspace-add-project" disabled={busy} onClick={addProject}>
             <Plus size={16} />
             添加项目
           </button>
         )}
-        {state.project && !state.project.runtime.agents.length && configureAgent && (
+        {!loading && state.project && !state.project.runtime.agents.length && configureAgent && (
           <>
             <p>此电脑尚未配置 Agent。</p>
             <button onClick={configureAgent} disabled={busy}>
@@ -214,6 +225,7 @@ function WorkspaceConversation({
         )}
       </section>
     );
+  }
   const reviews = sessionPermissionReviews(session, {
     ...state.scope.target,
     sessionId: state.sessionId,
@@ -229,6 +241,8 @@ function WorkspaceConversation({
   const retiredTask = state.ledger?.tasks?.[state.sessionId]?.pending;
   const attachments = state.ledger?.attachments?.[state.sessionId]?.items ?? [];
   const attachmentSupported = state.project?.runtime.features?.includes(ATTACHMENTS_FEATURE);
+  const sessionRefreshing = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
+  const sessionWritable = state.sessionLoad.status === 'ready' && !state.offline;
   const attachmentBlocked = attachments.some(
     (item) =>
       !item.uploaded ||
@@ -237,12 +251,12 @@ function WorkspaceConversation({
   );
   const canSend =
     !busy &&
-    !saving.current &&
     !saveError &&
+    !state.modelError &&
     !validation &&
     (text.trim() || attachments.length) &&
     !attachmentBlocked &&
-    !state.offline &&
+    sessionWritable &&
     !pending.length &&
     !retiredTask &&
     !activeTurns.length &&
@@ -253,20 +267,25 @@ function WorkspaceConversation({
         <h1>{session.meta.title || '新对话'}</h1>
         <div className="workspace-header-tools">
           <WorkspaceToolMenu>
-            <WorkspaceSessionTools controller={controller} state={state} busy={busy} run={run} />
-            <WorkspaceForkUI
+            <WorkspaceSessionTools
               controller={controller}
               state={state}
               busy={busy}
               run={run}
+              navigate={navigate}
+            />
+            <WorkspaceForkUI
+              controller={controller}
+              state={state}
+              busy={busy || !sessionWritable}
+              run={run}
+              navigate={navigate}
               controlRef={forkPanel}
             />
             <SessionInformation
               history={session.history}
-              disabled={busy || dirty.current.composer || dirty.current.interaction || !!saveError}
-              onCommand={(command) =>
-                run(() => controller.saveDraft(text ? text + '\n' + command : command, selection))
-              }
+              disabled={busy || !sessionWritable || !!saveError}
+              onCommand={(command) => save(text ? text + '\n' + command : command, selection)}
               onFiles={
                 state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE)
                   ? (turnId) => {
@@ -276,8 +295,8 @@ function WorkspaceConversation({
               }
             />
             <button
-              disabled={busy}
-              onClick={() => run(() => controller.refreshSession())}
+              disabled={busy || sessionRefreshing}
+              onClick={() => navigate(() => controller.refreshSession())}
               aria-label="刷新会话"
             >
               <RefreshCw size={16} />
@@ -294,7 +313,7 @@ function WorkspaceConversation({
             <div className="workspace-environment-location">
               <Monitor size={16} />
               <span>{state.project?.hostName}</span>
-              <small>{state.offline ? '离线' : '已连接'}</small>
+              <small>{sessionRefreshing ? '同步中' : state.offline ? '离线' : '已连接'}</small>
             </div>
             <WorkspaceGitUI
               controller={controller}
@@ -304,7 +323,12 @@ function WorkspaceConversation({
               controlRef={gitPanel}
               onChanged={readBranch}
             />
-            <WorkspaceGithubUI controller={controller} state={state} busy={busy} run={run} />
+            <WorkspaceGithubUI
+              controller={controller}
+              state={state}
+              busy={busy || !sessionWritable}
+              run={run}
+            />
           </WorkspaceToolMenu>
         </div>
       </header>
@@ -332,16 +356,25 @@ function WorkspaceConversation({
           <button
             disabled={busy}
             onClick={() =>
-              run(() => controller.openSession(session.meta.forkOrigin!.sourceSessionId))
+              navigate(() => controller.openSession(session.meta.forkOrigin!.sourceSessionId))
             }
           >
             打开源会话
           </button>
         </aside>
       )}
-      {state.offline && (
+      {sessionRefreshing && (
         <p className="workspace-status" role="status">
-          执行电脑暂不可达，显示本机缓存；草稿仍可编辑。
+          正在与执行电脑同步会话…
+        </p>
+      )}
+      {!sessionRefreshing && (state.offline || state.sessionLoad.status === 'failed') && (
+        <p className="workspace-status" role="status">
+          {state.sessionLoad.status === 'failed' && state.sessionLoad.reason === 'local'
+            ? '本机缓存读取失败；当前输入仍保留在编辑器中。'
+            : state.offline
+              ? '执行电脑暂不可达，显示本机缓存；草稿仍可编辑。'
+              : '连接已恢复，当前会话尚未重新同步，正在显示本机缓存。'}
         </p>
       )}
       <SessionTimeline
@@ -411,7 +444,7 @@ function WorkspaceConversation({
                 {review.options.map((option) => (
                   <button
                     key={option.optionId}
-                    disabled={busy || state.offline}
+                    disabled={busy || !sessionWritable}
                     onClick={() =>
                       run(() =>
                         controller.respondPermission(review, {
@@ -425,7 +458,7 @@ function WorkspaceConversation({
                   </button>
                 ))}
                 <button
-                  disabled={busy || state.offline}
+                  disabled={busy || !sessionWritable}
                   onClick={() =>
                     run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
                   }
@@ -453,7 +486,7 @@ function WorkspaceConversation({
                 className="session-fork-action"
                 aria-label="从此回合创建副本"
                 title="从此回合创建副本"
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => forkPanel.current?.open(turn.id)}
               >
                 <GitFork size={15} />
@@ -477,19 +510,19 @@ function WorkspaceConversation({
               </p>
               <small>{entry.original.value.operationId}</small>
               <button
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => run(() => controller.inspect(entry.original.value.operationId))}
               >
                 核查结果
               </button>
               <button
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => run(() => controller.retry(entry.original.value.operationId))}
               >
                 重试原操作
               </button>
               <button
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => run(() => controller.abandon(entry.original.value.operationId))}
               >
                 结束原操作
@@ -504,13 +537,13 @@ function WorkspaceConversation({
           <p>协作功能已移除，原操作记录仍保留。核查结果不会创建任务。</p>
           <code>{retiredTask.operationId}</code>
           <button
-            disabled={busy || state.offline}
+            disabled={busy || !sessionWritable}
             onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'inspect'))}
           >
             核查旧版操作
           </button>
           <button
-            disabled={busy || state.offline}
+            disabled={busy || !sessionWritable}
             onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'retry'))}
           >
             重试旧版原操作
@@ -520,9 +553,9 @@ function WorkspaceConversation({
       <WorkspaceInteractionUI
         controller={controller}
         state={state}
-        busy={busy}
+        busy={busy || !sessionWritable}
         run={run}
-        onDirty={(value) => reportDirty('interaction', value)}
+        onDirty={onDirty}
       />
       <form
         className="workspace-composer"
@@ -542,7 +575,7 @@ function WorkspaceConversation({
                   ? projectKey({ ...state.project, source: state.scope.source })
                   : ''
               }
-              disabled={busy || saving.current || !!saveError}
+              disabled={busy || !!saveError}
               onChange={(event) => {
                 const project = projects.find((entry) => projectKey(entry) === event.target.value);
                 if (project) onProjectChange(project);
@@ -565,7 +598,7 @@ function WorkspaceConversation({
                   ? projectKey({ ...state.project, source: state.scope.source })
                   : ''
               }
-              disabled={busy || saving.current || !!saveError}
+              disabled={busy || !!saveError}
               onChange={(event) => {
                 const project = projects.find((entry) => projectKey(entry) === event.target.value);
                 if (project) onProjectChange(project);
@@ -589,7 +622,7 @@ function WorkspaceConversation({
           </label>
           <button
             type="button"
-            disabled={busy || state.offline}
+            disabled={busy || !sessionWritable}
             onClick={() => gitPanel.current?.open()}
             title="选择 Git 分支与工作目录"
           >
@@ -663,7 +696,7 @@ function WorkspaceConversation({
                   {item.pending ? (
                     <button
                       type="button"
-                      disabled={busy || state.offline}
+                      disabled={busy || !sessionWritable}
                       onClick={() => run(() => controller.retry(item.pending!.request.operationId))}
                     >
                       重试附件原操作
@@ -673,7 +706,7 @@ function WorkspaceConversation({
                       {!item.uploaded && (
                         <button
                           type="button"
-                          disabled={busy || state.offline || !!reason}
+                          disabled={busy || !sessionWritable || !!reason}
                           onClick={() =>
                             run(() => controller.uploadAttachment(item.reference.attachmentId))
                           }
@@ -684,7 +717,7 @@ function WorkspaceConversation({
                       <button
                         type="button"
                         disabled={
-                          busy || (item.uploaded && (state.offline || !attachmentSupported))
+                          busy || (item.uploaded && (!sessionWritable || !attachmentSupported))
                         }
                         onClick={() =>
                           run(() => controller.removeAttachment(item.reference.attachmentId))
@@ -708,8 +741,9 @@ function WorkspaceConversation({
                     await controller.reloadDraft();
                     setText(controller.state.draft?.text ?? '');
                     setSelection(controller.state.draft?.selection ?? {});
+                    draftVersion.current++;
+                    draftDirty.current = false;
                     setSaveError('');
-                    reportDirty('composer', false);
                   })
                 }
               >
@@ -737,16 +771,15 @@ function WorkspaceConversation({
               <WorkspaceSkillsUI
                 controller={controller}
                 state={state}
-                busy={busy}
+                busy={busy || !sessionWritable}
                 run={run}
                 controlRef={skillsPanel}
               />
             </WorkspaceToolMenu>
-            {saving.current && <small role="status">正在保存草稿…</small>}
             {activeTurns.length === 1 ? (
               <button
                 type="button"
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
               >
                 <Square size={14} fill="currentColor" />
@@ -767,7 +800,7 @@ function WorkspaceConversation({
           agentType={session.meta.agentType}
           disabled={busy}
           loading={false}
-          canRefresh={!state.offline && !busy}
+          canRefresh={sessionWritable && !busy}
           validation={validation}
           status={state.modelError}
           existing
@@ -856,6 +889,7 @@ export function WorkspaceApp({
     navigationHandled = useRef(-1),
     notificationHandled = useRef('');
   const action = useRef(false),
+    navigationAction = useRef(0),
     mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -917,6 +951,15 @@ export function WorkspaceApp({
       });
     return true;
   };
+  const navigate: Run = (task) => {
+    if (action.current || plainDirty || secureBlocked) return false;
+    const version = ++navigationAction.current;
+    setError('');
+    void task().catch((reason: unknown) => {
+      if (mounted.current && version === navigationAction.current) setError(message(reason));
+    });
+    return true;
+  };
   const blocked = busy || plainDirty || secureBlocked;
   useEffect(() => {
     if (!desktop || blocked || desktopHandled.current === desktop.serial) return;
@@ -964,7 +1007,7 @@ export function WorkspaceApp({
     source: DesktopWorkspaceSource,
     target: NonNullable<WorkspaceClientState['project']>['target'],
   ) =>
-    run(async () => {
+    navigate(async () => {
       setView('plain');
       await controller.selectProject(source, target);
     });
@@ -1051,7 +1094,7 @@ export function WorkspaceApp({
                 aria-current={selectedSession === session.id ? 'page' : undefined}
                 disabled={blocked}
                 onClick={() =>
-                  run(async () => {
+                  navigate(async () => {
                     if (view === 'plain') await controller.openSession(session.id);
                     else await secure.openSession(session.id);
                     hideMobileNavigation();
@@ -1096,7 +1139,7 @@ export function WorkspaceApp({
     project: NavigationProject,
     session: (typeof sessions)[number],
   ) => {
-    run(async () => {
+    navigate(async () => {
       setView('plain');
       if (
         state.scope?.source !== project.source ||
@@ -1464,6 +1507,7 @@ export function WorkspaceApp({
             state={state}
             busy={busy}
             run={run}
+            navigate={navigate}
             onDirty={setPlainDirty}
             projects={allProjects}
             onProjectChange={changeComposerProject}
@@ -1538,8 +1582,8 @@ export async function bootWorkspace() {
     'pagehide',
     () => {
       root.unmount();
-      controller.close();
       secure.close();
+      void controller.flushDraft().finally(() => controller.close());
     },
     { once: true },
   );

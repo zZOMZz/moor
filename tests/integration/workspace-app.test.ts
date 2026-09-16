@@ -162,7 +162,13 @@ test('packaged workspace opens local projects without an account and preserves d
     agentType: 'synthetic',
     title: 'Local session',
   };
-  const state: WorkspaceClientState = { catalogs: {}, errors: {}, sessions: [], offline: true };
+  const state: WorkspaceClientState = {
+    catalogs: {},
+    errors: {},
+    sessions: [],
+    offline: true,
+    sessionLoad: { status: 'idle' },
+  };
   const forkOrigin = {
     version: 1 as const,
     sourceSessionId: meta.id,
@@ -177,10 +183,25 @@ test('packaged workspace opens local projects without an account and preserves d
   const emit = () => listeners.forEach((listener) => listener());
   let contextRevision = 0;
   let hold: Promise<void> | undefined;
+  let sessionRefresh: Promise<void> | undefined;
+  let bufferedDraft: { text: string; selection: object; saved?: () => void } | undefined;
   let attachmentsSaved!: () => void;
   const attachmentSaved = new Promise<void>((resolve) => {
     attachmentsSaved = resolve;
   });
+  const flushBufferedDraft = async () => {
+    const draft = bufferedDraft;
+    if (!draft) return;
+    bufferedDraft = undefined;
+    calls.push('draft:' + draft.text);
+    await hold;
+    state.draft = {
+      revision: state.draft!.revision + 1,
+      text: draft.text,
+      selection: draft.selection,
+    };
+    draft.saved?.();
+  };
   const controller = {
     async readGitContext() {
       return undefined;
@@ -223,7 +244,8 @@ test('packaged workspace opens local projects without an account and preserves d
     async openSession(id: string) {
       calls.push('session:' + id);
       state.sessionId = id;
-      state.offline = false;
+      state.sessionLoad = { status: 'loading-cache' };
+      emit();
       state.draft = { revision: 0, text: '', selection: {} };
       state.session = {
         meta,
@@ -280,15 +302,28 @@ test('packaged workspace opens local projects without an account and preserves d
         };
         state.session.history = [];
       }
+      state.sessionLoad = { status: 'refreshing', source: 'cache' };
+      emit();
+      await sessionRefresh;
+      state.offline = false;
+      state.sessionLoad = { status: 'ready', source: 'host' };
       emit();
     },
+    queueDraft(
+      text: string,
+      selection: object,
+      _failed?: (error: unknown) => void,
+      saved?: () => void,
+    ) {
+      bufferedDraft = { text, selection, saved };
+    },
+    flushDraft: flushBufferedDraft,
     async saveDraft(text: string, selection: object) {
-      calls.push('draft:' + text);
-      await hold;
-      state.draft = { revision: state.draft!.revision + 1, text, selection };
-      emit();
+      bufferedDraft = { text, selection };
+      await flushBufferedDraft();
     },
     async send() {
+      await flushBufferedDraft();
       calls.push('send');
       state.draft = { ...state.draft!, revision: state.draft!.revision + 1, text: '' };
       emit();
@@ -631,7 +666,7 @@ test('packaged workspace opens local projects without an account and preserves d
       const items = await Promise.all(
         files.map((file, index) => createAttachmentDraftItem(file, 'synthetic-file-' + index)),
       );
-      state.ledger ??= { version: 1, scope: state.scope!, revision: 1, drafts: {}, operations: [] };
+      state.ledger ??= { version: 1, scope: state.scope!, revision: 1, operations: [] };
       state.ledger.attachments = { [state.sessionId!]: { revision: 1, items } };
       emit();
       attachmentsSaved();
@@ -798,6 +833,24 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.run-controls')!.textContent!,
       /Installed model/,
     );
+    let finishSessionRefresh!: () => void;
+    sessionRefresh = new Promise<void>((resolve) => {
+      finishSessionRefresh = resolve;
+    });
+    await act(async () => visibleButton('Local sessionsynthetic').click());
+    assert.equal(state.offline, false);
+    assert.deepEqual(state.sessionLoad, { status: 'refreshing', source: 'cache' });
+    assert.equal(project.disabled, false);
+    assert.equal(visibleButton('Local sessionsynthetic').disabled, false);
+    assert.equal(visibleButton('连接其他电脑').disabled, false);
+    assert.match(dom.window.document.body.textContent!, /正在与执行电脑同步会话/);
+    assert.doesNotMatch(dom.window.document.body.textContent!, /执行电脑暂不可达/);
+    await act(async () => {
+      finishSessionRefresh();
+      await sessionRefresh;
+      await Promise.resolve();
+    });
+    sessionRefresh = undefined;
     const information =
       dom.window.document.querySelector<HTMLDetailsElement>('.session-information')!;
     assert.equal(information.open, false);
@@ -817,7 +870,10 @@ test('packaged workspace opens local projects without an account and preserves d
     await act(async () => information.querySelector('summary')!.click());
     const sendsBeforeCommand = calls.filter((call) => call === 'send').length;
     await act(async () => visibleButton('/review').click());
-    assert.equal(state.draft!.text, '/review');
+    assert.equal(
+      dom.window.document.querySelector<HTMLTextAreaElement>('textarea')!.value,
+      '/review',
+    );
     assert.equal(calls.filter((call) => call === 'send').length, sendsBeforeCommand);
     await act(async () => controller.saveDraft('', {}));
     await act(async () => visibleButton('关闭会话信息').click());
@@ -834,14 +890,19 @@ test('packaged workspace opens local projects without an account and preserves d
       );
       textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     });
-    assert.equal(project.disabled, true);
-    assert.equal(visibleButton('发送').disabled, true);
-    assert.equal(visibleButton('连接其他电脑').disabled, true);
+    await act(async () => controller.refreshSessions());
+    assert.equal(
+      textarea.value,
+      'Keep this draft',
+      'an unrelated global update keeps newer UI State',
+    );
+    assert.equal(project.disabled, false);
+    assert.equal(visibleButton('发送').disabled, false);
+    assert.equal(visibleButton('连接其他电脑').disabled, false);
     await act(async () => {
       release();
       await hold;
     });
-    assert.equal(project.disabled, false);
     assert.equal(textarea.value, 'Keep this draft');
     await act(async () => visibleButton('发送').click());
     assert.equal(calls.filter((value) => value === 'send').length, 1);

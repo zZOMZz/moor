@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { gitTargetSchema } from '../git/git-workspace';
-import { roleActionSchema, type RoleView } from '@moor/protocol/role-protocol';
+import { roleActionSchema } from '@moor/protocol/role-protocol';
 
 export const rolesStoredSchema = z
   .object({
@@ -28,8 +28,3 @@ export const roleAppliedSchema = z
       .max(50),
   })
   .strict();
-export function roleInstruction(role: RoleView) {
-  return role.instructions
-    ? `[角色预设：${role.name} · 版本 ${role.revision}]\n${role.instructions}\n[/角色预设]`
-    : '';
-}

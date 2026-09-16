@@ -13,6 +13,7 @@ export function WorkspaceForkUI({
   state,
   busy,
   run,
+  navigate,
   controlRef,
 }: {
   controller: WorkspaceController;
@@ -20,6 +21,7 @@ export function WorkspaceForkUI({
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
+  navigate(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0),
     [consent, setConsent] = useState('');
@@ -94,7 +96,9 @@ export function WorkspaceForkUI({
           onCreate={(cutoff, directory) => run(() => panel.current!.create(cutoff, directory))}
           onRetry={() => run(() => panel.current!.retry())}
           onOpenChild={() =>
-            run(() => controller.openSession(panel.current!.controller.receipt!.childSessionId))
+            navigate(() =>
+              controller.openSession(panel.current!.controller.receipt!.childSessionId),
+            )
           }
           onOpenWorkspace={(id) =>
             run(async () => {

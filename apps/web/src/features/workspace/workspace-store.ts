@@ -42,8 +42,7 @@ import { mcpStoredSchema, mcpReviewSchema, type McpSaved, type McpReview } from 
 import { validateWorkspaceMcp } from '../mcp/workspace-mcp';
 import { tasksStoredSchema, taskReviewedSchema, type ReviewedTasks } from '../tasks/tasks';
 import { validateWorkspaceTasks } from '../tasks/workspace-tasks';
-import { rolesStoredSchema, roleAppliedSchema, roleInstruction } from '../roles/roles';
-import { roleViewSchema, type RoleView } from '@moor/protocol/role-protocol';
+import { rolesStoredSchema, roleAppliedSchema } from '../roles/roles';
 import { validateWorkspaceRoles, validateWorkspaceRoleApplied } from '../roles/workspace-roles';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
 import {
@@ -98,6 +97,14 @@ const draftSchema = z
   })
   .strict();
 export type WorkspaceDraft = z.infer<typeof draftSchema>;
+const draftDocumentSchema = z
+  .object({
+    version: z.literal(1),
+    scope: scopeSchema,
+    sessionId: z.string(),
+    value: draftSchema,
+  })
+  .strict();
 const operationSchema = z
   .object({
     original: sessionOriginalOperationSchema,
@@ -124,7 +131,6 @@ const ledgerSchema = z
     version: z.literal(1),
     scope: scopeSchema,
     revision: z.number().int().nonnegative().safe(),
-    drafts: z.record(draftSchema),
     operations: z.array(operationSchema).max(512),
     attachments: z.record(workspaceAttachmentDraftSchema).optional(),
     interactions: z.record(interactionDocumentSchema).optional(),
@@ -142,13 +148,26 @@ const ledgerSchema = z
   })
   .strict();
 export type WorkspaceLedger = z.infer<typeof ledgerSchema>;
+const storedLedgerSchema = ledgerSchema
+  .extend({
+    // Version 1 originally mixed recoverable composer drafts into the reliable
+    // operation ledger. Keep this field readable only long enough to migrate it.
+    drafts: z.record(draftSchema).optional(),
+  })
+  .strict();
 const emptyDraft = (): WorkspaceDraft => ({ revision: 0, text: '', selection: {} });
 const conflict = () => Error('草稿或原操作已在另一页面改变，请重新读取后继续。');
 const keyFor = (scope: WorkspaceScope) =>
   canonical(['moor-desktop-ledger-v1', scopeSchema.parse(scope)]);
+const draftKeyFor = (scope: WorkspaceScope, sessionId: string) =>
+  canonical([
+    'moor-desktop-draft-v1',
+    scopeSchema.parse(scope),
+    desktopWorkspaceTargetSchema.parse({ ...scope.target, sessionId }).sessionId,
+  ]);
 const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 
-/** Private client state. It is never imported into the host or relayed to other clients. */
+/** Private recoverable Draft State and reliable Ledger; neither is relayed to another client. */
 export class WorkspaceStore {
   constructor(
     readonly backend: SecureStorageBackend = new IndexedSecureStorage({
@@ -166,14 +185,19 @@ export class WorkspaceStore {
     const cleaned = hasRetired
       ? Object.fromEntries(Object.entries(raw).filter(([key]) => !retired.includes(key)))
       : raw;
-    const value =
+    const stored =
       raw == null
-        ? { version: 1 as const, scope: normalized, revision: 0, drafts: {}, operations: [] }
-        : ledgerSchema.parse(cleaned);
+        ? { version: 1 as const, scope: normalized, revision: 0, operations: [] }
+        : storedLedgerSchema.parse(cleaned);
+    const legacyDrafts = stored.drafts ?? {};
+    const { drafts: _legacyDrafts, ...ledger } = stored;
+    const value = ledgerSchema.parse(ledger);
     await this.#validateLedger(value, normalized, current);
-    if (hasRetired) {
-      // Drop obsolete recovery copies only after validating the current ledger.
-      // CAS prevents cleanup from overwriting another page's edits or receipts.
+    for (const [sessionId, draft] of Object.entries(legacyDrafts))
+      await this.#migrateDraft(normalized, sessionId, draft, current);
+    if (hasRetired || Object.hasOwn(stored, 'drafts')) {
+      // Drop obsolete recovery copies and embedded drafts only after validating
+      // the current ledger and durably copying each draft to its own record.
       value.revision++;
       ledgerSchema.parse(value);
       current();
@@ -181,6 +205,73 @@ export class WorkspaceStore {
       current();
     }
     return value;
+  }
+  async #migrateDraft(
+    scope: WorkspaceScope,
+    sessionId: string,
+    draft: WorkspaceDraft,
+    current: () => void,
+  ) {
+    const key = draftKeyFor(scope, sessionId);
+    await this.backend.exclusive(key, current, async () => {
+      const raw = await this.backend.read(key);
+      current();
+      if (raw !== null) {
+        this.#parseDraftDocument(scope, sessionId, raw);
+        return;
+      }
+      const document = draftDocumentSchema.parse({
+        version: 1,
+        scope,
+        sessionId,
+        value: draft,
+      });
+      await this.backend.compareAndSet(key, null, document, current);
+      current();
+    });
+  }
+  #parseDraftDocument(scope: WorkspaceScope, sessionId: string, raw: unknown) {
+    const document = draftDocumentSchema.parse(raw);
+    if (!same(document.scope, scope) || document.sessionId !== sessionId) throw conflict();
+    if (document.value.actor && document.value.actor.accountId !== scope.target.owner)
+      throw Error('草稿账号与原范围不匹配。');
+    return document;
+  }
+  async readDraft(
+    scope: WorkspaceScope,
+    sessionId: string,
+    current: () => void,
+    ledger?: WorkspaceLedger,
+  ): Promise<WorkspaceDraft> {
+    const normalized = scopeSchema.parse(scope),
+      key = draftKeyFor(normalized, sessionId);
+    current();
+    const raw = await this.backend.read(key);
+    current();
+    let draft =
+      raw === null
+        ? emptyDraft()
+        : structuredClone(this.#parseDraftDocument(normalized, sessionId, raw).value);
+    // Draft cleanup is intentionally eventual and separate from the reliable
+    // receipt transaction. Re-reading a confirmed operation completes cleanup
+    // without ever clearing text edited after that operation was staged.
+    for (;;) {
+      const confirmed = ledger?.operations.find(
+        (entry) =>
+          entry.status === 'confirmed' &&
+          entry.draft?.sessionId === sessionId &&
+          entry.draft.revision === draft.revision,
+      );
+      if (!confirmed) return draft;
+      try {
+        draft = await this.clearDraft(normalized, sessionId, draft.revision, current);
+      } catch {
+        // Ledger confirmation is authoritative. Draft cleanup is recoverable
+        // and must never turn an accepted operation back into an unknown one.
+        current();
+        return draft;
+      }
+    }
   }
   async #validateLedger(value: WorkspaceLedger, normalized: WorkspaceScope, current: () => void) {
     if (!same(value.scope, normalized)) throw conflict();
@@ -325,7 +416,7 @@ export class WorkspaceStore {
       value.revision++;
       ledgerSchema.parse(value);
       if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 256 * 1024 * 1024)
-        throw Error('本机草稿和原操作存储已满，请先处理待确认操作。');
+        throw Error('本机可靠操作存储已满，请先处理待确认操作。');
       current();
       await this.backend.compareAndSet(key, before.revision === 0 ? null : before, value, current);
       current();
@@ -341,13 +432,15 @@ export class WorkspaceStore {
     current: () => void,
     actor?: AttentionActor,
   ) {
-    if (actor && actorSchema.parse(actor).accountId !== scope.target.owner)
+    const normalized = scopeSchema.parse(scope);
+    if (actor && actorSchema.parse(actor).accountId !== normalized.target.owner)
       throw Error('草稿账号与原范围不匹配。');
-    desktopWorkspaceTargetSchema.parse({ ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
-      const previous = Object.hasOwn(state.drafts, sessionId)
-        ? state.drafts[sessionId]!
-        : emptyDraft();
+    const key = draftKeyFor(normalized, sessionId);
+    return this.backend.exclusive(key, current, async () => {
+      const raw = await this.backend.read(key);
+      current();
+      const previous =
+        raw === null ? emptyDraft() : this.#parseDraftDocument(normalized, sessionId, raw).value;
       if (previous.revision !== expectedRevision) throw conflict();
       const draft = draftSchema.parse({
         revision: previous.revision + 1,
@@ -355,12 +448,44 @@ export class WorkspaceStore {
         selection,
         ...(actor ? { actor } : {}),
       });
-      Object.defineProperty(state.drafts, sessionId, {
+      const document = draftDocumentSchema.parse({
+        version: 1,
+        scope: normalized,
+        sessionId,
         value: draft,
-        enumerable: true,
-        writable: true,
-        configurable: true,
       });
+      await this.backend.compareAndSet(key, raw, document, current);
+      current();
+      return structuredClone(draft);
+    });
+  }
+  async clearDraft(
+    scope: WorkspaceScope,
+    sessionId: string,
+    expectedRevision: number,
+    current: () => void,
+  ) {
+    const normalized = scopeSchema.parse(scope),
+      key = draftKeyFor(normalized, sessionId);
+    return this.backend.exclusive(key, current, async () => {
+      const raw = await this.backend.read(key);
+      current();
+      const previous =
+        raw === null ? emptyDraft() : this.#parseDraftDocument(normalized, sessionId, raw).value;
+      if (previous.revision !== expectedRevision) return structuredClone(previous);
+      const draft = draftSchema.parse({
+        ...previous,
+        revision: previous.revision + 1,
+        text: '',
+      });
+      const document = draftDocumentSchema.parse({
+        version: 1,
+        scope: normalized,
+        sessionId,
+        value: draft,
+      });
+      await this.backend.compareAndSet(key, raw, document, current);
+      current();
       return structuredClone(draft);
     });
   }
@@ -434,12 +559,7 @@ export class WorkspaceStore {
         )
       )
         throw Error('请先核查此会话尚未确认的原操作。');
-      if (
-        draft &&
-        (draft.sessionId !== original.value.sessionId ||
-          (state.drafts[draft.sessionId]?.revision ?? 0) !== draft.revision)
-      )
-        throw conflict();
+      if (draft && draft.sessionId !== original.value.sessionId) throw conflict();
       if (
         original.kind === 'metadata' &&
         state.operations.some(
@@ -887,61 +1007,6 @@ export class WorkspaceStore {
       });
     });
   }
-  async applyRole(
-    scope: WorkspaceScope,
-    sessionId: string,
-    expectedRevision: number,
-    base: string,
-    input: RoleView,
-    selection: RunSelection,
-    current: () => void,
-  ) {
-    const role = roleViewSchema.parse(input);
-    return this.#change(scope, current, (state) => {
-      const draft = state.drafts[sessionId] ?? emptyDraft();
-      if (draft.revision !== expectedRevision) throw conflict();
-      if (
-        this.forkBlocked(state, sessionId) ||
-        this.githubBlocked(state, sessionId) ||
-        this.attentionBlocked(state, sessionId) ||
-        state.roles?.[sessionId]?.pending ||
-        state.git?.[sessionId]?.pending ||
-        state.interactions?.[sessionId]?.value.pending ||
-        state.operations.some(
-          (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,
-        )
-      )
-        throw Error('请先确认原操作，再应用角色。');
-      const marker = state.roleApplied?.[sessionId];
-      const applied = marker?.base === base ? marker.applied : [];
-      if (applied.some((item) => item.roleId === role.id && item.revision === role.revision))
-        throw Error('此角色版本已应用到当前草稿，不会重复追加。');
-      const instruction = roleInstruction(role);
-      const next = draftSchema.parse({
-        revision: draft.revision + 1,
-        selection,
-        text: draft.text + (instruction ? (draft.text ? '\n\n' : '') + instruction : ''),
-      });
-      const updated = roleAppliedSchema.parse({
-        version: 1,
-        target: workspaceFeatureTarget({ ...scope.target, sessionId }),
-        base,
-        applied: [...applied, { roleId: role.id, revision: role.revision }],
-      });
-      Object.defineProperty(state.drafts, sessionId, {
-        value: next,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-      Object.defineProperty((state.roleApplied ??= {}), sessionId, {
-        value: updated,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    });
-  }
   async savePreview(
     scope: WorkspaceScope,
     sessionId: string,
@@ -1111,17 +1176,6 @@ export class WorkspaceStore {
         mcp.cacheRevision++;
       }
       const draft = operation.draft;
-      if (
-        status === 'confirmed' &&
-        draft &&
-        state.drafts[draft.sessionId]?.revision === draft.revision
-      ) {
-        state.drafts[draft.sessionId] = {
-          ...state.drafts[draft.sessionId]!,
-          revision: draft.revision + 1,
-          text: '',
-        };
-      }
       const attachments = state.attachments?.[original.value.sessionId];
       if (attachments && original.kind === 'attachment') {
         const request = original.value;

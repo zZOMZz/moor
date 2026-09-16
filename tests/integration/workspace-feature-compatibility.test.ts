@@ -63,7 +63,6 @@ function ledger(): WorkspaceLedger {
     version: 1,
     scope,
     revision: 1,
-    drafts: {},
     operations: [
       {
         status: 'pending',

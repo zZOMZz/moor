@@ -20,7 +20,10 @@ import { join } from 'node:path';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
+import {
+  WorkspaceController,
+  type WorkspaceClientState,
+} from '../../apps/web/src/features/workspace/workspace-controller';
 import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
 import type { SecureStorageBackend } from '../../apps/web/src/platform/secure-store';
 import {
@@ -393,6 +396,156 @@ test('sidebar reads stay in the requested project without changing the active dr
   assert.equal(f.prompts(), 0);
 });
 
+test('opening a cached session models refresh separately from actual connectivity', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create(),
+    entered = signal(),
+    release = signal();
+  assert.equal(f.controller.state.offline, false);
+  assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
+  f.fault.after = async (request) => {
+    if (request.action === 'execute' && request.command.method === 'session') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const observed: WorkspaceClientState[] = [];
+  const unsubscribe = f.controller.subscribe(() => observed.push(f.controller.state));
+  const opening = f.controller.openSession(sessionId);
+  await entered.promise;
+  assert.equal(f.controller.state.offline, false);
+  assert.deepEqual(f.controller.state.sessionLoad, { status: 'refreshing', source: 'cache' });
+  assert.equal(f.controller.state.session?.meta.id, sessionId);
+  assert.equal(
+    observed.some((state) => state.sessionLoad.status === 'refreshing' && state.offline),
+    false,
+  );
+  release.resolve();
+  await opening;
+  unsubscribe();
+  assert.equal(f.controller.state.offline, false);
+  assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
+});
+
+test('local recovery failure is distinct from an offline execution computer', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create();
+  const read = f.memory.read.bind(f.memory);
+  let fail = true;
+  f.memory.read = async (key) => {
+    if (fail && key.includes('moor-desktop-ledger-v1'))
+      throw Error('Synthetic local recovery failure');
+    return read(key);
+  };
+  await assert.rejects(f.controller.openSession(sessionId), /local recovery failure/);
+  assert.equal(f.controller.state.offline, false);
+  assert.deepEqual(f.controller.state.sessionLoad, {
+    status: 'failed',
+    source: 'none',
+    reason: 'local',
+  });
+  fail = false;
+  await f.controller.openSession(sessionId);
+  assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
+});
+
+test('composer edits stay in UI memory, coalesce into Draft State and never rewrite the Ledger', async (t) => {
+  const scheduled: Array<{ milliseconds: number; canceled: boolean; work: () => void }> = [];
+  const f = await fixture(t, {
+      schedule: (milliseconds, work) => {
+        const entry = { milliseconds, canceled: false, work };
+        scheduled.push(entry);
+        return () => {
+          entry.canceled = true;
+        };
+      },
+    }),
+    sessionId = await f.create(),
+    scope = f.controller.state.scope!,
+    ledger = await f.store.read(scope, () => {});
+  let emissions = 0;
+  const unsubscribe = f.controller.subscribe(() => emissions++);
+  f.controller.queueDraft('A', {});
+  f.controller.queueDraft('AB', { modelId: 'synthetic-model' });
+  assert.equal(f.controller.state.draft?.text, '');
+  assert.deepEqual(
+    scheduled.map(({ milliseconds, canceled }) => ({ milliseconds, canceled })),
+    [
+      { milliseconds: 300, canceled: true },
+      { milliseconds: 300, canceled: false },
+    ],
+  );
+  scheduled[1]!.work();
+  await f.controller.flushDraft();
+  unsubscribe();
+  assert.equal(emissions, 0, 'recoverable draft commits must not publish global UI state');
+  assert.equal(scheduled[1]!.canceled, false);
+  assert.deepEqual(await f.store.read(scope, () => {}), ledger);
+  assert.deepEqual(await f.store.readDraft(scope, sessionId, () => {}), {
+    revision: 1,
+    text: 'AB',
+    selection: { modelId: 'synthetic-model' },
+  });
+});
+
+test('embedded version-one drafts migrate out of the reliable Ledger without data loss', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create(),
+    scope = f.controller.state.scope!,
+    ledger = await f.store.read(scope, () => {}),
+    ledgerKey = [...f.memory.values.keys()].find((key) =>
+      key.startsWith('["moor-desktop-ledger-v1",'),
+    )!;
+  f.memory.values.set(ledgerKey, {
+    ...ledger,
+    drafts: {
+      [sessionId]: { revision: 4, text: 'Legacy recoverable input', selection: {} },
+    },
+  });
+  const migrated = await f.store.read(scope, () => {});
+  assert.equal(Object.hasOwn(migrated, 'drafts'), false);
+  assert.equal(migrated.revision, ledger.revision + 1);
+  assert.equal(
+    Object.hasOwn(f.memory.values.get(ledgerKey) as object, 'drafts'),
+    false,
+    'the reliable record must no longer carry recoverable composer text',
+  );
+  assert.deepEqual(await f.store.readDraft(scope, sessionId, () => {}), {
+    revision: 4,
+    text: 'Legacy recoverable input',
+    selection: {},
+  });
+});
+
+test('send drains an edit queued while an earlier Draft State commit is in flight', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create(),
+    entered = signal(),
+    release = signal();
+  const compareAndSet = f.memory.compareAndSet.bind(f.memory);
+  let delayed = false;
+  f.memory.compareAndSet = async (key, expected, value, current) => {
+    if (!delayed && key.includes('moor-desktop-draft-v1')) {
+      delayed = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return compareAndSet(key, expected, value, current);
+  };
+  f.controller.queueDraft('Earlier UI snapshot', {});
+  const first = f.controller.flushDraft();
+  await entered.promise;
+  const sending = f.controller.send();
+  f.controller.queueDraft('Latest UI snapshot', {});
+  release.resolve();
+  await first;
+  await sending;
+  await f.started.promise;
+  assert.match(JSON.stringify(f.inputs[0]), /Latest UI snapshot/);
+  assert.doesNotMatch(JSON.stringify(f.inputs[0]), /Earlier UI snapshot/);
+  assert.equal((await f.store.readDraft(f.controller.state.scope!, sessionId, () => {})).text, '');
+});
+
 test('removed composer tools have no callable entry points and plain turns carry no optional authorization', async (t) => {
   const f = await fixture(t);
   await f.create();
@@ -437,7 +590,10 @@ test('retired recovery copies are deleted atomically while current drafts and or
   const cleaned = await f.store.read(scope, () => {});
   assert.deepEqual(cleaned, { ...before, revision: before.revision + 1 });
   assert.deepEqual(f.memory.values.get(key), cleaned);
-  assert.equal(cleaned.drafts[sessionId]?.text, 'Current editable draft');
+  assert.equal(
+    (await f.store.readDraft(scope, sessionId, () => {})).text,
+    'Current editable draft',
+  );
   assert.equal(f.prompts(), 0);
   await f.controller.refreshSession();
   await f.controller.send();
@@ -482,7 +638,8 @@ test('workspace client creates and sends through the host, preserving model sele
     id = await f.create();
   assert.equal(f.controller.state.sessionId, id);
   assert(f.controller.state.session?.agent?.runConfig?.models.length);
-  await f.controller.saveDraft('Synthetic prompt', {});
+  f.controller.queueDraft('Synthetic prompt', {});
+  assert.equal(f.controller.state.draft?.text, '');
   await f.controller.send();
   await f.started.promise;
   assert.equal(f.prompts(), 1);
@@ -1117,8 +1274,13 @@ test('failed interaction draft persistence blocks submission until the user expl
   f.memory.failWrite = true;
   await assert.rejects(f.controller.saveSteerDraft('Unsaved'), /storage failure/);
   f.memory.failWrite = false;
+  f.controller.queueDraft('Independent composer edit', {});
   await assert.rejects(f.controller.steer(question.expectedTurnId, 'Unsaved'), /storage failure/);
   assert.equal(f.steerCalls(), 0);
+  assert.equal(
+    (await f.store.readDraft(f.controller.state.scope!, question.sessionId, () => {})).text,
+    'Independent composer edit',
+  );
   await f.controller.reloadDraft();
   await f.controller.saveSteerDraft('Reviewed after recovery');
   await f.controller.steer(question.expectedTurnId, 'Reviewed after recovery');
@@ -1394,6 +1556,28 @@ test('a confirmed receipt never clears a draft edited while delivery was in flig
   assert.equal(f.controller.state.draft?.text, 'Next message');
 });
 
+test('Draft State cleanup failure never changes a confirmed Ledger result to unknown', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create();
+  await f.controller.saveDraft('Confirmed independently', {});
+  const compareAndSet = f.memory.compareAndSet.bind(f.memory);
+  let failCleanup = true;
+  f.memory.compareAndSet = async (key, expected, value, current) => {
+    const document = value as { value?: { text?: string } };
+    if (failCleanup && key.includes('moor-desktop-draft-v1') && document.value?.text === '')
+      throw Error('Synthetic draft cleanup failure');
+    return compareAndSet(key, expected, value, current);
+  };
+  await f.controller.send();
+  await f.started.promise;
+  assert(f.controller.state.ledger!.operations.every((entry) => entry.status === 'confirmed'));
+  assert.equal(f.controller.state.draft?.text, 'Confirmed independently');
+  failCleanup = false;
+  await f.controller.reloadDraft();
+  assert.equal(f.controller.state.draft?.text, '');
+  assert.equal((await f.store.readDraft(f.controller.state.scope!, sessionId, () => {})).text, '');
+});
+
 test('late session responses and mismatched receipts cannot overwrite selected content or clear drafts', async (t) => {
   const f = await fixture(t),
     first = await f.create(),
@@ -1439,16 +1623,16 @@ test('client drafts stay isolated across source, account, device, project and re
     { machineId: 'other' },
   ]) {
     const other = { ...scope, target: { ...scope.target, ...change } };
-    assert.deepEqual((await f.store.read(other, () => {})).drafts, {});
+    assert.equal((await f.store.readDraft(other, id, () => {})).text, '');
     assert.equal(await f.store.cachedSession(other, id, () => {}), null);
   }
-  assert.deepEqual((await f.store.read({ ...scope, source: 'remote' }, () => {})).drafts, {});
+  assert.equal((await f.store.readDraft({ ...scope, source: 'remote' }, id, () => {})).text, '');
   f.catalog.owner = 'other';
   f.catalog.targets[0]!.target.owner = 'other';
   await f.controller.refreshCatalog('local');
   assert.equal(f.controller.state.session, undefined);
   assert.equal(f.controller.state.scope, undefined);
-  assert.equal((await f.store.read(scope, () => {})).drafts[id]?.text, 'Private draft');
+  assert.equal((await f.store.readDraft(scope, id, () => {})).text, 'Private draft');
 });
 
 test('offline cache remains readable and editable without permitting execution', async (t) => {
@@ -1460,6 +1644,11 @@ test('offline cache remains readable and editable without permitting execution',
   await assert.rejects(f.controller.openSession(id), /重新连接/);
   assert.equal(f.controller.state.session?.meta.id, id);
   assert.equal(f.controller.state.offline, true);
+  assert.deepEqual(f.controller.state.sessionLoad, {
+    status: 'failed',
+    source: 'cache',
+    reason: 'connection',
+  });
   await f.controller.saveDraft('Edited offline', {});
   const count = f.calls.length;
   await assert.rejects(f.controller.send(), /重新连接/);
@@ -1468,6 +1657,7 @@ test('offline cache remains readable and editable without permitting execution',
   await f.controller.refreshCatalog('local');
   await f.controller.openSession(id);
   assert.equal(f.controller.state.draft?.text, 'Edited offline');
+  assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
   assert.equal(f.prompts(), 0);
 });
 
@@ -1549,7 +1739,10 @@ test('failed receipt persistence keeps the durable original recoverable', async 
   f.memory.failWrite = false;
   const ledger = await f.store.read(f.controller.state.scope!, () => {});
   const pending = ledger.operations.find((entry) => entry.status === 'pending')!;
-  assert.equal(ledger.drafts[id]?.text, 'Recover after storage failure');
+  assert.equal(
+    (await f.store.readDraft(f.controller.state.scope!, id, () => {})).text,
+    'Recover after storage failure',
+  );
   await f.controller.inspect(pending.original.value.operationId);
   assert.equal(f.controller.state.draft?.text, '');
   await f.started.promise;

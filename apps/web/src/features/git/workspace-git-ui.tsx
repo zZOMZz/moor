@@ -27,11 +27,16 @@ export function WorkspaceGitUI({
     render((n) => n + 1);
   };
   useEffect(() => close, [controller, controller.contextRevision]);
-  const reason = state.offline
-    ? '执行电脑离线，原 Git 记录保留；连接后请手动读取。'
-    : !state.project?.runtime.features?.includes(GIT_WORKTREE_FEATURE)
-      ? '此执行电脑尚未提供 Git 工作目录能力。'
-      : '';
+  const syncing = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
+  const reason = syncing
+    ? '会话正在同步，完成后可读取 Git 工作目录。'
+    : state.sessionLoad.status === 'failed'
+      ? '会话尚未重新确认，请刷新后再读取 Git 工作目录。'
+      : state.offline
+        ? '执行电脑离线，原 Git 记录保留；连接后请手动读取。'
+        : !state.project?.runtime.features?.includes(GIT_WORKTREE_FEATURE)
+          ? '此执行电脑尚未提供 Git 工作目录能力。'
+          : '';
   const open = () =>
     run(async () => {
       panel.current?.close();

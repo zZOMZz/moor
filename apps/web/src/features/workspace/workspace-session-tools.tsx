@@ -12,11 +12,13 @@ export function WorkspaceSessionTools({
   state,
   busy,
   run,
+  navigate,
 }: {
   controller: WorkspaceController;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
+  navigate(task: () => Promise<unknown>): boolean;
 }) {
   const [searching, setSearching] = useState(false),
     [result, setResult] = useState<SessionSearchView>();
@@ -24,6 +26,7 @@ export function WorkspaceSessionTools({
   const search = useRef<ReturnType<WorkspaceController['openSearch']> | null>(null);
   const [metadata, setMetadata] = useState<SessionMetadata>(),
     [title, setTitle] = useState('');
+  const sessionWritable = state.sessionLoad.status === 'ready' && !state.offline;
   const closeSearch = () => {
     search.current?.close();
     search.current = null;
@@ -97,7 +100,7 @@ export function WorkspaceSessionTools({
             })
           }
           onOpen={(hit) =>
-            run(async () => {
+            navigate(async () => {
               await search.current!.openHit(hit);
               closeSearch();
             })
@@ -116,7 +119,7 @@ export function WorkspaceSessionTools({
               <form
                 onSubmit={(event) => {
                   event.preventDefault();
-                  if (!busy && !state.offline) action('rename');
+                  if (!busy && sessionWritable) action('rename');
                 }}
               >
                 <label>
@@ -126,27 +129,35 @@ export function WorkspaceSessionTools({
                     value={title}
                     maxLength={200}
                     required
-                    disabled={busy || state.offline}
+                    disabled={busy || !sessionWritable}
                     onChange={(event) => setTitle(event.target.value)}
                   />
                 </label>
-                <button type="submit" disabled={busy || state.offline || !title.trim()}>
+                <button type="submit" disabled={busy || !sessionWritable || !title.trim()}>
                   保存名称
                 </button>
               </form>
               <button
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => action(metadata.isPinned ? 'unpin' : 'pin')}
               >
                 {metadata.isPinned ? '取消置顶' : '置顶会话'}
               </button>
               <button
-                disabled={busy || state.offline}
+                disabled={busy || !sessionWritable}
                 onClick={() => action(metadata.isArchived ? 'restore' : 'archive')}
               >
                 {metadata.isArchived ? '恢复会话' : '归档会话'}
               </button>
-              {state.offline && <p role="status">执行电脑离线；连接后请手动操作。</p>}
+              {!sessionWritable && (
+                <p role="status">
+                  {state.offline
+                    ? '执行电脑离线；连接后请手动操作。'
+                    : state.sessionLoad.status === 'failed'
+                      ? '会话尚未重新确认；请刷新后再整理。'
+                      : '会话正在同步；完成后可以整理。'}
+                </p>
+              )}
               <button onClick={() => setMetadata(undefined)}>关闭会话整理</button>
             </Dialog.Popup>
           </Dialog.Portal>
