@@ -1,6 +1,7 @@
 import { AppearanceSettings } from '../components/appearance';
 import {
   NavigationSessions,
+  NavigationProjectGroup,
   useNavigationSessions,
   navigationProjects,
   projectKey,
@@ -839,6 +840,7 @@ export function WorkspaceApp({
   addLocalProject,
   readDesktopContext,
   subscribeDesktopChanges,
+  subscribeSessionChanges,
 }: {
   controller: WorkspaceController;
   secure: SecureUiController;
@@ -848,6 +850,7 @@ export function WorkspaceApp({
   addLocalProject?: () => Promise<unknown>;
   readDesktopContext?: () => Promise<unknown>;
   subscribeDesktopChanges?: (listener: () => void) => () => void;
+  subscribeSessionChanges?: (listener: (notice: unknown) => void) => () => void;
 }) {
   const [state, setState] = useState(controller.state),
     [encrypted, setEncrypted] = useState(secure.state);
@@ -874,7 +877,6 @@ export function WorkspaceApp({
   const layout = useWorkspaceLayout();
   const navigationOpen = layout.open,
     setNavigationOpen = layout.setOpen;
-  const [collapsedProject, setCollapsedProject] = useState('all');
   const [sessionFilter, setSessionFilter] = useState('active'),
     [sessionQuery, setSessionQuery] = useState('');
   const rootElement = useRef<HTMLDivElement>(null);
@@ -912,6 +914,21 @@ export function WorkspaceApp({
     };
   }, [controller]);
   useEffect(() => secure.subscribe(setEncrypted), [secure]);
+  useEffect(() => {
+    const catchUp = () => {
+      if (document.visibilityState !== 'hidden') controller.scheduleSync?.();
+    };
+    const unsubscribe = subscribeSessionChanges?.((notice) => controller.scheduleSync(notice));
+    window.addEventListener('online', catchUp);
+    window.addEventListener('focus', catchUp);
+    document.addEventListener('visibilitychange', catchUp);
+    return () => {
+      unsubscribe?.();
+      window.removeEventListener('online', catchUp);
+      window.removeEventListener('focus', catchUp);
+      document.removeEventListener('visibilitychange', catchUp);
+    };
+  }, [controller, subscribeSessionChanges]);
   useEffect(() => {
     if (readDesktopContext) return;
     void controller.refreshCatalog('local').catch((reason: unknown) => {
@@ -1015,14 +1032,6 @@ export function WorkspaceApp({
   const selectedAgent = agents.some((agent) => agent.id === agentId)
     ? agentId
     : (agents[0]?.id ?? '');
-  const choose = (
-    source: DesktopWorkspaceSource,
-    target: NonNullable<WorkspaceClientState['project']>['target'],
-  ) =>
-    navigate(async () => {
-      setView('plain');
-      await controller.selectProject(source, target);
-    });
   const addProject = addLocalProject
     ? () => {
         if (blocked) return;
@@ -1162,19 +1171,40 @@ export function WorkspaceApp({
       hideMobileNavigation();
     });
   };
-  const changeComposerProject = (project: NavigationProject) => {
-    if (blocked) return;
+  const manageNavigationSession: Parameters<typeof NavigationSessions>[0]['onAction'] = (
+    project,
+    session,
+    action,
+    title,
+    done,
+    failed,
+  ) => {
     run(async () => {
-      await controller.selectProject(project.source, project.target);
-      const agent =
-        project.runtime.agents.find((entry) => entry.id === selectedAgent) ??
-        project.runtime.agents[0];
-      if (agent) {
-        const id = await controller.createSession(agent.id);
-        await controller.openSession(id);
+      try {
+        await controller.projectMetadata(project.source, project.target, session, action, title);
+        done?.();
+      } catch (error) {
+        failed?.(message(error));
+        throw error;
       }
     });
   };
+  const createProjectSession = (project: NavigationProject) => {
+    if (blocked) return;
+    run(async () => {
+      const agent =
+        project.runtime.agents.find((entry) => entry.id === selectedAgent) ??
+        project.runtime.agents[0];
+      if (!agent) throw Error('请先为此项目配置 Agent。');
+      setView('plain');
+      await controller.selectProject(project.source, project.target);
+      const id = await controller.createSession(agent.id);
+      await controller.refreshSessions();
+      await controller.openSession(id);
+      hideMobileNavigation();
+    });
+  };
+  const changeComposerProject = createProjectSession;
   return (
     <div
       className="workspace-app"
@@ -1295,6 +1325,12 @@ export function WorkspaceApp({
           )}
         </div>
         <nav className="workspace-projects" aria-label="电脑和项目">
+          {Object.values(state.syncDisconnected ?? {}).some(Boolean) && (
+            <p className="workspace-muted" role="status">
+              实时连接中断，正在重连
+              <button onClick={() => run(() => controller.synchronize())}>重新同步</button>
+            </p>
+          )}
           {navigation.unavailable.length > 0 && (
             <p className="workspace-muted" role="status">
               部分电脑的会话暂不可读取
@@ -1306,62 +1342,41 @@ export function WorkspaceApp({
             selected={navigationSelected}
             disabled={blocked}
             onOpen={openNavigationSession}
+            onAction={manageNavigationSession}
           />
           <section className="workspace-navigation-section" aria-label="项目">
             <h2>项目</h2>
-            {(['local', 'remote'] as const).flatMap((source) =>
-              projects
-                .filter((entry) => entry.source === source)
-                .map((entry) => {
-                  const key = source + ':' + canonical(entry.target);
-                  const selected =
-                    view === 'plain' &&
-                    state.scope?.source === source &&
-                    canonical(state.scope.target) === canonical(entry.target);
-                  const expanded = selected && collapsedProject === '';
-                  return (
-                    <section className="workspace-project-group" key={key}>
-                      <div className="workspace-project-heading">
-                        <button
-                          className="workspace-project"
-                          aria-current={selected ? 'page' : undefined}
-                          disabled={blocked}
-                          title={
-                            entry.projectName +
-                            ' · ' +
-                            entry.hostName +
-                            (source === 'local' ? ' · 本机' : '')
-                          }
-                          onClick={() => {
-                            setCollapsedProject('');
-                            choose(source, entry.target);
-                          }}
-                        >
-                          <Folder size={15} />
-                          <span>
-                            {entry.projectName}
-                            <small>
-                              {entry.hostName}
-                              {source === 'local' ? ' · 本机' : ''}
-                              {entry.online ? '' : ' · 离线'}
-                            </small>
-                          </span>
-                        </button>
-                        {selected && (
-                          <button
-                            aria-label={expanded ? '折叠项目会话' : '展开项目会话'}
-                            aria-expanded={expanded}
-                            onClick={() => setCollapsedProject(expanded ? key : '')}
-                          >
-                            {expanded ? '−' : '+'}
-                          </button>
-                        )}
-                      </div>
-                      {selected && <div hidden={!expanded}>{sessionList}</div>}
-                    </section>
-                  );
-                }),
-            )}
+            {projects.map((project) => (
+              <NavigationProjectGroup
+                key={projectKey(project)}
+                project={project}
+                sessions={navigation.sessions[projectKey(project)]}
+                selected={
+                  view === 'plain' &&
+                  state.scope?.source === project.source &&
+                  canonical(state.scope.target) === canonical(project.target)
+                }
+                selectedSession={state.sessionId}
+                disabled={blocked}
+                query={sessionQuery}
+                unavailable={navigation.unavailable.includes(projectKey(project))}
+                onOpen={openNavigationSession}
+                onAction={manageNavigationSession}
+                onCreate={createProjectSession}
+                onRefresh={(project) =>
+                  run(() =>
+                    controller.synchronize({
+                      source: project.source,
+                      connectionId: state.catalogs[project.source]!.connectionId,
+                      owner: project.target.owner,
+                      kind: 'connected',
+                      deviceId: project.target.deviceId,
+                      workspaceId: project.target.workspaceId,
+                    }),
+                  )
+                }
+              />
+            ))}
             {encrypted.status?.connection?.hosts.map((host) => (
               <div key={host.deviceId}>
                 <button
@@ -1415,6 +1430,7 @@ export function WorkspaceApp({
             selected={navigationSelected}
             disabled={blocked}
             onOpen={openNavigationSession}
+            onAction={manageNavigationSession}
           />
           {!Object.values(state.catalogs).some((catalog) => catalog.targets.length) && (
             <p className="workspace-muted">点击“添加项目”，选择本机文件夹。</p>
@@ -1555,6 +1571,7 @@ export async function bootWorkspace() {
       context(): Promise<unknown>;
       addProject(): Promise<unknown>;
       onChange(listener: () => void): () => void;
+      onSync(listener: (notice: unknown) => void): () => void;
     };
     moorSecure?: {
       version: number;
@@ -1588,6 +1605,7 @@ export async function bootWorkspace() {
       addLocalProject={bridges.moorWorkspace.addProject}
       readDesktopContext={bridges.moorWorkspace.context}
       subscribeDesktopChanges={bridges.moorWorkspace.onChange}
+      subscribeSessionChanges={bridges.moorWorkspace.onSync}
     />,
   );
   window.addEventListener(

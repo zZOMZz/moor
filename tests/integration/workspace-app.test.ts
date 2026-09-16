@@ -226,17 +226,20 @@ test('packaged workspace opens local projects without an account and preserves d
       emit();
     },
     async createSession(agentId: string) {
-      assert.equal(agentId, 'agent');
+      assert(state.project!.runtime.agents.some((agent) => agent.id === agentId));
       calls.push('create');
+      calls.push('create-agent:' + agentId);
       return 'session';
     },
     async refreshSessions() {
       calls.push('sessions');
       emit();
     },
-    async selectProject() {
+    async selectProject(_source: string, target: (typeof catalog.targets)[number]['target']) {
       calls.push('project');
-      state.project = catalog.targets[0]!;
+      state.project = catalog.targets.find(
+        (entry) => entry.target.localProjectId === target.localProjectId,
+      )!;
       state.scope = { source: 'local', target: state.project.target };
       state.sessions = [meta];
       emit();
@@ -570,6 +573,26 @@ test('packaged workspace opens local projects without an account and preserves d
           emit();
         },
       };
+    },
+    async projectMetadata(
+      source: string,
+      target: (typeof catalog.targets)[number]['target'],
+      shown: typeof meta,
+      action: string,
+      title?: string,
+    ) {
+      calls.push(`sidebar:${source}:${target.localProjectId}:${shown.id}:${action}`);
+      if (title === 'conflict') throw Error('Synthetic metadata conflict');
+      state.sessions = state.sessions.map((session) =>
+        session.id === shown.id
+          ? {
+              ...session,
+              ...(action === 'pin' || action === 'unpin' ? { isPinned: action === 'pin' } : {}),
+              ...(action === 'rename' ? { title } : {}),
+            }
+          : session,
+      );
+      emit();
     },
     async metadata(action: string, title?: string) {
       calls.push('metadata:' + action);
@@ -1151,7 +1174,14 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.workspace-secure-content')!.textContent!,
       /账号状态未确认/,
     );
+    const navigationCalls = calls.length;
     await act(async () => project.click());
+    assert.equal(calls.length, navigationCalls, 'project headings only expand or collapse');
+    assert.equal(
+      dom.window.document.querySelector('.workspace-conversation')!.hasAttribute('hidden'),
+      true,
+    );
+    await act(async () => visibleButton('Local sessionsynthetic').click());
     assert.equal(
       dom.window.document.querySelector('.workspace-conversation')!.hasAttribute('hidden'),
       false,
@@ -1222,7 +1252,12 @@ test('packaged workspace opens local projects without an account and preserves d
         completeSave = resolve;
       });
     await act(async () => visibleButton('保存附件').click());
-    assert.equal(project.disabled, true);
+    assert.equal(
+      project.disabled,
+      false,
+      'expanding a project does not navigate during an attachment save',
+    );
+    assert.equal(visibleButton('Local sessionsynthetic').disabled, true);
     await act(async () => {
       state.session!.history[0]!.items!.pop();
       emit();
@@ -1301,6 +1336,155 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(dom.window.document.querySelector('.workspace-legacy-recovery'), null);
     assert.equal(dom.window.document.querySelector('[aria-label="恢复旧客户端草稿"]'), null);
     assert.equal(calls.filter((value) => value === 'send').length, 1);
+    const activeSession = state.sessionId;
+    await act(async () => {
+      state.sessions = [
+        meta,
+        ...Array.from({ length: 7 }, (_, index) => ({
+          ...meta,
+          id: 'sidebar-' + index,
+          title: 'Sidebar ' + index,
+          isPinned: false,
+        })),
+      ];
+      emit();
+    });
+    if (project.getAttribute('aria-expanded') !== 'true') await act(async () => project.click());
+    const group = dom.window.document.querySelector('.workspace-project-group')!;
+    assert.equal(group.querySelectorAll('.workspace-session-row').length, 5);
+    await act(async () => visibleButton('展开显示').click());
+    assert.equal(group.querySelectorAll('.workspace-session-row').length, 8);
+    const contextKey = () =>
+      new dom.window.KeyboardEvent('keydown', {
+        key: 'F10',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+    await act(async () => visibleButton('Sidebar 0synthetic').dispatchEvent(contextKey()));
+    assert.match(
+      dom.window.document.querySelector('[role="menu"]')!.textContent!,
+      /重命名.*置顶.*归档/s,
+    );
+    await act(async () =>
+      Array.from(dom.window.document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+        .find((item) => item.textContent === '置顶')!
+        .click(),
+    );
+    assert.equal(state.sessionId, activeSession);
+    assert(calls.includes('sidebar:local:project:sidebar-0:pin'));
+    assert(
+      dom.window.document.querySelector('.workspace-pinned')!.textContent!.includes('Sidebar 0'),
+    );
+    await act(async () => visibleButton('Sidebar 0synthetic').dispatchEvent(contextKey()));
+    await act(async () =>
+      Array.from(dom.window.document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+        .find((item) => item.textContent === '重命名')!
+        .click(),
+    );
+    const renameInput =
+      dom.window.document.querySelector<HTMLInputElement>('[aria-label="会话名称"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+        renameInput,
+        'conflict',
+      );
+      renameInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    await act(async () =>
+      renameInput
+        .closest('form')!
+        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.match(
+      dom.window.document.querySelector('[role="dialog"] [role="alert"]')!.textContent!,
+      /Synthetic metadata conflict/,
+    );
+    assert.equal(state.sessionId, activeSession);
+    await act(async () => visibleButton('取消').click());
+    const selectedBeforeExpand = state.sessionId;
+    const secondProject = structuredClone(catalog.targets[0]!);
+    secondProject.projectName = 'Second project';
+    secondProject.target.localProjectId = 'project-two';
+    secondProject.target.catalogProjectId = 'logical-two';
+    secondProject.target.replicaId = 'replica-two';
+    secondProject.runtime.agents[0]!.id = 'agent-two';
+    await act(async () => {
+      catalog.targets.push(secondProject);
+      state.catalogs.local = catalog;
+      emit();
+    });
+    const secondHeading = visibleButton('Second projectMy Mac · 本机');
+    const beforeExpand = calls.length;
+    await act(async () => secondHeading.click());
+    assert.equal(secondHeading.getAttribute('aria-expanded'), 'true');
+    assert.equal(state.sessionId, selectedBeforeExpand);
+    assert.equal(calls.length, beforeExpand);
+    await act(async () => project.click());
+    assert.equal(
+      secondHeading.getAttribute('aria-expanded'),
+      'true',
+      'projects expand independently',
+    );
+    await act(async () => visibleButton('在 Second project 中新建对话').click());
+    assert.equal(state.scope!.target.localProjectId, 'project-two');
+    assert(
+      calls.includes('create-agent:agent-two'),
+      'new conversation chooses an Agent from the clicked project',
+    );
+    assert.equal(calls.filter((value) => value === 'send').length, 1);
+    const { useNavigationSessions } =
+      await import('../../apps/web/src/features/sessions/workspace-navigation');
+    let listRevision = 0,
+      releaseLists!: () => void;
+    const listGate = new Promise<void>((resolve) => {
+      releaseLists = resolve;
+    });
+    const listReads: number[] = [];
+    const listing = {
+      get navigationRevision() {
+        return listRevision;
+      },
+      async listProjectSessions(_source: string, target: typeof secondProject.target) {
+        const version = listRevision;
+        listReads.push(version);
+        if (listReads.length <= 2) await listGate;
+        return [{ ...meta, id: target.localProjectId, title: 'revision-' + version }];
+      },
+    } as unknown as WorkspaceController;
+    function NavigationProbe() {
+      const value = useNavigationSessions(listing, {
+        ...state,
+        project: undefined,
+        scope: undefined,
+        sessions: [],
+      });
+      return createElement(
+        'output',
+        { 'data-testid': 'navigation-values' },
+        JSON.stringify(value.sessions),
+      );
+    }
+    await act(async () => root.render(createElement(NavigationProbe)));
+    assert.equal(listReads.length, 2);
+    for (let index = 1; index <= 20; index++) {
+      listRevision = index;
+      await act(async () => root.render(createElement(NavigationProbe)));
+    }
+    assert.equal(listReads.length, 2, 'bursts cannot restart in-flight project reads');
+    await act(async () => {
+      releaseLists();
+      await listGate;
+    });
+    assert.deepEqual(
+      listReads,
+      [0, 0, 20, 20],
+      'each project catches up directly to the latest requested revision',
+    );
+    assert.match(
+      dom.window.document.querySelector('[data-testid="navigation-values"]')!.textContent!,
+      /revision-20/,
+    );
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

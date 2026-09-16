@@ -15,6 +15,7 @@ function gate() {
   return { promise, release };
 }
 function fixture() {
+  const notices: unknown[] = [];
   const cookies = Object.assign(new EventEmitter(), {
     async get() {
       return [
@@ -36,6 +37,7 @@ function fixture() {
     mainFrame: { url: CLIENT_URL, origin: CLIENT_ORIGIN },
     session: { cookies },
     isDestroyed: () => false,
+    send: (channel: string, value: unknown) => notices.push([channel, value]),
   };
   const window = { webContents: contents, isDestroyed: () => false };
   const registry = new Map([
@@ -86,8 +88,20 @@ function fixture() {
     },
   });
   const event = () => ({ sender: contents, senderFrame: contents.mainFrame });
-  return { bridge, state, contents, window, registry, event, cookies };
+  return { bridge, state, contents, window, registry, event, cookies, notices };
 }
+
+test('workspace change notices are delivered only to the current trusted document', async () => {
+  const f = fixture();
+  await f.bridge.request(f.event(), { action: 'catalog', source: 'local' });
+  const callback = f.state.configurations[0].onSync;
+  callback({ kind: 'connected' });
+  assert.deepEqual(f.notices, [['moor:workspace-sync', { kind: 'connected' }]]);
+  f.contents.mainFrame = { ...f.contents.mainFrame };
+  assert.throws(() => callback({ kind: 'changed' }));
+  assert.equal(f.notices.length, 1);
+  f.bridge.close();
+});
 
 test('workspace native bridge admits only its current packaged main frame and independently owned connections', async () => {
   const f = fixture();

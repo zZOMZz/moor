@@ -440,6 +440,7 @@ test('the trusted preload exposes finite application entry points', async () => 
     'addProject',
     'context',
     'onChange',
+    'onSync',
     'request',
     'version',
   ]);
@@ -457,6 +458,15 @@ test('the trusted preload exposes finite application entry points', async () => 
   listeners.get('moor:workspace-changed')!({ sender: 'private Electron event' });
   assert.equal(signals, 1);
   unsubscribe();
+  assert.equal(listeners.size, 0);
+  const notice = { source: 'local', kind: 'changed', sessionId: 'synthetic-session' };
+  let received: unknown;
+  const stopSync = exposed.get('moorWorkspace').onSync((value: unknown) => {
+    received = value;
+  });
+  listeners.get('moor:workspace-sync')!({ sender: 'private Electron event' }, notice);
+  assert.deepEqual(received, notice);
+  stopSync();
   assert.equal(listeners.size, 0);
   assert.deepEqual(calls, [
     ['moor:secure-client', { action: 'status' }],

@@ -3704,7 +3704,7 @@ dialog pre {
 .workspace-navigation-section li small {
   display: none;
 }
-.workspace-navigation-section li:hover small {
+.workspace-navigation-section li > button:hover small {
   display: block;
   font-size: 10px;
 }
@@ -3724,6 +3724,97 @@ dialog pre {
 .workspace-project-heading {
   display: flex;
   align-items: center;
+}
+.workspace-project-heading,
+.workspace-session-row {
+  border-radius: 7px;
+  min-height: 34px;
+}
+.workspace-project-heading:hover,
+.workspace-session-row:hover,
+.workspace-session-row:focus-within {
+  background: var(--hover);
+}
+.workspace-project-heading[data-selected],
+.workspace-session-row[data-selected] {
+  background: var(--selected);
+}
+.workspace-session-row {
+  display: flex;
+  align-items: center;
+}
+.workspace-sidebar .workspace-session-open {
+  min-width: 0;
+  flex: 1;
+  background: transparent;
+}
+.workspace-navigation-section .workspace-session-open small {
+  display: none;
+}
+.workspace-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  max-width: 0;
+  overflow: hidden;
+}
+.workspace-sidebar .workspace-row-actions button {
+  padding: 5px;
+}
+.workspace-session-row:hover .workspace-row-actions,
+.workspace-session-row:focus-within .workspace-row-actions,
+.workspace-project-heading:hover .workspace-row-actions,
+.workspace-project-heading:focus-within .workspace-row-actions,
+.workspace-row-actions:has([data-popup-open]) {
+  opacity: 1;
+  pointer-events: auto;
+  max-width: 70px;
+  padding-right: 3px;
+}
+.workspace-session-row .session-working {
+  margin: 0 5px;
+}
+.workspace-project-marker {
+  display: grid;
+  flex-shrink: 0;
+}
+.workspace-project-marker svg {
+  grid-area: 1 / 1;
+}
+.workspace-project-marker svg:last-child {
+  opacity: 0;
+}
+.workspace-project-marker [data-expanded='true'] {
+  transform: rotate(90deg);
+}
+.workspace-project-heading:hover .workspace-project-marker svg:first-child,
+.workspace-project-heading:focus-within .workspace-project-marker svg:first-child {
+  opacity: 0;
+}
+.workspace-project-heading:hover .workspace-project-marker svg:last-child,
+.workspace-project-heading:focus-within .workspace-project-marker svg:last-child {
+  opacity: 1;
+}
+.workspace-archived-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  padding-left: 8px;
+}
+.workspace-sidebar .workspace-show-more {
+  color: var(--muted);
+}
+@media (hover: none) {
+  .workspace-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+    max-width: 70px;
+    padding-right: 3px;
+  }
 }
 .workspace-project-heading > .workspace-project {
   flex: 1;

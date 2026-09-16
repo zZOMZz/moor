@@ -34,6 +34,8 @@ import { z } from 'zod';
 import {
   desktopWorkspaceCatalogSchema,
   desktopWorkspaceTargetSchema,
+  desktopWorkspaceChangeSchema,
+  type DesktopWorkspaceChange,
   type DesktopWorkspaceCatalog,
   type DesktopWorkspaceRequest,
   type DesktopWorkspaceSource,
@@ -157,6 +159,7 @@ export type WorkspaceClientState = {
   modelError?: string;
   searchFocus?: SearchHit;
   focusedTurnId?: string;
+  syncDisconnected?: Partial<Record<DesktopWorkspaceSource, boolean>>;
 };
 const resultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), value: z.unknown() }).strict(),
@@ -209,7 +212,18 @@ export class WorkspaceController {
   #sessionViewBytes = 0;
   #catalogVersions = { local: 0, remote: 0 };
   #sessionReadVersion = 0;
+  #sessionListReadVersion = 0;
   #modelReadVersion = 0;
+  #projectRevisions = new Map<string, number>();
+  #syncPending = new Map<DesktopWorkspaceSource, DesktopWorkspaceChange>();
+  #syncing?: Promise<void>;
+  #cancelSync?: () => void;
+  #sessionReads = 0;
+  #sessionListReads = 0;
+  #syncAfterRead = false;
+  #syncAfterList = false;
+  #catalogReads = { local: 0, remote: 0 };
+  #syncAfterCatalog = new Set<DesktopWorkspaceSource>();
   constructor(
     private readonly options: {
       request: (request: DesktopWorkspaceRequest) => Promise<unknown>;
@@ -236,6 +250,126 @@ export class WorkspaceController {
   }
   get navigationRevision() {
     return this.#catalogVersions.local + this.#catalogVersions.remote;
+  }
+  projectRevision(source: DesktopWorkspaceSource, target: Project['target']) {
+    return this.#projectRevisions.get(productCanonicalJson([source, target])) ?? 0;
+  }
+  #invalidateProject(source: DesktopWorkspaceSource, target: Project['target']) {
+    const key = productCanonicalJson([source, target]);
+    this.#projectRevisions.set(key, this.projectRevision(source, target) + 1);
+  }
+  #enqueueSync(raw?: unknown) {
+    if (this.#closed) return;
+    if (raw === undefined) {
+      for (const catalog of Object.values(this.#state.catalogs))
+        this.#enqueueSync({
+          source: catalog.source,
+          connectionId: catalog.connectionId,
+          owner: catalog.owner,
+          kind: 'connected',
+        });
+      return;
+    }
+    const parsed = desktopWorkspaceChangeSchema.safeParse(raw);
+    if (!parsed.success) return;
+    const notice = parsed.data,
+      catalog = this.#state.catalogs[notice.source];
+    if (!catalog || catalog.connectionId !== notice.connectionId || catalog.owner !== notice.owner)
+      return;
+    if (
+      notice.deviceId &&
+      !catalog.targets.some(
+        ({ target }) =>
+          target.deviceId === notice.deviceId &&
+          (!notice.workspaceId || target.workspaceId === notice.workspaceId),
+      )
+    )
+      return;
+    this.#state.syncDisconnected ??= {};
+    this.#state.syncDisconnected[notice.source] = notice.kind === 'disconnected';
+    if (notice.kind === 'disconnected') {
+      this.#emit();
+      return;
+    }
+    const prior = this.#syncPending.get(notice.source);
+    this.#syncPending.set(
+      notice.source,
+      prior
+        ? {
+            ...notice,
+            kind: prior.kind === 'connected' ? 'connected' : notice.kind,
+            deviceId: prior.deviceId === notice.deviceId ? notice.deviceId : undefined,
+            workspaceId: prior.workspaceId === notice.workspaceId ? notice.workspaceId : undefined,
+            sessionId: prior.sessionId === notice.sessionId ? notice.sessionId : undefined,
+          }
+        : notice,
+    );
+  }
+  /** Read-only catch-up. Never retries a draft, approval or pending operation. */
+  scheduleSync(raw?: unknown) {
+    this.#enqueueSync(raw);
+    if (this.#closed || this.#cancelSync || !this.#syncPending.size) return;
+    this.#cancelSync = this.#schedule(150, () => {
+      this.#cancelSync = undefined;
+      void this.#drainSync();
+    });
+  }
+  synchronize(raw?: unknown) {
+    this.#enqueueSync(raw);
+    this.#cancelSync?.();
+    this.#cancelSync = undefined;
+    return this.#drainSync();
+  }
+  #drainSync(): Promise<void> {
+    if (this.#syncing) return this.#syncing;
+    this.#syncing = (async () => {
+      while (!this.#closed && this.#syncPending.size) {
+        const pending = [...this.#syncPending.values()];
+        this.#syncPending.clear();
+        for (const notice of pending) {
+          const catalog = this.#state.catalogs[notice.source];
+          if (catalog?.connectionId !== notice.connectionId || catalog.owner !== notice.owner)
+            continue;
+          try {
+            if (this.#catalogReads[notice.source]) {
+              this.#syncAfterCatalog.add(notice.source);
+              continue;
+            }
+            if (notice.kind === 'connected' || !notice.workspaceId)
+              await this.refreshCatalog(notice.source);
+            const targets = this.#state.catalogs[notice.source]?.targets ?? [];
+            for (const { target } of targets)
+              if (
+                (!notice.deviceId || target.deviceId === notice.deviceId) &&
+                (!notice.workspaceId || target.workspaceId === notice.workspaceId)
+              )
+                this.#invalidateProject(notice.source, target);
+            this.#emit();
+            const scope = this.#state.scope;
+            if (
+              !scope ||
+              scope.source !== notice.source ||
+              (notice.deviceId && scope.target.deviceId !== notice.deviceId) ||
+              (notice.workspaceId && scope.target.workspaceId !== notice.workspaceId)
+            )
+              continue;
+            const current = this.#current();
+            await this.refreshSessions({ background: true });
+            current();
+            if (
+              this.#state.sessionId &&
+              (!notice.sessionId || notice.sessionId === this.#state.sessionId)
+            )
+              await this.refreshSession({ announce: false, background: true });
+          } catch {
+            // Read methods retain the last confirmed view and expose their connection state.
+          }
+        }
+      }
+    })().finally(() => {
+      this.#syncing = undefined;
+    });
+    return this.#syncing;
   }
   get contextRevision() {
     return this.#generation;
@@ -324,6 +458,7 @@ export class WorkspaceController {
   async refreshCatalog(source: DesktopWorkspaceSource) {
     if (this.#state.scope?.source === source) await this.flushDraft();
     const version = ++this.#catalogVersions[source];
+    this.#catalogReads[source]++;
     const current = () => {
       if (this.#closed || this.#catalogVersions[source] !== version)
         throw Error('电脑列表读取已过期。');
@@ -344,6 +479,7 @@ export class WorkspaceController {
       )
         this.#clearSelection();
       this.#state.catalogs[source] = catalog;
+      for (const { target } of catalog.targets) this.#invalidateProject(source, target);
       if (this.#state.scope?.source === source) {
         const active = catalog.targets.find((entry) =>
           same(entry.target, this.#state.scope!.target),
@@ -361,6 +497,8 @@ export class WorkspaceController {
       }
       throw error;
     } finally {
+      this.#catalogReads[source]--;
+      if (!this.#catalogReads[source] && this.#syncAfterCatalog.delete(source)) this.scheduleSync();
       if (!this.#closed && this.#catalogVersions[source] === version) this.#emit();
     }
   }
@@ -435,8 +573,19 @@ export class WorkspaceController {
       localProjectId: scope.target.localProjectId,
     } as HostCommand;
   }
-  async refreshSessions() {
+  async refreshSessions({ background = false }: { background?: boolean } = {}) {
+    if (background && this.#sessionListReads) {
+      this.#syncAfterList = true;
+      return;
+    }
     const context = this.#context();
+    this.#sessionListReads++;
+    const version = ++this.#sessionListReadVersion,
+      selected = context.current;
+    context.current = () => {
+      selected();
+      if (version !== this.#sessionListReadVersion) throw Error('会话列表读取已由较新的请求替代。');
+    };
     try {
       const sessions = sessionListSchema.parse(
         await this.#execute(
@@ -460,29 +609,25 @@ export class WorkspaceController {
       this.#state.offline = true;
       throw error;
     } finally {
+      this.#sessionListReads--;
+      if (!this.#sessionListReads && this.#syncAfterList) {
+        this.#syncAfterList = false;
+        this.scheduleSync();
+      }
       context.current();
       this.#emit();
     }
   }
   async listProjectSessions(source: DesktopWorkspaceSource, target: Project['target']) {
-    const catalog = this.#state.catalogs[source];
-    const project = catalog?.targets.find((entry) => same(entry.target, target));
-    if (!catalog || !project) throw Error('项目不属于当前电脑列表。');
-    const version = this.#catalogVersions[source];
-    const current = () => {
-      if (
-        this.#closed ||
-        version !== this.#catalogVersions[source] ||
-        this.#state.catalogs[source] !== catalog
-      )
-        throw Error('项目列表已改变，请重新读取。');
+    const context = this.#projectContext(source, target);
+    const version = this.#catalogVersions[source],
+      current = context.current;
+    context.current = () => {
+      current();
+      if (version !== this.#catalogVersions[source]) throw Error('项目列表已改变，请重新读取。');
     };
-    const scope = { source, target: structuredClone(project.target) };
     const sessions = sessionListSchema.parse(
-      await this.#execute(
-        { scope, project, connectionId: catalog.connectionId, current },
-        this.#command(scope, 'sessions', {}),
-      ),
+      await this.#execute(context, this.#command(context.scope, 'sessions', {})),
     );
     if (
       sessions.some(
@@ -494,6 +639,34 @@ export class WorkspaceController {
     )
       throw Error('会话列表执行范围不匹配。');
     return sessions;
+  }
+  #projectContext(
+    source: DesktopWorkspaceSource,
+    target: Project['target'],
+    sessionId?: string,
+  ): Context {
+    const catalog = this.#state.catalogs[source];
+    const project = catalog?.targets.find((entry) => same(entry.target, target));
+    if (!catalog || !project) throw Error('项目不属于当前电脑列表。');
+    const current = () => {
+      const latest = this.#state.catalogs[source];
+      if (
+        this.#closed ||
+        latest?.connectionId !== catalog.connectionId ||
+        latest.owner !== catalog.owner ||
+        !same(latest.actor ?? null, catalog.actor ?? null) ||
+        !latest.targets.some((entry) => same(entry.target, target))
+      )
+        throw Error('项目列表已改变，请重新读取。');
+    };
+    const scope = { source, target: structuredClone(project.target) };
+    return {
+      scope,
+      project: structuredClone(project),
+      connectionId: catalog.connectionId,
+      current,
+      sessionId,
+    };
   }
   async readGitContext() {
     const context = this.#context();
@@ -579,6 +752,10 @@ export class WorkspaceController {
       this.#state.sessionLoad = { status: 'ready', source: 'host' };
       if (!optionsRefreshed) this.#rememberSessionView(scope, sessionId);
       this.#emit();
+      if (this.#syncAfterRead) {
+        this.#syncAfterRead = false;
+        this.scheduleSync();
+      }
     }
     current();
     if (turnId && this.#state.session?.history.some((turn) => turn.id === turnId)) {
@@ -589,7 +766,16 @@ export class WorkspaceController {
   async refreshSession({
     announce = true,
     settle = true,
-  }: { announce?: boolean; settle?: boolean } = {}) {
+    background = false,
+  }: { announce?: boolean; settle?: boolean; background?: boolean } = {}) {
+    if (
+      background &&
+      (this.#sessionReads ||
+        ['loading-cache', 'refreshing'].includes(this.#state.sessionLoad.status))
+    ) {
+      this.#syncAfterRead = true;
+      return;
+    }
     const context = this.#context();
     const version = ++this.#sessionReadVersion,
       selected = context.current;
@@ -598,6 +784,8 @@ export class WorkspaceController {
       if (version !== this.#sessionReadVersion) throw Error('会话读取已由较新的请求替代。');
     };
     if (!context.sessionId) throw Error('请先选择会话。');
+    this.#sessionReads++;
+    const base = this.#state.session;
     const source =
       this.#state.sessionLoad.status === 'ready'
         ? 'host'
@@ -613,13 +801,20 @@ export class WorkspaceController {
     try {
       const raw = await this.#execute(
         context,
-        this.#command(context.scope, 'session', { sessionId: context.sessionId }),
+        this.#command(context.scope, 'session', {
+          sessionId: context.sessionId,
+          ...(base?.version ? { version: base.version } : {}),
+        }),
       );
-      const session = readClientSession(raw, {
-        ...context.scope.target,
-        sessionId: context.sessionId,
-      });
-      await this.store.cacheSession(context.scope, context.sessionId, raw, context.current);
+      const session = readClientSession(
+        raw,
+        {
+          ...context.scope.target,
+          sessionId: context.sessionId,
+        },
+        base,
+      );
+      await this.store.cacheSession(context.scope, context.sessionId, session, context.current);
       context.current();
       this.#state.session = session;
       this.#state.offline = false;
@@ -633,6 +828,11 @@ export class WorkspaceController {
       this.#state.sessionLoad = { status: 'failed', source, reason: 'connection' };
       throw error;
     } finally {
+      this.#sessionReads--;
+      if (!this.#sessionReads && this.#syncAfterRead) {
+        this.#syncAfterRead = false;
+        this.scheduleSync();
+      }
       context.current();
       this.#emit();
     }
@@ -1229,6 +1429,77 @@ export class WorkspaceController {
     await this.retry(request.operationId);
     await this.refreshSession();
     await this.refreshSessions();
+  }
+  async projectMetadata(
+    source: DesktopWorkspaceSource,
+    target: Project['target'],
+    reviewed: SessionMetadata,
+    action: SessionAction['action'],
+    title?: string,
+  ) {
+    const shown = structuredClone(reviewed);
+    const context = this.#projectContext(source, target, shown.id);
+    if (
+      shown.userId !== target.userId ||
+      shown.machineId !== target.machineId ||
+      shown.project.localProjectId !== target.localProjectId
+    )
+      throw Error('会话信息与原执行范围不匹配。');
+    if (!context.project.online) throw Error('执行电脑离线，请连接后手动整理会话。');
+    const read = readClientSession(
+      await this.#execute(
+        context,
+        this.#command(context.scope, 'session', { sessionId: shown.id }),
+      ),
+      { ...target, sessionId: shown.id },
+    );
+    if (
+      !read.persisted ||
+      read.persistenceError ||
+      (read.meta.metadataRevision ?? 0) !== (shown.metadataRevision ?? 0)
+    )
+      throw Error('会话信息已改变，请重新查看后操作。');
+    const request = sessionActionSchema.parse({
+      action,
+      operationId: this.#uuid(),
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      sessionId: shown.id,
+      expectedRevision: shown.metadataRevision ?? 0,
+      ...(action === 'rename' ? { title } : {}),
+    });
+    await this.store.stage(
+      context.scope,
+      { kind: 'metadata', value: request },
+      undefined,
+      context.current,
+    );
+    try {
+      await this.#deliverOperation(context, request.operationId);
+    } finally {
+      context.current();
+      this.#invalidateProject(source, target);
+      // Only the journal changes here: a sidebar action cannot overwrite an in-memory draft.
+      if (same(context.scope, this.#state.scope)) {
+        const ledger = await this.store.read(context.scope, context.current);
+        if (same(context.scope, this.#state.scope)) this.#state.ledger = ledger;
+      }
+      this.#emit();
+      this.scheduleSync({
+        source,
+        owner: target.owner,
+        connectionId: context.connectionId,
+        kind: 'changed',
+        deviceId: target.deviceId,
+        workspaceId: target.workspaceId,
+        sessionId: shown.id,
+      });
+    }
+    if (same(context.scope, this.#state.scope)) {
+      await this.refreshSessions();
+      if (this.#state.sessionId === shown.id)
+        await this.refreshSession({ announce: false, background: true });
+    }
   }
   #contentCache(scope: WorkspaceScope) {
     const cache = workspaceContentCache(scope.source, this.store.backend);
@@ -2350,6 +2621,10 @@ export class WorkspaceController {
   /** Explicit user action only. Nothing calls this on mount, polling or reconnection. */
   async retry(operationId: string) {
     const context = this.#context();
+    await this.#deliverOperation(context, operationId);
+    await this.#reloadLedger(context);
+  }
+  async #deliverOperation(context: Context, operationId: string) {
     await this.store.exclusiveOperation(context.scope, operationId, context.current, async () => {
       const ledger = await this.store.read(context.scope, context.current);
       const entry = ledger.operations.find(
@@ -2406,7 +2681,16 @@ export class WorkspaceController {
       }
       await this.store.finish(context.scope, original, status, context.current);
     });
-    await this.#reloadLedger(context);
+    this.#invalidateProject(context.scope.source, context.scope.target);
+    this.scheduleSync({
+      source: context.scope.source,
+      connectionId: context.connectionId,
+      owner: context.scope.target.owner,
+      kind: 'changed',
+      deviceId: context.scope.target.deviceId,
+      workspaceId: context.scope.target.workspaceId,
+      sessionId: context.sessionId,
+    });
   }
   inspect(operationId: string) {
     return this.#recover(operationId, 'inspect');
@@ -2452,6 +2736,8 @@ export class WorkspaceController {
     await this.#reloadLedger(context);
   }
   close() {
+    this.#cancelSync?.();
+    this.#syncPending.clear();
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;

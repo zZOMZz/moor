@@ -139,6 +139,7 @@ let state: any = {
   draft: { revision: 0, text: '', selection: {} },
   ledger: { operations: [] },
   offline: false,
+  sessionLoad: { status: 'ready', source: 'host' },
 };
 const listeners = new Set<() => void>();
 const emit = () => {
@@ -151,6 +152,23 @@ const controller: any = {
     return state;
   },
   contextRevision: 0,
+  navigationRevision: 0,
+  scheduleSync() {},
+  async synchronize() {
+    this.navigationRevision++;
+    emit();
+  },
+  async projectMetadata(_source: string, target: any, shown: any, action: string, title?: string) {
+    const entry = sessions.find(
+      (session) =>
+        session.id === shown.id && session.project.localProjectId === target.localProjectId,
+    )!;
+    if (action === 'rename') entry.title = title!;
+    if (action === 'pin' || action === 'unpin') entry.isPinned = action === 'pin';
+    if (action === 'archive' || action === 'restore') entry.isArchived = action === 'archive';
+    this.navigationRevision++;
+    emit();
+  },
   subscribe(fn: () => void) {
     listeners.add(fn);
     return () => listeners.delete(fn);
@@ -166,9 +184,12 @@ const controller: any = {
     return { execution: { branch: 'codex/ui' }, repository: { branch: 'main' } };
   },
   async listProjectSessions(_source: string, target: any) {
-    return target.localProjectId === 'project' ? sessions : [];
+    return sessions.filter((session) => session.project.localProjectId === target.localProjectId);
   },
   async refreshSessions() {
+    state.sessions = sessions.filter(
+      (session) => session.project.localProjectId === state.scope.target.localProjectId,
+    );
     emit();
   },
   async selectProject(_source: string, selected: any) {
@@ -178,12 +199,23 @@ const controller: any = {
     state.scope = { source: 'local', target: selected };
     state.session = undefined;
     state.sessionId = undefined;
-    state.sessions = selected.localProjectId === 'project' ? sessions : [];
+    state.sessions = sessions.filter(
+      (session) => session.project.localProjectId === selected.localProjectId,
+    );
     emit();
   },
   async createSession() {
     calls.push('create');
-    return sessions[0]!.id;
+    const id = 'session-' + sessions.length;
+    sessions.push({
+      ...sessions[2]!,
+      id,
+      title: '新对话',
+      project: { kind: 'local', localProjectId: state.scope.target.localProjectId },
+      isPinned: false,
+      isArchived: false,
+    });
+    return id;
   },
   async openSession(id: string) {
     state.draft ??= { revision: 0, text: '', selection: {} };
@@ -203,6 +235,17 @@ const controller: any = {
     state.draft = { revision: state.draft.revision + 1, text, selection };
     emit();
   },
+  queueDraft(
+    text: string,
+    selection: unknown,
+    _failed?: (error: unknown) => void,
+    saved?: () => void,
+  ) {
+    state.draft = { revision: state.draft.revision + 1, text, selection };
+    saved?.();
+    emit();
+  },
+  async flushDraft() {},
   async send() {
     calls.push('send');
   },
@@ -237,6 +280,7 @@ const fixture = {
       errors: {},
       sessions: [],
       offline: false,
+      sessionLoad: { status: 'idle' },
     };
     emit();
   },

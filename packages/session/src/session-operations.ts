@@ -15,7 +15,14 @@ export type SessionClientScope = {
   localProjectId: string;
   sessionId: string;
 };
-export function readClientSession(raw: unknown, scope: SessionClientScope) {
+export function readClientSession(
+  raw: unknown,
+  scope: SessionClientScope,
+  base?: unknown,
+): z.infer<typeof sessionReadResponseSchema> & {
+  version?: string;
+  history: ReturnType<ReturnType<typeof mirror>['getState']>['history'];
+} {
   const result = sessionReadResponseSchema.parse(raw);
   validateSessionBundle(result);
   if (
@@ -27,12 +34,19 @@ export function readClientSession(raw: unknown, scope: SessionClientScope) {
     throw new Error('会话响应与原执行范围不匹配');
   const doc = new LoroDoc();
   try {
-    doc.import(decode(result.update));
+    if (base !== undefined) doc.import(decode(readClientSession(base, scope).update));
+    const imported = doc.import(decode(result.update));
+    if (imported.pending?.size) throw new Error('会话增量缺少前置版本，请重新读取');
     const view = mirror(doc, scope.sessionId);
     try {
       const state = view.getState();
       if (state.session.id !== scope.sessionId) throw new Error('会话文档身份不匹配');
-      return { ...result, history: structuredClone(state.history) };
+      return {
+        ...result,
+        update: delta(doc),
+        version: vv(doc),
+        history: structuredClone(state.history),
+      };
     } finally {
       view.dispose();
     }

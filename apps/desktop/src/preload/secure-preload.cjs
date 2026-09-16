@@ -4,6 +4,12 @@ contextBridge.exposeInMainWorld('moorWorkspace', {
   request: (value) => ipcRenderer.invoke('moor:workspace-client', value),
   context: () => ipcRenderer.invoke('moor:workspace-context'),
   addProject: () => ipcRenderer.invoke('moor:add-project'),
+  onSync: (listener) => {
+    if (typeof listener !== 'function') throw new TypeError('Expected workspace listener');
+    const receive = (_event, value) => listener(value);
+    ipcRenderer.on('moor:workspace-sync', receive);
+    return () => ipcRenderer.removeListener('moor:workspace-sync', receive);
+  },
   onChange: (listener) => {
     if (typeof listener !== 'function') throw new TypeError('Expected workspace listener');
     const receive = () => listener();

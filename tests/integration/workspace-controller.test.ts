@@ -2664,3 +2664,130 @@ test('retired task recovery uses only the reviewed original, retains failed rece
   await assert.rejects(client.recoverRetiredTask(original, 'retry'), /已改变/);
   assert.equal(actions.length, 2);
 });
+
+test('sidebar metadata targets the clicked session without navigating or replacing the current draft', async (t) => {
+  const f = await fixture(t),
+    first = await f.create(),
+    second = await f.create();
+  await f.controller.saveDraft('Continue editing the second session', {});
+  const scope = f.controller.state.scope!,
+    target = scope.target;
+  const shown = f.controller.state.sessions.find((entry) => entry.id === first)!;
+  const before = f.controller.state.draft;
+  const revision = f.controller.contextRevision;
+  await assert.rejects(
+    f.controller.projectMetadata('local', target, { ...shown, machineId: 'other' }, 'pin'),
+    /执行范围/,
+  );
+  await f.controller.projectMetadata('local', target, shown, 'pin');
+  assert.equal(f.controller.state.sessionId, second);
+  assert.equal(f.controller.contextRevision, revision);
+  assert.deepEqual(f.controller.state.draft, before);
+  assert.equal(f.controller.state.sessions.find((entry) => entry.id === first)?.isPinned, true);
+  await assert.rejects(f.controller.projectMetadata('local', target, shown, 'archive'), /已改变/);
+  const pinned = f.controller.state.sessions.find((entry) => entry.id === first)!;
+  await f.controller.projectMetadata('local', target, pinned, 'archive');
+  assert.equal(f.controller.state.sessions.find((entry) => entry.id === first)?.isArchived, true);
+  assert.equal(f.controller.state.sessionId, second);
+  assert.equal(f.prompts(), 0);
+});
+
+test('host invalidations read CRDT deltas and metadata while preserving drafts and pending operations', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  await f.controller.saveDraft('A turn with a lost receipt', {});
+  f.fault.loseMutation = true;
+  await assert.rejects(f.controller.send());
+  await f.started.promise;
+  const pending = structuredClone(f.controller.state.ledger!.operations);
+  await f.controller.saveDraft('Keep this offline draft', {});
+  const target = f.catalog.targets[0]!.target;
+  const notice = {
+    source: 'local',
+    owner: f.catalog.owner,
+    connectionId: f.catalog.connectionId,
+    kind: 'changed',
+    deviceId: target.deviceId,
+    workspaceId: target.workspaceId,
+    sessionId: id,
+  };
+  const count = f.calls.length;
+  await f.controller.synchronize(notice);
+  const reads = f.calls.slice(count);
+  assert(
+    reads.every(
+      (request) =>
+        request.action === 'execute' && ['session', 'sessions'].includes(request.command.method),
+    ),
+  );
+  assert(
+    reads.some(
+      (request) =>
+        request.action === 'execute' &&
+        request.command.method === 'session' &&
+        request.command.params.version,
+    ),
+  );
+  assert(f.controller.state.session!.history.some((turn) => turn.role === 'user'));
+  assert.equal(f.controller.state.draft!.text, 'Keep this offline draft');
+  assert.deepEqual(f.controller.state.ledger!.operations, pending);
+  assert.equal(f.prompts(), 1);
+  const cached = await f.store.cachedSession(f.controller.state.scope!, id, () => {});
+  assert.deepEqual(cached?.history, f.controller.state.session!.history);
+  f.fault.unavailable = true;
+  await f.controller.synchronize();
+  assert.equal(f.controller.state.offline, true);
+  f.fault.unavailable = false;
+  await f.controller.synchronize();
+  assert.equal(f.controller.state.offline, false);
+  assert.equal(f.controller.state.draft!.text, 'Keep this offline draft');
+  assert.equal(f.prompts(), 1);
+});
+
+test('sync notices reject stale connections and foreign scopes, and coalesce bursts deterministically', async (t) => {
+  const timers = new Map<() => void, number>();
+  const f = await fixture(t, {
+    schedule: (ms, fn) => {
+      timers.set(fn, ms);
+      return () => {
+        timers.delete(fn);
+      };
+    },
+  });
+  const id = await f.create(),
+    target = f.catalog.targets[0]!.target;
+  await f.controller.synchronize();
+  const notice = {
+    source: 'local',
+    owner: f.catalog.owner,
+    connectionId: f.catalog.connectionId,
+    kind: 'changed',
+    deviceId: target.deviceId,
+    workspaceId: target.workspaceId,
+    sessionId: id,
+  };
+  const count = f.calls.length;
+  for (const patch of [
+    { owner: 'other' },
+    { deviceId: 'other' },
+    { workspaceId: 'other' },
+    { source: 'remote' },
+    { connectionId: '00000000-0000-4000-8000-000000000099' },
+  ])
+    await f.controller.synchronize({ ...notice, ...patch });
+  assert.equal(f.calls.length, count);
+  for (let i = 0; i < 20; i++) f.controller.scheduleSync(notice);
+  assert.equal([...timers.values()].filter((ms) => ms === 150).length, 1);
+  await f.controller.synchronize(notice);
+  assert.equal(
+    f.calls
+      .slice(count)
+      .filter((request) => request.action === 'execute' && request.command.method === 'session')
+      .length,
+    1,
+  );
+  assert.equal(f.prompts(), 0);
+  f.controller.scheduleSync(notice);
+  f.controller.close();
+  assert.equal([...timers.values()].filter((ms) => ms === 150).length, 0);
+});

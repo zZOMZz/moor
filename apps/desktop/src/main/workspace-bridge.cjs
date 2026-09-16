@@ -160,6 +160,10 @@ class DesktopWorkspaceBridge {
           cookie,
           ...(source === 'local' ? { localIdentity: slot.local.identity } : {}),
           current: () => this.current(slot),
+          onSync: (notice) => {
+            this.current(slot);
+            context.contents.send('moor:workspace-sync', notice);
+          },
         });
         return slot.client;
       } catch (error) {

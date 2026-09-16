@@ -24,6 +24,19 @@ export const desktopWorkspaceSourceSchema = z.enum(['local', 'remote']);
 export type DesktopWorkspaceSource = z.infer<typeof desktopWorkspaceSourceSchema>;
 export const desktopWorkspaceTargetSchema = workspaceTargetSchema.extend({ catalogProjectId: id });
 export type DesktopWorkspaceTarget = z.infer<typeof desktopWorkspaceTargetSchema>;
+// Invalidation only. Session bodies are read through the authenticated host boundary.
+export const desktopWorkspaceChangeSchema = z
+  .object({
+    source: desktopWorkspaceSourceSchema,
+    connectionId: z.string().uuid(),
+    owner: z.string().min(1).max(1000),
+    kind: z.enum(['connected', 'disconnected', 'changed']),
+    deviceId: id.optional(),
+    workspaceId: id.optional(),
+    sessionId: id.optional(),
+  })
+  .strict();
+export type DesktopWorkspaceChange = z.infer<typeof desktopWorkspaceChangeSchema>;
 export const desktopWorkspaceRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('catalog'), source: desktopWorkspaceSourceSchema }).strict(),
   z
