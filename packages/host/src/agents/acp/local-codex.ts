@@ -23,7 +23,12 @@ export function localCodexPath(
   const executable = process.platform === 'win32' ? 'codex.exe' : 'codex';
   const candidates = [
     join(homedir(), '.local', 'bin', executable),
-    ...(process.platform === 'darwin' ? ['/Applications/Codex.app/Contents/Resources/codex'] : []),
+    ...(process.platform === 'darwin'
+      ? [
+          '/Applications/ChatGPT.app/Contents/Resources/codex',
+          '/Applications/Codex.app/Contents/Resources/codex',
+        ]
+      : []),
     '/opt/homebrew/bin/codex',
     '/usr/local/bin/codex',
     ...(env.PATH ?? '')
