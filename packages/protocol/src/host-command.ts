@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { agentUsageRequestSchema, runPreferencesRequestSchema } from './agent-controls';
 import { AppError, assert, id, mutationSchema, sessionActionSchema } from './protocol';
 import { agentOptionsRequestSchema } from './protocol';
 import { sessionBase64Schema, sessionCancelSchema } from './session-responses';
@@ -38,6 +39,8 @@ import {
 export const HOST_COMMAND_METHODS = [
   'sessions',
   'agent-options',
+  'agent-usage',
+  'run-preferences',
   'session',
   'roles-read',
   'mcp-read',
@@ -81,6 +84,8 @@ export type HostCommandMethod = (typeof HOST_COMMAND_METHODS)[number];
 export const hostCommandSchemas = {
   sessions: z.object({}).strict(),
   'agent-options': agentOptionsRequestSchema,
+  'agent-usage': agentUsageRequestSchema,
+  'run-preferences': runPreferencesRequestSchema,
   session: z
     .object({
       sessionId: id,

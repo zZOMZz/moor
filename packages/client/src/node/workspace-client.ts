@@ -31,6 +31,8 @@ const unavailable = () => new AppError(409, '连接或执行目标已变化，�
 // methods have no legacy route and are rejected; they never select another link.
 const routes = {
   'agent-options': 'agent-options',
+  'agent-usage': 'agent-usage',
+  'run-preferences': 'run-preferences',
   'roles-read': 'roles/read',
   'roles-action': 'roles/action',
   'mcp-read': 'mcp/read',

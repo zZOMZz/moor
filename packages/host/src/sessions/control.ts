@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { readRunPreferences } from '../agents/run-preferences';
 import { assert } from '@moor/protocol/protocol';
 import {
   attachmentReceiptSchema,
@@ -197,6 +198,9 @@ export class SessionControlManager {
           cliType: agent.cliType,
           agentType: agent.agentType,
           agentConfigId: agent.id,
+          ...(agent.agentType === 'codex' && !agent.customAcp
+            ? { initialModeId: readRunPreferences(this.host.store).modeId }
+            : {}),
           status: { type: 'idle' },
           isArchived: false,
           isPinned: false,

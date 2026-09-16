@@ -162,7 +162,12 @@ test(
     await host.wait((message) => message.type === 'health' && message.local === 'ready');
     const read = await host.request({ action: 'read' });
     assert.equal(read.ok, true);
-    assert.deepEqual(read.state, { revision: 0, presets: [] });
+    assert.deepEqual(
+      { revision: read.state.revision, presets: read.state.presets },
+      { revision: 0, presets: [] },
+    );
+    assert.equal(read.state.projects.length, 1);
+    assert.ok(read.state.projects[0].id);
     host.child.kill('SIGTERM');
     assert.equal((await host.closed)[0], 0, host.output().stderr);
   },
@@ -190,7 +195,12 @@ test(
     await host.wait((message) => message.type === 'health' && message.local === 'ready');
     const read = await host.request({ action: 'read' });
     assert.equal(read.ok, true);
-    assert.deepEqual(read.state, { revision: 0, presets: [] });
+    assert.deepEqual(
+      { revision: read.state.revision, presets: read.state.presets },
+      { revision: 0, presets: [] },
+    );
+    assert.equal(read.state.projects.length, 1);
+    assert.ok(read.state.projects[0].id);
     host.child.kill('SIGTERM');
     assert.equal((await host.closed)[0], 0, host.output().stderr);
 

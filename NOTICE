@@ -8,6 +8,12 @@ Historical upstream: https://github.com/LodyAI/Lody
 Historical revision: e88b18c6e8242704f3b4ffa3afbaf38bad3a1ead
 See release licenses/ and bundled package license files for dependency notices.
 
+Moor applies a version-locked patch to @agentclientprotocol/codex-acp 1.11.0
+(Apache-2.0), maintained in patches/. The patch adds explicit permission presets,
+per-model reasoning metadata and a negotiated read-only account usage extension.
+Upstream: https://github.com/agentclientprotocol/codex-acp
+The adapter's original LICENSE remains included in distributed packages.
+
 Moor's interface uses React, Base UI and Lucide, with Tailwind CSS utilities.
 Their original license and copyright notices, including bundled transitive
 dependencies, are collected in public/THIRD_PARTY_NOTICES.txt during builds.

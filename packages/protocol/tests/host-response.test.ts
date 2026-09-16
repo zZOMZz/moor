@@ -38,6 +38,7 @@ const workspace: RuntimeWorkspace = {
   ],
   agents: [agent],
   features: [
+    'agent-controls-v1',
     'roles-v1',
     'session-mcp-v1',
     'session-control-v1',
@@ -233,6 +234,32 @@ const forkOriginal = sessionForkSchema.parse({
 const fixtures = {
   sessions: { params: {}, result: [meta] },
   'agent-options': { params: { agentId: agent.id }, result: agent },
+  'agent-usage': {
+    params: { agentId: agent.id },
+    result: {
+      scope: {
+        workspaceId: scope.workspaceId,
+        userId: workspace.userId,
+        machineId: workspace.machineId,
+        localProjectId: scope.localProjectId,
+        agentId: agent.id,
+      },
+      usage: { version: 1, status: 'unknown', buckets: [] },
+    },
+  },
+  'run-preferences': {
+    params: { agentId: agent.id, action: 'read' },
+    result: {
+      scope: {
+        workspaceId: scope.workspaceId,
+        userId: workspace.userId,
+        machineId: workspace.machineId,
+        localProjectId: scope.localProjectId,
+        agentId: agent.id,
+      },
+      preferences: { version: 1, revision: 0, modeId: 'moor-agent' },
+    },
+  },
   session: {
     params: { sessionId: scope.sessionId },
     result: {

@@ -20,7 +20,13 @@ import {
   type AgentMcpServer,
   type AgentRunBinding,
 } from '../driver';
-import { resolveRunSelection, selectionFromInput } from '@moor/protocol/run-config';
+import { canonicalMode, resolveRunSelection, selectionFromInput } from '@moor/protocol/run-config';
+import {
+  agentUsageUpdateSchema,
+  MOOR_USAGE_READ,
+  MOOR_USAGE_UPDATED,
+} from '@moor/protocol/agent-usage';
+import { readAcpUsage, supportsUsage } from './usage';
 import { promptContent } from '../../sessions/attachment-input';
 import { AppError, assert } from '@moor/protocol/protocol';
 import { CONTENT_LIMITS, isCanonicalBase64 } from '@moor/protocol/content-protocol';
@@ -125,6 +131,7 @@ const launchAcp = (command: string, args: string[], options: SpawnOptionsWithout
 // Injection changes only the owned child process. Protocol handling remains real.
 export function createAcpDriver(launch = launchAcp): AgentDriver {
   const driver: AgentDriver = {
+    readUsage: (config, cwd, current) => readAcpUsage(config, cwd, current, launch),
     diagnose: (config, cwd) => inspectAgentProgram(config, cwd),
     async fork(config, input) {
       validateForkInput(config, input);
@@ -437,6 +444,21 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         eventState: SessionEventState | undefined,
         observedQuestion = false;
       const startupCommands = new Map<string, SessionEvent>();
+      const startupContext = new Map<string, SessionEvent>();
+      let usageSupported = false,
+        usageSequence = -1;
+      const deliverUsage = (value: unknown) => {
+        const parsed = agentUsageUpdateSchema.safeParse(value);
+        if (
+          parsed.success &&
+          parsed.data.sequence > usageSequence &&
+          !stopped &&
+          currentCallback()
+        ) {
+          usageSequence = parsed.data.sequence;
+          callbacks.usage?.(parsed.data);
+        }
+      };
       const startupConfigurations = new Map<string, unknown>();
       let configuration: AcpConfiguration | undefined,
         configurationFault = false;
@@ -499,6 +521,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       };
       const conn = new ClientSideConnection(
         () => ({
+          extNotification: async (method, value) => {
+            if (method !== MOOR_USAGE_UPDATED || !usageSupported || stopped || !currentCallback())
+              return;
+            deliverUsage(value);
+          },
           sessionUpdate: async (value) => {
             if (stopped || !currentCallback()) return;
             const normalized = normalizeSessionEvent(value.update);
@@ -515,6 +542,11 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                   startupCommands.delete(startupCommands.keys().next().value!);
                 startupCommands.set(value.sessionId, normalized.event);
               }
+              if (normalized.status === 'accepted' && normalized.event.kind === 'context-usage') {
+                if (startupContext.size >= 4 && !startupContext.has(value.sessionId))
+                  startupContext.delete(startupContext.keys().next().value!);
+                startupContext.set(value.sessionId, normalized.event);
+              }
               return;
             }
             if (value.sessionId !== activeSessionId) return;
@@ -527,7 +559,10 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               configurationFault = true;
             }
             if (!acceptingUpdates || !activeRun || activeRun.cancelled) {
-              if (normalized.status === 'accepted' && normalized.event.kind === 'commands')
+              if (
+                normalized.status === 'accepted' &&
+                ['commands', 'context-usage'].includes(normalized.event.kind)
+              )
                 observe(normalized.event);
               return;
             }
@@ -652,10 +687,12 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             clientCapabilities: {
               ...(callbacks.question ? { elicitation: { form: {} } } : {}),
               plan: {},
+              _meta: { moor: { version: 1 } },
             },
           }),
         );
         currentTaskTools();
+        usageSupported = supportsUsage(init);
         if (
           extraServers.some(
             (server) =>
@@ -689,6 +726,9 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         const initialCommands = startupCommands.get(id);
         if (initialCommands) observe(initialCommands);
         startupCommands.clear();
+        const initialContext = startupContext.get(id);
+        if (initialContext) observe(initialContext);
+        startupContext.clear();
         configuration = new AcpConfiguration(response, nativeId ? 'loaded' : 'new');
         if (startupConfigurations.has(id)) configuration.replace(startupConfigurations.get(id));
         startupConfigurations.clear();
@@ -729,6 +769,17 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         const nativeForkCapabilities = forkCapabilities(config, init);
         return {
           id,
+          ...(usageSupported
+            ? {
+                readUsage: async () => {
+                  const result = agentUsageUpdateSchema.parse(
+                    await bounded(() => conn.extMethod(MOOR_USAGE_READ, {})),
+                  );
+                  deliverUsage(result);
+                  return result;
+                },
+              }
+            : {}),
           get capabilities() {
             assert(!configurationFault, 409, 'Agent 当前配置不可验证，请重新读取能力');
             return cleanTaskValue(configuration!.capabilities);
@@ -829,7 +880,12 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               currentConfiguration().validateValues(input.configOptionValues ?? {});
               resolveRunSelection(selectionFromInput(input, choices), choices);
               if (input.modeId)
-                await bounded(() => conn.setSessionMode({ sessionId: id, modeId: input.modeId }));
+                await bounded(() =>
+                  conn.setSessionMode({
+                    sessionId: id,
+                    modeId: canonicalMode(input.modeId, choices)!,
+                  }),
+                );
               currentTaskTools();
               for (const [configId, value] of Object.entries(input.configOptionValues ?? {})) {
                 currentConfiguration().validateValues({ [configId]: value });

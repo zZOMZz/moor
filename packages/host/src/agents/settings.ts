@@ -59,6 +59,15 @@ export const agentSettingsActionSchema = z.discriminatedUnion('action', [
     .strict(),
   z.object({ action: z.literal('remove'), expectedRevision: revision, id }).strict(),
   z.object({ action: z.literal('check'), expectedRevision: revision, id, versionId: id }).strict(),
+  z
+    .object({
+      action: z.literal('refresh'),
+      expectedRevision: revision,
+      id,
+      versionId: id,
+      localProjectId: id,
+    })
+    .strict(),
 ]);
 export type AgentSettingsAction = z.infer<typeof agentSettingsActionSchema>;
 export type AgentCheck = {
@@ -83,7 +92,11 @@ export type AgentPreset = {
   checked?: AgentCheck;
   program?: LocalAgentProgram;
 };
-export type AgentSettingsState = { revision: number; presets: AgentPreset[] };
+export type AgentSettingsState = {
+  revision: number;
+  presets: AgentPreset[];
+  projects?: { id: string; name: string }[];
+};
 const identitySchema = z
   .object({ workspaceId: id, userId: z.string().min(1).max(200), machineId: id })
   .strict();
@@ -129,6 +142,7 @@ export class AgentSettings {
     private driver: AgentDriver,
     private changed: () => void = () => {},
     private discoverCodex: () => string | undefined = localCodexPath,
+    private refreshControls?: (agentId: string, localProjectId: string) => Promise<void>,
   ) {
     this.identity = this.currentIdentity();
   }
@@ -262,7 +276,13 @@ export class AgentSettings {
           ...(p.checked?.versionId === config.id ? { checked: { ...p.checked } } : {}),
         };
       });
-    return { revision: saved.revision, presets };
+    return {
+      revision: saved.revision,
+      presets,
+      ...(this.refreshControls
+        ? { projects: this.store.workspace.projects.map((p) => ({ id: p.id, name: p.rootPath })) }
+        : {}),
+    };
   }
   private expected(expectedRevision: number) {
     const saved = this.load();
@@ -401,6 +421,18 @@ export class AgentSettings {
       return this.read();
     }
     assert(preset, 404, 'Agent 预设不存在');
+    if (action.action === 'refresh') {
+      assert(this.refreshControls, 409, '请在运行中的工作区设置中刷新模型与额度');
+      assert(preset.versionId === action.versionId, 409, 'Agent 预设版本已改变');
+      assert(
+        preset.enabled && this.store.workspace.projects.some((p) => p.id === action.localProjectId),
+        409,
+        '请选择已启用的 Agent 和当前项目',
+      );
+      await this.refreshControls(action.versionId, action.localProjectId);
+      this.expected(action.expectedRevision);
+      return this.read();
+    }
     if (action.action === 'check') {
       const pending = this.check(action, preset);
       this.pending.add(pending);

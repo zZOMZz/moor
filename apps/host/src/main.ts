@@ -291,12 +291,26 @@ secureProjectRoots = () => [
     ),
 ];
 requireRuntimeBoundary();
-const agentSettings = new AgentSettings(runtime, acpDriver, () => {
-  if (!configurationOnly) {
-    for (const host of workspaces.values()) host.updateCatalogue();
-    hello();
-  }
-});
+const agentSettings = new AgentSettings(
+  runtime,
+  acpDriver,
+  () => {
+    if (!configurationOnly) {
+      for (const host of workspaces.values()) host.updateCatalogue();
+      hello();
+    }
+  },
+  undefined,
+  configurationOnly
+    ? undefined
+    : async (agentId, localProjectId) => {
+        const host = workspaces.get(runtime.workspace.id);
+        assert(host && !configurationOnly, 409, '请先启动本机工作区');
+        await host.refreshAgentOptions(agentId, localProjectId, undefined, undefined, true);
+        await host.readAgentUsage({ agentId, refresh: true }, localProjectId);
+        hello();
+      },
+);
 const mcpSettings = new McpSettings(runtime, () => {
   if (!configurationOnly) {
     for (const host of workspaces.values()) host.invalidateMcp();

@@ -50,7 +50,10 @@ function matchesResource(command: HostCommand, resource: EncryptedResource): boo
   const request = object(params.request);
   const sessionId = params.sessionId ?? request?.sessionId;
   if (sessionId === undefined) {
-    if (resource.kind !== 'project' || !['sessions', 'agent-options'].includes(command.method))
+    if (
+      resource.kind !== 'project' ||
+      !['sessions', 'agent-options', 'agent-usage', 'run-preferences'].includes(command.method)
+    )
       return false;
   } else if (resource.kind !== 'session' || sessionId !== resource.sessionId) return false;
   // Check the protocol's recovery wrappers, including session-operations' original

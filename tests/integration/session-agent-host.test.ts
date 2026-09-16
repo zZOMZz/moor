@@ -432,7 +432,7 @@ test('capability refresh rejects a missing cwd before opening the Agent', async 
   assert.equal(f.opened.length, 0);
 });
 
-test('model observations are isolated by project and session and invalidated by program replacement', async (t) => {
+test('model catalogs are isolated by project, shared by sessions, and invalidated by program replacement', async (t) => {
   const f = fixture(t, true);
   const first = await f.host.refreshAgentOptions(f.config.id, f.project);
   assert.deepEqual(first.runConfig, syntheticCapabilities);
@@ -458,12 +458,17 @@ test('model observations are isolated by project and session and invalidated by 
   );
   await f.host.mutate(f.request(), f.project);
   await f.settle();
-  assert.equal((await f.host.read('session', undefined, f.project)).agent?.runConfig, undefined);
+  assert.deepEqual(
+    (await f.host.read('session', undefined, f.project)).agent?.runConfig,
+    syntheticCapabilities,
+  );
+  const before = f.opened.length;
   await f.host.refreshAgentOptions(f.config.id, f.project, 'session');
   assert.deepEqual(
     (await f.host.read('session', undefined, f.project)).agent?.runConfig,
     syntheticCapabilities,
   );
+  assert.equal(f.opened.length, before, 'entering a session reuses the project catalog');
   writeFileSync(f.config.customAcp!.command, 'synthetic version 2 with new model discovery');
   assert.equal(f.host.agentDescriptor(f.config, f.project).runConfig, undefined);
   assert.equal((await f.host.read('session', undefined, f.project)).agent?.runConfig, undefined);
@@ -506,4 +511,19 @@ test('an Agent launch error never persists private executable paths or arguments
   assert.equal(serialized.includes('/synthetic/agent-v1'), false);
   assert.equal(serialized.includes('synthetic-secret'), false);
   assert.match(serialized, /Agent.*失败/);
+});
+
+test('failed capability initialization is reused until explicit refresh', async (t) => {
+  const f = fixture(t);
+  f.opening(async () => {
+    throw Error('synthetic unavailable');
+  });
+  await assert.rejects(f.host.refreshAgentOptions(f.config.id, f.project));
+  await assert.rejects(f.host.refreshAgentOptions(f.config.id, f.project));
+  assert.equal(f.opened.length, 1);
+  f.opening(async () => {});
+  await assert.rejects(f.host.refreshAgentOptions(f.config.id, f.project));
+  assert.equal(f.opened.length, 1, 'opening another menu cannot retry a failed probe');
+  await f.host.refreshAgentOptions(f.config.id, f.project, undefined, undefined, true);
+  assert.equal(f.opened.length, 2);
 });

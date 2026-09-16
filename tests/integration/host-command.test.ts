@@ -90,6 +90,8 @@ const cases: {
   };
 } = {
   sessions: { params: {}, call: 'list' },
+  'agent-usage': { params: { agentId: 'agent', sessionId: 'session' }, call: 'readAgentUsage' },
+  'run-preferences': { params: { agentId: 'agent', action: 'read' }, call: 'runPreferences' },
   'agent-options': {
     params: { agentId: 'agent', sessionId: 'session', modelId: 'synthetic-model' },
     call: 'refreshAgentOptions',
@@ -282,9 +284,9 @@ const envelope = (method: HostCommandMethod, params: unknown = cases[method].par
 const status = (code: number) => (error: unknown) =>
   error instanceof AppError && error.status === code;
 
-test('all 40 commands preserve the exact delegate, parsed payload, project and authority', async () => {
-  assert.equal(HOST_COMMAND_METHODS.length, 40);
-  assert.equal(new Set(HOST_COMMAND_METHODS).size, 40);
+test('all 42 commands preserve the exact delegate, parsed payload, project and authority', async () => {
+  assert.equal(HOST_COMMAND_METHODS.length, 42);
+  assert.equal(new Set(HOST_COMMAND_METHODS).size, 42);
   assert.deepEqual(Object.keys(hostCommandSchemas).sort(), Object.keys(cases).sort());
   const f = fixture();
   const authority = {
@@ -305,7 +307,7 @@ test('all 40 commands preserve the exact delegate, parsed payload, project and a
       method === 'sessions'
         ? [scope.localProjectId]
         : method === 'agent-options'
-          ? ['agent', scope.localProjectId, 'session', 'synthetic-model']
+          ? ['agent', scope.localProjectId, 'session', 'synthetic-model', undefined]
           : method === 'session'
             ? ['session', 'YQ==', scope.localProjectId]
             : method === 'cancel'

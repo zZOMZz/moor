@@ -7,6 +7,7 @@ import {
   AppError,
   AGENT_VERSIONS_FEATURE,
   AGENT_MODEL_OPTIONS_FEATURE,
+  AGENT_CATALOG_CACHE_FEATURE,
   capabilityContextSchema,
   assert,
   sessionActionSchema,
@@ -24,6 +25,14 @@ import {
   type PermissionOutcome,
 } from '../agents/driver';
 import { runCapabilitiesSchema } from '@moor/protocol/run-config';
+import {
+  AGENT_CONTROLS_FEATURE,
+  type AgentUsageRequest,
+  type RunPreferencesRequest,
+} from '@moor/protocol/agent-controls';
+import { AGENT_USAGE_FEATURE } from '@moor/protocol/agent-usage';
+import { AgentUsageCache } from '../agents/usage-cache';
+import { readRunPreferences, saveRunPreferences } from '../agents/run-preferences';
 import { agentProgramFingerprint } from '../agents/program';
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
 import {
@@ -231,6 +240,9 @@ type Active = {
 };
 export class HostWorkspace {
   closed = false;
+  private capabilityAttempts = new Map<string, { revision: number; error?: unknown }>();
+  private capabilityRevision = 0;
+  private usageCache = new AgentUsageCache();
   private attentionChanged: (actor: AttentionActor, sessionId: string) => void = () => {};
   setAttentionListener(listener: (actor: AttentionActor, sessionId: string) => void) {
     this.attentionChanged = listener;
@@ -307,6 +319,121 @@ export class HostWorkspace {
   async ready() {
     this.ensureConnected();
   }
+  private controlsContext(input: { agentId: string; sessionId?: string }, localProjectId?: string) {
+    this.ensureConnected();
+    const project = this.workspace.projects.find((p) => p.id === localProjectId);
+    assert(project, 404, 'Agent 设置的项目不可用');
+    const scope = {
+      workspaceId: this.workspace.id,
+      userId: this.workspace.userId,
+      machineId: this.workspace.machineId,
+      localProjectId: project.id,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      agentId: input.agentId,
+    };
+    const agent = input.sessionId
+      ? this.sessionAgent({ ...scope, sessionId: input.sessionId })
+      : this.store.agents.get(input.agentId);
+    assert(
+      agent?.id === input.agentId &&
+        agent.machineId === scope.machineId &&
+        (input.sessionId || this.workspace.agents.some((a) => a.id === agent.id)),
+      404,
+      'Agent 配置不可用',
+    );
+    const observed = this.capabilityScope(agent, project.id, input.sessionId);
+    const cwd = input.sessionId
+      ? this.executionLease({ ...scope, sessionId: input.sessionId }, project.id).rootPath
+      : project.rootPath;
+    const current = () => {
+      this.ensureConnected();
+      assert(
+        scope.userId === this.workspace.userId &&
+          scope.machineId === this.workspace.machineId &&
+          scope.workspaceId === this.workspace.id,
+        409,
+        'Agent 设置的账号或电脑已变化',
+      );
+      if (input.sessionId)
+        this.store.agents.assertCurrent({ ...scope, sessionId: input.sessionId }, agent);
+      else
+        assert(
+          this.workspace.agents.some((a) => a.id === agent.id),
+          409,
+          'Agent 配置已变化',
+        );
+      assert(
+        isDeepStrictEqual(observed, this.capabilityScope(agent, project.id, input.sessionId)),
+        409,
+        'Agent 设置的执行范围已变化',
+      );
+    };
+    current();
+    return {
+      scope,
+      agent,
+      cwd,
+      current,
+      key: JSON.stringify([
+        scope.userId,
+        scope.workspaceId,
+        scope.machineId,
+        scope.localProjectId,
+        agent.id,
+        observed.programFingerprint,
+        observed.directoryFingerprint,
+      ]),
+    };
+  }
+  private cachedUsage(agentId: string, sessionId: string, localProjectId: string) {
+    try {
+      return this.usageCache.peek(this.controlsContext({ agentId, sessionId }, localProjectId).key);
+    } catch {
+      return undefined;
+    } // Historical sessions remain readable after a directory is removed.
+  }
+  runPreferences(input: RunPreferencesRequest, localProjectId?: string) {
+    const context = this.controlsContext(input, localProjectId);
+    if (input.action === 'save') {
+      const choices = this.agentDescriptor(
+        context.agent,
+        context.scope.localProjectId,
+        input.sessionId,
+      ).runConfig;
+      assert(
+        (context.agent.agentType === 'codex' && !context.agent.customAcp) ||
+          choices?.modes.some((m) => m.id === input.modeId),
+        409,
+        '此 Agent 未提供该审批模式',
+      );
+    }
+    return {
+      scope: context.scope,
+      preferences:
+        input.action === 'save'
+          ? saveRunPreferences(this.store, input.expectedRevision, input.modeId)
+          : readRunPreferences(this.store),
+    };
+  }
+  async readAgentUsage(input: AgentUsageRequest, localProjectId?: string) {
+    const context = this.controlsContext(input, localProjectId);
+    const previous = this.usageCache.peek(context.key);
+    const usage = await this.usageCache.read(
+      context.key,
+      async () => {
+        const active = input.sessionId ? this.active.get(input.sessionId) : undefined;
+        if (active?.session?.readUsage) return active.session.readUsage();
+        return this.driver.readUsage
+          ? this.driver.readUsage(context.agent, context.cwd, context.current)
+          : { version: 1, sequence: 0, status: 'unsupported' };
+      },
+      context.current,
+      input.refresh,
+    );
+    context.current();
+    if (!isDeepStrictEqual(previous, usage)) this.changed();
+    return { scope: context.scope, usage };
+  }
   updateCatalogue() {
     this.workspace.features = [
       'session-actions',
@@ -335,6 +462,9 @@ export class HostWorkspace {
       ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
       AGENT_MODEL_OPTIONS_FEATURE,
+      AGENT_CATALOG_CACHE_FEATURE,
+      AGENT_CONTROLS_FEATURE,
+      AGENT_USAGE_FEATURE,
       SESSION_CONTROL_FEATURE,
       ATTACHMENT_OPERATIONS_FEATURE,
       SESSION_TASKS_FEATURE,
@@ -447,17 +577,19 @@ export class HostWorkspace {
     let cached: any;
     if (localProjectId) {
       try {
+        const currentScope = this.capabilityScope(a, localProjectId, sessionId);
         const saved: any = this.machine.get([
-          'capabilityObservations',
+          'capabilityCatalogs',
           a.id,
           localProjectId,
-          sessionId ?? '',
+          currentScope.directoryFingerprint,
         ]);
         const parsed = capabilityContextSchema.safeParse(saved?.context);
         if (parsed.success) {
-          const { observedAt: _time, ...scope } = parsed.data;
-          if (isDeepStrictEqual(scope, this.capabilityScope(a, localProjectId, sessionId)))
-            cached = saved;
+          const { observedAt: _time, sessionId: _session, ...scope } = parsed.data;
+          const { sessionId: _selectedSession, ...expected } = currentScope;
+          if (isDeepStrictEqual(scope, expected))
+            cached = { ...saved, context: { ...currentScope, observedAt: parsed.data.observedAt } };
         }
       } catch {
         /* Unavailable or replaced directories must not reuse old options. */
@@ -496,7 +628,9 @@ export class HostWorkspace {
     localProjectId?: string,
     sessionId?: string,
     modelId?: string,
+    refresh = false,
   ) {
+    const requestedAtRevision = this.capabilityRevision;
     return this.serial('capabilities/' + agentId, async () => {
       this.ensureConnected();
       const selectedProject =
@@ -566,6 +700,27 @@ export class HostWorkspace {
           );
       };
       current();
+      const attemptKey = JSON.stringify([
+        ...identity,
+        agentId,
+        project.id,
+        capabilityScope.programFingerprint,
+        capabilityScope.directoryFingerprint,
+      ]);
+      const previous = this.capabilityAttempts.get(attemptKey);
+      if (previous && (!refresh || previous.revision > requestedAtRevision)) {
+        if (previous.error) throw previous.error;
+        const cached = this.agentDescriptor(agent, project.id, sessionId);
+        if (cached.runConfig) return cached;
+      }
+      const attempt = { revision: ++this.capabilityRevision } as {
+        revision: number;
+        error?: unknown;
+      };
+      this.capabilityAttempts.set(attemptKey, attempt);
+      // Bound process-local lifecycle records; durable catalogs remain scope checked.
+      if (this.capabilityAttempts.size > 1000)
+        this.capabilityAttempts.delete(this.capabilityAttempts.keys().next().value!);
       let session: AgentSession;
       try {
         session = await this.driver.open(
@@ -576,6 +731,10 @@ export class HostWorkspace {
           { assertCurrent: current },
         );
       } catch (error) {
+        attempt.error = new AppError(
+          502,
+          publicAgentFailure(error, 'Agent 能力检查失败，请在设置中手动刷新'),
+        );
         current();
         if (error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED) throw error;
         throw new AppError(
@@ -583,37 +742,51 @@ export class HostWorkspace {
           publicAgentFailure(error, 'Agent 能力检查失败，请在执行电脑检查本机配置'),
         );
       }
+      let runConfig;
       try {
         current();
-        if (modelId && session.capabilities.models.some((m) => m.id === modelId)) {
-          assert(session.configureModel, 409, '此 Agent 尚不支持模型配置探测');
-          try {
-            await session.configureModel(modelId);
-          } catch (error) {
+        runConfig = runCapabilitiesSchema.parse(session.capabilities);
+        // Older ACP agents expose efforts only for their currently selected model.
+        // Collect missing choices once in this temporary, prompt-free probe.
+        if (session.configureModel) {
+          for (const model of runConfig.models) {
+            if (model.efforts.length || model.id === runConfig.currentModelId) continue;
+            const observed = await session.configureModel(model.id);
             current();
-            throw new AppError(
-              502,
-              publicAgentFailure(error, 'Agent 模型配置检查失败，请刷新选项或检查执行电脑'),
-            );
+            const choice = observed.models.find((m) => m.id === model.id);
+            if (choice) Object.assign(model, choice);
+            if (
+              observed.currentModelId === model.id &&
+              model.efforts.includes(observed.currentReasoningEffort ?? '')
+            )
+              model.defaultEffort ??= observed.currentReasoningEffort;
           }
-          current();
         }
+      } catch (error) {
+        attempt.error = new AppError(
+          502,
+          publicAgentFailure(error, 'Agent 能力检查失败，请在设置中手动刷新'),
+        );
+        throw attempt.error;
       } finally {
         try {
           await session.close();
         } catch {}
         current();
       }
-      const runConfig = runCapabilitiesSchema.parse(session.capabilities);
-      this.machine.set(['capabilityObservations', agentId, project.id, sessionId ?? ''], {
-        context: { ...capabilityScope, observedAt: Date.now() },
-        runConfig,
-        ...(session.inputCapabilities ? { inputCapabilities: session.inputCapabilities } : {}),
-      } as never);
+      this.machine.set(
+        ['capabilityCatalogs', agentId, project.id, capabilityScope.directoryFingerprint],
+        {
+          context: { ...capabilityScope, observedAt: Date.now() },
+          runConfig,
+          ...(session.inputCapabilities ? { inputCapabilities: session.inputCapabilities } : {}),
+        } as never,
+      );
       this.machine.set(['capabilities', agentId], runConfig as never);
       this.machine.set(['inputCapabilities', agentId], session.inputCapabilities as never);
       this.store.saveMachine();
       this.updateCatalogue();
+      this.changed();
       return this.agentDescriptor(agent, project.id, sessionId);
     });
   }
@@ -690,6 +863,9 @@ export class HostWorkspace {
       agent.cliType === metadata.cliType &&
       agent.agentType === metadata.agentType
         ? { agent: this.agentDescriptor(agent, scope.localProjectId, sessionId) }
+        : {}),
+      ...(agent
+        ? { accountUsage: this.cachedUsage(agent.id, sessionId, scope.localProjectId) }
         : {}),
       meta: metas(this.meta)['session-' + sessionId],
       metaBundle: {
@@ -1740,6 +1916,15 @@ export class HostWorkspace {
       409,
       'Agent 配置版本不可用',
     );
+    // Freeze the default at acceptance for legacy clients that create on first send.
+    if (
+      !metas(this.meta)['session-' + m.sessionId] &&
+      agent.agentType === 'codex' &&
+      !agent.customAcp
+    ) {
+      meta.initialModeId = readRunPreferences(this.store).modeId;
+      putMeta(validated.flock, 'session-' + m.sessionId, { initialModeId: meta.initialModeId });
+    }
     if (m.kind === 'turn') this.githubWriteManager.assertExecutionAvailable(execution);
     // Reject a mismatched restored context before confirming a new turn.
     this.store.nativeSession(m.sessionId, execution, agent.id);
@@ -2063,6 +2248,19 @@ export class HostWorkspace {
           this.store.nativeSession(id, run.execution, agent.id),
           {
             update: (value) => this.update(id, run, value),
+            usage: (update) => {
+              if (!this.boundRun(id, run, this.runBinding(id, run))) return;
+              try {
+                const context = this.controlsContext(
+                  { agentId: agent.id, sessionId: id },
+                  run.projectScope.localProjectId,
+                );
+                this.usageCache.update(context.key, update);
+                this.changed();
+              } catch {
+                /* Revoked scopes and invalid telemetry cannot change the visible account. */
+              }
+            },
             event: (event, binding) => this.sessionEvent(id, run, event, binding),
             forkAnchor: (anchor, binding) => {
               if (!this.boundRun(id, run, binding)) return;
@@ -2208,6 +2406,8 @@ export class HostWorkspace {
       });
       const attachmentData = this.attachmentData(attachmentScope, input.attachments ?? []);
       this.assertAttachmentCapabilities(input.attachments ?? [], session.inputCapabilities);
+      const initialModeId = metas(this.meta)['session-' + id]?.initialModeId;
+      if (!input.modeId && initialModeId) input.modeId = initialModeId;
       const effectiveInput = taskTools
         ? { ...input, prompt: String(input.prompt ?? '') + '\n\n' + taskTools.promptContext }
         : input;

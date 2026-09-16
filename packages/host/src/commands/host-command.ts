@@ -18,6 +18,8 @@ export type HostCommandWorkspace = Pick<
   | 'closed'
   | 'list'
   | 'refreshAgentOptions'
+  | 'readAgentUsage'
+  | 'runPreferences'
   | 'read'
   | 'readRoles'
   | 'readMcp'
@@ -104,7 +106,12 @@ export class HostCommandDispatcher {
         command.localProjectId,
         command.params.sessionId,
         command.params.modelId,
+        command.params.refresh,
       );
+    else if (command.method === 'agent-usage')
+      result = await workspace.readAgentUsage(command.params, command.localProjectId);
+    else if (command.method === 'run-preferences')
+      result = workspace.runPreferences(command.params, command.localProjectId);
     else if (command.method === 'session')
       result = await workspace.read(
         command.params.sessionId,

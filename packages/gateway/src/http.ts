@@ -1,3 +1,6 @@
+import { hostCommandSchema } from '@moor/protocol/host-command';
+import { validateHostResponse } from '@moor/protocol/host-response';
+import { AGENT_CONTROLS_FEATURE } from '@moor/protocol/agent-controls';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { serveStatic } from './static';
@@ -22,7 +25,6 @@ import {
   AppError,
   assert,
   agentSchema,
-  agentOptionsRequestSchema,
   AGENT_MODEL_OPTIONS_FEATURE,
   helloSchema,
   id,
@@ -389,6 +391,8 @@ export function createApp(
           'mcp-read',
           'roles-action',
           'agent-options',
+          'agent-usage',
+          'run-preferences',
           'sessions',
           'session',
           'mutate',
@@ -2090,13 +2094,38 @@ export function createApp(
               throw error;
             }
           }
-          if (parts[5] === 'agent-options' && parts.length === 6 && req.method === 'POST') {
-            const input = agentOptionsRequestSchema.parse(await body(req, 4096));
+          if (
+            ['agent-options', 'agent-usage', 'run-preferences'].includes(parts[5]!) &&
+            parts.length === 6 &&
+            req.method === 'POST'
+          ) {
+            const command = hostCommandSchema.parse({
+              method: parts[5],
+              workspaceId: host.runtime_id,
+              localProjectId: replica.local_id,
+              params: await body(req, 4096),
+            });
+            assert(
+              command.method === 'agent-options' ||
+                command.method === 'agent-usage' ||
+                command.method === 'run-preferences',
+              400,
+              'Agent 设置请求无效',
+            );
+            const input = command.params;
             assert(runtime, 409, '执行电脑暂时不可用');
             assert(
-              !input.modelId || runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE),
+              command.method !== 'agent-options' ||
+                !command.params.modelId ||
+                runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE),
               409,
               '执行主机尚不支持模型配置探测，请升级主机',
+            );
+            assert(
+              command.method === 'agent-options' ||
+                runtime.features?.includes(AGENT_CONTROLS_FEATURE),
+              409,
+              '执行主机尚不支持此设置，请升级主机',
             );
             const selectedAgent = runtime.agents.find((agent) => agent.id === input.agentId);
             if (!input.sessionId) assert(selectedAgent, 404, 'Agent 配置不可用');
@@ -2132,7 +2161,7 @@ export function createApp(
             try {
               raw = await request(
                 host.device_id,
-                'agent-options',
+                command.method,
                 host.runtime_id,
                 input,
                 replica.local_id,
@@ -2160,6 +2189,12 @@ export function createApp(
               502,
               '执行电脑返回的 Agent 能力超过限制',
             );
+            if (command.method !== 'agent-options')
+              return json(
+                res,
+                200,
+                await validateHostResponse(raw, { command, workspace: runtime, current }),
+              );
             // The public schema strips host-only launch options, including nested
             // unknown capability fields. Errors never forward raw ACP diagnostics.
             const parsed = agentSchema.safeParse(raw);

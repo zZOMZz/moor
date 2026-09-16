@@ -1,5 +1,10 @@
 import type { HostCommand, HostCommandMethod } from './host-command';
 import {
+  AGENT_CONTROLS_FEATURE,
+  agentUsageResponseSchema,
+  runPreferencesResponseSchema,
+} from './agent-controls';
+import {
   AppError,
   agentSchema,
   runtimeWorkspaceSchema,
@@ -96,6 +101,8 @@ const KiB = 1024,
 const policies = {
   sessions: [undefined, SESSION_RESPONSE_LIMITS.listBytes],
   'agent-options': [undefined, 16 * MiB],
+  'agent-usage': [AGENT_CONTROLS_FEATURE, 256 * KiB],
+  'run-preferences': [AGENT_CONTROLS_FEATURE, 16 * KiB],
   session: [undefined, SESSION_RESPONSE_LIMITS.readBytes],
   'roles-read': [ROLE_FEATURE, ROLE_LIMITS.responseBytes],
   'mcp-read': [MCP_FEATURE, MCP_LIMITS.responseBytes],
@@ -303,6 +310,33 @@ export async function validateHostResponse(
                 observed.machineId === workspace.machineId &&
                 observed.localProjectId === command.localProjectId &&
                 observed.sessionId === command.params.sessionId,
+            );
+          }
+          return result;
+        }
+        case 'agent-usage':
+        case 'run-preferences': {
+          const result =
+            command.method === 'agent-usage'
+              ? agentUsageResponseSchema.parse(raw)
+              : runPreferencesResponseSchema.parse(raw);
+          const scope = result.scope;
+          requireValue(
+            scope.workspaceId === workspace.id &&
+              scope.userId === workspace.userId &&
+              scope.machineId === workspace.machineId &&
+              scope.localProjectId === command.localProjectId &&
+              scope.sessionId === command.params.sessionId &&
+              scope.agentId === command.params.agentId,
+          );
+          requireValue(
+            !!command.params.sessionId || workspace.agents.some((a) => a.id === scope.agentId),
+          );
+          if (command.method === 'run-preferences' && command.params.action === 'save') {
+            const value = runPreferencesResponseSchema.parse(result).preferences;
+            requireValue(
+              value.modeId === command.params.modeId &&
+                value.revision === command.params.expectedRevision + 1,
             );
           }
           return result;

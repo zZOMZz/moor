@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { approvalModeSchema } from './run-config';
+import { accountUsageSchema } from './agent-usage';
 import { agentSchema, assert, id, type SessionAction } from './protocol';
 import { forkOriginSchema } from './fork-protocol';
 import { taskOriginSchema } from './task-protocol';
@@ -31,6 +33,7 @@ export const sessionMetadataSchema = z.object({
   agentConfigId: id,
   cliType: z.string().max(200),
   agentType: z.string().max(200),
+  initialModeId: approvalModeSchema.optional(),
   // Older host-generated Fork titles appended a suffix to a 200-character title.
   title: z.string().max(220).optional(),
   titleSource: z.string().max(100).optional(),
@@ -71,6 +74,7 @@ export const sessionReadResponseSchema = z.object({
   persisted: z.boolean().optional(),
   persistenceError: z.string().max(1000).optional(),
   agent: agentSchema.optional(),
+  accountUsage: accountUsageSchema.optional(),
 });
 const acceptedMutationReceiptSchema = z
   .object({

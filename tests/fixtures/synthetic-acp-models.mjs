@@ -44,6 +44,19 @@ function handle(message) {
   if (method === 'session/new' || method === 'session/load') {
     sessionId = params.sessionId ?? sessionId;
     const initial = options();
+    if (settings.startupUsage) {
+      send({
+        method: 'session/update',
+        params: { sessionId, update: { sessionUpdate: 'usage_update', used: 400, size: 1000 } },
+      });
+      send({
+        method: 'session/update',
+        params: {
+          sessionId: 'unrelated-session',
+          update: { sessionUpdate: 'usage_update', used: 999, size: 1000 },
+        },
+      });
+    }
     if (settings.startupUpdate) {
       model = 'b';
       effort = 'high';

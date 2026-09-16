@@ -218,3 +218,12 @@ test('known upstream model failures expose fixed guidance and never fall back or
     assert.equal(f.methods().includes('session/prompt'), false);
   }
 });
+
+test('context usage emitted before new/load response binds only to the returned session', async (t) => {
+  for (const nativeId of [undefined, 'saved-context-session']) {
+    const f = await fixture(t, { startupUsage: true }, nativeId);
+    assert.equal(f.session.currentEvents?.contextUsage?.used, 400);
+    assert.equal(f.session.currentEvents?.contextUsage?.size, 1000);
+    assert.equal(f.methods().includes('session/prompt'), false);
+  }
+});

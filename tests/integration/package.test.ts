@@ -187,6 +187,13 @@ test('desktop dependencies keep the Codex adapter without a bundled Agent runtim
     ),
     entries = await readdir(runtime, { recursive: true });
   strict.equal(manifest.name, '@agentclientprotocol/codex-acp');
+  strict.match(
+    await readFile(
+      join(runtime, 'node_modules/@agentclientprotocol/codex-acp/dist/moor.js'),
+      'utf8',
+    ),
+    /_moor\/account\/rate_limits\/read/,
+  );
   strict.equal(
     entries.some((path) => isAgentRuntimePackagePath(path)),
     false,

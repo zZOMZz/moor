@@ -125,7 +125,11 @@ export function encryptedCommandResource(
     request = params.request as Record<string, unknown> | undefined;
   const sessionId = params.sessionId ?? request?.sessionId;
   if (sessionId !== undefined && typeof sessionId !== 'string') fail();
-  if (sessionId === undefined && !['sessions', 'agent-options'].includes(command.method)) fail();
+  if (
+    sessionId === undefined &&
+    !['sessions', 'agent-options', 'agent-usage', 'run-preferences'].includes(command.method)
+  )
+    fail();
   const scope = {
     workspaceId: command.workspaceId,
     projectId: command.localProjectId,

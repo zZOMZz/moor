@@ -1,4 +1,5 @@
 import type { RunCapabilities } from '@moor/protocol/run-config';
+import type { AgentUsageUpdate } from '@moor/protocol/agent-usage';
 import type { AgentProgramCheck } from './program';
 import type { PromptInputCapabilities } from '@moor/protocol/attachment-protocol';
 import type { QuestionAnswer, QuestionRequest } from '@moor/protocol/interaction-protocol';
@@ -35,6 +36,7 @@ export type AgentRunBinding = Pick<
   'workspaceId' | 'localProjectId' | 'sessionId' | 'expectedTurnId'
 >;
 export type AgentCallbacks = {
+  usage?(update: AgentUsageUpdate): void;
   update(value: any): void;
   permission(value: any): Promise<{ outcome: PermissionOutcome }>;
   event?(event: SessionEvent, binding: AgentRunBinding): void;
@@ -80,6 +82,7 @@ export type AgentOpenOptions = {
   };
 };
 export type AgentSession = {
+  readUsage?(): Promise<AgentUsageUpdate>;
   id: string;
   capabilities: RunCapabilities;
   /** Temporary capability probes only; changes configuration without sending a prompt. */
@@ -97,6 +100,7 @@ export type AgentSession = {
   close(): void | Promise<void>;
 };
 export type AgentDriver = {
+  readUsage?(config: AgentConfig, cwd: string, current: () => void): Promise<AgentUsageUpdate>;
   diagnose?(config: AgentConfig, cwd: string): Promise<AgentProgramCheck>;
   fork?(config: AgentConfig, input: AgentForkInput): Promise<AgentForkResult>;
   open(

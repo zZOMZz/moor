@@ -6,6 +6,7 @@ import { deviceMetadataSchema } from './device-metadata';
 export const PROTOCOL = 3;
 export const AGENT_VERSIONS_FEATURE = 'agent-versions-v1';
 export const AGENT_MODEL_OPTIONS_FEATURE = 'agent-model-options-v1';
+export const AGENT_CATALOG_CACHE_FEATURE = 'agent-catalog-cache-v1';
 export const id = z
   .string()
   .min(1)
@@ -21,6 +22,7 @@ export const agentOptionsRequestSchema = z
     agentId: id,
     sessionId: id.optional(),
     modelId: z.string().min(1).max(300).optional(),
+    refresh: z.boolean().optional(),
   })
   .strict();
 export const capabilityContextSchema = z

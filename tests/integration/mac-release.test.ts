@@ -83,6 +83,8 @@ async function fixture(t: TestContext) {
     [`${appRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/package.json`]:
       '{"name":"@agentclientprotocol/codex-acp","version":"1.11.0"}',
     [adapter]: '// synthetic Codex ACP adapter',
+    [`${appRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/dist/moor.js`]:
+      '// synthetic Moor extension',
     [`${appRoot}/licenses/Moor-LICENSE`]: 'synthetic Moor license',
     [`${appRoot}/licenses/Moor-NOTICE`]: 'synthetic attribution',
     [`${appRoot}/licenses/BUNDLED-NOTICES.txt`]: 'synthetic third-party notices',

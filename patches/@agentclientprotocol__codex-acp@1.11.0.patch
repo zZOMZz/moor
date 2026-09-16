@@ -1,0 +1,182 @@
+diff --git a/dist/index.js b/dist/index.js
+index ea9fbc5890ecf6fa858bb88088c6b289260ab4de..a01d36cf5fea3c1bba34eba429fa32a536343b3c 100755
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,4 +1,5 @@
+ #!/usr/bin/env node
++import { MOOR_USAGE_READ, MOOR_CAPABILITIES, MoorRateLimits, moorModes, moorModelMetadata } from './moor.js';
+ import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);
+ var __create = Object.create;
+ var __defProp = Object.defineProperty;
+@@ -27329,10 +27330,10 @@ var AgentMode = class _AgentMode {
+     };
+   }
+   static all() {
+-    return [_AgentMode.ReadOnly, _AgentMode.Agent, _AgentMode.AgentFullAccess];
++    return moorModes(_AgentMode);
+   }
+   static find(modeId) {
+-    const match = _AgentMode.all().find((m) => m.id === modeId);
++    const match = [..._AgentMode.all(), _AgentMode.ReadOnly, _AgentMode.Agent, _AgentMode.AgentFullAccess].find((m) => m.id === modeId);
+     return match ?? null;
+   }
+   static getInitialAgentMode() {
+@@ -30043,6 +30044,7 @@ function createModelConfigOption(availableModels, currentBaseModelId, recommende
+   const options = availableModels.map((model) => ({
+     value: model.id,
+     name: formatModelDisplayName(model.displayName),
++    _meta: moorModelMetadata(model),
+     description: model.description
+   }));
+   if (!availableModels.some((model) => model.id === currentBaseModelId)) {
+@@ -32275,6 +32277,7 @@ var CodexAcpServer = class {
+     this.currentAuthStatus = null;
+     this.availableCommands = this.createAvailableCommands(codexAcpClient);
+     this.observeCodexProcess();
++    this.moorRateLimits = new MoorRateLimits(this);
+   }
+   createAvailableCommands(client) {
+     return new CodexCommands(
+@@ -32289,6 +32292,7 @@ var CodexAcpServer = class {
+     this.clientInfo = _params.clientInfo ?? null;
+     this.clientCapabilities = _params.clientCapabilities ?? null;
+     this.initializeRequest = _params;
++    this.moorRateLimits.supported = _params.clientCapabilities?._meta?.moor?.version === 1;
+     this.terminalOutputMode = resolveTerminalOutputMode(_params.clientCapabilities);
+     this.booleanConfigOptionsSupported = clientSupportsBooleanConfigOptions(_params.clientCapabilities);
+     await this.runWithProcessCheck(() => this.codexAcpClient.initialize(_params));
+@@ -32328,7 +32332,8 @@ var CodexAcpServer = class {
+         _meta: {
+           // Presence means "this agent pushes `_auth/status_update`". It
+           // never carries a payload, and the client never asks for one.
+-          [AUTH_STATUS_META_KEY]: authStatusCapability()
++          [AUTH_STATUS_META_KEY]: authStatusCapability(),
++          moor: MOOR_CAPABILITIES
+         }
+       },
+       authMethods: getCodexAuthMethods(_params.clientCapabilities),
+@@ -32688,6 +32693,7 @@ Check ${configPath} and project .codex directories, especially their config.toml
+     );
+   }
+   installSessionState(sessionState) {
++    this.moorRateLimits.observeAccount(sessionState.account);
+     this.sessions.get(sessionState.sessionId)?.asyncTasks.clear();
+     this.sessions.set(sessionState.sessionId, sessionState);
+   }
+@@ -35182,5 +35188,5 @@ function startAcpServer() {
+         codexAcpServer = null;
+       }
+     });
+-  }).onRequest(methods.agent.initialize, (ctx) => getAgent().initialize(ctx.params)).onRequest(methods.agent.session.new, (ctx) => getAgent().newSession(ctx.params)).onRequest(methods.agent.session.load, (ctx) => getAgent().loadSession(ctx.params)).onRequest(methods.agent.session.fork, (ctx) => getAgent().forkSession(ctx.params)).onRequest(methods.agent.session.list, (ctx) => getAgent().listSessions(ctx.params)).onRequest(methods.agent.session.delete, (ctx) => getAgent().deleteSession(ctx.params)).onRequest(methods.agent.session.resume, (ctx) => getAgent().resumeSession(ctx.params)).onRequest(methods.agent.session.close, (ctx) => getAgent().closeSession(ctx.params)).onRequest(methods.agent.session.setMode, (ctx) => getAgent().setSessionMode(ctx.params)).onRequest(methods.agent.session.setConfigOption, (ctx) => getAgent().setSessionConfigOption(ctx.params)).onRequest(methods.agent.authenticate, (ctx) => getAgent().authenticate(ctx.params, ctx.requestId)).onRequest(methods.agent.logout, (ctx) => getAgent().logout(ctx.params)).onRequest(methods.agent.providers.list, (ctx) => getAgent().listProviders(ctx.params)).onRequest(methods.agent.providers.set, (ctx) => getAgent().setProvider(ctx.params)).onRequest(methods.agent.providers.disable, (ctx) => getAgent().disableProvider(ctx.params)).onRequest(methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params, ctx.signal)).onNotification(methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params)).onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params)).onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params)).onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params)).onRequest(SESSION_STEERING_METHOD, sessionSteerParamsParser, (ctx) => getAgent().extMethod(SESSION_STEERING_METHOD, ctx.params)).onRequest(ASYNC_TASK_STOP_METHOD, asyncTaskStopParamsParser, (ctx) => getAgent().extMethod(ASYNC_TASK_STOP_METHOD, ctx.params)).onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => getAgent().extMethod(GOAL_CONTROL_METHOD, ctx.params)).connect(acpJsonStream);
++  }).onRequest(MOOR_USAGE_READ, emptyExtensionParamsParser, () => getAgent().moorRateLimits.read()).onRequest(methods.agent.initialize, (ctx) => getAgent().initialize(ctx.params)).onRequest(methods.agent.session.new, (ctx) => getAgent().newSession(ctx.params)).onRequest(methods.agent.session.load, (ctx) => getAgent().loadSession(ctx.params)).onRequest(methods.agent.session.fork, (ctx) => getAgent().forkSession(ctx.params)).onRequest(methods.agent.session.list, (ctx) => getAgent().listSessions(ctx.params)).onRequest(methods.agent.session.delete, (ctx) => getAgent().deleteSession(ctx.params)).onRequest(methods.agent.session.resume, (ctx) => getAgent().resumeSession(ctx.params)).onRequest(methods.agent.session.close, (ctx) => getAgent().closeSession(ctx.params)).onRequest(methods.agent.session.setMode, (ctx) => getAgent().setSessionMode(ctx.params)).onRequest(methods.agent.session.setConfigOption, (ctx) => getAgent().setSessionConfigOption(ctx.params)).onRequest(methods.agent.authenticate, (ctx) => getAgent().authenticate(ctx.params, ctx.requestId)).onRequest(methods.agent.logout, (ctx) => getAgent().logout(ctx.params)).onRequest(methods.agent.providers.list, (ctx) => getAgent().listProviders(ctx.params)).onRequest(methods.agent.providers.set, (ctx) => getAgent().setProvider(ctx.params)).onRequest(methods.agent.providers.disable, (ctx) => getAgent().disableProvider(ctx.params)).onRequest(methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params, ctx.signal)).onNotification(methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params)).onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params)).onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params)).onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params)).onRequest(SESSION_STEERING_METHOD, sessionSteerParamsParser, (ctx) => getAgent().extMethod(SESSION_STEERING_METHOD, ctx.params)).onRequest(ASYNC_TASK_STOP_METHOD, asyncTaskStopParamsParser, (ctx) => getAgent().extMethod(ASYNC_TASK_STOP_METHOD, ctx.params)).onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => getAgent().extMethod(GOAL_CONTROL_METHOD, ctx.params)).connect(acpJsonStream);
+ }
+diff --git a/dist/moor.js b/dist/moor.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..7fa4b918efc8fc9f0dd9394cf44a794d2f1f9fbe
+--- /dev/null
++++ b/dist/moor.js
+@@ -0,0 +1,92 @@
++// Moor extension v1 for @agentclientprotocol/codex-acp 1.11.0 (Apache-2.0).
++// Read-only account telemetry and explicit permission presets; no prompt dispatch.
++import { createHash } from 'node:crypto';
++
++export const MOOR_USAGE_READ = '_moor/account/rate_limits/read';
++export const MOOR_USAGE_UPDATED = '_moor/account/rate_limits/updated';
++export const MOOR_CAPABILITIES = {
++  version: 1,
++  modelCatalog: true,
++  approvalModes: true,
++  rateLimits: { read: MOOR_USAGE_READ, updated: MOOR_USAGE_UPDATED },
++};
++
++export function moorModes(Mode) {
++  return [
++    new Mode('moor-read-only', 'Read-only', 'Read files; ask the user when elevated access is needed.', 'read_only', 'on-request', 'user', { type: 'readOnly' }, 'read-only'),
++    new Mode('moor-agent', 'Agent', 'Work in the workspace; ask the user when approval is needed.', 'standard', 'on-request', 'user', Mode.ReadOnly.sandboxPolicy, 'workspace-write'),
++    new Mode('moor-auto-review', 'Auto review', 'Work in the workspace; Codex reviews approval requests.', 'auto_review', 'on-request', 'auto_review', Mode.Agent.sandboxPolicy, 'workspace-write'),
++    new Mode('moor-full-access', 'Full access', 'Access files and the network without requesting approval.', 'full_access', 'never', 'user', { type: 'dangerFullAccess' }, 'danger-full-access'),
++  ];
++}
++
++export function moorModelMetadata(model) {
++  return { moor: {
++    version: 1,
++    efforts: model.supportedReasoningEfforts.map(option => option.reasoningEffort),
++    defaultEffort: model.defaultReasoningEffort,
++  } };
++}
++
++export class MoorRateLimits {
++  epoch = 0;
++  sequence = 0;
++  supported = false;
++  accountKey;
++  constructor(server) {
++    this.server = server;
++    server.codexAcpClient.appServerClient.onClientTransportEvent(event => {
++      if (event.eventType !== 'notification') return;
++      if (event.method === 'account/updated') {
++        this.epoch++;
++        this.accountKey = undefined;
++        this.publish({ version: 1, status: 'unknown', sequence: ++this.sequence });
++        if (this.supported) void this.read().then(value => this.publish(value)).catch(() => {});
++      } else if (event.method === 'account/rateLimits/updated' && this.accountKey) {
++        this.publish({ version: 1, status: 'ready', accountKey: this.accountKey,
++          sequence: ++this.sequence, partial: true, rateLimits: event.params.rateLimits });
++      }
++    });
++  }
++  observeAccount(account, announce = true) {
++    const identity = account?.id ?? account?.accountId ?? account?.email;
++    const next = account?.type === 'chatgpt' && typeof identity === 'string' && identity
++      ? createHash('sha256').update(identity).digest('hex') : undefined;
++    if (this.accountKey && next !== this.accountKey) {
++      this.epoch++;
++      this.publish({ version: 1, status: 'unknown', sequence: ++this.sequence });
++    }
++    this.accountKey = next;
++    if (announce && next) this.publish({ version: 1, status: 'unknown', accountKey: next, sequence: ++this.sequence });
++  }
++  publish(value) {
++    if (this.supported) void this.server.connection.notify(MOOR_USAGE_UPDATED, value).catch(() => {});
++  }
++  async read() {
++    if (!this.supported) throw new Error('Moor usage extension was not negotiated');
++    let epoch = this.epoch;
++    return this.server.runWithProcessCheck(async () => {
++      const { account } = await this.server.codexAcpClient.getAccount();
++      if (epoch !== this.epoch) throw new Error('Account changed during usage read');
++      if (!account || account.type !== 'chatgpt') {
++        this.accountKey = undefined;
++        return { version: 1, sequence: ++this.sequence, status: account ? 'unsupported' : 'signed-out' };
++      }
++      // Only an opaque identity leaves the adapter. Never publish email or auth tokens.
++      const identity = account.id ?? account.accountId ?? account.email;
++      if (typeof identity !== 'string' || !identity) throw new Error('Account identity unavailable');
++      this.observeAccount(account, false);
++      epoch = this.epoch;
++      let result;
++      try { result = await this.server.codexAcpClient.getRateLimits(); }
++      catch {
++        if (epoch !== this.epoch) throw new Error('Account changed during usage read');
++        return { version: 1, status: 'failed', accountKey: this.accountKey, sequence: ++this.sequence };
++      }
++      if (epoch !== this.epoch) throw new Error('Account changed during usage read');
++      return { version: 1, status: 'ready', accountKey: this.accountKey,
++        sequence: ++this.sequence, partial: false,
++        rateLimits: result.rateLimits, rateLimitsByLimitId: result.rateLimitsByLimitId };
++    });
++  }
++}
+diff --git a/package.json b/package.json
+index 877c3afe0345f9d0e1b28c1a3971edb0231d29a8..8d230bbd91222ebfc92109bb33dea63f72912e86 100644
+--- a/package.json
++++ b/package.json
+@@ -11,6 +11,7 @@
+   },
+   "files": [
+     "dist/index.js",
++    "dist/moor.js",
+     "README.md",
+     "LICENSE",
+     "package.json"

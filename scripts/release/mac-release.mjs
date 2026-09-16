@@ -86,6 +86,7 @@ const required = [
   `${programRoot}/runtime/public/index.html`,
   codexAdapterManifest,
   `${programRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/dist/index.js`,
+  `${programRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/dist/moor.js`,
   `${programRoot}/licenses/Moor-LICENSE`,
   `${programRoot}/licenses/Moor-NOTICE`,
   `${programRoot}/licenses/BUNDLED-NOTICES.txt`,

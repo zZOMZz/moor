@@ -1,4 +1,14 @@
-import { runCapabilitiesSchema, type RunCapabilities } from '@moor/protocol/run-config';
+import {
+  runCapabilitiesSchema,
+  canonicalMode,
+  type RunCapabilities,
+} from '@moor/protocol/run-config';
+import { z } from 'zod';
+const modelMetadata = z.object({
+  version: z.literal(1),
+  efforts: z.array(z.string().min(1).max(300)).max(30),
+  defaultEffort: z.string().min(1).max(300).nullish(),
+});
 // Only ACP-advertised choices are exposed; effort choices belong to the current model.
 export function capabilities(response: any): RunCapabilities {
   const select = (category: string) =>
@@ -17,14 +27,38 @@ export function capabilities(response: any): RunCapabilities {
       : {}),
     ...(effort?.currentValue ? { currentReasoningEffort: effort.currentValue } : {}),
     models: (models
-      ? options(models).map((m: any) => ({ id: m.value, name: m.name }))
+      ? options(models).map((m: any) => {
+          const data = modelMetadata.safeParse(m._meta?.moor);
+          return {
+            id: m.value,
+            name: m.name,
+            ...(typeof m.description === 'string' ? { description: m.description } : {}),
+            ...(data.success
+              ? {
+                  efforts: data.data.efforts,
+                  ...(data.data.defaultEffort && data.data.efforts.includes(data.data.defaultEffort)
+                    ? { defaultEffort: data.data.defaultEffort }
+                    : {}),
+                }
+              : {}),
+          };
+        })
       : (response.models?.availableModels ?? []).map((m: any) => ({ id: m.modelId, name: m.name }))
     ).map((m: any) => ({
       ...m,
-      efforts: m.id === current ? options(effort).map((e: any) => e.value) : [],
+      efforts: m.efforts ?? (m.id === current ? options(effort).map((e: any) => e.value) : []),
+      ...(m.id === current &&
+      effort?.currentValue &&
+      options(effort).some((e: any) => e.value === effort.currentValue)
+        ? { defaultEffort: m.defaultEffort ?? effort.currentValue }
+        : {}),
     })),
     modes: mode
-      ? options(mode).map((m: any) => ({ id: m.value, name: m.name }))
+      ? options(mode).map((m: any) => ({
+          id: m.value,
+          name: m.name,
+          ...(typeof m.description === 'string' ? { description: m.description } : {}),
+        }))
       : (response.modes?.availableModes ?? []),
     ...(effort ? { effortConfigId: effort.id } : {}),
   });
@@ -84,8 +118,12 @@ export class AcpConfiguration {
     };
   }
   get capabilities(): RunCapabilities {
+    const result = capabilities(this.response);
     return {
-      ...capabilities(this.response),
+      ...result,
+      ...(result.currentModeId
+        ? { currentModeId: canonicalMode(result.currentModeId, result) }
+        : {}),
       sessionKind: this.sessionKind,
       ...(this.initialModel ? { defaultModelId: this.initialModel } : {}),
     };
