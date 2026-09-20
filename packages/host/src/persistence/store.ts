@@ -179,7 +179,8 @@ export class RuntimeStore {
             view = mirror(doc, id),
             localProjectId = (metas(this.meta)['session-' + id]?.project as any)?.localProjectId;
           let interrupted = false,
-            interactionsChanged = false;
+            interactionsChanged = false,
+            identityChanged = false;
           const scope = {
             workspaceId: this.workspace.id,
             userId: this.workspace.userId,
@@ -198,6 +199,11 @@ export class RuntimeStore {
             this.attachmentScopeMatches(scope);
           try {
             view.setState((state) => {
+              // Legacy identity repair is a startup migration, never a read-side write.
+              if (canNotify && !state.session.id) {
+                state.session.id = id;
+                identityChanged = true;
+              }
               for (const turn of state.history) {
                 if (turn.role === 'assistant')
                   interactionsChanged = expireSessionInteractions(turn) || interactionsChanged;
@@ -233,7 +239,7 @@ export class RuntimeStore {
               }
             });
             if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
-            if (interrupted || interactionsChanged) this.persist(id, doc);
+            if (interrupted || interactionsChanged || identityChanged) this.persist(id, doc);
           } finally {
             view.dispose();
           }

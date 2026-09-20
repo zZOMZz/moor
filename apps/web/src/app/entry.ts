@@ -23,6 +23,21 @@ export async function start() {
     window.dispatchEvent(new Event('moor:ready'));
     return;
   }
+  const invitation = new URLSearchParams(location.search).get('invite');
+  if (invitation) {
+    const { showAuth } = await import('../components/ui');
+    showAuth({
+      setup: true,
+      invited: true,
+      onSubmit: async (data) => {
+        await api('/api/account-invitations/redeem', { invitation, ...data });
+        history.replaceState(null, '', '/');
+        await start();
+      },
+    });
+    window.dispatchEvent(new Event('moor:ready'));
+    return;
+  }
   const cache = await import('../platform/cache');
   const identity = api('/api/me').catch(() => null) as Promise<Identity | null>;
   const cachedOwner = cache.read<string>('last-owner').catch(() => undefined);
@@ -45,6 +60,15 @@ export async function start() {
     return;
   }
   const status = document.querySelector('#startup-status');
+  if (new URLSearchParams(location.search).get('collaboration') === '1') {
+    const owner = source.kind === 'cache' ? source.owner : source.identity?.owner;
+    if (owner) {
+      const { bootCollaboration } = await import('./collaboration-app');
+      await bootCollaboration(owner, identity);
+      window.dispatchEvent(new Event('moor:ready'));
+      return;
+    }
+  }
   if (status) status.textContent = '正在恢复工作区…';
   const app = await import('./app');
   await app.boot(identity, cachedOwner);

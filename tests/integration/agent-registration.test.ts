@@ -242,17 +242,28 @@ test('direct edits to a remembered machine Agent ID cannot overwrite its snapsho
 test('real legacy SQLite migration freezes original IDs, preserves metadata and history, and fills native Agent ownership durably', (t) => {
   const f = legacy(t);
   let store = new RuntimeStore(f.file);
+  let migratedSnapshot: Uint8Array | undefined;
   try {
     assert.deepEqual(store.agents.get('legacy-agent'), config());
     assert.deepEqual(store.agents.bySession('session'), { scope, config: config() });
     assert.deepEqual(metas(store.meta)['session-session'], f.originalMeta);
-    assert.deepEqual(
-      Buffer.from(
-        store.journal.db.prepare('SELECT snapshot FROM session WHERE id=?').get('session')!
-          .snapshot as Uint8Array,
-      ),
-      Buffer.from(f.snapshot),
-    );
+    // Startup now repairs the missing identity; every other shared value must remain intact.
+    const originalDoc = new LoroDoc(),
+      migratedDoc = store.doc('session');
+    originalDoc.import(f.snapshot);
+    try {
+      const original = originalDoc.toJSON() as Record<string, unknown>;
+      assert.deepEqual(migratedDoc.toJSON(), {
+        ...original,
+        session: { ...((original.session as object) ?? {}), id: 'session' },
+      });
+    } finally {
+      originalDoc.free();
+      migratedDoc.free();
+    }
+    migratedSnapshot = store.journal.db
+      .prepare('SELECT snapshot FROM session WHERE id=?')
+      .get('session')!.snapshot as Uint8Array;
     assert.equal(
       store.nativeSession(
         'session',
@@ -273,6 +284,13 @@ test('real legacy SQLite migration freezes original IDs, preserves metadata and 
   }
   store = new RuntimeStore(f.file);
   try {
+    assert.deepEqual(
+      Buffer.from(
+        store.journal.db.prepare('SELECT snapshot FROM session WHERE id=?').get('session')!
+          .snapshot as Uint8Array,
+      ),
+      Buffer.from(migratedSnapshot!),
+    );
     assert.deepEqual(store.agents.bySession('session'), { scope, config: config() });
     assert.equal(store.nativeSession('session'), 'native-original');
     assert.deepEqual(metas(store.meta)['session-session'], f.originalMeta);

@@ -10,6 +10,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -91,7 +92,7 @@ test('state rejects shared/hardlinked/symlink ancestry and detects moved directo
   store.close();
   symlinkSync(join(root, 'moved'), dir, 'dir');
   assert.throws(() => new CliState(dir));
-  rmSync(dir);
+  unlinkSync(dir);
   renameSync(join(root, 'moved'), dir);
   linkSync(join(dir, 'moor-cli-v1.sqlite'), join(root, 'hardlink'));
   assert.throws(() => new CliState(dir));

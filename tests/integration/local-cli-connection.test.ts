@@ -12,6 +12,7 @@ import fs, {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -124,7 +125,7 @@ test('CLI reader rejects unsafe file modes, symlinks, hardlinks, writable parent
   symlinkSync(f.privateRoot, parentAlias);
   const aliasLease = readLocalCliConnection(join(parentAlias, 'bridge.json.cli.json'));
   aliasLease.assertCurrent();
-  rmSync(parentAlias);
+  unlinkSync(parentAlias);
   symlinkSync(f.project, parentAlias);
   assert.throws(() => aliasLease.assertCurrent(), safe);
   chmodSync(f.privateRoot, 0o777);

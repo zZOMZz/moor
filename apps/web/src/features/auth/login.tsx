@@ -5,11 +5,12 @@ import { GoogleStart } from './google-login';
 
 export interface LoginProps {
   setup: boolean;
+  invited?: boolean;
   googleEnabled?: boolean;
   onSubmit: (data: Record<string, FormDataEntryValue>) => Promise<void>;
 }
 
-export function Login({ setup, onSubmit, googleEnabled }: LoginProps) {
+export function Login({ setup, invited = false, onSubmit, googleEnabled }: LoginProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const water = useRef<WaterSurface | null>(null);
   const submitting = useRef(false);
@@ -59,7 +60,9 @@ export function Login({ setup, onSubmit, googleEnabled }: LoginProps) {
       <section className="auth" aria-labelledby="login-title">
         <div className="auth-heading">
           <span className="auth-eyebrow">A PLACE TO PICK UP</span>
-          <h1 id="login-title">{setup ? '你的电脑，随处可达。' : '继续你的工作。'}</h1>
+          <h1 id="login-title">
+            {invited ? '加入协作。' : setup ? '你的电脑，随处可达。' : '继续你的工作。'}
+          </h1>
           <p>
             项目留在电脑上，
             <br />
@@ -88,7 +91,7 @@ export function Login({ setup, onSubmit, googleEnabled }: LoginProps) {
             required
             disabled={busy}
           />
-          {setup && (
+          {setup && !invited && (
             <>
               <label htmlFor="login-token">初始化口令</label>
               <input
@@ -108,7 +111,15 @@ export function Login({ setup, onSubmit, googleEnabled }: LoginProps) {
           </p>
           <button className="primary auth-submit" type="submit" disabled={busy}>
             <span>
-              {busy ? (setup ? '正在创建账号' : '正在登录') : setup ? '创建个人账号' : '登录'}
+              {busy
+                ? setup
+                  ? '正在创建账号'
+                  : '正在登录'
+                : invited
+                  ? '创建协作账号'
+                  : setup
+                    ? '创建个人账号'
+                    : '登录'}
             </span>
             {busy ? <LoaderCircle className="auth-spinner" /> : <ArrowRight />}
           </button>

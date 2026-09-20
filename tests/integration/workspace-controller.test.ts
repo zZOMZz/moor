@@ -2478,7 +2478,7 @@ test('workspace attention approves only the original active request and retries 
   restored.close();
 });
 
-test('host missing-id repair is atomic and never replaces an existing mismatched document id', async (t) => {
+test('session reads stay pure and startup identity migration is atomic without replacing a mismatched id', async (t) => {
   const f = await fixture(t),
     sessionId = await f.create();
   const source = f.runtime.doc(sessionId),
@@ -2492,11 +2492,20 @@ test('host missing-id repair is atomic and never replaces an existing mismatched
   f.runtime.journal.db.exec(
     "CREATE TRIGGER fail_legacy_identity BEFORE INSERT ON session BEGIN SELECT RAISE(ABORT,'synthetic repair failure'); END",
   );
-  await assert.rejects(f.host.read(sessionId), /synthetic repair failure/);
+  const changes = f.runtime.journal.db.prepare('SELECT total_changes() AS n').get()!.n;
+  await assert.rejects(f.host.read(sessionId), /身份尚未迁移/);
+  assert.equal(f.runtime.journal.db.prepare('SELECT total_changes() AS n').get()!.n, changes);
+  assert.throws(
+    () => new RuntimeStore(join(f.project, '..', 'host.sqlite')),
+    /synthetic repair failure/,
+  );
   f.runtime.journal.db.exec('DROP TRIGGER fail_legacy_identity');
   const unchanged = f.runtime.doc(sessionId),
     old = mirror(unchanged, sessionId);
   assert.equal(old.getState().session.id, '');
+  const migrated = new RuntimeStore(join(f.project, '..', 'host.sqlite'));
+  migrated.close();
+  assert.equal((await f.host.read(sessionId)).meta.id, sessionId);
   old.setState((state) => {
     state.session.id = 'another-session';
   });

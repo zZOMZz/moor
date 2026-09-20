@@ -71,7 +71,10 @@ export class IndexedSecureStorage implements SecureStorageBackend {
     private readonly options: {
       locks?: Pick<LockManager, 'request'> | null;
       deadline?: (milliseconds: number) => AbortSignal;
-      databaseName?: 'moor-secure-workspace-v1' | 'moor-desktop-workspace-v1';
+      databaseName?:
+        | 'moor-secure-workspace-v1'
+        | 'moor-desktop-workspace-v1'
+        | 'moor-collaboration-v1';
     } = {},
   ) {}
   async exclusive<T>(key: string, current: () => void, task: () => Promise<T>): Promise<T> {

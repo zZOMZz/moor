@@ -277,7 +277,8 @@ test('preexisting histories migrate on open and fresh durable indexes survive re
     'DROP TRIGGER search_source_insert; DROP TRIGGER search_source_update; DROP TABLE search_source',
   );
   f.restart();
-  assert.equal(f.store.searchSource('session')!.revision, 1);
+  // One source import, followed by the startup repair of the legacy document identity.
+  assert.equal(f.store.searchSource('session')!.revision, 2);
   assert.equal((await f.search('original')).hits.length, 1);
   const version = f.store.searchIndexVersion(f.host.projectLease(f.request('x')));
   f.restart();

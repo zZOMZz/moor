@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -335,7 +336,7 @@ test('Skills read leases reject a changed account, scope and retargeted parent a
     f.identity,
   );
   aliased.assertCurrent();
-  rmSync(alias);
+  unlinkSync(alias);
   symlinkSync(f.data, alias);
   assert.throws(() => aliased.assertCurrent(), /已变化/);
 });

@@ -207,6 +207,8 @@ test('relay database contains only identity and organization records, never sess
       .map((r) => r.name),
     [
       'account',
+      'account_invitation',
+      'collaboration_access',
       'device',
       'external_identity',
       'host_binding',

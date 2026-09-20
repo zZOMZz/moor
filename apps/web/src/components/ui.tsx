@@ -110,11 +110,13 @@ export function Shell({
   onDraft,
   onCancel,
   onFiles,
+  onCollaboration,
 }: {
   onSend: () => void;
   onDraft: (value: string) => void;
   onCancel: () => void;
   onFiles?: (files: globalThis.File[]) => void;
+  onCollaboration?: () => void;
 }) {
   const [mobile, setMobile] = useState(() => matchMedia('(max-width: 760px)').matches);
   const [open, setOpen] = useState(false);
@@ -176,6 +178,7 @@ export function Shell({
                 <Content name="#session-search-control" />
               </div>
               <Content name="#session-fork-control" />
+              {onCollaboration && <button onClick={onCollaboration}>共享草稿与队列</button>}
             </WorkspaceToolMenu>
             <div id="legacy-environment" hidden>
               <WorkspaceToolMenu kind="environment">

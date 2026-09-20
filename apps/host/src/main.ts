@@ -55,6 +55,7 @@ import {
   type DeviceMetadataState,
 } from '@moor/protocol/device-metadata';
 import { taskAuthoritySchema } from '@moor/protocol/task-protocol';
+import { collaborationContextSchema } from '@moor/protocol/collaboration-protocol';
 import {
   assertLocalCliConnectionPath,
   publishLocalCliConnection,
@@ -790,6 +791,21 @@ async function connect(target: Target) {
         );
         notifications.drain();
       }
+      if (m.type === 'ready' && ready && target.attentionReady && target.config.actor) {
+        for (const workspace of workspaces.values()) {
+          await workspace.collaboration.resume(target.config.actor, target.config.id, () => {
+            requireRuntimeBoundary();
+            assert(
+              !stopped &&
+                !target.revoked &&
+                target.socket === ws &&
+                ws.readyState === WebSocket.OPEN,
+              409,
+              '协作主机连接已失效',
+            );
+          });
+        }
+      }
       if (m.type === 'notification-ack' && !target.local) {
         notifications.acknowledge(
           relayNotificationChannel(target.config.id, target.config.server),
@@ -829,7 +845,21 @@ async function connect(target: Target) {
           const workspace = workspaces.get(m.workspaceId);
           assert(ready && workspace && !workspace.closed, 409, '本机执行服务不可达');
           let result: unknown;
-          if (typeof m.method === 'string' && m.method.startsWith('attention-')) {
+          if (typeof m.method === 'string' && m.method.startsWith('collaboration-')) {
+            const context = collaborationContextSchema.parse(m.context);
+            assert(
+              target.attentionReady &&
+                target.config.actor &&
+                actorKey(context.ownerActor) === actorKey(target.config.actor) &&
+                context.executionDeviceId === target.config.id &&
+                context.machineId === machineId &&
+                context.runtimeWorkspaceId === m.workspaceId &&
+                context.localProjectId === m.localProjectId,
+              403,
+              '协作请求与当前主机授权连接不匹配',
+            );
+            result = await workspace.collaboration.execute(m.method, m.params, context, current);
+          } else if (typeof m.method === 'string' && m.method.startsWith('attention-')) {
             assert(target.attentionReady && target.config.actor, 409, '待办账号身份尚未确认');
             const context = attentionContextSchema.parse(m.context);
             assert(

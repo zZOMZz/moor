@@ -176,6 +176,8 @@ import {
   type GitStateRead,
 } from '@moor/protocol/git-protocol';
 import { SessionExecutionManager, type ExecutionLease } from './execution';
+import { HostCollaborationService } from './collaboration-service';
+import { COLLABORATION_FEATURE } from '@moor/protocol/collaboration-protocol';
 import { SessionForkManager } from './fork';
 import { SessionPreviewManager, type SessionPreviewOptions } from './preview';
 import {
@@ -239,6 +241,7 @@ type Active = {
   >;
 };
 export class HostWorkspace {
+  readonly collaboration: HostCollaborationService;
   closed = false;
   private capabilityAttempts = new Map<string, { revision: number; error?: unknown }>();
   private capabilityRevision = 0;
@@ -284,6 +287,12 @@ export class HostWorkspace {
     preview?: SessionPreviewOptions,
     skills?: SessionSkillsOptions,
   ) {
+    this.collaboration = new HostCollaborationService(this);
+    const notifyChanged = this.changed;
+    this.changed = (sessionId) => {
+      notifyChanged(sessionId);
+      this.collaboration.wake(sessionId);
+    };
     this.executionManager = new SessionExecutionManager(this, git);
     this.forkManager = new SessionForkManager(this, driver);
     this.previewManager = new SessionPreviewManager(this, preview);
@@ -468,6 +477,7 @@ export class HostWorkspace {
       SESSION_CONTROL_FEATURE,
       ATTACHMENT_OPERATIONS_FEATURE,
       SESSION_TASKS_FEATURE,
+      COLLABORATION_FEATURE,
       SECURE_TURN_AUTHORITY_FEATURE,
       MCP_FEATURE,
     ];
@@ -842,14 +852,7 @@ export class HostWorkspace {
       try {
         const id = identity.getState().session.id;
         assert(!id || id === sessionId, 409, '会话文档身份与主机记录不匹配');
-        // Early Moor clients created the first turn without an explicit document
-        // id. Repair only this missing field, under the verified host/project scope.
-        if (!id && !activeDocument) {
-          identity.setState((state) => {
-            state.session.id = sessionId;
-          });
-          this.store.transaction(() => this.store.persist(sessionId, document));
-        }
+        assert(id, 409, '会话文档身份尚未迁移，请重启执行主机');
       } finally {
         identity.dispose();
       }
@@ -2460,6 +2463,7 @@ export class HostWorkspace {
           this.changed(id);
         } finally {
           if (this.active.get(id) === run) this.active.delete(id);
+          this.collaboration.wake();
         }
       }
     }
@@ -2616,6 +2620,7 @@ export class HostWorkspace {
   }
   close() {
     if (this.closed) return;
+    this.collaboration.close();
     try {
       this.taskManager.close();
     } catch {

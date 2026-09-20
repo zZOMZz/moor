@@ -43,6 +43,9 @@ importers:
       '@moor/session':
         specifier: workspace:*
         version: link:packages/session
+      '@moor/sync':
+        specifier: workspace:*
+        version: link:packages/sync
       '@types/jsdom':
         specifier: 30.0.0
         version: 30.0.0
@@ -378,6 +381,9 @@ importers:
       '@moor/session':
         specifier: workspace:*
         version: link:../session
+      '@moor/sync':
+        specifier: workspace:*
+        version: link:../sync
       ws:
         specifier: 8.18.3
         version: 8.18.3
@@ -428,6 +434,22 @@ importers:
       zod:
         specifier: 3.25.76
         version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/sync:
+    dependencies:
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@moor/session':
+        specifier: workspace:*
+        version: link:../session
     devDependencies:
       '@types/node':
         specifier: 24.10.1

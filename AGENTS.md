@@ -7,7 +7,7 @@ Moor owns its session schema and persistence; pinned ACP adapters connect local 
 - Only the execution host imports and persists user CRDT operations. The relay stores no session bodies.
 - Bind every request to account, device, workspace, project and session.
 - Keep credentials out of shared documents. Never expose a raw shell or socket proxy.
-- Offline drafts never execute on reconnect. Retries use the original operation id and require a manual action.
+- Offline drafts never execute on reconnect. Explicitly submitted durable task intents may synchronize and enter the execution queue automatically after reconnect; freeze their input and authorization separately from editable drafts. Legacy uncertain command retries still use the original operation id and require a manual action.
 - Delivery requires host confirmation. Approvals must match the exact active turn and request.
 - Test with synthetic data and deterministic signals or injected timers, never real agent accounts or sleeps.
 - Never commit transcripts, secrets, local databases, generated bundles or internal task records.

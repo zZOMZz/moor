@@ -3,6 +3,10 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { RuntimeWorkspace } from '@moor/protocol/protocol';
 import { assert } from '@moor/protocol/protocol';
 import type { Workspace, ProjectSource } from '@moor/protocol/catalog';
+import {
+  collaborationRoleSchema,
+  type CollaborationRole,
+} from '@moor/protocol/collaboration-protocol';
 
 type Binding = { id: string; workspace_id: string; device_id: string; runtime_id: string };
 type Replica = { id: string; project_id: string; host_id: string; local_id: string };
@@ -17,7 +21,57 @@ export class Catalog {
       CREATE TABLE IF NOT EXISTS host_binding(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspace(id), device_id TEXT NOT NULL REFERENCES device(id), runtime_id TEXT NOT NULL, UNIQUE(device_id,runtime_id));
       CREATE TABLE IF NOT EXISTS project(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspace(id), name TEXT NOT NULL, source TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS project_replica(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), host_id TEXT NOT NULL REFERENCES host_binding(id), local_id TEXT NOT NULL, UNIQUE(host_id,local_id));
+      CREATE TABLE IF NOT EXISTS collaboration_access(workspace TEXT NOT NULL REFERENCES workspace(id), account TEXT NOT NULL REFERENCES account(id), role TEXT NOT NULL, PRIMARY KEY(workspace,account));
     `);
+  }
+  collaborationAccess(account: string, workspaceId: string) {
+    const workspace = this.db.prepare('SELECT owner FROM workspace WHERE id=?').get(workspaceId);
+    assert(workspace, 404, '共享工作区不可用');
+    const owner = String(workspace.owner);
+    if (owner === account) return { owner, role: 'owner' as const };
+    const member = this.db
+      .prepare('SELECT role FROM collaboration_access WHERE workspace=? AND account=?')
+      .get(workspaceId, account);
+    assert(member, 403, '没有共享工作区访问权限');
+    return { owner, role: collaborationRoleSchema.parse(member.role) };
+  }
+  collaborationMembers(workspaceId: string): string[] {
+    return this.db
+      .prepare('SELECT account FROM collaboration_access WHERE workspace=?')
+      .all(workspaceId)
+      .map((row) => String(row.account));
+  }
+  grantCollaboration(
+    owner: string,
+    workspaceId: string,
+    account: string,
+    role: CollaborationRole | null,
+  ) {
+    this.workspace(owner, workspaceId);
+    assert(account !== owner && role !== 'owner', 400, '不能通过成员接口更改所有者');
+    assert(this.db.prepare('SELECT 1 FROM account WHERE id=?').get(account), 404, '协作账号不存在');
+    if (role === null)
+      this.db
+        .prepare('DELETE FROM collaboration_access WHERE workspace=? AND account=?')
+        .run(workspaceId, account);
+    else
+      this.db
+        .prepare(
+          'INSERT INTO collaboration_access VALUES(?,?,?) ON CONFLICT(workspace,account) DO UPDATE SET role=excluded.role',
+        )
+        .run(workspaceId, account, collaborationRoleSchema.parse(role));
+  }
+  collaborationList(account: string, live: (deviceId: string) => RuntimeWorkspace[]) {
+    const spaces = this.db
+      .prepare(
+        'SELECT w.id,w.owner FROM workspace w LEFT JOIN collaboration_access a ON a.workspace=w.id AND a.account=? WHERE w.owner=? OR a.account IS NOT NULL',
+      )
+      .all(account, account);
+    return spaces.flatMap((space) =>
+      this.list(String(space.owner), live, false)
+        .filter((entry) => entry.id === space.id)
+        .map((entry) => ({ ...entry, role: this.collaborationAccess(account, entry.id).role })),
+    );
   }
   defaultWorkspace(owner: string) {
     const id = stableId('space', owner);
@@ -147,8 +201,12 @@ export class Catalog {
       throw e;
     }
   }
-  list(owner: string, live: (deviceId: string) => RuntimeWorkspace[]): Workspace[] {
-    this.defaultWorkspace(owner);
+  list(
+    owner: string,
+    live: (deviceId: string) => RuntimeWorkspace[],
+    initialize = true,
+  ): Workspace[] {
+    if (initialize) this.defaultWorkspace(owner);
     return this.db
       .prepare('SELECT * FROM workspace WHERE owner=? ORDER BY rowid')
       .all(owner)

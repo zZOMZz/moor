@@ -2776,6 +2776,15 @@ function showLogin(setup: boolean, googleEnabled = false) {
 }
 function shell() {
   showShell({
+    onCollaboration: () => {
+      const query = new URLSearchParams({ collaboration: '1' });
+      if (activeWorkspace && replica && sessionId) {
+        query.set('workspace', activeWorkspace.id);
+        query.set('replica', replica.id);
+        query.set('session', sessionId);
+      }
+      location.assign('/?' + query.toString());
+    },
     onSend: () => run(sendTurn),
     onDraft: (value) => {
       if (skillsDraftSaving) skillsDraftAbort?.abort();

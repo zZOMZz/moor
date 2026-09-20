@@ -1,5 +1,5 @@
 {
-  "name": "@moor/host",
+  "name": "@moor/sync",
   "version": "0.2.0",
   "private": true,
   "type": "module",
@@ -16,21 +16,14 @@
   "scripts": {
     "build": "node ../../scripts/build/build-package.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm --filter @moor/host... run build && node ../../scripts/validation/test.mjs packages/host"
+    "test": "pnpm --filter @moor/sync... run build && node ../../scripts/validation/test.mjs packages/sync"
   },
   "dependencies": {
-    "@agentclientprotocol/codex-acp": "1.11.0",
-    "@agentclientprotocol/sdk": "1.4.0",
-    "@moor/e2ee": "workspace:*",
     "@moor/protocol": "workspace:*",
-    "@moor/session": "workspace:*",
-    "@moor/sync": "workspace:*",
-    "ws": "8.18.3",
-    "zod": "3.25.76"
+    "@moor/session": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
-    "@types/ws": "8.18.1",
     "typescript": "5.9.3"
   }
 }

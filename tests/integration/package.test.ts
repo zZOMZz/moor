@@ -33,6 +33,7 @@ test('license discovery includes the root and every application and public packa
     '@moor/host',
     '@moor/protocol',
     '@moor/session',
+    '@moor/sync',
     'moor',
   ]);
 });

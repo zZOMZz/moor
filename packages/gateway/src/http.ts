@@ -81,6 +81,18 @@ import {
   type AttentionContext,
 } from '@moor/protocol/attention';
 import {
+  COLLABORATION_FEATURE,
+  COLLABORATION_LIMITS,
+  collaborationContextSchema,
+  collaborationKey,
+  collaborationMemberSchema,
+  collaborationOfferSchema,
+  collaborationOfferReceiptSchema,
+  collaborationReadResponseSchema,
+  collaborationSyncRequestSchema,
+  validateCollaborationSyncResponse,
+} from '@moor/protocol/collaboration-protocol';
+import {
   FILE_CONTENT_FEATURE,
   projectFileReadSchema,
   projectFileResultSchema,
@@ -367,8 +379,26 @@ export function createApp(
     }
   };
   const changed = (owner: string, deviceId: string, workspaceId?: string, room?: unknown) => {
+    if (closing) return;
     for (const [ws, v] of viewers)
       if (v.owner === owner) send(ws, { type: 'changed', deviceId, workspaceId, room });
+    if (!room || (room as { scope?: string }).scope === 'doc') {
+      const members = new Set(
+        store.catalog
+          .list(owner, () => [])
+          .filter((space) =>
+            space.hosts.some(
+              (host) =>
+                host.deviceId === deviceId &&
+                (!workspaceId || host.runtimeWorkspaceId === workspaceId),
+            ),
+          )
+          .flatMap((space) => store.catalog.collaborationMembers(space.id)),
+      );
+      for (const [ws, viewer] of viewers)
+        if (members.has(viewer.owner))
+          send(ws, { type: 'collaboration-changed', deviceId, workspaceId });
+    }
   };
   function rejectFileReads(device: string, socket?: WebSocket) {
     for (const [id, pending] of commands)
@@ -686,7 +716,34 @@ export function createApp(
           attentionFeatures,
         });
       }
+      if (path === '/api/account-invitations/redeem' && req.method === 'POST') {
+        assert(req.headers.origin === origin, 403, '请求来源不匹配');
+        assert(!options.localOnly, 403, '本机模式不提供远程账号注册');
+        const input = z
+          .object({
+            invitation: z.string().min(20).max(200),
+            email: z.string().email().max(320),
+            password: z.string().min(12).max(1024),
+          })
+          .strict()
+          .parse(await body(req, 8192));
+        const secret = await store.redeemAccountInvitation(
+          input.invitation,
+          input.email,
+          input.password,
+        );
+        res.setHeader('Set-Cookie', loginCookie(secret));
+        return json(res, 200, { owner: store.owner(secret) });
+      }
       const owner = path.startsWith('/api/') ? store.owner(cookie(req)) : null;
+      if (path === '/api/account-invitations' && req.method === 'POST') {
+        assert(req.headers.origin === origin, 403, '请求来源不匹配');
+        assert(!options.localOnly, 403, '本机模式不提供远程账号邀请');
+        z.object({})
+          .strict()
+          .parse(await body(req, 1024));
+        return json(res, 200, store.inviteAccount(owner!));
+      }
       if (path === '/api/logout' && req.method === 'POST') {
         const secret = cookie(req);
         store.db.exec('SAVEPOINT moor_logout');
@@ -930,6 +987,206 @@ export function createApp(
           changed(owner!, '');
           return json(res, 200, workspace);
         }
+      }
+      if (parts[0] === 'api' && parts[1] === 'collaboration') {
+        if (parts.length === 2 && req.method === 'GET') {
+          return json(res, 200, {
+            actor: actor(owner!),
+            workspaces: store.catalog.collaborationList(owner!, (device) =>
+              online(device) ? bridges.get(device)!.workspaces : [],
+            ),
+          });
+        }
+        assert(
+          parts.length === 6 && ['read', 'sync', 'member', 'enable', 'offer'].includes(parts[5]!),
+          404,
+          '协作接口不存在',
+        );
+        const [workspaceId, replicaId, sessionId] = parts.slice(2, 5);
+        id.parse(workspaceId);
+        id.parse(replicaId);
+        id.parse(sessionId);
+        const access = store.catalog.collaborationAccess(owner!, workspaceId!),
+          replica = store.catalog.replica(access.owner, workspaceId!, replicaId!),
+          host = replica.host,
+          socket = bridges.get(host.device_id)?.socket,
+          runtime = bridges
+            .get(host.device_id)
+            ?.workspaces.find((entry) => entry.id === host.runtime_id);
+        assert(
+          runtime &&
+            online(host.device_id) &&
+            bridges.get(host.device_id)?.attentionReady &&
+            runtime.features?.includes(COLLABORATION_FEATURE),
+          409,
+          '共享会话主机离线或尚未支持协作',
+        );
+        const context = collaborationContextSchema.parse({
+          actor: actor(owner!),
+          ownerActor: actor(access.owner),
+          executionDeviceId: host.device_id,
+          machineId: runtime.machineId,
+          catalogWorkspaceId: workspaceId,
+          projectId: replica.project_id,
+          replicaId,
+          runtimeWorkspaceId: runtime.id,
+          localProjectId: replica.local_id,
+          sessionId,
+        });
+        const scope = {
+          authorityId: context.actor.authorityId,
+          workspaceId: workspaceId!,
+          projectId: replica.project_id,
+          sessionId: sessionId!,
+        };
+        const current = () => {
+          assert(!closing && store.owner(cookie(req)) === owner, 401, '协作登录已失效');
+          assert(
+            isDeepStrictEqual(store.catalog.collaborationAccess(owner!, workspaceId!), access),
+            403,
+            '协作权限已变化',
+          );
+          store.device(access.owner, host.device_id);
+          assert(
+            online(host.device_id) &&
+              bridges.get(host.device_id)?.socket === socket &&
+              isDeepStrictEqual(
+                store.catalog.replica(access.owner, workspaceId!, replicaId!),
+                replica,
+              ) &&
+              isDeepStrictEqual(
+                bridges.get(host.device_id)?.workspaces.find((entry) => entry.id === runtime.id),
+                runtime,
+              ),
+            409,
+            '协作请求的主机或项目绑定已变化',
+          );
+        };
+        current();
+        const method = 'collaboration-' + parts[5];
+        let input: unknown = {};
+        if (parts[5] === 'read') assert(req.method === 'GET', 405, '读取共享会话需要 GET');
+        else {
+          assert(req.method === 'POST' && req.headers.origin === origin, 403, '协作请求来源不匹配');
+          if (parts[5] === 'sync') {
+            const sync = collaborationSyncRequestSchema.parse(
+              await body(req, COLLABORATION_LIMITS.requestBytes),
+            );
+            assert(
+              collaborationKey(sync.scope) === collaborationKey(scope),
+              400,
+              '同步范围与原路由不匹配',
+            );
+            input = sync;
+          } else if (parts[5] === 'offer') {
+            const offer = collaborationOfferSchema.parse(
+              await body(req, COLLABORATION_LIMITS.requestBytes),
+            );
+            assert(
+              collaborationKey(offer.scope) === collaborationKey(scope),
+              400,
+              'RPC 意图与原路由不匹配',
+            );
+            input = offer;
+          } else if (parts[5] === 'enable') {
+            assert(access.role === 'owner', 403, '只有所有者可以开启共享');
+            input = z
+              .object({})
+              .strict()
+              .parse(await body(req, 1024));
+          } else {
+            assert(access.role === 'owner', 403, '只有所有者可以管理协作成员');
+            const member = collaborationMemberSchema.parse(await body(req, 4096));
+            assert(
+              member.accountId !== owner &&
+                store.db.prepare('SELECT 1 FROM account WHERE id=?').get(member.accountId),
+              404,
+              '协作账号不可用',
+            );
+            input = member;
+          }
+        }
+        current();
+        let raw: unknown, failure: unknown;
+        try {
+          raw = await request(
+            host.device_id,
+            method,
+            runtime.id,
+            input,
+            replica.local_id,
+            access.owner,
+            context,
+          );
+        } catch (error) {
+          failure = error;
+        }
+        current();
+        if (failure) throw failure;
+        if (parts[5] === 'sync') {
+          return json(
+            res,
+            200,
+            validateCollaborationSyncResponse(raw, collaborationSyncRequestSchema.parse(input)),
+          );
+        }
+        if (parts[5] === 'member') {
+          const member = collaborationMemberSchema.parse(input),
+            result = z
+              .object({
+                confirmed: z.literal(true),
+                accountId: id,
+                role: collaborationMemberSchema.shape.role,
+              })
+              .strict()
+              .parse(raw);
+          assert(
+            result.accountId === member.accountId && result.role === member.role,
+            502,
+            '成员授权回执不匹配',
+          );
+          store.catalog.grantCollaboration(
+            access.owner,
+            workspaceId!,
+            member.accountId,
+            member.role,
+          );
+          changed(access.owner, host.device_id, runtime.id);
+          for (const [ws, viewer] of viewers)
+            if (viewer.owner === member.accountId)
+              send(ws, { type: 'collaboration-changed', deviceId: '' });
+          return json(res, 200, result);
+        }
+        if (parts[5] === 'offer') {
+          const offer = collaborationOfferSchema.parse(input),
+            receipt = collaborationOfferReceiptSchema.parse(raw);
+          assert(
+            receipt.operationId === offer.operationId &&
+              collaborationKey(receipt.scope) === collaborationKey(scope),
+            502,
+            'RPC 送达回执与原意图不匹配',
+          );
+          return json(res, 200, receipt);
+        }
+        const result = collaborationReadResponseSchema.parse(raw),
+          target = result.target;
+        assert(
+          collaborationKey(result.scope) === collaborationKey(scope) &&
+            target.executionDeviceId === host.device_id &&
+            target.workspaceId === runtime.id &&
+            target.machineId === runtime.machineId &&
+            target.userId === runtime.userId &&
+            target.localProjectId === replica.local_id &&
+            target.sessionId === sessionId &&
+            result.session.meta.id === sessionId &&
+            result.session.meta.userId === runtime.userId &&
+            result.session.meta.machineId === runtime.machineId &&
+            result.session.meta.project.localProjectId === replica.local_id &&
+            result.session.meta.agentConfigId === target.agentId,
+          502,
+          '共享会话响应不属于原执行范围',
+        );
+        return json(res, 200, result);
       }
       if (parts[0] === 'api' && parts[1] === 'workspaces' && parts[2]) {
         const workspaceId = parts[2];

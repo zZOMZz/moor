@@ -76,6 +76,7 @@ export class Store {
         PRIMARY KEY(issuer,subject)
       );
       CREATE TABLE IF NOT EXISTS login(token TEXT PRIMARY KEY,owner TEXT,expires INTEGER);
+      CREATE TABLE IF NOT EXISTS account_invitation(token TEXT PRIMARY KEY,creator TEXT NOT NULL REFERENCES account(id),expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS pair(code TEXT PRIMARY KEY,owner TEXT,expires INTEGER);
       CREATE TABLE IF NOT EXISTS device(id TEXT PRIMARY KEY,owner TEXT,name TEXT,token TEXT UNIQUE,revoked INTEGER DEFAULT 0,machine_id TEXT,catalog TEXT DEFAULT '[]');
       CREATE TABLE IF NOT EXISTS service_identity(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -162,6 +163,46 @@ export class Store {
     await this.checkPassword(row, password);
     assert(row && samePassword(row, this.account(row.id)), 401, '邮箱或密码错误');
     return this.createLogin(row.id);
+  }
+  inviteAccount(owner: string) {
+    assert(this.account(owner), 401, '请先登录');
+    this.db.prepare('DELETE FROM account_invitation WHERE expires<=?').run(this.now());
+    const count = Number(
+      this.db.prepare('SELECT count(*) AS n FROM account_invitation WHERE creator=?').get(owner)!.n,
+    );
+    assert(count < 20, 429, '尚有过多有效邀请，请等待过期后再创建');
+    const secret = token(),
+      expiresAt = this.now() + 24 * 60 * 60 * 1000;
+    this.db
+      .prepare('INSERT INTO account_invitation VALUES(?,?,?)')
+      .run(hash(secret), owner, expiresAt);
+    return { invitation: secret, expiresAt };
+  }
+  async redeemAccountInvitation(invitation: string, email: string, password: string) {
+    const current = () => {
+      const invite = this.db
+        .prepare('SELECT creator FROM account_invitation WHERE token=? AND expires>?')
+        .get(hash(invitation), this.now());
+      assert(invite && this.account(String(invite.creator)), 403, '账号邀请无效或已过期');
+      assert(
+        !this.db.prepare('SELECT 1 FROM account WHERE email=?').get(email.toLowerCase()),
+        409,
+        '该账号已存在，请直接登录',
+      );
+    };
+    current();
+    assert(password.length >= 12 && password.length <= 1024, 400, '密码需要至少 12 个字符');
+    const salt = token(),
+      key = (await derive(password, salt, 64)) as Buffer;
+    return this.transaction(() => {
+      current();
+      const owner = crypto.randomUUID();
+      this.db
+        .prepare('INSERT INTO account(id,email,salt,password) VALUES(?,?,?,?)')
+        .run(owner, email.toLowerCase(), salt, key);
+      this.db.prepare('DELETE FROM account_invitation WHERE token=?').run(hash(invitation));
+      return this.createLogin(owner);
+    });
   }
   googleIdentity(owner: string): { email: string } | null {
     const row = this.db
