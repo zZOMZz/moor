@@ -2,7 +2,7 @@ import { assert, id, mutationSchema, type Mutation } from '@moor/protocol/protoc
 import { mutationReceiptSchema } from '@moor/protocol/session-responses';
 import {
   collaborationKey,
-  collaborationOperationSchema,
+  migrateCollaborationOperation,
   taskExecutionTargetSchema,
   taskStateSchema,
   type CollaborationScope,
@@ -57,7 +57,7 @@ export class CollaborationExecutionStore {
       .get(key, intent.operationId);
     if (existing) {
       assert(
-        JSON.stringify(collaborationOperationSchema.parse(JSON.parse(String(existing.intent)))) ===
+        JSON.stringify(migrateCollaborationOperation(JSON.parse(String(existing.intent)))) ===
           JSON.stringify(intent),
         409,
         '任务意图与原执行记录不匹配',
@@ -154,9 +154,7 @@ export class CollaborationExecutionStore {
       for (const row of rows) {
         const current = taskStateSchema.parse(JSON.parse(String(row.state)));
         if (current.phase !== 'queued') continue;
-        const intent = collaborationOperationSchema.parse(
-          JSON.parse(String(row.intent)),
-        ) as TaskIntent;
+        const intent = migrateCollaborationOperation(JSON.parse(String(row.intent))) as TaskIntent;
         try {
           this.state.authorize(intent.author.actor, scope.workspaceId, 'submit');
           assert(intent.authorization.expiresAt > this.now(), 409, '执行授权已经过期');
@@ -177,7 +175,7 @@ export class CollaborationExecutionStore {
     const row = this.task(claim.intent.scope, claim.intent.operationId);
     assert(
       row.claim === claim.claimId &&
-        JSON.stringify(collaborationOperationSchema.parse(JSON.parse(row.intent))) ===
+        JSON.stringify(migrateCollaborationOperation(JSON.parse(row.intent))) ===
           JSON.stringify(claim.intent),
       409,
       '任务认领已经失效',

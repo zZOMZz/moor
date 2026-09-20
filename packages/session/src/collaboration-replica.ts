@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   collaborationKey,
   collaborationOperationSchema,
+  migrateCollaborationOperation,
   taskStateSchema,
   type CollaborationScope,
   type CollaborationOperation,
@@ -9,7 +10,7 @@ import {
 } from '@moor/protocol/collaboration-protocol';
 import { LoroDoc, decode, encode, delta, vv } from './model';
 
-/** Moor TaskDoc v1: shared authoring, durable intents and Host-authored execution projections. */
+/** Moor TaskDoc v2: durable intents and Host-authored execution projections. */
 export class CollaborationReplica {
   readonly doc = new LoroDoc();
   constructor(
@@ -23,7 +24,7 @@ export class CollaborationReplica {
       const identity = this.doc.getMap('identity');
       if (identity.get('scope') === undefined) {
         identity.set('scope', collaborationKey(scope));
-        identity.set('schemaVersion', 1);
+        identity.set('schemaVersion', 2);
         this.doc.commit();
       }
       this.view();
@@ -42,7 +43,7 @@ export class CollaborationReplica {
     return encode(this.doc.export({ mode: 'snapshot' }));
   }
   export(version?: string) {
-    return { schemaVersion: 1 as const, update: delta(this.doc, version), version: this.version };
+    return { schemaVersion: 2 as const, update: delta(this.doc, version), version: this.version };
   }
   import(update: string) {
     if (this.doc.import(decode(update)).pending?.size) throw Error('协作文档增量缺少前置版本');
@@ -60,7 +61,7 @@ export class CollaborationReplica {
     const identity = this.doc.getMap('identity');
     if (
       identity.get('scope') !== collaborationKey(this.scope) ||
-      identity.get('schemaVersion') !== 1
+      identity.get('schemaVersion') !== 2
     )
       throw Error('协作文档的版本或身份不匹配');
     const operations = Object.entries(this.doc.getMap('operations').toJSON())
@@ -125,5 +126,49 @@ export class CollaborationReplica {
     }
     map.set(task.taskId, JSON.stringify(task));
     this.doc.commit();
+  }
+}
+
+/** Rebuild old snapshots so retired draft bytes cannot survive in CRDT history or exports. */
+export function migrateCollaborationSnapshot(scope: CollaborationScope, snapshot: string) {
+  const old = new LoroDoc();
+  try {
+    if (old.import(decode(snapshot)).pending?.size) throw Error('旧协作文档缺少前置版本');
+    const identity = old.getMap('identity');
+    if (identity.get('scope') !== collaborationKey(scope)) throw Error('旧协作文档身份不匹配');
+    if (identity.get('schemaVersion') === 2) return undefined;
+    if (identity.get('schemaVersion') !== 1) throw Error('不支持的旧协作文档版本');
+    if (
+      Object.keys(old.toJSON()).some(
+        (key) => !['identity', 'operations', 'tasks', 'admissions'].includes(key),
+      )
+    )
+      throw Error('旧协作文档包含不支持的字段');
+    const replica = new CollaborationReplica(scope);
+    const retiredOperationIds: string[] = [];
+    try {
+      const admissions = z
+        .record(z.number().int().positive().safe())
+        .parse(old.getMap('admissions').toJSON());
+      for (const [key, value] of Object.entries(old.getMap('operations').toJSON())) {
+        const raw = JSON.parse(z.string().parse(value));
+        if (raw.operationId !== key || collaborationKey(raw.scope) !== collaborationKey(scope))
+          throw Error('旧协作文档操作身份不匹配');
+        const operation = migrateCollaborationOperation(raw);
+        if (operation) replica.append(operation, admissions[key]);
+        else retiredOperationIds.push(key);
+      }
+      for (const [key, value] of Object.entries(old.getMap('tasks').toJSON())) {
+        const task = taskStateSchema.parse(JSON.parse(z.string().parse(value)));
+        if (task.taskId !== key) throw Error('旧协作文档任务身份不匹配');
+        replica.publishExecution(task);
+      }
+      replica.view();
+      return { snapshot: replica.snapshot(), peer: replica.peerId, retiredOperationIds };
+    } finally {
+      replica.close();
+    }
+  } finally {
+    old.free();
   }
 }

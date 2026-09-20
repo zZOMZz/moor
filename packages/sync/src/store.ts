@@ -6,6 +6,7 @@ import {
   collaborationAllows,
   collaborationKey,
   collaborationOperationSchema,
+  migrateCollaborationOperation,
   collaborationRoleSchema,
   collaborationScopeSchema,
   collaborationSyncRequestSchema,
@@ -21,7 +22,10 @@ import {
   type TaskState,
 } from '@moor/protocol/collaboration-protocol';
 import { validateCollaborationDependencies } from '@moor/session/collaboration-document';
-import { CollaborationReplica } from '@moor/session/collaboration-replica';
+import {
+  CollaborationReplica,
+  migrateCollaborationSnapshot,
+} from '@moor/session/collaboration-replica';
 
 type DocumentRow = { snapshot: string; peer: string; revision: number; sequence: number };
 export type CollaborationChange = { scope: CollaborationScope; authored: boolean };
@@ -245,7 +249,19 @@ export class CollaborationStore {
   }
   /** Explicit startup/enable migration. Reads never migrate, register or recover execution. */
   migrate(scope: CollaborationScope) {
-    if (this.row(scope)) return;
+    const existing = this.row(scope);
+    if (existing) {
+      const upgraded = migrateCollaborationSnapshot(scope, existing.snapshot);
+      if (upgraded)
+        this.atomic(() => {
+          this.db
+            .prepare(
+              'UPDATE collaboration_document SET snapshot=?,peer=?,revision=revision+1 WHERE scope=?',
+            )
+            .run(upgraded.snapshot, upgraded.peer, collaborationKey(scope));
+        });
+      return;
+    }
     this.atomic(() => {
       const replica = new CollaborationReplica(scope);
       try {
@@ -257,7 +273,8 @@ export class CollaborationStore {
             .prepare('SELECT rowid,body FROM collaboration_operation WHERE scope=? ORDER BY rowid')
             .all(collaborationKey(scope));
           for (const row of operations) {
-            const op = collaborationOperationSchema.parse(JSON.parse(String(row.body)));
+            const op = migrateCollaborationOperation(JSON.parse(String(row.body)));
+            if (!op) continue;
             const old = exists('collaboration_event')
               ? this.db
                   .prepare(
@@ -323,7 +340,7 @@ export class CollaborationStore {
             403,
             '不能代替其他成员发布原操作',
           );
-          this.authorize(actor, scope.workspaceId, operation.kind === 'draft' ? 'edit' : 'submit');
+          this.authorize(actor, scope.workspaceId, 'submit');
           const existing = byId.get(operation.operationId);
           if (existing) {
             assert(

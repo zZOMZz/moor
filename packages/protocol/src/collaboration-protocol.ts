@@ -4,14 +4,13 @@ import { id } from './protocol';
 import { runSelectionSchema } from './run-config';
 import { sessionBase64Schema, sessionReadResponseSchema } from './session-responses';
 
-export const COLLABORATION_VERSION = 2;
+export const COLLABORATION_VERSION = 3;
 export const COLLABORATION_OPERATION_VERSION = 1;
-export const COLLABORATION_FEATURE = 'collaboration-doc-v2';
+export const COLLABORATION_FEATURE = 'collaboration-doc-v3';
 export const COLLABORATION_LIMITS = {
   batch: 100,
   requestBytes: 16 * 1024 * 1024,
   promptCharacters: 100000,
-  heads: 100,
 } as const;
 
 /** Product identities belong to the sync authority, independently of execution workspaces. */
@@ -83,10 +82,6 @@ export const collaborationInputSchema = z
   .strict();
 export type CollaborationInput = z.infer<typeof collaborationInputSchema>;
 
-const parentsSchema = z
-  .array(id)
-  .max(COLLABORATION_LIMITS.heads)
-  .refine((parents) => new Set(parents).size === parents.length, '重复的草稿前置版本');
 const operationBase = z.object({
   version: z.literal(COLLABORATION_OPERATION_VERSION),
   operationId: id,
@@ -95,23 +90,10 @@ const operationBase = z.object({
   createdAt: z.number().int().nonnegative().safe(),
 });
 
-/** Concurrent revisions remain separate heads until an editor explicitly merges them. */
-export const sharedDraftRevisionSchema = operationBase
-  .extend({
-    kind: z.literal('draft'),
-    draftId: id,
-    parents: parentsSchema,
-    input: collaborationInputSchema,
-  })
-  .strict();
-export type SharedDraftRevision = z.infer<typeof sharedDraftRevisionSchema>;
-
 /** Explicit submission freezes a complete input. Later draft edits cannot authorize other text. */
 export const taskIntentSchema = operationBase
   .extend({
     kind: z.literal('submit'),
-    draftId: id,
-    draftRevisionId: id,
     input: collaborationInputSchema,
     target: taskExecutionTargetSchema,
     authorization: z
@@ -132,12 +114,10 @@ export const taskWithdrawalSchema = operationBase
 export type TaskWithdrawal = z.infer<typeof taskWithdrawalSchema>;
 
 export const collaborationOperationSchema = z
-  .discriminatedUnion('kind', [sharedDraftRevisionSchema, taskIntentSchema, taskWithdrawalSchema])
+  .discriminatedUnion('kind', [taskIntentSchema, taskWithdrawalSchema])
   .superRefine((operation, context) => {
     if (operation.author.actor.authorityId !== operation.scope.authorityId)
       context.addIssue({ code: 'custom', message: '作者与协作空间不属于同一授权服务' });
-    if (operation.kind === 'draft' && operation.parents.includes(operation.operationId))
-      context.addIssue({ code: 'custom', message: '草稿不能依赖自身版本' });
     if (operation.kind === 'submit') {
       if (!operation.input.prompt.trim())
         context.addIssue({ code: 'custom', message: '提交任务必须包含指令' });
@@ -148,6 +128,26 @@ export const collaborationOperationSchema = z
     }
   });
 export type CollaborationOperation = z.infer<typeof collaborationOperationSchema>;
+
+/** Storage migration only. Never accept retired draft operations through a transport boundary. */
+export function migrateCollaborationOperation(raw: unknown): CollaborationOperation | undefined {
+  const legacyDraft = operationBase
+    .extend({
+      kind: z.literal('draft'),
+      draftId: id,
+      parents: z.array(id).max(100),
+      input: collaborationInputSchema,
+    })
+    .strict();
+  if (legacyDraft.safeParse(raw).success) return undefined;
+  const legacyIntent = taskIntentSchema.extend({ draftId: id, draftRevisionId: id }).strict();
+  const legacy = legacyIntent.safeParse(raw);
+  if (legacy.success) {
+    const { draftId: _draft, draftRevisionId: _revision, ...intent } = legacy.data;
+    return collaborationOperationSchema.parse(intent);
+  }
+  return collaborationOperationSchema.parse(raw);
+}
 
 export const taskPhaseSchema = z.enum([
   'queued',
@@ -200,7 +200,7 @@ export const collaborationSyncResponseSchema = z
     storedOperationIds: z.array(id).max(COLLABORATION_LIMITS.batch),
     document: z
       .object({
-        schemaVersion: z.literal(1),
+        schemaVersion: z.literal(2),
         update: sessionBase64Schema,
         version: sessionBase64Schema,
       })
@@ -234,7 +234,7 @@ export function validateCollaborationSyncResponse(
   return result;
 }
 
-/** Online acceleration offers the exact same immutable intent, including its draft dependencies. */
+/** Online acceleration offers the exact same immutable intent, including preceding submitted intents. */
 export const collaborationOfferSchema = z
   .object({
     version: z.literal(COLLABORATION_VERSION),

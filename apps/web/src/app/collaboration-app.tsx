@@ -28,7 +28,7 @@ const phases: Record<TaskPhase, string> = {
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : '尚未确认，请检查连接。';
 
-function CollaborationBoard({
+export function CollaborationBoard({
   client,
   initial,
   actor,
@@ -46,19 +46,16 @@ function CollaborationBoard({
   const [status, setStatus] = useState('正在同步');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [draftId, setDraftId] = useState('shared-draft');
-  const [parents, setParents] = useState<string[]>([]);
   const [text, setText] = useState('');
   const [account, setAccount] = useState('');
-  const [role, setRole] = useState<'viewer' | 'editor' | 'operator'>('editor');
+  const [role, setRole] = useState<'viewer' | 'operator'>('viewer');
   const [invitation, setInvitation] = useState('');
-  const heads = client.state.draftHeads(draftId);
   const composerKey = JSON.stringify([
     'moor-collaboration-composer',
     location.origin,
     actor,
     initial.scope,
-    draftId,
+    'shared-draft',
   ]);
   const canEdit = collaborationAllows(read.role, 'edit'),
     canSubmit = read.enabled && collaborationAllows(read.role, 'submit');
@@ -68,21 +65,15 @@ function CollaborationBoard({
     try {
       const saved = localStorage.getItem(composerKey);
       if (saved) {
-        const parsed = z
-          .object({ text: z.string(), parents: z.array(z.string()) })
-          .strict()
-          .parse(JSON.parse(saved));
+        const parsed = z.object({ text: z.string() }).parse(JSON.parse(saved));
         setText(parsed.text);
-        setParents(parsed.parents);
         return;
       }
     } catch (cause) {
       setError(errorText(cause));
     }
-    const current = client.state.draftHeads(draftId);
-    setText(current.length === 1 ? current[0].input.prompt : '');
-    setParents(current.length === 1 ? [current[0].operationId] : []);
-  }, [composerKey, client, draftId]);
+    setText('');
+  }, [composerKey]);
 
   const sync = async () => {
     try {
@@ -154,23 +145,13 @@ function CollaborationBoard({
     };
   }, [client, refreshRead]);
 
-  const edit = (value: string, versions = parents) => {
+  const edit = (value: string) => {
     setText(value);
-    setParents(versions);
     try {
-      localStorage.setItem(composerKey, JSON.stringify({ text: value, parents: versions }));
+      localStorage.setItem(composerKey, JSON.stringify({ text: value }));
     } catch (cause) {
       setError('本机编辑内容未保存：' + errorText(cause));
     }
-  };
-  const save = async (merge = false) => {
-    const revision = await client.control.saveDraft({
-      draftId,
-      parents: merge ? heads.map((head) => head.operationId) : parents,
-      input: { prompt: text, selection: heads.length === 1 ? heads[0].input.selection : {} },
-    });
-    edit(text, [revision.operationId]);
-    return revision;
   };
   const act = async (work: () => Promise<unknown>) => {
     if (busy) return;
@@ -186,19 +167,13 @@ function CollaborationBoard({
     }
   };
   const history = readClientSession(read.session, read.target).history;
-  const draftIds = [
-    ...new Set([
-      draftId,
-      ...state.operations.filter((op) => op.kind === 'draft').map((op) => op.draftId),
-    ]),
-  ];
   return (
     <main
       style={{ maxWidth: 1000, margin: 'auto', padding: 24, overflow: 'auto', height: '100vh' }}
     >
       <header>
         <a href="/">返回 Moor</a>
-        <h1>共享草稿与任务队列</h1>
+        <h1>共享会话与任务队列</h1>
         {!read.enabled && read.role === 'owner' && (
           <button disabled={busy} onClick={() => void act(() => api(route + '/enable', {}))}>
             开启此会话共享
@@ -222,36 +197,9 @@ function CollaborationBoard({
         </button>
       </header>
       {error && <p role="alert">{error}</p>}
-      <section aria-labelledby="shared-draft-title">
-        <h2 id="shared-draft-title">共享草稿</h2>
-        <p>主机离线时先保存在此设备；连接恢复后汇合。保存草稿不会执行。</p>
-        <label>
-          选择草稿{' '}
-          <select value={draftId} onChange={(event) => setDraftId(event.target.value)}>
-            {draftIds.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-        </label>{' '}
-        <button disabled={!canEdit} onClick={() => setDraftId('draft-' + crypto.randomUUID())}>
-          新建草稿
-        </button>
-        {heads.length > 1 && (
-          <p role="status">有 {heads.length} 个并发版本。请阅读后合并，再提交执行。</p>
-        )}
-        {heads.map((head) => (
-          <details key={head.operationId} open={heads.length > 1}>
-            <summary>
-              {head.author.actor.accountId} · {head.operationId}
-            </summary>
-            <pre style={{ whiteSpace: 'pre-wrap' }}>{head.input.prompt}</pre>
-            <button disabled={!canEdit} onClick={() => edit(head.input.prompt, [head.operationId])}>
-              编辑此版本
-            </button>
-          </details>
-        ))}
+      <section aria-labelledby="local-draft-title">
+        <h2 id="local-draft-title">本机草稿</h2>
+        <p>编辑内容仅保存在此浏览器，不会同步。明确提交后才共享本次任务内容。</p>
         <label style={{ display: 'block' }}>
           指令
           <textarea
@@ -263,21 +211,12 @@ function CollaborationBoard({
             style={{ width: '100%' }}
           />
         </label>
-        <button disabled={!canEdit || busy} onClick={() => void act(() => save())}>
-          保存共享草稿
-        </button>{' '}
-        {heads.length > 1 && (
-          <button disabled={!canEdit || busy} onClick={() => void act(() => save(true))}>
-            保存已审阅的合并版本
-          </button>
-        )}{' '}
         <button
-          disabled={!canSubmit || busy || !text.trim() || heads.length > 1}
+          disabled={!canSubmit || busy || !text.trim()}
           onClick={() =>
             void act(async () => {
-              const revision = await save();
               await client.control.sendTurn({
-                draftRevisionId: revision.operationId,
+                input: { prompt: text, selection: {} },
                 target: read.target,
                 expiresAt: Date.now() + 24 * 60 * 60 * 1000,
               });
@@ -384,8 +323,7 @@ function CollaborationBoard({
             onChange={(event) => setRole(event.target.value as typeof role)}
           >
             <option value="viewer">仅查看</option>
-            <option value="editor">编辑草稿</option>
-            <option value="operator">编辑与提交执行</option>
+            <option value="operator">提交执行</option>
           </select>{' '}
           <button
             disabled={busy || !account.trim()}
@@ -419,7 +357,7 @@ export async function bootCollaboration(owner: string, identity: Promise<Identit
     root.render(
       <main style={{ padding: 24 }}>
         <h1>共享会话</h1>
-        <p>请从 Moor 的会话页面打开共享草稿，或使用所有者提供的会话链接。</p>
+        <p>请从 Moor 的会话页面打开共享会话，或使用所有者提供的会话链接。</p>
         <p>
           你的账号 ID：<code>{owner}</code>
         </p>

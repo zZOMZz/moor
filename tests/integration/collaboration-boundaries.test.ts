@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { CollaborationStore } from '@moor/sync/store';
 import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
 import { CollaborationExecutionPlane } from '@moor/host/sessions/collaboration';
+import { LoroDoc, encode } from '@moor/session/model';
 import { CollaborationReplica } from '@moor/session/collaboration-replica';
 import { CollaborationClient, type CollaborationStorage } from '@moor/client/collaboration-client';
 import {
   collaborationKey,
   type CollaborationScope,
   type TaskExecutionTarget,
-  type SharedDraftRevision,
   type TaskIntent,
   type CollaborationOffer,
 } from '@moor/protocol/collaboration-protocol';
@@ -33,27 +33,14 @@ const target: TaskExecutionTarget = {
   agentId: 'agent',
 };
 function inputs(s = scope, t = target, account = actor, suffix = '') {
-  const draft: SharedDraftRevision = {
-    version: 1,
-    operationId: 'draft-op' + suffix,
-    kind: 'draft',
-    scope: s,
-    author: { actor: account, clientId: 'client' },
-    createdAt: 1000,
-    draftId: 'draft' + suffix,
-    parents: [],
-    input: { prompt: 'synthetic intent' + suffix, selection: {} },
-  };
   const intent: TaskIntent = {
     version: 1,
     operationId: 'intent-op' + suffix,
     kind: 'submit',
     scope: s,
-    author: draft.author,
+    author: { actor: account, clientId: 'client' },
     createdAt: 1000,
-    draftId: draft.draftId,
-    draftRevisionId: draft.operationId,
-    input: draft.input,
+    input: { prompt: 'synthetic intent' + suffix, selection: {} },
     target: t,
     authorization: {
       kind: 'execute',
@@ -62,13 +49,12 @@ function inputs(s = scope, t = target, account = actor, suffix = '') {
     },
   };
   return {
-    draft,
     intent,
     offer: {
-      version: 2 as const,
+      version: 3 as const,
       scope: s,
       operationId: intent.operationId,
-      operations: [draft, intent],
+      operations: [intent],
     },
   };
 }
@@ -105,10 +91,10 @@ class Memory implements CollaborationStorage {
 
 test('State sync persists a Loro document but cannot accept, withdraw or recover execution by itself', (t) => {
   const state = stateFixture(t),
-    { draft, intent } = inputs();
-  const response = state.sync(actor, { version: 2, scope, after: 0, operations: [draft, intent] });
+    { intent } = inputs();
+  const response = state.sync(actor, { version: 3, scope, after: 0, operations: [intent] });
   const document = view(scope, response.document.update);
-  assert.equal(document.operations.length, 2);
+  assert.equal(document.operations.length, 1);
   assert.deepEqual(document.tasks, []);
   assert.equal(
     state.db.prepare("SELECT 1 FROM sqlite_master WHERE name='collaboration_execution'").get(),
@@ -122,7 +108,7 @@ test('State sync persists a Loro document but cannot accept, withdraw or recover
   coordinator.reconcile(scope);
   assert.equal(state.projection(scope).tasks[0].phase, 'queued');
   state.sync(actor, {
-    version: 2,
+    version: 3,
     scope,
     after: 0,
     operations: [
@@ -131,7 +117,7 @@ test('State sync persists a Loro document but cannot accept, withdraw or recover
         kind: 'withdraw',
         operationId: 'withdraw',
         scope,
-        author: draft.author,
+        author: intent.author,
         createdAt: 1001,
         taskId: intent.operationId,
       },
@@ -145,15 +131,15 @@ test('State sync persists a Loro document but cannot accept, withdraw or recover
 test('execution ledger and Loro status projection roll back together, while the already-stored intent survives', (t) => {
   const state = stateFixture(t),
     coordinator = new CollaborationCoordinator(state),
-    { draft, intent } = inputs();
-  state.sync(actor, { version: 2, scope, after: 0, operations: [draft, intent] });
+    { intent } = inputs();
+  state.sync(actor, { version: 3, scope, after: 0, operations: [intent] });
   state.db.exec(
     "CREATE TRIGGER fail_projection BEFORE UPDATE ON collaboration_document BEGIN SELECT RAISE(ABORT,'synthetic projection failure'); END",
   );
   assert.throws(() => coordinator.reconcile(scope), /projection failure/);
   assert.equal(state.db.prepare('SELECT count(*) AS n FROM collaboration_execution').get()!.n, 0);
   assert.equal(coordinator.queue.through(scope), 0);
-  assert.equal(state.projection(scope).operations.length, 2);
+  assert.equal(state.projection(scope).operations.length, 1);
   assert.deepEqual(state.projection(scope).tasks, []);
   state.db.exec('DROP TRIGGER fail_projection');
   coordinator.reconcile(scope);
@@ -166,11 +152,11 @@ test('execution ledger and Loro status projection roll back together, while the 
 test('Loro incremental reads converge and contain execution projections without a second queue response', (t) => {
   const state = stateFixture(t),
     coordinator = new CollaborationCoordinator(state),
-    { draft, intent } = inputs();
+    { intent } = inputs();
   const initial = state.read(actor, scope),
     replica = new CollaborationReplica(scope, initial.document.update);
   t.after(() => replica.close());
-  state.sync(actor, { version: 2, scope, after: 0, operations: [draft, intent] });
+  state.sync(actor, { version: 3, scope, after: 0, operations: [intent] });
   coordinator.reconcile(scope);
   const delta = state.read(actor, scope, initial.document.version);
   replica.import(delta.document.update);
@@ -217,9 +203,9 @@ test('a read cannot recover an existing claimed task or promote pending intent i
   const state = new CollaborationStore(f.runtime.journal.db, author.authorityId, () => 1000);
   state.createWorkspace(author, read.scope.workspaceId);
   state.registerSession(author, read.scope, read.target);
-  const { draft, intent } = inputs(read.scope, read.target, author),
+  const { intent } = inputs(read.scope, read.target, author),
     coordinator = new CollaborationCoordinator(state);
-  state.append(author, read.scope, [draft, intent]);
+  state.append(author, read.scope, [intent]);
   coordinator.reconcile(read.scope);
   assert.ok(coordinator.queue.claim(read.scope, read.target, 'claimed-before-read'));
   const before = Number(f.runtime.journal.db.prepare('SELECT total_changes() AS n').get()!.n);
@@ -280,8 +266,8 @@ for (const order of ['rpc-first', 'doc-first'] as const) {
         authorityId: f.accounts.authorityId,
         accountId: f.ownerId,
       };
-      const { draft, intent, offer } = inputs(read.scope, read.target, author);
-      const sync = { version: 2, scope: read.scope, after: 0, operations: [draft, intent] };
+      const { intent, offer } = inputs(read.scope, read.target, author);
+      const sync = { version: 3, scope: read.scope, after: 0, operations: [intent] };
       const prompt = f.waitForPrompts(1);
       const first = await f.ownerApi(
         f.route + (order === 'rpc-first' ? '/offer' : '/sync'),
@@ -304,7 +290,7 @@ for (const order of ['rpc-first', 'doc-first'] as const) {
       assert.equal(document.operations.filter((op) => op.kind === 'submit').length, 1);
       assert.equal(document.tasks[0].phase, 'completed');
       const mismatched = structuredClone(offer);
-      mismatched.operations[1].input.prompt = 'changed';
+      mismatched.operations[0].input.prompt = 'changed';
       assert.equal((await f.ownerApi(f.route + '/offer', mismatched)).status, 409);
       assert.equal(f.prompts.length, 1);
     },
@@ -336,13 +322,9 @@ test('RPC acknowledgement loss leaves the durable outbox intact and sync recover
     now: () => 1000,
     uuid: () => 'local-' + ++next,
   });
-  const draft = await client.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'durable', selection: {} },
-  });
+  const draft = { input: { prompt: 'durable', selection: {} } };
   const intent = await client.control.sendTurn({
-    draftRevisionId: draft.operationId,
+    input: draft.input,
     target,
     expiresAt: 9000,
   });
@@ -352,7 +334,7 @@ test('RPC acknowledgement loss leaves the durable outbox intact and sync recover
   assert.equal(client.state.snapshot().pending.length, 0);
   assert.equal(client.state.snapshot().tasks.length, 1);
   const persisted = [...storage.data.values()][0] as Record<string, unknown>;
-  assert.equal(persisted.storageVersion, 2);
+  assert.equal(persisted.storageVersion, 3);
   assert.equal(typeof persisted.snapshot, 'string');
   assert.equal('operations' in persisted || 'tasks' in persisted, false);
 });
@@ -383,18 +365,14 @@ test('a later RPC preserves its writer preceding intents when messages arrive in
     now: () => 1000,
     uuid: () => 'local-' + ++next,
   });
-  const draft = await client.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'same input', selection: {} },
-  });
+  const draft = { input: { prompt: 'same input', selection: {} } };
   const first = await client.control.sendTurn({
-    draftRevisionId: draft.operationId,
+    input: draft.input,
     target,
     expiresAt: 9000,
   });
   const second = await client.control.sendTurn({
-    draftRevisionId: draft.operationId,
+    input: draft.input,
     target,
     expiresAt: 9000,
   });
@@ -429,14 +407,22 @@ test('legacy local records migrate to Loro without changing frozen intent or sen
     uuid: () => 'local-' + ++next,
   };
   const original = new CollaborationClient(options);
-  const draft = await original.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'legacy frozen input', selection: {} },
-  });
-  await original.control.sendTurn({ draftRevisionId: draft.operationId, target, expiresAt: 9000 });
+  const draft = { input: { prompt: 'legacy frozen input', selection: {} } };
+  await original.control.sendTurn({ input: draft.input, target, expiresAt: 9000 });
   const { admissions: _admissions, ...legacy } = original.state.snapshot();
-  storage.data.set([...storage.data.keys()][0], legacy);
+  const old = legacySnapshot();
+  storage.data.set([...storage.data.keys()][0], {
+    ...legacy,
+    operations: [
+      old.draft,
+      ...legacy.operations.map((op) => ({
+        ...op,
+        draftId: 'draft',
+        draftRevisionId: old.draft.operationId,
+      })),
+    ],
+    pending: [old.draft.operationId, ...legacy.pending],
+  });
   const reopened = new CollaborationClient({
     ...options,
     transport: {
@@ -454,7 +440,7 @@ test('legacy local records migrate to Loro without changing frozen intent or sen
   assert.equal(
     ((await storage.read([...storage.data.keys()][0])) as { storageVersion: number })
       .storageVersion,
-    2,
+    3,
   );
 });
 
@@ -526,7 +512,7 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
     .run(collaborationKey(scope), JSON.stringify(target));
   state.db.exec(`CREATE TABLE collaboration_operation(id TEXT PRIMARY KEY,scope TEXT,body TEXT);
     CREATE TABLE collaboration_task(id TEXT PRIMARY KEY,scope TEXT,sequence INTEGER,intent TEXT,state TEXT,claim TEXT,command TEXT);`);
-  const { draft, intent } = inputs(),
+  const { intent, oldIntent, draft } = legacySnapshot(),
     task = {
       taskId: intent.operationId,
       scope,
@@ -536,7 +522,7 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
       updatedAt: 1000,
       executionOperationId: 'original-command',
     };
-  for (const operation of [draft, intent])
+  for (const operation of [draft, oldIntent])
     state.db
       .prepare('INSERT INTO collaboration_operation VALUES(?,?,?)')
       .run(operation.operationId, collaborationKey(scope), JSON.stringify(operation));
@@ -546,7 +532,7 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
       intent.operationId,
       collaborationKey(scope),
       2,
-      JSON.stringify(intent),
+      JSON.stringify(oldIntent),
       JSON.stringify(task),
       'old-claim',
       '{"operationId":"original-command"}',
@@ -569,4 +555,124 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
     state.db.prepare('SELECT command FROM collaboration_execution').get()!.command,
     '{"operationId":"original-command"}',
   );
+});
+
+function legacySnapshot() {
+  const doc = new LoroDoc();
+  const { intent } = inputs();
+  const draft = {
+    version: 1,
+    operationId: 'retired-draft',
+    kind: 'draft',
+    scope,
+    author: intent.author,
+    createdAt: 1000,
+    draftId: 'draft',
+    parents: [],
+    input: { prompt: 'SYNTHETIC_UNSUBMITTED_PRIVATE_DRAFT', selection: {} },
+  };
+  const oldIntent = { ...intent, draftId: 'draft', draftRevisionId: draft.operationId };
+  try {
+    doc.getMap('identity').set('scope', collaborationKey(scope));
+    doc.getMap('identity').set('schemaVersion', 1);
+    for (const [index, operation] of [draft, oldIntent].entries()) {
+      doc.getMap('operations').set(operation.operationId, JSON.stringify(operation));
+      doc.getMap('admissions').set(operation.operationId, index + 1);
+    }
+    doc.commit();
+    return {
+      snapshot: encode(doc.export({ mode: 'snapshot' })),
+      peer: doc.peerIdStr,
+      draft,
+      intent,
+      oldIntent,
+    };
+  } finally {
+    doc.free();
+  }
+}
+
+test('Host rebuilds TaskDoc v1 without drafts or their CRDT history and preserves admitted task identity', (t) => {
+  const state = stateFixture(t),
+    old = legacySnapshot();
+  state.db
+    .prepare(
+      'UPDATE collaboration_document SET snapshot=?,peer=?,revision=12,sequence=2 WHERE scope=?',
+    )
+    .run(old.snapshot, old.peer, collaborationKey(scope));
+  state.migrate(scope);
+  const read = state.read(actor, scope);
+  assert.equal(read.document.schemaVersion, 2);
+  assert.equal(read.revision, 13);
+  assert.deepEqual(state.projection(scope).operations, [old.intent]);
+  assert.deepEqual(state.projection(scope).admissions, { [old.intent.operationId]: 2 });
+  // Inspect the entire exported CRDT history, including deleted or overwritten values.
+  const replica = new CollaborationReplica(scope, read.document.update);
+  try {
+    assert.equal(JSON.stringify(replica.doc.toJSON()).includes(old.draft.input.prompt), false);
+    assert.equal(
+      JSON.stringify(replica.doc.exportJsonUpdates()).includes(old.draft.input.prompt),
+      false,
+    );
+  } finally {
+    replica.close();
+  }
+  state.migrate(scope);
+  assert.deepEqual(state.read(actor, scope), read);
+  const coordinator = new CollaborationCoordinator(state);
+  coordinator.reconcile(scope);
+  assert.equal(
+    coordinator.queue.claim(scope, target, 'migrated')?.intent.operationId,
+    old.intent.operationId,
+  );
+});
+
+test('old client snapshot drops pending drafts before sync and retains the original submitted intent', async (t) => {
+  const state = stateFixture(t),
+    storage = new Memory(),
+    old = legacySnapshot();
+  const author = old.intent.author;
+  const key = JSON.stringify(['moor-collaboration-v1', collaborationKey(scope), author]);
+  storage.data.set(key, {
+    storageVersion: 2,
+    scope,
+    author,
+    cursor: 42,
+    pending: [old.draft.operationId, old.intent.operationId],
+    snapshot: old.snapshot,
+    peer: old.peer,
+    documentVersion: 'retired-version',
+  });
+  const requests: unknown[] = [];
+  let offers = 0;
+  const client = new CollaborationClient({
+    scope,
+    author,
+    storage,
+    current: () => {},
+    now: () => 1000,
+    uuid: () => 'unused',
+    transport: {
+      sync: async (request) => {
+        requests.push(request);
+        return state.sync(actor, request);
+      },
+      offer: async () => {
+        offers++;
+        throw Error('unexpected offer');
+      },
+    },
+  });
+  await client.state.recover();
+  assert.equal(offers, 0);
+  assert.deepEqual(client.state.snapshot().pending, [old.intent.operationId]);
+  assert.deepEqual(client.state.snapshot().operations, [old.intent]);
+  assert.equal(client.state.snapshot().cursor, 0);
+  const stored = storage.data.get(key) as { storageVersion: number; documentVersion?: string };
+  assert.equal(stored.storageVersion, 3);
+  assert.equal(stored.documentVersion, undefined);
+  await client.state.sync();
+  assert.equal(JSON.stringify(requests).includes(old.draft.input.prompt), false);
+  assert.deepEqual(state.projection(scope).operations, [old.intent]);
+  assert.equal(offers, 0);
 });

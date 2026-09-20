@@ -144,126 +144,36 @@ function fixture(t: TestContext, execution = target) {
   };
 }
 
-test('offline drafts and explicitly authorized tasks survive restart, converge across accounts and deduplicate lost acknowledgements', async (t) => {
+test('explicitly authorized local input survives restart and deduplicates lost acknowledgements', async (t) => {
   const f = fixture(t),
     b = f.client('b'),
     c = f.client('c');
   b.online(false);
-  const draft = await b.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'synthetic task', selection: {} },
-  });
+  const input = { prompt: 'synthetic task', selection: {} };
+  const submitting = b.value.control.sendTurn({ input, target, expiresAt: 9000 });
+  input.prompt = 'later local edit';
+  const intent = await submitting;
   assert.equal(b.calls(), 0);
-  const intent = await b.value.control.sendTurn({
-    draftRevisionId: draft.operationId,
-    target,
-    expiresAt: 9000,
-  });
   await assert.rejects(b.value.state.sync(), /offline/);
   const reopened = b.reopen();
   await reopened.state.recover();
-  assert.equal(reopened.state.snapshot().pending.length, 2);
-  await reopened.control.saveDraft({
-    draftId: 'draft',
-    parents: [draft.operationId],
-    input: { prompt: 'later draft edit', selection: {} },
-  });
+  assert.equal(reopened.state.snapshot().pending.length, 1);
   b.online(true);
   b.loseReply();
   await assert.rejects(reopened.state.sync(), /lost reply/);
-  assert.equal(reopened.state.snapshot().pending.length, 3);
+  assert.equal(reopened.state.snapshot().pending.length, 1);
   await reopened.state.sync();
   await c.value.state.sync();
-  assert.equal(c.value.state.draftHeads('draft')[0].input.prompt, 'later draft edit');
+  assert.equal(c.value.state.snapshot().operations.length, 1);
   assert.equal(c.value.state.snapshot().tasks.length, 1);
   const claim = f.queue.claim(scope, target, 'claim')!;
   assert.equal(claim.intent.operationId, intent.operationId);
   assert.equal(claim.intent.input.prompt, 'synthetic task');
   assert.equal(f.queue.claim(scope, target, 'duplicate'), undefined);
-});
-
-test(
-  'a pending network response does not lock local authoring or overwrite a later draft',
-  { timeout: 10000 },
-  async (t) => {
-    const f = fixture(t),
-      b = f.client('b'),
-      c = f.client('c');
-    let entered!: () => void, release!: () => void;
-    const waiting = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const reply = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const first = await b.value.control.saveDraft({
-      draftId: 'draft',
-      parents: [],
-      input: { prompt: 'first', selection: {} },
-    });
-    b.holdReply(async () => {
-      entered();
-      await reply;
-    });
-    const syncing = b.value.state.sync();
-    await waiting;
-    await b.value.control.saveDraft({
-      draftId: 'draft',
-      parents: [first.operationId],
-      input: { prompt: 'edited while syncing', selection: {} },
-    });
-    b.holdReply();
-    release();
-    await syncing;
-    await c.value.state.sync();
-    assert.equal(b.value.state.snapshot().pending.length, 0);
-    assert.equal(c.value.state.draftHeads('draft')[0].input.prompt, 'edited while syncing');
-  },
-);
-
-test('concurrent offline edits remain visible and require explicit merge before submission', async (t) => {
-  const f = fixture(t),
-    b = f.client('b'),
-    c = f.client('c');
-  const initial = await b.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'initial', selection: {} },
-  });
-  await b.value.state.sync();
-  await c.value.state.sync();
-  const left = await b.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [initial.operationId],
-    input: { prompt: 'B edit', selection: {} },
-  });
-  const right = await c.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [initial.operationId],
-    input: { prompt: 'C edit', selection: {} },
-  });
-  await c.value.state.sync();
-  await b.value.state.sync();
-  await c.value.state.sync();
-  assert.equal(b.value.state.draftHeads('draft').length, 2);
-  await assert.rejects(
-    b.value.control.sendTurn({ draftRevisionId: left.operationId, target, expiresAt: 9000 }),
-    /并发/,
-  );
-  const merged = await b.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [left.operationId, right.operationId],
-    input: { prompt: 'B and C', selection: {} },
-  });
-  await b.value.control.sendTurn({ draftRevisionId: merged.operationId, target, expiresAt: 9000 });
-  await b.value.state.sync();
-  await c.value.state.sync();
-  assert.equal(c.value.state.draftHeads('draft').length, 1);
   const operations = c.value.state.snapshot().operations;
   assert.deepEqual(
     mergeCollaborationOperations(scope, operations, [...operations].reverse()),
-    mergeCollaborationOperations(scope, operations),
+    operations,
   );
 });
 
@@ -283,9 +193,9 @@ test(
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const initial = await b.value.control.saveDraft({
-      draftId: 'draft',
-      parents: [],
+    await b.value.control.sendTurn({
+      target,
+      expiresAt: 9000,
       input: { prompt: 'initial', selection: {} },
     });
     b.holdReply(async () => {
@@ -297,9 +207,9 @@ test(
     });
     const firstSync = b.value.state.sync();
     await waiting;
-    await second.control.saveDraft({
-      draftId: 'draft',
-      parents: [initial.operationId],
+    const later = await second.control.sendTurn({
+      target,
+      expiresAt: 9000,
       input: { prompt: 'newer page', selection: {} },
     });
     await second.state.sync();
@@ -307,24 +217,22 @@ test(
     release();
     await firstSync;
     assert.equal(b.value.state.snapshot().cursor, version);
-    assert.equal(b.value.state.draftHeads('draft')[0].input.prompt, 'newer page');
+    assert.ok(
+      b.value.state.snapshot().operations.some((op) => op.operationId === later.operationId),
+    );
     assert.equal(b.value.state.snapshot().pending.length, 0);
   },
 );
 
-test('persistence failure never publishes an executable intent; draft-only sync creates no queue item', async (t) => {
+test('persistence failure never publishes an executable intent; empty sync creates no queue item', async (t) => {
   const f = fixture(t),
     b = f.client('b');
-  const draft = await b.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'draft only', selection: {} },
-  });
+  const draft = { input: { prompt: 'draft only', selection: {} } };
   await b.value.state.sync();
   assert.equal(f.queue.claim(scope, target, 'none'), undefined);
   b.storage.failWrite = true;
   await assert.rejects(
-    b.value.control.sendTurn({ draftRevisionId: draft.operationId, target, expiresAt: 9000 }),
+    b.value.control.sendTurn({ input: draft.input, target, expiresAt: 9000 }),
     /disk/,
   );
   assert.equal(b.value.state.snapshot().pending.length, 0);
@@ -334,27 +242,23 @@ test('persistence failure never publishes an executable intent; draft-only sync 
 test('membership, actor spoofing, expired grants, foreign targets and queue withdrawal are enforced at acceptance and dispatch', async (t) => {
   const f = fixture(t),
     b = f.client('b');
-  const draft = await b.value.control.saveDraft({
-    draftId: 'draft',
-    parents: [],
-    input: { prompt: 'task', selection: {} },
-  });
+  const draft = { input: { prompt: 'task', selection: {} } };
   const task = await b.value.control.sendTurn({
-    draftRevisionId: draft.operationId,
+    input: draft.input,
     target,
     expiresAt: 9000,
   });
   assert.throws(
-    () => f.store.sync(actor('c'), { version: 2, scope, after: 0, operations: [draft, task] }),
+    () => f.store.sync(actor('c'), { version: 3, scope, after: 0, operations: [task] }),
     /代替/,
   );
   assert.throws(
     () =>
       f.store.sync(actor('b'), {
-        version: 2,
+        version: 3,
         scope,
         after: 0,
-        operations: [draft, { ...task, target: { ...target, machineId: 'foreign' } }],
+        operations: [{ ...task, target: { ...target, machineId: 'foreign' } }],
       }),
     /绑定/,
   );
@@ -366,7 +270,7 @@ test('membership, actor spoofing, expired grants, foreign targets and queue with
   assert.equal(b.value.state.snapshot().tasks[0].phase, 'blocked');
   f.store.setMember(actor('owner'), scope.workspaceId, actor('b'), 'operator');
   const second = await b.value.control.sendTurn({
-    draftRevisionId: draft.operationId,
+    input: draft.input,
     target,
     expiresAt: 9000,
   });
@@ -374,7 +278,7 @@ test('membership, actor spoofing, expired grants, foreign targets and queue with
   await b.value.control.withdrawTask(second.operationId);
   await b.value.state.sync();
   assert.equal(f.queue.claim(scope, target, 'withdrawn'), undefined);
-  await b.value.control.sendTurn({ draftRevisionId: draft.operationId, target, expiresAt: 9000 });
+  await b.value.control.sendTurn({ input: draft.input, target, expiresAt: 9000 });
   await b.value.state.sync();
   f.clock(10000);
   assert.equal(f.queue.claim(scope, target, 'expired'), undefined);
@@ -388,14 +292,14 @@ test('malformed sync responses cannot acknowledge another operation or cross acc
     () =>
       validateCollaborationSyncResponse(
         {
-          version: 2,
+          version: 3,
           scope,
           cursor: 0,
           hasMore: false,
           storedOperationIds: ['foreign'],
-          document: { schemaVersion: 1, update: '', version: '' },
+          document: { schemaVersion: 2, update: '', version: '' },
         },
-        { version: 2, scope, after: 0, operations: [] },
+        { version: 3, scope, after: 0, operations: [] },
       ),
     /原范围/,
   );
@@ -405,12 +309,12 @@ test('offline sync batches fit the wire byte limit even when prompts expand unde
   const operations = Array.from({ length: 30 }, (_, index) =>
     collaborationOperationSchema.parse({
       version: 1,
-      kind: 'draft',
+      kind: 'submit',
+      target,
+      authorization: { kind: 'execute', ordering: 'after-previous', expiresAt: 9000 },
       scope,
       operationId: 'escaped-' + index,
-      draftId: 'draft-' + index,
       author: { actor: actor('b'), clientId: 'browser' },
-      parents: [],
       createdAt: 1000,
       input: { prompt: '\u0000'.repeat(100000), selection: {} },
     }),
@@ -429,9 +333,9 @@ test('sync drains multiple bounded pages and survives local checkpoint persisten
     b = f.client('b'),
     c = f.client('c');
   for (let index = 0; index < 125; index++)
-    await b.value.control.saveDraft({
-      draftId: 'draft-' + index,
-      parents: [],
+    await b.value.control.sendTurn({
+      target,
+      expiresAt: 9000,
       input: { prompt: 'synthetic-' + index, selection: {} },
     });
   b.storage.failWrite = true;
@@ -444,7 +348,7 @@ test('sync drains multiple bounded pages and survives local checkpoint persisten
   await c.value.state.sync();
   assert.equal(restored.state.snapshot().pending.length, 0);
   assert.equal(c.value.state.snapshot().operations.length, 125);
-  assert.equal(f.queue.claim(scope, target, 'drafts-not-execution'), undefined);
+  assert.equal(c.value.state.snapshot().tasks.length, 125);
 });
 
 test('queued authorized work is drained through actual Host acceptance once and in order, while uncertain work is never replayed', async (t) => {
@@ -504,13 +408,9 @@ test('queued authorized work is drained through actual Host acceptance once and 
   const f = fixture(t, execution),
     b = f.client('b');
   for (const prompt of ['first task', 'second task']) {
-    const draft = await b.value.control.saveDraft({
-      draftId: prompt.replace(' ', '-'),
-      parents: [],
-      input: { prompt, selection: {} },
-    });
+    const draft = { input: { prompt, selection: {} } };
     await b.value.control.sendTurn({
-      draftRevisionId: draft.operationId,
+      input: draft.input,
       target: execution,
       expiresAt: 9000,
     });
@@ -538,13 +438,9 @@ test('queued authorized work is drained through actual Host acceptance once and 
     b.value.state.snapshot().tasks.map((task) => task.phase),
     ['completed', 'completed'],
   );
-  const last = await b.value.control.saveDraft({
-    draftId: 'crash',
-    parents: [],
-    input: { prompt: 'uncertain task', selection: {} },
-  });
+  const last = { input: { prompt: 'uncertain task', selection: {} } };
   await b.value.control.sendTurn({
-    draftRevisionId: last.operationId,
+    input: last.input,
     target: execution,
     expiresAt: 9000,
   });

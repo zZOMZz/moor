@@ -178,7 +178,7 @@ export function Shell({
                 <Content name="#session-search-control" />
               </div>
               <Content name="#session-fork-control" />
-              {onCollaboration && <button onClick={onCollaboration}>共享草稿与队列</button>}
+              {onCollaboration && <button onClick={onCollaboration}>共享会话与队列</button>}
             </WorkspaceToolMenu>
             <div id="legacy-environment" hidden>
               <WorkspaceToolMenu kind="environment">

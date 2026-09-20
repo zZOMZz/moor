@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { CollaborationReplica } from '@moor/session/collaboration-replica';
+import {
+  CollaborationReplica,
+  migrateCollaborationSnapshot,
+} from '@moor/session/collaboration-replica';
 import {
   COLLABORATION_LIMITS,
   COLLABORATION_VERSION,
@@ -8,6 +11,7 @@ import {
   collaborationAuthorSchema,
   collaborationKey,
   collaborationOperationSchema,
+  migrateCollaborationOperation,
   collaborationScopeSchema,
   collaborationSyncRequestSchema,
   taskStateSchema,
@@ -17,13 +21,11 @@ import {
   type CollaborationOperation,
   type CollaborationScope,
   type CollaborationSyncRequest,
-  type SharedDraftRevision,
   type TaskExecutionTarget,
   type TaskIntent,
 } from '@moor/protocol/collaboration-protocol';
 import {
   mergeCollaborationOperations,
-  sharedDraftHeads,
   validateCollaborationDependencies,
 } from '@moor/session/collaboration-document';
 
@@ -71,14 +73,14 @@ const legacyDocumentSchema = z
     scope: collaborationScopeSchema,
     author: collaborationAuthorSchema,
     cursor: z.number().int().nonnegative().safe(),
-    operations: z.array(collaborationOperationSchema),
+    operations: z.array(z.unknown()),
     pending: z.array(z.string()),
     tasks: z.array(taskStateSchema),
   })
   .strict();
 const storedDocumentSchema = z
   .object({
-    storageVersion: z.literal(2),
+    storageVersion: z.literal(3),
     scope: collaborationScopeSchema,
     author: collaborationAuthorSchema,
     cursor: z.number().int().nonnegative().safe(),
@@ -89,7 +91,8 @@ const storedDocumentSchema = z
   })
   .strict();
 type StoredDocument = z.infer<typeof storedDocumentSchema>;
-export type CollaborationDocument = z.infer<typeof legacyDocumentSchema> & {
+export type CollaborationDocument = Omit<z.infer<typeof legacyDocumentSchema>, 'operations'> & {
+  operations: CollaborationOperation[];
   admissions: Record<string, number>;
 };
 export interface CollaborationStatePlane {
@@ -97,16 +100,10 @@ export interface CollaborationStatePlane {
   subscribe(listener: () => void): () => void;
   recover(): Promise<void>;
   sync(): Promise<void>;
-  draftHeads(draftId: string): SharedDraftRevision[];
 }
 export interface CollaborationControlPlane {
-  saveDraft(input: {
-    draftId: string;
-    parents: string[];
-    input: CollaborationInput;
-  }): Promise<SharedDraftRevision>;
   sendTurn(input: {
-    draftRevisionId: string;
+    input: CollaborationInput;
     target: TaskExecutionTarget;
     expiresAt: number;
   }): Promise<TaskIntent>;
@@ -156,42 +153,22 @@ export class CollaborationClient {
       },
       recover: () => this.#recover(),
       sync: () => this.#sync(),
-      draftHeads: (draftId) => sharedDraftHeads(this.state.snapshot().operations, draftId),
     };
     this.control = {
-      saveDraft: async (input) =>
-        this.#authorOperation((document) => {
-          const operation = collaborationOperationSchema.parse({
-            ...this.#base(),
-            kind: 'draft',
-            draftId: input.draftId,
-            parents: input.parents,
-            input: input.input,
-          }) as SharedDraftRevision;
-          validateCollaborationDependencies(operation, document.operations);
-          return operation;
-        }),
       sendTurn: async (input) => {
-        const intent = await this.#authorOperation((document) => {
-          const draft = document.operations.find(
-            (operation) => operation.operationId === input.draftRevisionId,
-          );
-          if (draft?.kind !== 'draft') throw Error('请先保存需要提交的草稿版本');
-          const heads = sharedDraftHeads(document.operations, draft.draftId);
-          if (heads.length !== 1 || heads[0].operationId !== draft.operationId)
-            throw Error('草稿已有并发修改，请合并并审阅后再提交');
-          if (input.expiresAt <= this.options.now()) throw Error('执行授权已经过期');
+        // Freeze before waiting for the storage lock; caller edits cannot change authorization.
+        const frozen = structuredClone(input);
+        const intent = await this.#authorOperation(() => {
+          if (frozen.expiresAt <= this.options.now()) throw Error('执行授权已经过期');
           return collaborationOperationSchema.parse({
             ...this.#base(),
             kind: 'submit',
-            draftId: draft.draftId,
-            draftRevisionId: draft.operationId,
-            input: draft.input,
-            target: input.target,
+            input: frozen.input,
+            target: frozen.target,
             authorization: {
               kind: 'execute',
               ordering: 'after-previous',
-              expiresAt: input.expiresAt,
+              expiresAt: frozen.expiresAt,
             },
           }) as TaskIntent;
         });
@@ -226,7 +203,7 @@ export class CollaborationClient {
     const replica = new CollaborationReplica(this.#scope);
     try {
       return {
-        storageVersion: 2,
+        storageVersion: 3,
         scope: this.#scope,
         author: this.#author,
         cursor: 0,
@@ -259,9 +236,25 @@ export class CollaborationClient {
     this.options.current();
     let record: StoredDocument;
     if (raw == null) record = this.#empty();
-    else if ((raw as { storageVersion?: unknown }).storageVersion === 2)
-      record = storedDocumentSchema.parse(raw);
-    else {
+    else if ([2, 3].includes((raw as { storageVersion: number }).storageVersion)) {
+      const previous = storedDocumentSchema
+        .extend({ storageVersion: z.union([z.literal(2), z.literal(3)]) })
+        .parse(raw);
+      const upgraded =
+        previous.storageVersion === 2
+          ? migrateCollaborationSnapshot(this.#scope, previous.snapshot)
+          : undefined;
+      record = { ...previous, storageVersion: 3 };
+      if (upgraded) {
+        record.snapshot = upgraded.snapshot;
+        record.peer = upgraded.peer;
+      }
+      if (previous.storageVersion === 2) {
+        record.cursor = 0;
+        delete record.documentVersion;
+        record.pending = record.pending.filter((id) => !upgraded?.retiredOperationIds.includes(id));
+      }
+    } else {
       const legacy = legacyDocumentSchema.parse(raw);
       if (
         collaborationKey(legacy.scope) !== collaborationKey(this.#scope) ||
@@ -269,16 +262,25 @@ export class CollaborationClient {
       )
         throw Error('本机协作记录的身份不匹配');
       const replica = new CollaborationReplica(this.#scope);
+      const retiredOperationIds = new Set<string>();
       try {
-        for (const operation of mergeCollaborationOperations(this.#scope, legacy.operations))
+        for (const operation of mergeCollaborationOperations(
+          this.#scope,
+          legacy.operations.flatMap((raw) => {
+            const op = migrateCollaborationOperation(raw);
+            if (!op)
+              retiredOperationIds.add(z.object({ operationId: z.string() }).parse(raw).operationId);
+            return op ? [op] : [];
+          }),
+        ))
           replica.append(operation);
         for (const task of legacy.tasks) replica.publishExecution(task);
         record = {
-          storageVersion: 2,
+          storageVersion: 3,
           scope: legacy.scope,
           author: legacy.author,
           cursor: 0,
-          pending: legacy.pending,
+          pending: legacy.pending.filter((id) => !retiredOperationIds.has(id)),
           snapshot: replica.snapshot(),
           peer: replica.peerId,
         };
@@ -315,7 +317,7 @@ export class CollaborationClient {
   async #recover() {
     await this.options.storage.exclusive(this.#key, this.options.current, async () => {
       const { raw, record, document } = await this.#read();
-      if (raw && (raw as { storageVersion?: unknown }).storageVersion !== 2)
+      if (raw && (raw as { storageVersion?: unknown }).storageVersion !== 3)
         await this.options.storage.compareAndSet(this.#key, raw, record, this.options.current);
       this.options.current();
       this.#publish(document);
@@ -355,8 +357,7 @@ export class CollaborationClient {
         const op = byId.get(id);
         if (!op) throw Error('本机任务意图缺少依赖');
         seen.add(id);
-        if (op.kind === 'draft') op.parents.forEach(visit);
-        else visit(op.kind === 'submit' ? op.draftRevisionId : op.taskId);
+        if (op.kind === 'withdraw') visit(op.taskId);
         operations.push(op);
       };
       // Preserve this writer's already-published order even when a later RPC arrives first.
@@ -428,7 +429,7 @@ export class CollaborationClient {
           return batch;
         },
       );
-      // Network waits must not hold the local authoring lock. A later draft or another
+      // Network waits must not hold the local authoring lock. A later submission or another
       // page's sync is merged into the fresh durable state when this response arrives.
       this.options.current();
       const result = validateCollaborationSyncResponse(

@@ -43,7 +43,7 @@ test('invitation HTTP enrollment requires the original origin, consumes its toke
   assert.equal(shared.status, 403);
   assert.equal((await enroll(f.origin)).status, 403);
 });
-test('collaboration routes authenticate distinct members and keep all draft and task bodies on the Host', async (t) => {
+test('collaboration routes authenticate distinct members and reject draft transmission and keep submitted task bodies on the Host', async (t) => {
   const f = await syntheticCollaboration();
   t.after(f.close);
   assert.equal((await f.memberApi(f.route + '/read')).status, 403);
@@ -72,15 +72,26 @@ test('collaboration routes authenticate distinct members and keep all draft and 
     },
     input: { prompt: 'Synthetic shared draft with no execution', selection: {} },
   };
-  const request = { version: 2, scope: read.scope, after: 0, operations: [draft] };
-  const sync = await f.memberApi(f.route + '/sync', request);
-  assert.equal(sync.status, 200, JSON.stringify(await sync.clone().json()));
-  assert.deepEqual((await sync.json()).storedOperationIds, ['member-draft']);
+  const request = { version: 3, scope: read.scope, after: 0, operations: [] };
+  assert.equal(
+    (await f.memberApi(f.route + '/sync', { ...request, operations: [draft] })).status,
+    400,
+  );
+  assert.equal(
+    (
+      await f.memberApi(f.route + '/offer', {
+        version: 3,
+        scope: read.scope,
+        operationId: draft.operationId,
+        operations: [draft],
+      })
+    ).status,
+    400,
+  );
   assert.equal(f.prompts.length, 0);
-  const own = await (await f.ownerApi(f.route + '/sync', { ...request, operations: [] })).json();
+  const own = await (await f.ownerApi(f.route + '/sync', request)).json();
   const replica = new CollaborationReplica(read.scope, own.document.update);
-  const sharedDraft = replica.view().operations[0];
-  assert.equal(sharedDraft.kind === 'draft' && sharedDraft.input.prompt, draft.input.prompt);
+  assert.deepEqual(replica.view().operations, []);
   replica.close();
   assert.equal(
     f.accounts.db
@@ -96,33 +107,40 @@ test('collaboration routes authenticate distinct members and keep all draft and 
     (await f.memberApi(f.route + '/member', { accountId: f.ownerId, role: 'viewer' })).status,
     403,
   );
-  assert.equal(
-    (
-      await f.memberApi(f.route + '/sync', {
-        ...request,
-        operations: [
-          {
-            ...draft,
-            operationId: 'spoof',
-            author: { ...draft.author, actor: { ...draft.author.actor, accountId: f.ownerId } },
-          },
-        ],
-      })
-    ).status,
-    403,
-  );
   const submit = {
     ...draft,
     kind: 'submit',
     operationId: 'unauthorized-task',
     parents: undefined,
-    draftRevisionId: draft.operationId,
+    draftId: undefined,
     target: read.target,
     authorization: { kind: 'execute', ordering: 'after-previous', expiresAt: Date.now() + 100000 },
   };
   assert.equal(
     (await f.memberApi(f.route + '/sync', { ...request, operations: [submit] })).status,
     403,
+  );
+  assert.equal(
+    (await f.ownerApi(f.route + '/member', { accountId: f.memberId, role: 'operator' })).status,
+    200,
+  );
+  assert.equal(
+    (
+      await f.memberApi(f.route + '/sync', {
+        ...request,
+        operations: [
+          {
+            ...submit,
+            author: { ...submit.author, actor: { ...submit.author.actor, accountId: f.ownerId } },
+          },
+        ],
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await f.memberApi(f.route + '/sync', { ...request, operations: [submit] })).status,
+    200,
   );
 });
 
@@ -184,12 +202,11 @@ test(
       },
       input: { prompt: 'followup queued turn', selection: {} },
     };
-    const { parents: _parents, ...base } = draft;
+    const { parents: _parents, draftId: _draftId, ...base } = draft;
     const task = {
       ...base,
       kind: 'submit',
       operationId: 'queued-task',
-      draftRevisionId: draft.operationId,
       target: read.target,
       authorization: {
         kind: 'execute',
@@ -198,10 +215,10 @@ test(
       },
     };
     const submitted = await f.ownerApi(f.route + '/sync', {
-      version: 2,
+      version: 3,
       scope: read.scope,
       after: 0,
-      operations: [draft, task],
+      operations: [task],
     });
     assert.equal(submitted.status, 200, JSON.stringify(await submitted.clone().json()));
     assert.equal(f.prompts.length, 1);
