@@ -16,6 +16,12 @@ corepack pnpm format:check
 
 四项检查分别验证类型、行为、构建产物和格式，提交前都要通过。`pnpm test` 先用 esbuild 打包测试，再交给 Node 测试运行器；构建生成的 `dist` 不提交。
 
+### 工作区源码解析
+
+开发模式从每个 `packages/*/package.json` 的 `exports.types` 发现源码入口，不再维护另一份包名清单。新增包（包括 `@moor/sync`）会自动进入 esbuild 与桌面 Vite 的源码解析；运行时不会因为遗漏 alias 而混用新源码和旧 `dist`。各包仍须通过依赖方向与浏览器边界检查，源码 alias 不授权跨包访问私有文件。
+
+[解析回归](../tests/integration/workspace-sources.test.ts)实际打包 sync 源码并验证新增包可自动发现。构建回归中的 esbuild 作为外部 Node 工具加载，测试 bundle 的 require 注入使用独立名称，避免覆盖被测源码的导入。
+
 构建同时生成 `dist/cli.mjs` 会话命令入口，并随 macOS 包提供。CLI 的真实子进程往返测试见 `tests/cli-host.test.ts`；它启动独立本机主机与合成 ACP，使用真实 HTTP 和私有客户端数据库验证创建、发送、等待、停止、整理、重启与原结果查询。CLI 状态不读取主机数据库，测试准备仅在主机启动前登记虚构项目和 Agent。构建后可用 `MOOR_TEST_CLI_BUNDLES=1 pnpm exec tsx --test tests/cli-host.test.ts` 对最终 `bridge.mjs`/`cli.mjs` 再跑同一流程。使用说明见[会话 CLI](cli.md)。
 
 显式加密入口的实际子进程专项为 `tests/encrypted-cli-host.test.ts`：Host 和 CLI 连接生产 `createApp` 中转应用，使用合成 Google-only 账号、真实设备配对和合成 stdio ACP，核对密文往返、原操作恢复、冷重启不重复执行，以及中转帧/SQLite 不含项目和会话正文。中转应用在测试进程内运行，Host/CLI 为真实子进程。构建后执行 `MOOR_TEST_CLI_BUNDLES=1 pnpm exec tsx --test tests/encrypted-cli-host.test.ts`；新安装包可用 `MOOR_TEST_PACKAGED_APP` 指定包内入口与 Electron。没有真实 Google 或 Agent 账号，也不依赖另一个应用的数据。

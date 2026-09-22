@@ -59,9 +59,9 @@ for (const file of tests)
     target: 'node24',
     // Keep React shared with act(), but initialize bundled React DOM only when
     // each UI test imports its components after installing the synthetic DOM.
-    external: ['loro-crdt', 'ws', 'jsdom', 'react'],
+    external: ['loro-crdt', 'ws', 'jsdom', 'react', 'esbuild'],
     banner: {
-      js: "import { createRequire } from 'node:module'; const require=createRequire(import.meta.url);",
+      js: "import { createRequire as __moorTestCreateRequire } from 'node:module'; const require=__moorTestCreateRequire(import.meta.url);",
     },
   });
 const result = spawnSync(
