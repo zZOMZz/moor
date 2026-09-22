@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
 import { GitBranch } from 'lucide-react';
 import { GitWorkspacePanel } from './git-workspace-ui';
-import { GIT_WORKTREE_FEATURE, SECURE_GIT_OPERATIONS_FEATURE } from '@moor/protocol/git-protocol';
+import { GIT_WORKTREE_FEATURE, GIT_OPERATIONS_FEATURE } from '@moor/protocol/git-protocol';
 import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 
 export function WorkspaceGitUI({
@@ -77,12 +77,12 @@ export function WorkspaceGitUI({
           onRefresh={() => update(() => panel.current!.refresh())}
           onRetry={() => update(() => panel.current!.retry())}
           onInspect={
-            state.project?.runtime.features?.includes(SECURE_GIT_OPERATIONS_FEATURE)
+            state.project?.runtime.features?.includes(GIT_OPERATIONS_FEATURE)
               ? () => update(() => panel.current!.inspect())
               : undefined
           }
           onAbandon={
-            state.project?.runtime.features?.includes(SECURE_GIT_OPERATIONS_FEATURE)
+            state.project?.runtime.features?.includes(GIT_OPERATIONS_FEATURE)
               ? () => update(() => panel.current!.abandon())
               : undefined
           }

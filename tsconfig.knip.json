@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@moor/client/*": ["./packages/client/src/*.ts"],
+      "@moor/gateway/*": ["./packages/gateway/src/*.ts"],
+      "@moor/host/*": ["./packages/host/src/*.ts"],
+      "@moor/protocol/*": ["./packages/protocol/src/*.ts"],
+      "@moor/session/*": ["./packages/session/src/*.ts"],
+      "@moor/sync/*": ["./packages/sync/src/*.ts"],
+      "@moor/app-cli": ["./apps/cli/src/main.ts"],
+      "@moor/app-cli/*": ["./apps/cli/src/*.ts"],
+      "@moor/app-host": ["./apps/host/src/main.ts"],
+      "@moor/app-relay": ["./apps/relay/src/main.ts"],
+      "@moor/app-relay/*": ["./apps/relay/src/*.ts"],
+      "@moor/app-web": ["./apps/web/src/app/entry.ts"]
+    }
+  },
+  "include": []
+}

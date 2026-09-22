@@ -25,7 +25,7 @@ import {
   type WorkspaceClientState,
 } from '../../apps/web/src/features/workspace/workspace-controller';
 import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
-import type { SecureStorageBackend, StorageChange } from '../../apps/web/src/platform/secure-store';
+import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
 import {
   desktopWorkspaceCatalogSchema,
   type DesktopWorkspaceRequest,
@@ -40,7 +40,6 @@ import type { AgentForkInput } from '@moor/host/agents/fork';
 import { syntheticTaskPlan, syntheticTaskGrant } from '../fixtures/task-plan';
 import { workspaceFeatureTarget } from '../../apps/web/src/features/mcp/workspace-mcp';
 import { type PreviewAnnotationSnapshot } from '../../apps/web/src/features/preview/project-preview';
-import type { SessionPreviewOptions } from '@moor/host/sessions/preview';
 import {
   previewFrame,
   previewPng,
@@ -55,7 +54,7 @@ function signal() {
   });
   return { promise, resolve };
 }
-class Memory implements SecureStorageBackend {
+class Memory implements StorageBackend {
   values = new Map<string, unknown>();
   locks = new Map<string, Promise<void>>();
   failWrite = false;
@@ -101,7 +100,6 @@ async function fixture(
     attention?: boolean;
     github?: (projectId: string) => SessionGithubOptions;
     githubWrite?: (projectId: string) => SessionGithubWriteOptions;
-    preview?: (projectId: string) => SessionPreviewOptions;
     schedule?: (ms: number, work: () => void) => () => void;
   } = {},
 ) {
@@ -162,7 +160,6 @@ async function fixture(
             inputs.push(structuredClone(input));
             active = true;
             prompts++;
-            options?.taskTools?.onPromptDispatch();
             started.resolve();
             await completion.promise;
             if (config.nativeFork && binding)
@@ -202,7 +199,6 @@ async function fixture(
     undefined,
     config.github?.(projectId),
     config.githubWrite?.(projectId),
-    config.preview?.(projectId),
   );
   const dispatcher = new HostCommandDispatcher({
     ready: () => true,
@@ -378,7 +374,7 @@ async function fixture(
   };
 }
 
-test('sidebar reads stay in the requested project without changing the active draft and discard replaced catalogs', async (t) => {
+test('sidebar reads preserve drafts across unchanged catalogs and reject replaced connections', async (t) => {
   const f = await fixture(t),
     sessionId = await f.create();
   await f.controller.saveDraft('Keep the active input', {});
@@ -393,18 +389,38 @@ test('sidebar reads stay in the requested project without changing the active dr
   const entered = signal(),
     release = signal();
   f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'sessions') {
+    if (
+      request.action === 'execute' &&
+      ['sessions', 'sessions-page'].includes(request.command.method)
+    ) {
       entered.resolve();
       await release.promise;
     }
   };
   const pending = f.controller.listProjectSessions('local', f.catalog.targets[0]!.target);
-  const rejected = assert.rejects(pending, /项目列表已改变/);
   await entered.promise;
   await f.controller.refreshCatalog('local');
   release.resolve();
-  await rejected;
+  assert((await pending).some((item) => item.id === sessionId));
   assert.equal(f.controller.state.draft?.text, 'Keep the active input');
+  const nextEntered = signal(),
+    nextRelease = signal();
+  f.fault.after = async (request) => {
+    if (
+      request.action === 'execute' &&
+      ['sessions', 'sessions-page'].includes(request.command.method)
+    ) {
+      nextEntered.resolve();
+      await nextRelease.promise;
+    }
+  };
+  const changed = f.controller.listProjectSessions('local', f.catalog.targets[0]!.target);
+  const rejected = assert.rejects(changed, /项目列表已改变/);
+  await nextEntered.promise;
+  f.catalog.connectionId = '00000000-0000-4000-8000-000000000002';
+  await f.controller.refreshCatalog('local');
+  nextRelease.resolve();
+  await rejected;
   assert.equal(f.prompts(), 0);
 });
 
@@ -1806,90 +1822,6 @@ const syntheticRole = {
   instructions: 'SYNTHETIC_ROLE_BODY <script>not executable</script>',
 };
 
-const annotationSnapshot: PreviewAnnotationSnapshot = {
-  serviceId: 'service',
-  serviceLabel: 'Synthetic project',
-  pagePath: '/settings',
-  frameId: 'frame',
-  capturedAt: '2026-09-12T00:00:00Z',
-  viewport: previewViewport,
-  element: {
-    elementId: 'element',
-    tagName: 'button',
-    role: 'button',
-    name: 'Save',
-    text: 'Synthetic',
-    bounds: { x: 20, y: 90, width: 120, height: 40 },
-  },
-  note: 'Increase button spacing',
-};
-function syntheticPreview() {
-  const actions: string[] = [],
-    closed: string[] = [];
-  let sequence = 0;
-  const frame = (id: string, viewport = previewViewport) =>
-    previewFrame(id, 'frame-' + ++sequence, viewport);
-  const options = (localProjectId: string): SessionPreviewOptions => ({
-    now: () => Date.parse('2026-09-12T00:00:00Z'),
-    schedule: () => () => {},
-    config: {
-      getServices: () => [
-        { id: 'service', label: 'Synthetic', version: previewVersion, startPath: '/' },
-      ],
-      getService: () => ({
-        id: 'service',
-        label: 'Synthetic',
-        version: previewVersion,
-        startPath: '/',
-        origin: 'http://127.0.0.1:12345',
-        localProjectId,
-        executionId: 'shared',
-        rootIdentity: previewVersion,
-        projectRootIdentity: previewVersion,
-      }),
-      isCurrent: () => true,
-    },
-    driver: {
-      available: async () => ({ available: true }),
-      open: async (binding, check) => {
-        check.assertCurrent();
-        check.beforeDispatch!();
-        actions.push('open');
-        return frame(binding.previewId, binding.viewport);
-      },
-      capture: async (id, check) => {
-        check.assertCurrent();
-        return frame(id);
-      },
-      locate: async (_id, frameId, point, check) => {
-        check.assertCurrent();
-        return {
-          elementId: 'element',
-          frameId,
-          tag: 'button',
-          role: 'button',
-          name: 'Save',
-          text: 'Synthetic',
-          rect: { x: point.x, y: point.y, width: 20, height: 20 },
-          editable: false,
-          password: false,
-        };
-      },
-      interact: async (request, check) => {
-        check.assertCurrent();
-        check.beforeDispatch!();
-        actions.push(request.action);
-        return frame(request.previewId, 'viewport' in request ? request.viewport : previewViewport);
-      },
-      close: async (id) => {
-        closed.push(id);
-      },
-      closeAll: async () => {},
-    },
-  });
-  return { options, actions, closed };
-}
-
 async function githubWorkspace(t: TestContext) {
   const repository = {
     id: 42,
@@ -2522,8 +2454,16 @@ test('session reads stay pure and startup identity migration is atomic without r
     state.session.id = 'another-session';
   });
   old.dispose();
-  f.runtime.persist(sessionId, unchanged);
+  assert.throws(() => f.runtime.persist(sessionId, unchanged), /检查点原持久版本/);
   unchanged.free();
+  const replaced = f.runtime.doc(sessionId),
+    replacement = mirror(replaced, sessionId);
+  replacement.setState((state) => {
+    state.session.id = 'another-session';
+  });
+  replacement.dispose();
+  f.runtime.persist(sessionId, replaced);
+  replaced.free();
   await assert.rejects(f.host.read(sessionId), /身份.*不匹配/);
   const bad = f.runtime.doc(sessionId),
     badView = mirror(bad, sessionId);
@@ -2591,7 +2531,9 @@ test('workspace content rejects late navigation results and labels failed cache 
   writeFileSync(join(f.project, 'sample.txt'), 'before');
   const firstId = await f.create();
   const panel = await f.controller.openProjectContent();
-  const before = structuredClone(f.memory.values);
+  const nonListRecords = () =>
+    new Map([...f.memory.values].filter(([key]) => !key.includes('moor-workspace-session-page')));
+  const before = structuredClone(nonListRecords());
   const entered = signal(),
     release = signal();
   f.fault.after = async (request) => {
@@ -2606,7 +2548,9 @@ test('workspace content rejects late navigation results and labels failed cache 
   release.resolve();
   await reading;
   assert.equal(panel.state, null);
-  assert.deepEqual(f.memory.values, before);
+  // Selecting a project may refresh disposable metadata pages; late file data
+  // must still leave content caches, drafts and original operations untouched.
+  assert.deepEqual(nonListRecords(), before);
   f.fault.after = undefined;
   await f.controller.openSession(firstId);
   f.memory.failWrite = true;
@@ -2708,7 +2652,15 @@ test('sidebar metadata targets the clicked session without navigating or replaci
   await assert.rejects(f.controller.projectMetadata('local', target, shown, 'archive'), /已改变/);
   const pinned = f.controller.state.sessions.find((entry) => entry.id === first)!;
   await f.controller.projectMetadata('local', target, pinned, 'archive');
-  assert.equal(f.controller.state.sessions.find((entry) => entry.id === first)?.isArchived, true);
+  assert.equal(
+    f.controller.state.sessions.some((entry) => entry.id === first),
+    false,
+  );
+  const archived = await f.controller.listProjectSessionPage('local', target, {
+    archived: 'archived',
+    fresh: true,
+  });
+  assert.equal(archived.items.find((entry) => entry.id === first)?.isArchived, true);
   assert.equal(f.controller.state.sessionId, second);
   assert.equal(f.prompts(), 0);
 });
@@ -2738,7 +2690,8 @@ test('host invalidations read CRDT deltas and metadata while preserving drafts a
   assert(
     reads.every(
       (request) =>
-        request.action === 'execute' && ['session', 'sessions'].includes(request.command.method),
+        request.action === 'execute' &&
+        ['session', 'sessions', 'sessions-page'].includes(request.command.method),
     ),
   );
   assert(

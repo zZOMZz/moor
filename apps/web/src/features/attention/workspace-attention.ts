@@ -13,7 +13,7 @@ import {
   type PendingAttention,
 } from './attention';
 import type { DesktopWorkspaceTarget } from '@moor/client/workspace-protocol';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export const workspaceAttentionBucketSchema = z
   .object({

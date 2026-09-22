@@ -7,7 +7,8 @@ import {
 } from './content-protocol';
 
 export const GIT_WORKTREE_FEATURE = 'git-worktree-v1';
-export const SECURE_GIT_OPERATIONS_FEATURE = 'secure-git-operations-v1';
+// The historical wire identifier also covers ordinary authenticated HTTP/IPC.
+export const GIT_OPERATIONS_FEATURE = 'secure-git-operations-v1';
 export const GIT_LIMITS = { branches: 200, changes: 500, issues: 20 } as const;
 export const gitOidSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
 // Git's check-ref-format remains authoritative on the execution host.

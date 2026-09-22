@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
 import { CONTENT_LIMITS, projectFilePathSchema } from '@moor/protocol/content-protocol';
-import { productCanonicalJson } from '@moor/client/encrypted-product';
+import { productCanonicalJson } from '@moor/protocol/canonical-json';
 import {
   projectDiffReferenceSchema,
   type ProjectDiffChange,

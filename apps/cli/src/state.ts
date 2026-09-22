@@ -17,15 +17,6 @@ import { id } from '@moor/protocol/protocol';
 import { CliError } from './args';
 import { workspaceTargetSchema as cliTargetSchema } from '@moor/protocol/workspace-target';
 export { workspaceTargetSchema as cliTargetSchema } from '@moor/protocol/workspace-target';
-import {
-  secureOperationSchema,
-  secureOperationDigestSource,
-  secureCatalogOperationSchema,
-  secureTargetSchema,
-  secureCatalogTargetSchema,
-  type SecureCliOperation,
-  type SecureCatalogOperation,
-} from '@moor/client/secure-operation';
 export type CliTarget = z.infer<typeof cliTargetSchema>;
 const operationSchema = z
   .object({
@@ -44,19 +35,9 @@ const operationSchema = z
   })
   .strict();
 export type CliOperation = z.infer<typeof operationSchema>;
-export type CliConnection = { origin: string; cookie: string; owner: string };
+
 export function requestVersion(body: string) {
   return 'sha256:' + createHash('sha256').update(body).digest('hex');
-}
-function secureRequestVersion(
-  value: Pick<SecureCliOperation, 'body' | 'target' | 'mcpReview' | 'previewReview' | 'userTurnId'>,
-) {
-  return requestVersion(secureOperationDigestSource(value));
-}
-function secureCatalogRequestVersion(value: Pick<SecureCatalogOperation, 'body' | 'target'>) {
-  return requestVersion(
-    JSON.stringify(['catalog-action', secureCatalogTargetSchema.parse(value.target), value.body]),
-  );
 }
 const identityKeys = [
   'serverKey',
@@ -132,7 +113,7 @@ export class CliState {
 
   constructor(
     directory = defaultCliDirectory(),
-    options: { projectRoots?: readonly string[] } = {},
+    options: { projectRoots?: readonly string[]; readOnly?: boolean } = {},
   ) {
     if (!isAbsolute(directory))
       throw new CliError('private-state', 'CLI 状态目录必须使用绝对路径。', 1);
@@ -155,16 +136,18 @@ export class CliState {
           1,
         );
     }
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    if (!options.readOnly) mkdirSync(directory, { recursive: true, mode: 0o700 });
     privateFile(directory, true);
     this.directory = realpathSync(directory);
     this.assertOutsideProjects(options.projectRoots ?? []);
     const file = join(this.directory, 'moor-cli-v1.sqlite');
-    try {
-      const fd = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-      closeSync(fd);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    if (!options.readOnly) {
+      try {
+        const fd = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+        closeSync(fd);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
     }
     privateFile(file, false);
     this.identities = [...paths, file].map((path) => {
@@ -178,11 +161,10 @@ export class CliState {
         directory: path !== file,
       };
     });
-    this.db = new DatabaseSync(file);
+    this.db = new DatabaseSync(file, { readOnly: options.readOnly === true });
+    if (options.readOnly) return;
     this.db.exec(
       'PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS setting(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,value TEXT NOT NULL);' +
-        'CREATE TABLE IF NOT EXISTS secure_outbox(id TEXT PRIMARY KEY,value TEXT NOT NULL);' +
-        'CREATE TABLE IF NOT EXISTS secure_catalog_outbox(id TEXT PRIMARY KEY,value TEXT NOT NULL);' +
         'CREATE TABLE IF NOT EXISTS setting_revision(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL CHECK(revision>=0)); INSERT OR IGNORE INTO setting_revision VALUES(1,0);' +
         'CREATE INDEX IF NOT EXISTS pending_identity ON outbox (' +
         identityColumns.join(',') +
@@ -249,207 +231,76 @@ export class CliState {
     const value = this.get('target');
     return value === undefined ? undefined : cliTargetSchema.parse(value);
   }
-  /** Encrypted operations have a separate table so legacy CLI recovery can never send them in plaintext. */
-  secureOperation(operationId: string) {
+  /** Offline compatibility only. Existing retired rows are never interpreted as dispatchable work. */
+  #retiredRead<T>(read: (tables: readonly string[]) => T): T {
     this.assertCurrent();
-    const row = this.db
-      .prepare('SELECT value FROM secure_outbox WHERE id=?')
-      .get(id.parse(operationId));
-    if (!row) return;
-    const value = secureOperationSchema.parse(JSON.parse(String(row.value)));
-    if (value.operationId !== operationId || value.requestVersion !== secureRequestVersion(value))
-      throw new CliError('corrupt-outbox', '加密原操作记录不可验证；未发送。', 1);
-    return value;
-  }
-  secureOperationSummaries() {
-    this.assertCurrent();
-    const rows = this.db
-      .prepare(
-        "SELECT json_remove(value,'$.body','$.receipt') AS value FROM secure_outbox ORDER BY rowid DESC LIMIT 101",
-      )
-      .all();
-    const shape = secureOperationSchema.innerType().omit({ body: true, receipt: true });
-    return {
-      operations: rows.slice(0, 100).map((row) => shape.parse(JSON.parse(String(row.value)))),
-      limit: 100,
-      truncated: rows.length > 100,
-    };
-  }
-  secureStage(
-    input: Omit<SecureCliOperation, 'state' | 'createdAt' | 'requestVersion'>,
-    now = new Date().toISOString(),
-  ) {
-    const value = secureOperationSchema.parse({
-      ...input,
-      state: 'pending',
-      createdAt: now,
-      requestVersion: secureRequestVersion(input),
-    });
-    this.assertCurrent();
-    this.db.exec('BEGIN IMMEDIATE');
+    this.db.exec('SAVEPOINT retired_cli_read');
     try {
-      const prior = this.secureOperation(value.operationId);
-      if (prior) {
-        if (
-          prior.body !== value.body ||
-          prior.requestVersion !== value.requestVersion ||
-          prior.kind !== value.kind ||
-          JSON.stringify(prior.target) !== JSON.stringify(value.target)
-        )
-          throw new CliError('operation-conflict', '原操作编号已用于另一加密请求。', 5);
-        this.db.exec('COMMIT');
-        return prior;
-      }
-      if (value.kind !== 'stop') {
-        const { product: _product, ...runtimeTarget } = value.target;
+      const tables = ['secure_outbox', 'secure_catalog_outbox'].filter((name) =>
+        this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name),
+      );
+      const result = read(tables);
+      this.assertCurrent();
+      this.db.exec('RELEASE retired_cli_read');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK TO retired_cli_read; RELEASE retired_cli_read');
+      throw error;
+    }
+  }
+  retiredSummaries() {
+    return this.#retiredRead((tables) => ({
+      retired: true,
+      offline: true,
+      tables: tables.map((table) => {
+        const count = Number(
+          this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count,
+        );
         const rows = this.db
           .prepare(
-            "SELECT id FROM secure_outbox WHERE json_extract(value,'$.state') IN ('pending','ending') AND json_remove(json_extract(value,'$.target'),'$.product')=? LIMIT 1",
+            `SELECT id,CASE WHEN json_valid(value) THEN json_extract(value,'$.state') ELSE NULL END AS stored_state FROM ${table} ORDER BY rowid DESC LIMIT 100`,
           )
-          .get(JSON.stringify(runtimeTarget));
-        if (rows)
+          .all();
+        return {
+          table,
+          count,
+          truncated: count > rows.length,
+          operations: rows.map((row) => ({
+            operationId: id.parse(row.id),
+            storedState: ['pending', 'ending', 'accepted', 'abandoned', 'rejected'].includes(
+              String(row.stored_state),
+            )
+              ? String(row.stored_state)
+              : 'unreadable',
+          })),
+        };
+      }),
+    }));
+  }
+  retiredArchive(operationId: string) {
+    const selected = id.parse(operationId);
+    return this.#retiredRead((tables) => {
+      const records = tables.flatMap((table) => {
+        const row = this.db.prepare(`SELECT value FROM ${table} WHERE id=?`).get(selected);
+        if (!row) return [];
+        if (typeof row.value !== 'string')
           throw new CliError(
-            'pending',
-            '请先核查此会话的加密原操作；精确停止仍可单独执行。',
-            6,
-            String(rows.id),
+            'retired-operation',
+            '旧记录不是已知文本格式，请保留原私有数据库。',
+            5,
           );
-      }
-      this.db
-        .prepare('INSERT INTO secure_outbox VALUES(?,?)')
-        .run(value.operationId, JSON.stringify(value));
-      this.assertCurrent();
-      this.db.exec('COMMIT');
-      return value;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
-  }
-  secureTransition(
-    operationId: string,
-    from: SecureCliOperation['state'][],
-    state: SecureCliOperation['state'],
-    receipt?: unknown,
-  ) {
-    this.assertCurrent();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const prior = this.secureOperation(operationId);
-      if (!prior || !from.includes(prior.state))
-        throw new CliError('operation-conflict', '加密原操作状态已改变，请重新读取。', 5);
-      const next = secureOperationSchema.parse({
-        ...prior,
-        state,
-        ...(receipt === undefined ? {} : { receipt }),
+        return [{ table, operationId: selected, originalJson: row.value }];
       });
-      this.db
-        .prepare('UPDATE secure_outbox SET value=? WHERE id=?')
-        .run(JSON.stringify(next), operationId);
-      this.assertCurrent();
-      this.db.exec('COMMIT');
-      return next;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
-  }
-  secureCatalogOperation(operationId: string) {
-    this.assertCurrent();
-    const row = this.db
-      .prepare('SELECT value FROM secure_catalog_outbox WHERE id=?')
-      .get(id.parse(operationId));
-    if (!row) return;
-    const value = secureCatalogOperationSchema.parse(JSON.parse(String(row.value)));
-    if (
-      value.operationId !== operationId ||
-      value.requestVersion !== secureCatalogRequestVersion(value)
-    )
-      throw new CliError('corrupt-outbox', '加密原操作记录不可验证；未发送。', 1);
-    return value;
-  }
-  secureCatalogOperationSummaries() {
-    this.assertCurrent();
-    const rows = this.db
-      .prepare(
-        "SELECT json_remove(value,'$.body','$.receipt') AS value FROM secure_catalog_outbox ORDER BY rowid DESC LIMIT 101",
-      )
-      .all();
-    const shape = secureCatalogOperationSchema.innerType().omit({ body: true, receipt: true });
-    return {
-      operations: rows.slice(0, 100).map((row) => shape.parse(JSON.parse(String(row.value)))),
-      limit: 100,
-      truncated: rows.length > 100,
-    };
-  }
-  secureCatalogStage(
-    input: Omit<SecureCatalogOperation, 'state' | 'createdAt' | 'requestVersion'>,
-    now = new Date().toISOString(),
-  ) {
-    const value = secureCatalogOperationSchema.parse({
-      ...input,
-      state: 'pending',
-      createdAt: now,
-      requestVersion: secureCatalogRequestVersion(input),
+      if (!records.length)
+        throw new CliError('retired-operation', '未找到这个已退场的原操作记录。', 5);
+      if (records.some((record) => Buffer.byteLength(record.originalJson) > 128 * 1024 * 1024))
+        throw new CliError(
+          'retired-operation',
+          '原记录超过单次导出上限，请保留完整私有数据库备份。',
+          5,
+        );
+      return { archiveVersion: 1, retired: true, records };
     });
-    this.assertCurrent();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const prior = this.secureCatalogOperation(value.operationId);
-      if (prior) {
-        if (
-          prior.body !== value.body ||
-          JSON.stringify(prior.target) !== JSON.stringify(value.target)
-        )
-          throw new CliError('operation-conflict', '原操作编号已用于另一加密请求。', 5);
-        this.db.exec('COMMIT');
-        return prior;
-      }
-      const pending = this.db
-        .prepare(
-          "SELECT id FROM secure_catalog_outbox WHERE json_extract(value,'$.state') IN ('pending','ending') AND json_extract(value,'$.target')=? LIMIT 1",
-        )
-        .get(JSON.stringify(value.target));
-      if (pending)
-        throw new CliError('pending', '请先核查此主机的加密目录原操作。', 6, String(pending.id));
-      this.db
-        .prepare('INSERT INTO secure_catalog_outbox VALUES(?,?)')
-        .run(value.operationId, JSON.stringify(value));
-      this.assertCurrent();
-      this.db.exec('COMMIT');
-      return value;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
-  }
-  secureCatalogTransition(
-    operationId: string,
-    from: SecureCatalogOperation['state'][],
-    state: SecureCatalogOperation['state'],
-    receipt?: unknown,
-  ) {
-    this.assertCurrent();
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const prior = this.secureCatalogOperation(operationId);
-      if (!prior || !from.includes(prior.state))
-        throw new CliError('operation-conflict', '加密原操作状态已改变，请重新读取。', 5);
-      const next = secureCatalogOperationSchema.parse({
-        ...prior,
-        state,
-        ...(receipt === undefined ? {} : { receipt }),
-      });
-      this.db
-        .prepare('UPDATE secure_catalog_outbox SET value=? WHERE id=?')
-        .run(JSON.stringify(next), operationId);
-      this.assertCurrent();
-      this.db.exec('COMMIT');
-      return next;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
   }
   setTarget(value: CliTarget) {
     this.set('target', cliTargetSchema.parse(value));

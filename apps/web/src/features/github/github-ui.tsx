@@ -1,9 +1,8 @@
-import { useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { GitPullRequest, X } from 'lucide-react';
-import { paint } from '../../components/ui';
-import { githubKey, safeGithubLink, type GithubController } from './github';
 import type { GithubPage, GithubRepository } from '@moor/protocol/github-protocol';
+import { X } from 'lucide-react';
+import { useState } from 'react';
+import { safeGithubLink, type GithubController } from './github';
 
 type PageInfo = Pick<GithubPage<unknown>, 'page' | 'hasNext' | 'partial'>;
 function Pages({
@@ -450,36 +449,5 @@ export function GithubPanel(p: GithubPanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showGithubPanel(props?: GithubPanelProps) {
-  paint(
-    '#github-view',
-    props ? (
-      <GithubPanel
-        key={props.controller ? githubKey(props.controller.target) : 'loading'}
-        {...props}
-      />
-    ) : null,
-  );
-}
-export function showGithubControl(props?: {
-  onOpen(): void;
-  disabled?: boolean;
-  pending?: boolean;
-}) {
-  paint(
-    '#github-control',
-    props ? (
-      <button
-        aria-label="GitHub 仓库与会话上下文"
-        title="GitHub 仓库与会话上下文"
-        disabled={props.disabled}
-        onClick={props.onOpen}
-      >
-        <GitPullRequest size={16} />
-        <span>{props.pending ? 'GitHub · 待确认' : 'GitHub'}</span>
-      </button>
-    ) : null,
   );
 }

@@ -3,6 +3,13 @@ import { createRoot } from 'react-dom/client';
 import { applyAppearance } from '../../apps/web/src/components/appearance';
 applyAppearance(localStorage.getItem('moor-appearance') ?? 'system');
 import { WorkspaceApp } from '../../apps/web/src/app/workspace-app';
+import {
+  SESSION_PAGE_FEATURE,
+  compareSessionPageItems,
+  sessionPageMatches,
+  sessionPageRequestSchema,
+  validateSessionPageResult,
+} from '@moor/protocol/session-page';
 const target = {
   serverKey: 'local:machine',
   owner: 'local-desktop',
@@ -54,7 +61,13 @@ const runtime = {
   name: '我的电脑',
   projects: [{ id: 'project', name: 'Moor', rootPath: '/synthetic/project' }],
   agents: [agent],
-  features: ['session-fork-v1', 'project-diff-v1', 'project-tree-v1', 'agent-run-defaults-v1'],
+  features: [
+    SESSION_PAGE_FEATURE,
+    'session-fork-v1',
+    'project-diff-v1',
+    'project-tree-v1',
+    'agent-run-defaults-v1',
+  ],
 };
 const project = {
   target,
@@ -94,7 +107,7 @@ const sessions = Array.from({ length: 40 }, (_, i) => ({
   agentConfigId: 'agent',
   userId: 'user',
   machineId: 'machine',
-  project: { kind: 'local', localProjectId: 'project' },
+  project: { kind: 'local' as const, localProjectId: 'project' },
   isPinned: i < 2,
   isArchived: i >= 37,
   status: { type: 'idle' },
@@ -166,6 +179,7 @@ const emit = () => {
   listeners.forEach((fn) => fn());
 };
 const calls: string[] = [];
+const pageReads: { projectId: string; pinned: string; limit: number; cursor?: string }[] = [];
 const controller: any = {
   get state() {
     return state;
@@ -207,6 +221,45 @@ const controller: any = {
   },
   async listProjectSessions(_source: string, target: any) {
     return sessions.filter((session) => session.project.localProjectId === target.localProjectId);
+  },
+  async listProjectSessionPage(_source: string, selected: any, options: any = {}) {
+    const { fresh: _fresh, ...filters } = options;
+    const request = sessionPageRequestSchema.parse({
+      pageVersion: 1,
+      workspaceId: selected.workspaceId,
+      localProjectId: selected.localProjectId,
+      ...filters,
+    });
+    const rows = sessions
+      .filter(
+        (session) =>
+          session.project.localProjectId === selected.localProjectId &&
+          sessionPageMatches(session, request),
+      )
+      .sort(compareSessionPageItems);
+    const offset = request.cursor ? Number(request.cursor.replace(/^fixture_/, '')) : 0;
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      (request.cursor && request.cursor !== `fixture_${offset}`)
+    )
+      throw Error('Synthetic pagination cursor is invalid');
+    const end = offset + request.limit;
+    const { cursor: _cursor, ...page } = request;
+    const result = validateSessionPageResult(request, {
+      ...page,
+      confirmed: true,
+      revision: 'sha256:' + this.navigationRevision.toString(16).padStart(64, '0'),
+      items: rows.slice(offset, end),
+      nextCursor: end < rows.length ? `fixture_${end}` : null,
+    });
+    pageReads.push({
+      projectId: selected.localProjectId,
+      pinned: request.pinned,
+      limit: request.limit,
+      cursor: request.cursor,
+    });
+    return { ...result, source: 'host', partial: result.nextCursor !== null };
   },
   async refreshSessions() {
     state.sessions = sessions.filter(
@@ -272,30 +325,9 @@ const controller: any = {
     calls.push('send');
   },
 };
-const secureState: any = {
-  hostId: null,
-  catalog: null,
-  replicaId: null,
-  sessions: [],
-  session: null,
-  status: null,
-  operations: [],
-  draft: '',
-  attachmentDraft: [],
-  mcpDraft: null,
-  previewAnnotations: [],
-  extensionBlock: null,
-  permissionReviews: [],
-  busy: false,
-};
-const secure: any = {
-  state: secureState,
-  subscribe: () => () => {},
-  invalidate() {},
-  contentContext: { target: null, online: false, generation: 0 },
-};
 const fixture = {
   calls,
+  pageReads,
   empty() {
     state = {
       catalogs: { local: { ...catalog, targets: [] } },
@@ -327,7 +359,6 @@ Object.assign(window, { __moorFixture: fixture });
 createRoot(document.getElementById('app')!).render(
   <WorkspaceApp
     controller={controller}
-    secure={secure}
     accountApi={async () => ({ ok: false, error: { message: 'Synthetic offline account' } })}
     openSettings={async () => {
       calls.push('settings');

@@ -1,4 +1,5 @@
 import { AppError } from './protocol';
+import { RETIRED_SESSION_FEATURE, HOST_UPGRADE_REQUIRED } from './connection-authority';
 
 export const agentModelFailures = {
   programVersion:
@@ -21,7 +22,9 @@ export function identifyAgentModelFailure(error: unknown): AppError | undefined 
 
 export function publicAgentFailure(error: unknown, fallback: string): string {
   return error instanceof Error &&
-    Object.values(agentModelFailures).some((value) => error.message === value)
+    [...Object.values(agentModelFailures), RETIRED_SESSION_FEATURE, HOST_UPGRADE_REQUIRED].some(
+      (value) => error.message === value,
+    )
     ? error.message
     : fallback;
 }

@@ -18,6 +18,7 @@ try {
   else {
     state = new CliState(
       args.flags['state-dir'] ? resolve(String(args.flags['state-dir'])) : defaultCliDirectory(),
+      { readOnly: args.group === 'retired' },
     );
     const emit = (data: unknown) =>
       process.stdout.write(

@@ -43,7 +43,7 @@ app.whenReady().then(async () => {
       BrowserWindow: HiddenWindow,
       session: clientSession,
       origin: '',
-      preloadPath: path.join(root, 'dist/desktop/preload/secure-preload.cjs'),
+      preloadPath: path.join(root, 'dist/desktop/preload/workspace-preload.cjs'),
       registry,
       invalidate() {},
       clientPolicy: policy,
@@ -82,14 +82,14 @@ app.whenReady().then(async () => {
       trusted(event);
       return { appearance: 'system' };
     });
-    ipcMain.handle('moor:secure-account', (event) => {
+    ipcMain.handle('moor:account', (event) => {
       trusted(event);
       return {
         ok: true,
         value: { origin: '', owner: null, needsSetup: false, google: { enabled: false } },
       };
     });
-    for (const name of ['moor:workspace-client', 'moor:secure-client'])
+    for (const name of ['moor:workspace-client'])
       ipcMain.handle(name, (event, value) => {
         trusted(event);
         operations.push(value);

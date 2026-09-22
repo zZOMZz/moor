@@ -72,10 +72,13 @@ test('mobile project panel distinguishes current files, cached history and incom
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
   });
-  const { act } = await import('react');
-  const { showShell, disposeUI } = await import('../../apps/web/src/components/ui');
-  const { showProjectContentPanel, showProjectContentControls } =
+  const { act, createElement } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const { ProjectContentPanel } =
     await import('../../apps/web/src/features/files/project-content-ui');
+  const root = createRoot(document.getElementById('app')!);
+  const renderPanel = (props?: ProjectContentPanelProps) =>
+    root.render(props ? createElement(ProjectContentPanel, props) : null);
   const actions: unknown[] = [];
   let props: ProjectContentPanelProps = {
     title: 'Synthetic session · Synthetic Mac',
@@ -107,7 +110,7 @@ test('mobile project panel distinguishes current files, cached history and incom
     onTurn: (id) => actions.push(id),
     onDiffFile: (change) => actions.push(change.path),
     onRefresh: () => actions.push('refresh'),
-    onClose: () => showProjectContentPanel(),
+    onClose: () => renderPanel(),
   };
   const button = (label: string) => {
     const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
@@ -119,9 +122,7 @@ test('mobile project panel distinguishes current files, cached history and incom
   const panel = () => document.querySelector('.project-content-panel')!;
   try {
     await act(async () => {
-      showShell({ onSend() {}, onDraft() {}, onCancel() {} });
-      showProjectContentControls({ tree: true, changes: true, onTree() {}, onChanges() {} });
-      showProjectContentPanel(props);
+      renderPanel(props);
     });
     assert.match(panel().textContent!, /上次读取的目录缓存/);
     assert.match(panel().textContent!, /未列出不表示文件不存在/);
@@ -152,7 +153,7 @@ test('mobile project panel distinguishes current files, cached history and incom
         },
       },
     };
-    await act(async () => showProjectContentPanel(props));
+    await act(async () => renderPanel(props));
     assert.match(panel().textContent!, /已缓存文件版本 · 不代表当前主机内容/);
     assert.equal(panel().querySelector('script'), null);
     assert.equal(panel().querySelector('a[href^="javascript:"]'), null);
@@ -200,7 +201,7 @@ test('mobile project panel distinguishes current files, cached history and incom
         },
       },
     };
-    await act(async () => showProjectContentPanel(props));
+    await act(async () => renderPanel(props));
     assert.match(panel().textContent!, /已保存的回合前后版本 · 离线缓存/);
     assert.equal(panel().querySelector('.project-diff-line.removed code')!.textContent, 'old');
     assert.equal(panel().querySelector('.project-diff-line.added code')!.textContent, 'new');
@@ -228,19 +229,14 @@ test('mobile project panel distinguishes current files, cached history and incom
           },
         },
       };
-      await act(async () => showProjectContentPanel(props));
+      await act(async () => renderPanel(props));
       assert.ok(panel().querySelector('.project-partial'), state);
       assert.doesNotMatch(panel().textContent!, /未检测到文件变化|零改动|0 个文件/, state);
     }
     await act(async () => button('关闭文件与变更').click());
     assert.equal(document.querySelector('.project-content-panel'), null);
-    assert.equal(
-      document.querySelector<HTMLTextAreaElement>('#prompt')!.value,
-      '',
-      'read-only navigation never changes the prompt',
-    );
   } finally {
-    await act(async () => disposeUI());
+    await act(async () => root.unmount());
     dom.window.close();
   }
 });

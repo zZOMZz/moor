@@ -5,7 +5,6 @@ const fs = require('node:fs'),
   os = require('node:os'),
   http = require('node:http'),
   assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '../..');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moor-layout-profile-'));
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'moor-layout-output-'));
@@ -17,22 +16,9 @@ app
   .then(async () => {
     const { build } = await import('esbuild');
     const { browserWasm } = await import('../build/browser-wasm.mjs');
-    const baseline = process.env.MOOR_LAYOUT_BASELINE;
-    const plugins = [browserWasm()];
-    if (baseline)
-      plugins.push({
-        name: 'baseline-workspace',
-        setup(build) {
-          build.onLoad({ filter: /src\/web\/workspace-app\.tsx$/ }, () => ({
-            contents: execFileSync('git', ['show', baseline + ':src/web/workspace-app.tsx'], {
-              cwd: root,
-              encoding: 'utf8',
-            }),
-            loader: 'tsx',
-            resolveDir: path.join(root, 'src/web'),
-          }));
-        },
-      });
+    const { workspaceSources } = await import('../build/workspace-sources.mjs');
+    const { buildWebStyles } = await import('../../apps/web/scripts/build-styles.mjs');
+    const plugins = [workspaceSources, browserWasm()];
     await build({
       entryPoints: [path.join(root, 'tests/fixtures/workspace-layout-fixture.tsx')],
       outfile: path.join(output, 'fixture.js'),
@@ -45,30 +31,15 @@ app
       loader: { '.wasm': 'file' },
       publicPath: '/',
     });
-    await build({
-      entryPoints: [path.join(root, 'tests/fixtures/secure-layout-fixture.tsx')],
-      outfile: path.join(output, 'secure-fixture.js'),
-      bundle: true,
-      platform: 'browser',
-      format: 'esm',
-      target: 'chrome120',
-      alias: { 'loro-crdt': 'loro-crdt/bundler' },
-      plugins: [browserWasm()],
-      loader: { '.wasm': 'file' },
-      publicPath: '/',
-    });
-    const css = baseline
-      ? execFileSync('git', ['show', baseline + ':apps/web/public/style.css'], { cwd: root })
-      : fs.readFileSync(path.join(root, 'apps/web/public/style.css'), 'utf8') +
-        '\n' +
-        fs.readFileSync(path.join(root, 'apps/web/src/styles/secure.css'), 'utf8');
+    await buildWebStyles(path.join(output, 'style.css'));
+    const css = fs.readFileSync(path.join(output, 'style.css'), 'utf8');
     server = http.createServer((req, res) => {
       const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
-      if (pathname === '/' || pathname === '/secure') {
+      if (pathname === '/') {
         res.setHeader('content-type', 'text/html');
         res.end(
           '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"></head><body><div id="app"></div><script type="module" src="/' +
-            (pathname === '/secure' ? 'secure-fixture.js' : 'fixture.js') +
+            'fixture.js' +
             '"></script></body></html>',
         );
         return;
@@ -125,6 +96,20 @@ app
     };
     await win.loadURL(url);
     await wait('.workspace-pinned li');
+    await wait('.workspace-recent li');
+    const pageReads = await win.webContents.executeJavaScript('window.__moorFixture.pageReads');
+    assert.equal(pageReads.length, 8, 'four projects load bounded pinned and recent summaries');
+    assert(
+      pageReads.every(
+        (read) => read.limit === 30 && !read.cursor && ['pinned', 'unpinned'].includes(read.pinned),
+      ),
+    );
+    assert.equal(
+      await win.webContents.executeJavaScript(
+        "document.querySelector('.workspace-projects').textContent.includes('含旧主机兼容目录')",
+      ),
+      false,
+    );
     const metrics = await win.webContents.executeJavaScript(`(()=>{
       const nav=document.querySelector('.workspace-projects'), rect=nav.getBoundingClientRect();
       return { viewport: innerHeight, listHeight: rect.height, visibleSessions: [...nav.querySelectorAll('li')].filter(node=>{const r=node.getBoundingClientRect();return r.height>0&&r.top>=rect.top&&r.bottom<=rect.bottom;}).length, overflow: document.documentElement.scrollWidth>innerWidth };
@@ -190,7 +175,7 @@ app
       );
     }
 
-    if (!baseline) {
+    {
       assert.equal(metrics.overflow, false);
       assert(metrics.visibleSessions >= 4, JSON.stringify(metrics));
       await win.webContents.executeJavaScript(
@@ -253,8 +238,8 @@ app
     const narrowOverflow = await win.webContents.executeJavaScript(
       'document.documentElement.scrollWidth>innerWidth',
     );
-    if (!baseline) assert.equal(narrowOverflow, false);
-    if (!baseline) {
+    assert.equal(narrowOverflow, false);
+    {
       await win.webContents.executeJavaScript(
         "document.querySelector('.workspace-navigation-bar button').click()",
       );
@@ -276,33 +261,9 @@ app
         'create',
       ]);
     }
-    win.setContentSize(1200, 800);
-    await win.loadURL(url + '/secure');
-    await wait('#secure-prompt');
-    await shot('secure-desktop');
-    assert.equal(
-      await win.webContents.executeJavaScript('document.documentElement.scrollWidth>innerWidth'),
-      false,
-    );
-    win.setContentSize(390, 760);
-    await shot('secure-narrow');
-    assert(
-      await win.webContents.executeJavaScript(
-        "innerHeight-document.querySelector('.secure-composer').getBoundingClientRect().bottom < 30",
-      ),
-      'composer stays at the bottom of the encrypted conversation',
-    );
-    assert.equal(
-      await win.webContents.executeJavaScript('document.documentElement.scrollWidth>innerWidth'),
-      false,
-    );
     fs.writeFileSync(
       path.join(output, 'metrics.json'),
-      JSON.stringify(
-        { baseline: baseline ?? null, ...metrics, narrowOverflow, composerLayout, errors },
-        null,
-        2,
-      ),
+      JSON.stringify({ ...metrics, narrowOverflow, composerLayout, errors }, null, 2),
     );
     console.log(JSON.stringify({ output, metrics, errors }));
     win.destroy();

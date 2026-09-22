@@ -13,7 +13,7 @@ import {
 } from '../../apps/web/src/features/workspace/workspace-records';
 import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
 import { emptyInteractionSaved } from '../../apps/web/src/features/interactions/interactions';
-import type { SecureStorageBackend, StorageChange } from '../../apps/web/src/platform/secure-store';
+import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
 import type { SessionOriginalOperation } from '@moor/protocol/session-control-protocol';
 
 const scope: WorkspaceScope = {
@@ -46,7 +46,7 @@ const operation = (id: string, sessionId = 'session'): SessionOriginalOperation 
     machineId: 'machine',
   },
 });
-class Memory implements SecureStorageBackend {
+class Memory implements StorageBackend {
   values = new Map<string, unknown>();
   reads: string[] = [];
   batches: StorageChange[][] = [];

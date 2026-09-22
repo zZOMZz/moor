@@ -14,11 +14,7 @@ export async function buildWebStyles(output) {
   await mkdir(dirname(output), { recursive: true });
   await writeFile(
     output,
-    utilities.css +
-      '\n' +
-      (await readFile(resolve(appRoot, 'public/style.css'), 'utf8')) +
-      '\n' +
-      (await readFile(resolve(appRoot, 'src/styles/secure.css'), 'utf8')),
+    utilities.css + '\n' + (await readFile(resolve(appRoot, 'public/style.css'), 'utf8')),
   );
 }
 

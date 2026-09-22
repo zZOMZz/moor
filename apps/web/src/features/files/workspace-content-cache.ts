@@ -3,15 +3,12 @@ import {
   type DesktopWorkspaceSource,
 } from '@moor/client/workspace-protocol';
 import { ScopedProjectContentCache } from './scoped-project-content-cache';
-import type { SecureStorageBackend } from '../../platform/secure-store';
+import type { StorageBackend } from '../../platform/indexed-storage';
 
 export const workspaceContentTargetSchema = desktopWorkspaceTargetSchema.required({
   sessionId: true,
 });
-export function workspaceContentCache(
-  source: DesktopWorkspaceSource,
-  backend: SecureStorageBackend,
-) {
+export function workspaceContentCache(source: DesktopWorkspaceSource, backend: StorageBackend) {
   return new ScopedProjectContentCache(
     {
       namespace: 'moor-workspace-project-content-v1',

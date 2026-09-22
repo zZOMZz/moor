@@ -26,10 +26,12 @@ import {
   sessionOriginalOperationSchema,
   type SessionOriginalOperation,
 } from '@moor/protocol/session-control-protocol';
-import { sessionReadResponseSchema } from '@moor/protocol/session-responses';
+import { sessionReadResponseSchema, sessionListSchema } from '@moor/protocol/session-responses';
+import type { SessionPageRequest } from '@moor/protocol/session-page';
+import { workspaceSessionPage } from './workspace-session-pages';
 import { readClientSession } from '@moor/client/session-client';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
-import { IndexedSecureStorage, type SecureStorageBackend } from '../../platform/secure-store';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import { IndexedStorage, type StorageBackend } from '../../platform/indexed-storage';
 import {
   workspaceAttachmentDraftSchema,
   emptyWorkspaceAttachments,
@@ -179,7 +181,7 @@ const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 /** Private recoverable Draft State and reliable Ledger; neither is relayed to another client. */
 export class WorkspaceStore {
   constructor(
-    readonly backend: SecureStorageBackend = new IndexedSecureStorage({
+    readonly backend: StorageBackend = new IndexedStorage({
       databaseName: 'moor-desktop-workspace-v1',
     }),
   ) {}
@@ -1292,6 +1294,40 @@ export class WorkspaceStore {
       current();
       await this.backend.compareAndSet(key, before, value, current);
     });
+  }
+  async sessionList(scope: WorkspaceScope, current: () => void, input?: unknown) {
+    const normalized = scopeSchema.parse(scope);
+    const key = canonical(['moor-workspace-session-list-v1', normalized]);
+    const raw = input === undefined ? await this.backend.read(key) : input;
+    current();
+    if (raw === null) return undefined;
+    const list = sessionListSchema.parse(raw);
+    if (
+      list.some(
+        (item) =>
+          item.userId !== normalized.target.userId ||
+          item.machineId !== normalized.target.machineId ||
+          item.project.localProjectId !== normalized.target.localProjectId,
+      )
+    )
+      throw Error('缓存会话列表不属于原电脑和项目。');
+    if (input !== undefined)
+      await this.backend.exclusive(key, current, async () => {
+        const before = await this.backend.read(key);
+        current();
+        await this.backend.compareAndSet(key, before, list, current);
+      });
+    return list;
+  }
+  /** Each confirmed page retains its original filters/cursor. It cannot make an
+   * unread page look available, or replace the complete legacy-list cache. */
+  async sessionPage(
+    scope: WorkspaceScope,
+    current: () => void,
+    rawRequest: SessionPageRequest,
+    input?: unknown,
+  ) {
+    return workspaceSessionPage(this.backend, scopeSchema.parse(scope), current, rawRequest, input);
   }
   async attachmentContent(
     scope: WorkspaceScope,

@@ -4,8 +4,6 @@ import {
   type HostNotificationEvent,
   type NotificationEnvelope,
 } from '@moor/protocol/notification-protocol';
-import type { Workspace } from '@moor/protocol/catalog';
-import type { Device } from '../sessions/navigation';
 export function parseNotificationNavigation(
   raw: string,
   owner: string,
@@ -28,40 +26,4 @@ export function parseNotificationNavigation(
   if (event.createdAt > now + 60000 || event.expiresAt <= now)
     throw new Error('此通知已过期，请从会话列表重新查看当前状态。');
   return event;
-}
-/** Product routes are mutable. Resolve the event's immutable execution identity. */
-export function resolveNotificationNavigation(
-  event: HostNotificationEvent | NotificationEnvelope,
-  devices: Device[],
-  catalog: Workspace[],
-) {
-  const matches = catalog.flatMap((space) =>
-    space.hosts.flatMap((host) => {
-      if ('deviceId' in event && host.deviceId !== event.deviceId) return [];
-      const device = devices.find((device) => device.id === host.deviceId);
-      const runtime = device?.workspaces.find(
-        (runtime) =>
-          runtime.id === event.workspaceId &&
-          runtime.machineId === event.machineId &&
-          runtime.userId === event.userId,
-      );
-      if (
-        !runtime ||
-        host.machineId !== event.machineId ||
-        host.runtimeWorkspaceId !== event.workspaceId
-      )
-        return [];
-      return space.replicas
-        .filter(
-          (replica) =>
-            replica.hostId === host.id &&
-            replica.localProjectId === event.localProjectId &&
-            space.projects.some((project) => project.id === replica.projectId),
-        )
-        .map((replica) => ({ space, host, replica }));
-    }),
-  );
-  if (matches.length !== 1)
-    throw new Error('此通知的执行目标已移除或映射不唯一，请从会话列表重新选择。');
-  return matches[0]!;
 }

@@ -228,7 +228,6 @@ test(
       ['--desktop'],
       ['--pair', 'synthetic'],
       ['--github-config-stdin'],
-      ['--preview-config-stdin'],
       ['--skills-config-stdin'],
     ]) {
       const rejected = await f.cli({ action: 'read' }, flags);
@@ -357,7 +356,7 @@ test(
 );
 
 test(
-  'actual host-main awaits role reads and persists accepted and sealed operations across restart without launching an Agent',
+  'actual host-main retains empty legacy reads and refuses retired writes across restart without launching an Agent',
   { timeout: 20000 },
   async (t) => {
     const f = fixture(t);
@@ -387,14 +386,14 @@ test(
           localProjectId: replica.localProjectId,
           sessionId: 'roles-cli-draft',
         },
-        async request(kind: 'read' | 'action', body: unknown) {
+        async request(kind: 'read' | 'action', body: unknown, expectedStatus = 200) {
           const response = await fetch(path + kind, {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
           });
           const value = await response.json();
-          assert.equal(response.status, 200, JSON.stringify(value));
+          assert.equal(response.status, expectedStatus, JSON.stringify(value));
           assert.equal(response.headers.get('cache-control'), 'no-store');
           return value;
         },
@@ -417,23 +416,11 @@ test(
       selection: {},
       instructions: 'SYNTHETIC_ROLE_RPC_BODY',
     };
-    const accepted = await api.request('action', request);
-    assert.equal(accepted.accepted, true);
-    assert.equal(
-      (await api.request('read', api.scope)).roles[0].instructions,
-      request.instructions,
-    );
-    const neverArrived = {
-      ...request,
-      operationId: randomUUID(),
-      expectedRevision: 1,
-      instructions: 'SYNTHETIC_SEALED_NEVER_BODY',
-    };
-    const sealed = await api.request('action', { action: 'abandon', request: neverArrived });
-    assert.equal(sealed.accepted, false);
-    assert.equal(sealed.abandoned, true);
-    assert.deepEqual(await api.request('action', neverArrived), sealed);
-    assert.equal((await api.request('read', api.scope)).roles.length, 1);
+    await api.request('action', request, 410);
+    await api.request('action', { action: 'abandon', request }, 410);
+    const inspected = await api.request('action', { action: 'inspect', request });
+    assert.equal(inspected.found, false);
+    assert.equal((await api.request('read', api.scope)).roles.length, 0);
     assert.equal(existsSync(f.log), false);
     host.child.kill('SIGTERM');
     assert.equal((await host.closed)[0], 0, host.output().stderr);
@@ -442,21 +429,26 @@ test(
     await restarted.wait((message) => message.type === 'health' && message.local === 'ready');
     const next = await client(nextReady);
     assert.deepEqual(next.scope, api.scope);
-    assert.deepEqual(await next.request('action', request), accepted);
-    assert.deepEqual(
-      (await next.request('action', { action: 'inspect', request: neverArrived })).receipt,
-      sealed,
-    );
-    assert.equal((await next.request('read', next.scope)).catalogRevision, 1);
+    assert.deepEqual(await next.request('action', { action: 'inspect', request }), inspected);
+    await next.request('action', request, 410);
+    assert.equal((await next.request('read', next.scope)).catalogRevision, 0);
     assert.equal(existsSync(f.log), false);
     restarted.child.kill('SIGTERM');
     assert.equal((await restarted.closed)[0], 0, restarted.output().stderr);
-    const relayBytes = readFileSync(f.configFile + '.catalog.sqlite');
-    assert.equal(relayBytes.includes(Buffer.from(request.instructions)), false);
-    assert.equal(relayBytes.includes(Buffer.from(f.script)), false);
-    assert.equal(
-      readFileSync(f.runtimeFile).includes(Buffer.from(neverArrived.instructions)),
-      false,
-    );
+    const stored = new RuntimeStore(f.runtimeFile);
+    try {
+      assert.equal(
+        stored.journal.db.prepare('SELECT 1 FROM operation WHERE id=?').get(request.operationId),
+        undefined,
+      );
+      assert.equal(
+        stored.journal.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE name='project_role_catalog'")
+          .get(),
+        undefined,
+      );
+    } finally {
+      stored.close();
+    }
   },
 );

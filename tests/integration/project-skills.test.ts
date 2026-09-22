@@ -21,7 +21,7 @@ import {
   type SkillSource,
 } from '@moor/protocol/skills-protocol';
 import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
-import { runDeviceSecurityCommand } from '../../apps/cli/src/security/commands';
+import { writePrivateArtifacts } from '../fixtures/private-documents';
 
 const version = 'sha256:' + '1'.repeat(64);
 const source = (id = 'project_agents'): SkillSource => ({
@@ -51,23 +51,7 @@ test('private vault, recovery code and capsule copies named SKILL.md never becom
     recoveryCodeFile = join(root, 'custom-code.json'),
     outputFile = join(root, 'custom-backup.json'),
     skillsRoot = join(root, 'skills');
-  await runDeviceSecurityCommand(
-    {
-      action: 'initialize',
-      identity: {
-        accountId: 'synthetic-owner',
-        serverOrigin: 'https://relay.example.test',
-        deviceId: 'synthetic-mbp',
-        roles: ['host'],
-      },
-      recoveryCodeFile,
-    },
-    { dataFile },
-  );
-  await runDeviceSecurityCommand(
-    { action: 'export-recovery', recoveryCodeFile, outputFile },
-    { dataFile },
-  );
+  writePrivateArtifacts(dataFile, recoveryCodeFile, outputFile);
   for (const [index, path] of [dataFile, recoveryCodeFile, outputFile].entries())
     await put(skillsRoot, `private-${index}/SKILL.md`, await readFile(path));
   await put(skillsRoot, 'safe/SKILL.md', 'Ordinary documentation of moor-private-endpoint-v1.');

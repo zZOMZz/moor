@@ -2,7 +2,7 @@ import type { GitTarget } from '../git/git-workspace';
 import { tasksStoredSchema } from './tasks';
 import { taskPlanSchema } from '@moor/protocol/task-protocol';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 export function validateWorkspaceTasks(input: unknown, target: GitTarget) {
   const value = tasksStoredSchema.parse(input);
   if (

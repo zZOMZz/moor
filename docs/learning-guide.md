@@ -139,7 +139,7 @@ Session S
 
 用户条目的 `finished=true` 只表示输入记录完整。Agent 是否还在执行，需要看助手回合的生命周期。助手正常返回标为 `handled`，失败为 `failed`，用户停止为 `canceled`。`handled` 不证明代码正确或用户目标达成。
 
-普通 Web 新会话在首次指令被接受时持久建立；会话 CLI 的显式创建、Fork 和协作子任务还存在先建立空会话的路径。学习时不要把“点新会话”与“数据库已有会话”视为同一个时刻，也不要把普通 Web 的流程推广到全部入口。
+普通 Web 新会话在首次指令被接受时持久建立；会话 CLI 的显式创建和 Fork 还存在先建立空会话的路径。学习时不要把“点新会话”与“数据库已有会话”视为同一个时刻，也不要把普通 Web 的流程推广到全部入口。
 
 ### 5.2 四种状态为何分开保存
 
@@ -248,7 +248,7 @@ Agent 回调进入主机，由主机将内容写入 Moor 历史。`changed` 是�
 
 **理解检查：** 应该在写数据库之前还是之后启动 Agent？若反过来，写入失败会造成什么不可解释的状态？
 
-源码入口：[Web 的 `sendTurn`、`prepareTurnMutation`、`submit`](../apps/web/src/app/app.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
+源码入口：[Web 的 `sendTurn`、`prepareTurnMutation`、`submit`](../apps/web/src/features/workspace/workspace-controller.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
 
 ## 7. 断线、重试与一致性
 
@@ -349,7 +349,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 | 执行主机重启             | 恢复服务与历史，不恢复旧 prompt 执行                             |
 | 电脑休眠或关机           | 该电脑无法继续执行                                               |
 
-带 MCP 或协作任务授权的回合还绑定原执行连接。连接或授权失效可以触发工具撤销与精确子回合停止，因此“断线后继续”必须说明是浏览器页面连接、主机中转连接，还是执行进程退出，不能一概而论。
+旧逐回合 MCP 和父子任务执行授权已经退场，不在重连时恢复。旧未知操作与子槽位保留原状态；当前 TaskDoc 中明确提交的持久意图按独立授权与队列规则处理，不能把它们当作可编辑草稿或旧未知命令的自动重试。
 
 理解恢复时分别问：服务能否访问？原操作是否接受？本轮是否结束？文件是什么状态？不要用一个“已恢复”覆盖所有答案。
 
@@ -386,28 +386,21 @@ Git 和 GitHub 副作用不能与 Moor SQLite 构成同一个事务，因此主�
 
 专题：[Git 工作目录](git-workspaces.md)、[原生 Fork](session-fork.md)、[GitHub 上下文](github.md)、[审阅与发布](github-writes.md)。
 
-### 10.3 预览、Skills、角色与 MCP
+### 10.3 Skills 与已退场的会话扩展
 
-| 能力     | 接入方式                                                         | 执行边界                                                                        |
-| -------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 网页预览 | 执行电脑登记回环开发服务，独立 Electron 渲染并返回画面与受限交互 | 不自动启动开发服务，不提供任意 URL/端口代理；页面交互本身可能修改应用数据       |
-| Skills   | 发现已授权文件，用户将选中版本的说明加入草稿                     | 阅读不执行；加入后冻结的文本按普通发送进入历史，不代表原生 Agent 自动激活 Skill |
-| 项目角色 | 固定 Agent 版本与默认选项，用户明确应用说明                      | 应用修改草稿；角色不自动运行，也不把其他设备变成执行主机                        |
-| 额外 MCP | 本机登记私有连接，远端只选择固定版本，随当前回合授权             | 共享输入不携带凭据；授权到期或失效后撤销，已发生外部动作不会自动回滚            |
+Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿。阅读不执行；加入后冻结的文本按普通发送进入历史，不代表原生 Agent 自动激活 Skill。
 
-MCP 的空选择只表示没有添加 Moor 管理的服务。原生 Agent 可能有自己的 MCP 配置，不能据此宣传全部 MCP 都已禁用。
+旧网页预览、项目角色和 Moor 逐回合额外 MCP 已移除客户端入口、主机执行链和运行资源。Host 只保留完整范围内的旧角色目录/原回执、预览原回执和安全 MCP 描述读取。旧文件、连接参数和未知原操作不自动删除、改投或封存。Agent 自己的 MCP 配置仍由 Agent 管理，这次退场不修改这些配置。
 
-专题：[网页预览](preview.md)、[Skills](skills.md)、[Agent 与角色](agent-roles.md)、[MCP](mcp.md)。
+专题：[网页预览退场](preview.md)、[Skills](skills.md)、[Agent 与旧角色记录](agent-roles.md)、[Moor MCP 退场](mcp.md)。
 
-### 10.4 有限多 Agent 协作
+### 10.4 旧父子任务与当前持久任务
 
-用户先审查有限任务计划，随父指令手动发送，主机在接受事务中保存任务授权与预留槽位。父 Agent 经当轮私有 HTTP MCP 使用 `moor_task_create/send/read/wait/cancel` 五个工具。创建子目录与空会话不等于执行，发送子指令是后续独立动作。
+旧父回合计划、`moor_tasks` 工具、自动创建/发送/等待子会话及其撤销/清理执行链已移除。已有 grant、slot、operation 和 revocation 表保留原内容，核查只读原范围、原编号和原指纹，不启动 Agent、访问外部服务或推断终态。尚未确认的旧子槽位仍阻止其他流程覆盖同一身份。
 
-子任务限同一电脑、同一项目、单层，使用独立 worktree，并受任务数、并行数、回合数和授权时限约束。父回合结束或授权失效时撤销工具，并请求停止它发出的精确子回合；撤销完成不能替代进程停止确认。目录和历史保留，代码不会自动合并。
+当前 TaskDoc、同步和用户明确提交的持久任务意图继续存在，与这些旧父子任务表使用不同的执行链。可编辑草稿不会因重连执行，明确提交的持久任务则可以在授权有效后进入队列。升级不把旧记录转换为新任务。
 
-这些预算限制工具派发，不是 token 或模型费用硬上限。正常完成状态也不验证用户目标，结果仍需人工检查。
-
-专题：[有限协作](session-tasks.md)。实现：[任务管理](../packages/host/src/sessions/tasks.ts)、[私有任务 MCP](../packages/host/src/integrations/task-mcp.ts)。
+专题：[旧父子任务退场](session-tasks.md)、[当前接口语义](interface-semantics.md)。实现：[只读旧任务记录](../packages/host/src/persistence/retired-tasks.ts)、[历史核查](../packages/host/src/sessions/retired.ts)。
 
 **理解检查：** 用“读取、草稿、接受、执行、核查”描述一个扩展功能。哪些步骤可以安全重读，哪些步骤可能首次产生副作用？
 
@@ -443,14 +436,14 @@ MCP 的空选择只表示没有添加 Moor 管理的服务。原生 Agent 可能
 
 介绍功能时用下面三种状态表达：已接通的实现、已经完成的验证、后续计划。它们各自需要证据。
 
-| 范围                 | 当前可解释的事实                                              | 介绍时保留的边界                                    |
-| -------------------- | ------------------------------------------------------------- | --------------------------------------------------- |
-| 产品平台             | 0.2 开发预览，macOS Apple Silicon 与 Web/PWA                  | 不能宣称 Windows、团队权限、公司 SSO 已可用         |
-| 多设备工作流         | 会话管理、审批、结果阅读和工作台已有实现                      | 真实双 Mac、iPhone 与 Agent 专项仍需按记录核验      |
-| 扩展执行             | Git/Fork、发布、预览、Skills、MCP、有限协作已有接线与合成证据 | 不表示所有真实账号、适配器行为和设备组合已通过      |
-| 加密                 | 显式 v4 Host/secure CLI 已有链路                              | 默认界面没有因此自动变成端到端加密                  |
-| 发布                 | 预览打包与签名公证工具已有实现                                | 正式 Developer ID、公证及干净设备验收尚不能宣称完成 |
-| 跨主机迁移与长期任务 | 路线图包含后续方向                                            | 切换设备、项目归组和恢复进程不提供这些能力          |
+| 范围                 | 当前可解释的事实                                         | 介绍时保留的边界                                    |
+| -------------------- | -------------------------------------------------------- | --------------------------------------------------- |
+| 产品平台             | 0.2 开发预览，macOS Apple Silicon 与 Web/PWA             | 不能宣称 Windows、团队权限、公司 SSO 已可用         |
+| 多设备工作流         | 会话管理、审批、结果阅读和工作台已有实现                 | 真实双 Mac、iPhone 与 Agent 专项仍需按记录核验      |
+| 扩展执行             | Git/Fork、发布、Skills 和 TaskDoc 队列已有接线与合成证据 | 不表示所有真实账号、适配器行为和设备组合已通过      |
+| 加密                 | 显式 v4 Host/secure CLI 已有链路                         | 默认界面没有因此自动变成端到端加密                  |
+| 发布                 | 预览打包与签名公证工具已有实现                           | 正式 Developer ID、公证及干净设备验收尚不能宣称完成 |
+| 跨主机迁移与长期任务 | 路线图包含后续方向                                       | 切换设备、项目归组和恢复进程不提供这些能力          |
 
 可以进一步用“选择、收益、代价”评价设计。这是依据现有行为的工程解读，不是所有技术选择都有专门的历史决策记录：
 
@@ -461,7 +454,7 @@ MCP 的空选择只表示没有添加 Moor 管理的服务。原生 Agent 可能
 | Moor 独立历史加原生映射 | 界面与持久格式由项目控制         | Agent 原生上下文仍有独立恢复条件 |
 | 固定 Agent 配置版本     | 旧会话与原请求不被新配置悄悄替换 | 要保留版本并处理旧环境失效       |
 | 中转不保存会话正文      | 中转备份与分发不承载完整工作历史 | 远端读取依赖主机，备份需分层安排 |
-| worktree 隔离子任务     | 减少目录内的直接修改干扰         | 增加目录、引用、分支与清理管理   |
+| 用户明确选择 worktree   | 减少目录内的直接修改干扰         | 增加目录、引用、分支与清理管理   |
 
 学习时可以提出替代设计，但要明确新增了什么承诺。例如，离线自动执行需要过期意图、授权续期与队列消费规则；跨主机迁移需要原生上下文、文件、身份和唯一执行所有权的交接。仅增加一个按钮并不能解决这些问题。
 
@@ -471,25 +464,25 @@ MCP 的空选择只表示没有添加 Moor 管理的服务。原生 Agent 可能
 
 先读短的数据定义，再跟一条请求，最后读专题模块。不要一开始顺序通读大型 UI 文件。
 
-| 顺序 | 入口                                                                                                             | 本轮只找什么                                                    |
-| ---- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)     | `history`、用户/助手关联、版本向量与增量                        |
-| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)           | RuntimeWorkspace、Mutation、产品目标与本地目标的区别            |
-| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                       | 导入前后比较、允许字段、`expectedTurnId`、历史不可改            |
-| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts) | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`       |
-| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                  | `mutate`、`mutateAccepted`、事务之后的 `execute`、审批与停止    |
-| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)           | `open/prompt/cancel/close`，new/load、能力与回调                |
-| 7    | [app.ts](../apps/web/src/app/app.ts)、[cache.ts](../apps/web/src/platform/cache.ts)                              | `sendTurn`、`prepareTurnMutation`、`submit`，先存原请求再发网络 |
-| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)     | 路由与响应范围、共同方法校验和分发                              |
-| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)       | 用断言核验自己对顺序与恢复的解释                                |
-| 10   | [开发文档](development.md#从行为找到实现)                                                                        | 按感兴趣的功能查专门实现及测试                                  |
+| 顺序 | 入口                                                                                                                                                 | 本轮只找什么                                                    |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                                         | `history`、用户/助手关联、版本向量与增量                        |
+| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                                               | RuntimeWorkspace、Mutation、产品目标与本地目标的区别            |
+| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                                                           | 导入前后比较、允许字段、`expectedTurnId`、历史不可改            |
+| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts)                                     | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`       |
+| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                                                      | `mutate`、`mutateAccepted`、事务之后的 `execute`、审批与停止    |
+| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)                                               | `open/prompt/cancel/close`，new/load、能力与回调                |
+| 7    | [WorkspaceController](../apps/web/src/features/workspace/workspace-controller.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `sendTurn`、`prepareTurnMutation`、`submit`，先存原请求再发网络 |
+| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                                         | 路由与响应范围、共同方法校验和分发                              |
+| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                                           | 用断言核验自己对顺序与恢复的解释                                |
+| 10   | [开发文档](development.md#从行为找到实现)                                                                                                            | 按感兴趣的功能查专门实现及测试                                  |
 
 可在仓库根目录使用以下只读搜索。文件以符号定位，比记住容易变化的行号更可靠。
 
 ```sh
 rg -n 'mutateAccepted|transaction\(|journal\.accept|run.done = this.execute' packages/host/src/sessions/workspace.ts
 rg -n 'expectedTurnId|仅允许追加|原执行|不允许远程' packages/host/src/commands/validate-mutation.ts
-rg -n 'async function (submit|sendTurn|prepareTurnMutation)' apps/web/src/app/app.ts
+rg -n 'async function (submit|sendTurn|prepareTurnMutation)' apps/web/src/features/workspace/workspace-controller.ts
 rg -n 'fingerprint|lookup\(|stage\(|accept\(' packages/host/src/persistence/journal.ts
 ```
 

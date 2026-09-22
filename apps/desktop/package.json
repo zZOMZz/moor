@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@moor/client": "workspace:*",
-    "@moor/e2ee": "workspace:*",
     "@moor/protocol": "workspace:*",
     "ws": "8.18.3",
     "zod": "3.25.76"

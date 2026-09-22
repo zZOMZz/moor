@@ -12,6 +12,7 @@ import {
 } from '@moor/protocol/host-command';
 import { validateHostResponse, HOST_RESPONSE_FAILED } from '@moor/protocol/host-response';
 import { AppError, type RuntimeWorkspace } from '@moor/protocol/protocol';
+import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
 
 const hash = (text: string | Uint8Array) =>
   'sha256:' + createHash('sha256').update(text).digest('hex');
@@ -38,6 +39,8 @@ const workspace: RuntimeWorkspace = {
   ],
   agents: [agent],
   features: [
+    RETIRED_RECORDS_FEATURE,
+    'session-page-v1',
     'agent-controls-v1',
     'agent-run-defaults-v1',
     'roles-v1',
@@ -234,6 +237,26 @@ const forkOriginal = sessionForkSchema.parse({
 });
 const fixtures = {
   sessions: { params: {}, result: [meta] },
+  'sessions-page': {
+    params: {
+      pageVersion: 1,
+      workspaceId: scope.workspaceId,
+      localProjectId: scope.localProjectId,
+    },
+    result: {
+      pageVersion: 1,
+      workspaceId: scope.workspaceId,
+      localProjectId: scope.localProjectId,
+      confirmed: true,
+      archived: 'active',
+      pinned: 'all',
+      query: '',
+      limit: 30,
+      revision: version,
+      items: [meta],
+      nextCursor: null,
+    },
+  },
   'agent-options': { params: { agentId: agent.id }, result: agent },
   'agent-usage': {
     params: { agentId: agent.id },
@@ -725,6 +748,25 @@ const failure = (error: unknown) =>
   error.message === HOST_RESPONSE_FAILED &&
   error.rejected === false;
 
+test('session pages retain runtime metadata identity and require advertised pagination', async () => {
+  const original = fixtures['sessions-page'].result;
+  for (const field of ['userId', 'machineId'] as const)
+    await assert.rejects(
+      valid('sessions-page', { ...original, items: [{ ...meta, [field]: 'another' }] }),
+      failure,
+    );
+  await assert.rejects(
+    validateHostResponse(original, {
+      command: command('sessions-page', fixtures['sessions-page'].params),
+      workspace: {
+        ...workspace,
+        features: workspace.features!.filter((value) => value !== 'session-page-v1'),
+      },
+    }),
+    failure,
+  );
+});
+
 for (const method of HOST_COMMAND_METHODS) {
   test('host response accepts the original ' + method + ' response', async () => {
     const result = await valid(method);
@@ -1119,6 +1161,29 @@ test('shared role, MCP, task and recovery validators preserve nested references'
     ),
     failure,
   );
+});
+
+test('retired record responses require the current read-only boundary without changing ordinary old-host reads', async () => {
+  const legacy = {
+    ...workspace,
+    features: workspace.features!.filter((value) => value !== RETIRED_RECORDS_FEATURE),
+  };
+  for (const method of ['roles-read', 'mcp-read', 'tasks-read', 'preview-inspect'] as const)
+    await assert.rejects(
+      validateHostResponse(fixtures[method].result, {
+        command: command(method, fixtures[method].params),
+        workspace: legacy,
+      }),
+      failure,
+    );
+  for (const method of ['sessions', 'cancel', 'session-operations'] as const)
+    assert.deepEqual(
+      await validateHostResponse(fixtures[method].result, {
+        command: command(method, fixtures[method].params),
+        workspace: legacy,
+      }),
+      fixtures[method].result,
+    );
 });
 
 test('Skills detail checks the requested source, execution revision and actual UTF-8 bytes', async () => {

@@ -21,7 +21,7 @@ import {
   readLocalCliConnection,
   localCliChallenge,
   verifyLocalCliProof,
-} from '@moor/e2ee/node/local-cli-connection';
+} from '@moor/protocol/node/local-cli-connection';
 
 function fixture(t: TestContext, insideProject = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-local-cli-host-'))),
@@ -246,7 +246,6 @@ test(
       ['--local', '--server', 'https://example.invalid'],
       ['--local', '--agent-config-stdin'],
       ['--local', '--skills-config-stdin'],
-      ['--local', '--preview-config-stdin'],
       ['--local', '--github-config-stdin'],
     ]) {
       const host = f.start(flags);

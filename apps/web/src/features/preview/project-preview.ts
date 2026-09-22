@@ -1,28 +1,23 @@
-import { z } from 'zod';
-import { id, mutationSchema } from '@moor/protocol/protocol';
-import { contentDescriptorSchema, contentVersionSchema } from '@moor/protocol/content-protocol';
 import {
-  attachmentBase64Schema,
-  MAX_SESSION_ATTACHMENT_BYTES,
-} from '@moor/protocol/attachment-protocol';
-import { attachmentBytes } from '../attachments/attachments';
+  PREVIEW_ANNOTATION_LIMIT,
+  previewAnnotationSchema,
+  previewAnnotationSnapshotSchema,
+  type PreviewAnnotationSnapshot,
+} from '@moor/client/preview-annotation';
+import { MAX_SESSION_ATTACHMENT_BYTES } from '@moor/protocol/attachment-protocol';
+import { contentVersionSchema } from '@moor/protocol/content-protocol';
 import {
   previewActionSchema,
   previewOpenSchema,
   previewReceiptSchema,
 } from '@moor/protocol/preview-protocol';
-import { gitTargetSchema, gitWorkspaceKey, type GitTarget } from '../git/git-workspace';
+import { id } from '@moor/protocol/protocol';
+import { z } from 'zod';
+import { attachmentBytes } from '../attachments/attachments';
+import { gitTargetSchema } from '../git/git-workspace';
 
-export type PreviewTarget = GitTarget;
-import {
-  PREVIEW_ANNOTATION_LIMIT,
-  previewAnnotationSchema,
-  previewAnnotationSnapshotSchema,
-  type PreviewAnnotation,
-  type PreviewAnnotationSnapshot,
-} from '@moor/client/preview-annotation';
 export { PREVIEW_ANNOTATION_LIMIT, previewAnnotationSchema, previewAnnotationSnapshotSchema };
-export type { PreviewAnnotation, PreviewAnnotationSnapshot };
+export type { PreviewAnnotationSnapshot };
 export const previewAnnotationSelectionSchema = z
   .object({
     id,
@@ -37,22 +32,6 @@ export const previewAnnotationSubmissionSchema = z
   })
   .strict();
 export type PreviewAnnotationSubmission = z.infer<typeof previewAnnotationSubmissionSchema>;
-export const pendingPreviewMutationSchema = z
-  .object({
-    previewDraftVersion: z.literal(1),
-    mutation: mutationSchema,
-    annotationDelivery: z
-      .object({ operationId: id, submission: previewAnnotationSubmissionSchema })
-      .strict(),
-  })
-  .strict()
-  .refine(
-    (value) =>
-      value.mutation.kind === 'turn' &&
-      value.mutation.operationId === value.annotationDelivery.operationId &&
-      value.mutation.workspaceId === value.annotationDelivery.submission.target.workspaceId &&
-      value.mutation.sessionId === value.annotationDelivery.submission.target.sessionId,
-  );
 export const previewAnnotationsStoredSchema = z
   .object({
     version: z.literal(1),
@@ -70,11 +49,6 @@ export const previewAnnotationsStoredSchema = z
         (total, item) => total + (item.snapshot.image?.content.byteLength ?? 0),
         0,
       ) <= MAX_SESSION_ATTACHMENT_BYTES,
-  );
-export const previewAnnotationKey = (target: PreviewTarget) =>
-  gitWorkspaceKey(gitTargetSchema.parse(target)).replace(
-    'git-workspace-v1/',
-    'preview-annotations-v1/',
   );
 async function digest(bytes: Uint8Array<ArrayBuffer>) {
   const value = await crypto.subtle.digest('SHA-256', bytes);

@@ -4,7 +4,6 @@ import {
   taskPlanSchema,
   taskActionSchema,
   taskOriginSchema,
-  taskToolInputSchemas,
   validateTaskReadResult,
   validateTaskActionResult,
 } from '@moor/protocol/task-protocol';
@@ -48,25 +47,6 @@ test('finite task plans reject unknown launch fields, duplicate slots, unbounded
       operationId: 'old',
       taskId: 'task-one',
       expectedExecutionRevision: 1,
-    }).success,
-    false,
-  );
-  assert.equal(
-    taskToolInputSchemas.moor_task_send.safeParse({
-      grantId: 'grant',
-      taskId: 'task-one',
-      operationId: 'send',
-      expectedUserTurnId: null,
-      agentId: 'other',
-    }).success,
-    false,
-  );
-  assert.equal(
-    taskToolInputSchemas.moor_task_wait.safeParse({
-      grantId: 'grant',
-      taskId: 'task-one',
-      expectedUserTurnId: 'old',
-      timeoutMs: 20001,
     }).success,
     false,
   );

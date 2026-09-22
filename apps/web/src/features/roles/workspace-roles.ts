@@ -1,7 +1,7 @@
 import type { GitTarget } from '../git/git-workspace';
 import { rolesStoredSchema, roleAppliedSchema } from './roles';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export function validateWorkspaceRoles(input: unknown, target: GitTarget) {
   const value = rolesStoredSchema.parse(input);

@@ -1,7 +1,7 @@
 import {
   fixture as githubFixture,
   target as githubTarget,
-} from '../fixtures/secure-github-fixture';
+} from '../fixtures/github-session-fixture';
 import test from 'node:test';
 import { AttentionController } from '../../apps/web/src/features/attention/attention';
 import {
@@ -17,8 +17,6 @@ import type {
   WorkspaceController,
   WorkspaceClientState,
 } from '../../apps/web/src/features/workspace/workspace-controller';
-import type { SecureUiController } from '../../apps/web/src/app/secure-app';
-import type { SecureWorkspaceState } from '../../apps/web/src/platform/secure-controller';
 import { desktopWorkspaceCatalogSchema } from '@moor/client/workspace-protocol';
 import {
   notificationIdentity,
@@ -221,6 +219,7 @@ test('packaged workspace opens local projects without an account and preserves d
     },
     async refreshCatalog(source: string) {
       calls.push('catalog:' + source);
+      if (source === 'remote') return;
       assert.equal(source, 'local');
       state.catalogs.local = catalog;
       emit();
@@ -748,37 +747,6 @@ test('packaged workspace opens local projects without an account and preserves d
       };
     },
   } as unknown as WorkspaceController;
-  const encrypted: SecureWorkspaceState = {
-    status: null,
-    hostId: null,
-    catalog: null,
-    replicaId: null,
-    sessions: [],
-    session: null,
-    operations: [],
-    draft: '',
-    attachmentDraft: [],
-    mcpDraft: null,
-    previewAnnotations: [],
-    extensionBlock: null,
-    permissionReviews: [],
-    notice: null,
-    busy: false,
-  };
-  const secure = {
-    get state() {
-      return structuredClone(encrypted);
-    },
-    get contentContext() {
-      return { target: null, online: false, generation: 0 };
-    },
-    subscribe() {
-      return () => {};
-    },
-    invalidate() {
-      calls.push('secure-invalidate');
-    },
-  } as unknown as SecureUiController;
   const visibleButton = (label: string) => {
     const result = [...dom.window.document.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) =>
@@ -800,7 +768,6 @@ test('packaged workspace opens local projects without an account and preserves d
       root.render(
         createElement(WorkspaceApp, {
           controller,
-          secure,
           accountApi: async () => ({ ok: false as const, error: { message: 'No remote account' } }),
           openSettings: async () => {
             calls.push('settings');
@@ -830,13 +797,17 @@ test('packaged workspace opens local projects without an account and preserves d
         }),
       );
     });
-    assert.deepEqual(calls, ['secure-invalidate']);
+    assert.equal(calls.length, 0);
+    await act(async () => {
+      dom.window.dispatchEvent(new dom.window.Event('moor:catalog-changed'));
+    });
+    assert.deepEqual(calls.splice(0), ['catalog:remote']);
     assert.match(dom.window.document.body.textContent!, /执行组件正在准备/);
     await act(async () => {
       desktop.localReady = true;
       desktopChanged!();
     });
-    assert.deepEqual(calls, ['secure-invalidate', 'catalog:local']);
+    assert.deepEqual(calls, ['catalog:local']);
     assert.equal(dom.window.document.querySelectorAll('iframe').length, 0);
     const project = dom.window.document.querySelector<HTMLButtonElement>('.workspace-project')!;
     assert.match(project.textContent!, /Local project.*My Mac/s);
@@ -1226,8 +1197,8 @@ test('packaged workspace opens local projects without an account and preserves d
       true,
     );
     assert.match(
-      dom.window.document.querySelector('.workspace-secure-content')!.textContent!,
-      /账号状态未确认/,
+      dom.window.document.querySelector('.workspace-connections')!.textContent!,
+      /No remote account/,
     );
     const navigationCalls = calls.length;
     await act(async () => project.click());

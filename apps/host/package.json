@@ -15,7 +15,6 @@
     "test": "pnpm --filter @moor/app-host... run build && node ../../scripts/validation/test.mjs apps/host"
   },
   "dependencies": {
-    "@moor/e2ee": "workspace:*",
     "@moor/gateway": "workspace:*",
     "@moor/host": "workspace:*",
     "@moor/protocol": "workspace:*",

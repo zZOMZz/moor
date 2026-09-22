@@ -1,9 +1,8 @@
-import { useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { BookOpen, X } from 'lucide-react';
-import { paint } from '../../components/ui';
+import { X } from 'lucide-react';
+import { useState } from 'react';
 import { markdown } from '../../components/content';
-import { skillsKey, type SkillsController } from './skills';
+import { type SkillsController } from './skills';
 
 export type SkillsPanelProps = {
   controller?: SkillsController;
@@ -162,34 +161,5 @@ export function SkillsPanel(p: SkillsPanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showSkillsControl(props?: { disabled: boolean; onOpen(): void }) {
-  paint(
-    '#skills-control',
-    props ? (
-      <button
-        type="button"
-        className="icon-button"
-        disabled={props.disabled}
-        onClick={props.onOpen}
-        aria-label="Skills"
-        title="Skills"
-      >
-        <BookOpen />
-        <span>Skills</span>
-      </button>
-    ) : null,
-  );
-}
-export function showSkillsPanel(props?: SkillsPanelProps) {
-  paint(
-    '#skills-view',
-    props ? (
-      <SkillsPanel
-        key={props.controller ? skillsKey(props.controller.target) : 'unavailable'}
-        {...props}
-      />
-    ) : null,
   );
 }

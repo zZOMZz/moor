@@ -10,6 +10,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 import { PROTOCOL, type RuntimeWorkspace } from '@moor/protocol/protocol';
+import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
@@ -65,7 +66,8 @@ async function fixture(options: { localOnly?: boolean; authenticatedHello?: bool
     name: 'Synthetic runtime',
     projects: [{ id: 'local-project', name: 'Synthetic project', rootPath: '/synthetic/project' }],
     agents: [],
-    features,
+    features:
+      options.authenticatedHello === false ? features : [...features, RETIRED_RECORDS_FEATURE],
   };
   const requests: any[] = [];
   const socket = new WebSocket(origin.replace('http:', 'ws:') + '/bridge', {

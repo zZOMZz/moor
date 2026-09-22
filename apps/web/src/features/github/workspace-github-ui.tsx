@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { GitPullRequest } from 'lucide-react';
-import { GithubSessionPanel } from './secure-github-ui';
+import { GithubSessionPanel } from './github-session-ui';
 import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 
 export function WorkspaceGithubUI({

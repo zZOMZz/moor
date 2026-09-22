@@ -1,4 +1,10 @@
+import { RETIRED_RECORDS_FEATURE } from './connection-authority';
 import type { HostCommand, HostCommandMethod } from './host-command';
+import {
+  SESSION_PAGE_FEATURE,
+  SESSION_PAGE_LIMITS,
+  validateSessionPageResult,
+} from './session-page';
 import {
   AGENT_CONTROLS_FEATURE,
   AGENT_RUN_DEFAULTS_FEATURE,
@@ -49,14 +55,14 @@ import {
 import { SESSION_SEARCH_FEATURE, sessionSearchResultSchema } from './search-protocol';
 import {
   GIT_WORKTREE_FEATURE,
-  SECURE_GIT_OPERATIONS_FEATURE,
+  GIT_OPERATIONS_FEATURE,
   validateGitOperationResult,
   gitStateResultSchema,
   gitActionReceiptSchema,
 } from './git-protocol';
 import {
   SESSION_FORK_FEATURE,
-  SECURE_FORK_OPERATIONS_FEATURE,
+  FORK_OPERATIONS_FEATURE,
   validateForkActionReceipt,
   validateForkOperationResult,
   forkOptionsResultSchema,
@@ -102,21 +108,22 @@ const KiB = 1024,
 // Limits apply to the received value before schemas can strip any private fields.
 const policies = {
   sessions: [undefined, SESSION_RESPONSE_LIMITS.listBytes],
+  'sessions-page': [SESSION_PAGE_FEATURE, SESSION_PAGE_LIMITS.responseBytes],
   'agent-options': [undefined, 16 * MiB],
   'agent-usage': [AGENT_CONTROLS_FEATURE, 256 * KiB],
   'run-preferences': [AGENT_CONTROLS_FEATURE, 16 * KiB],
   session: [undefined, SESSION_RESPONSE_LIMITS.readBytes],
-  'roles-read': [ROLE_FEATURE, ROLE_LIMITS.responseBytes],
-  'mcp-read': [MCP_FEATURE, MCP_LIMITS.responseBytes],
+  'roles-read': [RETIRED_RECORDS_FEATURE, ROLE_LIMITS.responseBytes],
+  'mcp-read': [RETIRED_RECORDS_FEATURE, MCP_LIMITS.responseBytes],
   'session-control': [SESSION_CONTROL_FEATURE, SESSION_CONTROL_LIMITS.responseBytes],
   'session-operations': [SESSION_CONTROL_FEATURE, SESSION_CONTROL_LIMITS.responseBytes],
-  'tasks-read': [SESSION_TASKS_FEATURE, TASK_LIMITS.responseBytes],
-  'tasks-action': [SESSION_TASKS_FEATURE, TASK_LIMITS.responseBytes],
-  'roles-action': [ROLE_FEATURE, ROLE_LIMITS.responseBytes],
+  'tasks-read': [RETIRED_RECORDS_FEATURE, TASK_LIMITS.responseBytes],
+  'tasks-action': [RETIRED_RECORDS_FEATURE, TASK_LIMITS.responseBytes],
+  'roles-action': [RETIRED_RECORDS_FEATURE, ROLE_LIMITS.responseBytes],
   'skills-read': [SKILLS_FEATURE, 2 * MiB],
   'preview-read': [PREVIEW_FEATURE, 6 * MiB],
   'preview-action': [PREVIEW_FEATURE, 6 * MiB],
-  'preview-inspect': [PREVIEW_FEATURE, 6 * MiB],
+  'preview-inspect': [RETIRED_RECORDS_FEATURE, 6 * MiB],
   'preview-close': [PREVIEW_FEATURE, 6 * MiB],
   'github-write-read': [GITHUB_WRITE_FEATURE, 3 * MiB],
   'github-write-action': [GITHUB_WRITE_FEATURE, 16 * KiB],
@@ -138,9 +145,9 @@ const policies = {
   'search-sessions': [SESSION_SEARCH_FEATURE, 2 * MiB],
   'git-state': [GIT_WORKTREE_FEATURE, 2 * MiB],
   'git-action': [GIT_WORKTREE_FEATURE, 2 * MiB],
-  'git-operations': [SECURE_GIT_OPERATIONS_FEATURE, 2 * MiB],
+  'git-operations': [GIT_OPERATIONS_FEATURE, 2 * MiB],
   'fork-options': [SESSION_FORK_FEATURE, 2 * MiB],
-  'fork-operations': [SECURE_FORK_OPERATIONS_FEATURE, 2 * MiB],
+  'fork-operations': [FORK_OPERATIONS_FEATURE, 2 * MiB],
   'fork-action': [SESSION_FORK_FEATURE, 2 * MiB],
   cancel: [undefined, SESSION_RESPONSE_LIMITS.receiptBytes],
 } satisfies Record<HostCommandMethod, readonly [string | undefined, number]>;
@@ -184,10 +191,10 @@ function decode(value: string) {
 }
 
 /**
- * Validate a decrypted success value before any cache, CRDT import or delivery update.
- * The transport must supply its authenticated catalog snapshot and current lease;
- * this function does not authenticate the host or treat a relay catalog as authority.
- * Error envelopes and encrypted-record correlation are separate transport checks.
+ * Validate an authenticated Host's success value before cache, CRDT import or delivery updates.
+ * HTTP, IPC and other transports supply the verified execution workspace and a
+ * current authorization guard; this function does not authenticate the Host itself.
+ * Error envelopes and request/transport correlation remain transport responsibilities.
  */
 export async function validateHostResponse(
   raw: unknown,
@@ -272,6 +279,12 @@ export async function validateHostResponse(
     };
     const result = await (async (): Promise<unknown> => {
       switch (command.method) {
+        case 'sessions-page': {
+          requireValue(command.localProjectId === command.params.localProjectId);
+          const result = validateSessionPageResult(command.params, raw);
+          result.items.forEach(metadata);
+          return result;
+        }
         case 'sessions': {
           const result = sessionListSchema.parse(raw);
           requireValue(new Set(result.map((meta) => meta.id)).size === result.length);

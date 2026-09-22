@@ -37,7 +37,7 @@ test('trusted window keeps service authority separate from its immutable documen
     platform: 'darwin',
     session,
     origin: 'https://relay.example',
-    preloadPath: '/synthetic/secure-preload.cjs',
+    preloadPath: '/synthetic/workspace-preload.cjs',
     registry,
     invalidate: (contents: unknown) => invalidated.push(contents),
   });
@@ -59,7 +59,7 @@ test('trusted window keeps service authority separate from its immutable documen
   const contents = window.webContents;
   assert.deepEqual(window.options.webPreferences, {
     session,
-    preload: '/synthetic/secure-preload.cjs',
+    preload: '/synthetic/workspace-preload.cjs',
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,

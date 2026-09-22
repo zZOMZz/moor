@@ -6,7 +6,7 @@ import {
   localCliChallenge,
   verifyLocalCliProof,
   type LocalCliConnectionLease,
-} from '@moor/e2ee/node/local-cli-connection';
+} from '@moor/protocol/node/local-cli-connection';
 export type CliConnection = { origin: string; cookie: string; owner: string };
 export const connectionSchema = z
   .object({
@@ -44,7 +44,13 @@ export class CliHttpError extends CliError {
     message?: string,
   ) {
     super(
-      status === 401 ? 'authentication' : status === 409 ? 'conflict' : 'http',
+      status === 401
+        ? 'authentication'
+        : status === 409
+          ? 'conflict'
+          : status === 410
+            ? 'retired'
+            : 'http',
       publicAgentFailure(
         new Error(message ?? ''),
         status === 401

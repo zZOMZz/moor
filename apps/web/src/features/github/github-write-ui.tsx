@@ -1,13 +1,12 @@
-import { useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { X } from 'lucide-react';
-import { paint } from '../../components/ui';
-import { githubWriteKey, type GithubWriteController, type GithubWriteDraft } from './github-write';
 import {
-  githubPatchLines,
   GITHUB_WRITE_LIMITS,
+  githubPatchLines,
   type GithubWriteAction,
 } from '@moor/protocol/github-write-protocol';
+import { X } from 'lucide-react';
+import { useState } from 'react';
+import { type GithubWriteController, type GithubWriteDraft } from './github-write';
 export type GithubWritePanelProps = {
   controller?: GithubWriteController;
   reason?: string;
@@ -901,16 +900,5 @@ export function GithubWritePanel(p: GithubWritePanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showGithubWritePanel(props?: GithubWritePanelProps) {
-  paint(
-    '#github-write-view',
-    props ? (
-      <GithubWritePanel
-        key={props.controller ? githubWriteKey(props.controller.target) : 'loading'}
-        {...props}
-      />
-    ) : null,
   );
 }

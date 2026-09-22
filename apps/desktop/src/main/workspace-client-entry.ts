@@ -4,9 +4,13 @@ import {
   type DesktopWorkspaceChange,
 } from '@moor/client/workspace-protocol';
 import { WorkspaceEvents } from './workspace-events';
-export { workspaceCommandRoute } from '@moor/client/node/workspace-client';
-export type { LocalWorkspaceIdentity } from '@moor/client/node/workspace-client';
+/** @nativeEntry Loaded by account.cjs through main.cjs's packaged workspace-client.mjs loader. */
+export {
+  accountManagementPlan,
+  validateAccountManagementResult,
+} from '@moor/protocol/account-management';
 
+/** @nativeEntry Loaded by workspace-bridge.cjs from the packaged workspace-client.mjs module. */
 export class DesktopWorkspaceClient extends Client {
   #events?: WorkspaceEvents;
   #closed = false;

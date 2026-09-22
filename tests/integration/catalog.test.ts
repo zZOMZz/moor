@@ -7,10 +7,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { Store, hash } from '@moor/gateway/accounts';
 import { projectSourceSchema } from '@moor/protocol/catalog';
 import type { RuntimeWorkspace } from '@moor/protocol/protocol';
-import {
-  catalogSessionList,
-  filterCatalogSessions,
-} from '../../apps/web/src/features/sessions/navigation';
 
 const runtime = (machineId: string): RuntimeWorkspace => ({
   id: 'lw_same',
@@ -46,27 +42,16 @@ test('one product workspace contains two hosts; identical local ids, names and p
   f.store.catalog.assign(f.owner, spaces[0].id, b.id, a.projectId);
   const space = f.store.catalog.list(f.owner, f.live)[0];
   assert.equal(new Set(space.replicas.map((r) => r.projectId)).size, 1);
-  const list = space.hosts.flatMap((h, i) =>
-    catalogSessionList(
-      [
-        {
-          id: 'same-session-id',
-          title: 'Fix timeout',
-          lastMessageAt: i + 1,
-          project: { localProjectId: 'same-local-id' },
-        },
-      ],
-      space,
-      h.id,
-    ),
+  const mappings = space.replicas.map((replica) =>
+    f.store.catalog.replica(f.owner, space.id, replica.id),
   );
-  assert.equal(filterCatalogSessions(list, space, 'moor fix', a.projectId).length, 2);
-  assert.equal(filterCatalogSessions(list, space, 'Mac B', a.projectId).length, 1);
-  assert.notEqual(
-    list[0].replicaId,
-    list[1].replicaId,
-    'session id alone must never select an execution host',
+  assert.equal(new Set(mappings.map((mapping) => mapping.id)).size, 2);
+  assert.equal(
+    new Set(mappings.map((mapping) => mapping.host.device_id)).size,
+    2,
+    'shared grouping preserves the two exact execution devices',
   );
+  assert(mappings.every((mapping) => mapping.local_id === 'same-local-id'));
 });
 test('topology survives restart and offline hosts; local paths, agents and session bodies are not persisted', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'moor-catalog-'));

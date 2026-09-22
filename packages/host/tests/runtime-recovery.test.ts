@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { LoroDoc, mirror, putMeta } from '@moor/session/model';
+import { mirror, putMeta } from '@moor/session/model';
 import { RuntimeStore } from '../src/persistence/store';
 
 function database(t: TestContext) {
@@ -34,11 +34,12 @@ function seed(
     localProjectId: 'project-a',
     sessionId: id,
   });
-  const doc = new LoroDoc(),
+  const doc = store.doc(id),
     view = mirror(doc, id);
   try {
     view.setState((state) => {
       state.session.id = options.identity ?? id;
+      state.history.splice(0);
       state.history.push({
         id: 'assistant-' + id,
         userTurnId: 'user-' + id,

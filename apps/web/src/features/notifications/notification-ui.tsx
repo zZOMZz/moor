@@ -1,9 +1,8 @@
 import { Dialog } from '@base-ui/react/dialog';
+import type { NotificationPreferences } from '@moor/protocol/notification-protocol';
 import { X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { paint } from '../../components/ui';
 import type { NotificationController, NotificationSubscriptionView } from './notifications';
-import type { NotificationPreferences } from '@moor/protocol/notification-protocol';
 export type NotificationPanelProps = {
   controller?: NotificationController;
   reason?: string;
@@ -152,7 +151,4 @@ export function NotificationPanel(props: NotificationPanelProps) {
       </Dialog.Portal>
     </Dialog.Root>
   );
-}
-export function showNotificationPanel(props?: NotificationPanelProps) {
-  paint('#notification-view', props ? <NotificationPanel {...props} /> : null);
 }

@@ -90,6 +90,14 @@ const cases: {
   };
 } = {
   sessions: { params: {}, call: 'list' },
+  'sessions-page': {
+    params: {
+      pageVersion: 1,
+      workspaceId: scope.workspaceId,
+      localProjectId: scope.localProjectId,
+    },
+    call: 'list',
+  },
   'agent-usage': { params: { agentId: 'agent', sessionId: 'session' }, call: 'readAgentUsage' },
   'run-preferences': { params: { agentId: 'agent', action: 'read' }, call: 'runPreferences' },
   'agent-options': {
@@ -111,19 +119,22 @@ const cases: {
     },
     call: 'controlManager.recover',
   },
-  'tasks-read': { params: { ...scope, taskVersion: 1 }, call: 'taskManager.read' },
+  'tasks-read': { params: { ...scope, taskVersion: 1 }, call: 'readTasks' },
   'tasks-action': {
     params: { ...scope, taskVersion: 1, grantId: 'grant', operationId, action: 'inspect' },
-    call: 'taskManager.action',
+    call: 'inspectTask',
   },
   'roles-action': {
     params: {
-      ...scope,
-      rolesVersion: 1,
-      operationId,
-      expectedRevision: 0,
-      action: 'remove',
-      id: 'role',
+      action: 'inspect',
+      request: {
+        ...scope,
+        rolesVersion: 1,
+        operationId,
+        expectedRevision: 0,
+        action: 'remove',
+        id: 'role',
+      },
     },
     call: 'roleAction',
   },
@@ -236,7 +247,7 @@ const cases: {
   },
   cancel: { params: { sessionId: 'session', turnId: 'turn' }, call: 'cancel' },
 };
-function fixture() {
+function fixture(pageItems?: unknown[]) {
   const calls: { method: string; args: unknown[] }[] = [];
   const result = { sentinel: 'same host result' };
   const receiver = (prefix = '') =>
@@ -245,10 +256,20 @@ function fixture() {
       {
         get(_target, key) {
           if (key === 'closed') return closed;
-          if (key === 'controlManager' || key === 'taskManager') return receiver(String(key) + '.');
+          if (key === 'workspace')
+            return {
+              id: scope.workspaceId,
+              name: 'Synthetic',
+              userId: 'user',
+              machineId: 'machine',
+              projects: [{ id: scope.localProjectId, name: 'Synthetic', rootPath: '/synthetic' }],
+              agents: [],
+              features: ['session-page-v1'],
+            };
+          if (key === 'controlManager') return receiver(String(key) + '.');
           return (...args: unknown[]) => {
             calls.push({ method: prefix + String(key), args });
-            return result;
+            return key === 'list' && pageItems !== undefined ? pageItems : result;
           };
         },
       },
@@ -284,9 +305,9 @@ const envelope = (method: HostCommandMethod, params: unknown = cases[method].par
 const status = (code: number) => (error: unknown) =>
   error instanceof AppError && error.status === code;
 
-test('all 42 commands preserve the exact delegate, parsed payload, project and authority', async () => {
-  assert.equal(HOST_COMMAND_METHODS.length, 42);
-  assert.equal(new Set(HOST_COMMAND_METHODS).size, 42);
+test('all 43 commands preserve the exact delegate, parsed payload, project and authority', async () => {
+  assert.equal(HOST_COMMAND_METHODS.length, 43);
+  assert.equal(new Set(HOST_COMMAND_METHODS).size, 43);
   assert.deepEqual(Object.keys(hostCommandSchemas).sort(), Object.keys(cases).sort());
   const f = fixture();
   const authority = {
@@ -298,6 +319,23 @@ test('all 42 commands preserve the exact delegate, parsed payload, project and a
   const checkpoint = () => {};
   for (const method of HOST_COMMAND_METHODS) {
     const { params, call } = cases[method];
+    if (['preview-read', 'preview-action', 'preview-close'].includes(method)) {
+      const before = f.calls.length;
+      await assert.rejects(f.dispatcher.execute(envelope(method)), status(410));
+      assert.equal(f.calls.length, before);
+      continue;
+    }
+    if (method === 'sessions-page') {
+      const page = fixture([]);
+      const value: any = await page.dispatcher.execute(envelope(method), {
+        authority,
+        current: checkpoint,
+      });
+      assert.deepEqual(value.items, []);
+      assert.equal(value.nextCursor, null);
+      assert.deepEqual(page.calls, [{ method: call, args: [scope.localProjectId] }]);
+      continue;
+    }
     assert.equal(
       await f.dispatcher.execute(envelope(method), { authority, current: checkpoint }),
       f.result,
@@ -384,7 +422,7 @@ test('direct and nested workspace mismatches, unavailable workspaces and rejecte
   ] as const) {
     await assert.rejects(
       f.dispatcher.execute(envelope(method, { ...cases[method].params, workspaceId: 'other' })),
-      status(400),
+      status(method === 'preview-action' ? 410 : 400),
     );
   }
   for (const method of [
@@ -398,7 +436,7 @@ test('direct and nested workspace mismatches, unavailable workspaces and rejecte
       f.dispatcher.execute(
         envelope(method, { ...params, request: { ...params.request, workspaceId: 'other' } }),
       ),
-      status(400),
+      status(method === 'preview-close' ? 410 : 400),
     );
   }
   await assert.rejects(
@@ -460,7 +498,7 @@ test('safe errors preserve precisely the existing nine journal rejection fallbac
     assert.equal(f.dispatcher.error(raw, new Error()).rejected, false);
 });
 
-test('real Host keeps project and MCP authority checks through dispatch, with one explicit synthetic prompt only', async (t) => {
+test('real Host keeps project and connection checks, rejects retired MCP, and runs one explicit ordinary prompt', async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-command-host-')));
   const store = new RuntimeStore(':memory:'),
     project = store.registerProject(root);
@@ -533,15 +571,6 @@ test('real Host keeps project and MCP authority checks through dispatch, with on
       agentId: agent.id,
     }),
   );
-  const config = await host.mcpSettings.handle({
-    action: 'save',
-    expectedRevision: 0,
-    name: 'Synthetic',
-    description: '',
-    projectIds: [project],
-    enabled: true,
-    connection: { transport: 'http', url: 'https://synthetic.invalid/mcp', headers: {} },
-  });
   const request = {
     workspaceId: localScope.workspaceId,
     localProjectId: project,
@@ -563,9 +592,19 @@ test('real Host keeps project and MCP authority checks through dispatch, with on
     turnId: 'user-original',
     peerId: 'abcd1234',
     now: '2026-09-13T00:00:00.000Z',
-    mcpServerIds: [config.presets[0]!.versionId],
   });
-  await assert.rejects(dispatcher.execute(command('mutate', turn)), status(409));
+  const extras = buildSessionTurn({
+    scope: localScope,
+    read: await dispatcher.execute(command('session', { sessionId: localScope.sessionId })),
+    agent: host.workspace.agents[0]!,
+    prompt: 'Retired extras',
+    operationId: 'retired-extra',
+    turnId: 'retired-extra-turn',
+    peerId: '77',
+    now: '2026-09-13T00:00:00.000Z',
+    mcpServerIds: ['mcpv_' + '1'.repeat(32)],
+  });
+  await assert.rejects(dispatcher.execute(command('mutate', extras)), status(410));
   const authority = {
     serverOrigin: 'https://synthetic.invalid',
     ownerId: 'owner',
@@ -595,7 +634,7 @@ test('real Host keeps project and MCP authority checks through dispatch, with on
   assert.equal(prompts, 1);
   assert.equal(opens, 1);
   assert.ok(checks > 1);
-  assert.equal(options?.mcp?.servers.length, 1);
+  assert.equal(options, undefined);
   assert.equal(store.journal.has('send-original'), true);
   assert.equal(dispatcher.error(command('mutate', turn), new Error('unknown')).rejected, false);
 });

@@ -62,7 +62,6 @@ function fixture(t: TestContext) {
     undefined,
     undefined,
     undefined,
-    undefined,
     {
       config,
       discover: async (sources, options) => {

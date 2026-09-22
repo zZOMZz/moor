@@ -69,108 +69,33 @@ JSON
 
 ## 导出设备信任连接
 
-设备公开信任发布与同步使用独立的[设备安全入口](device-security.md)。先核对当前 CLI 的远程账号和服务，再导出到尚不存在的私有文件：
-
-```sh
-node dist/cli.mjs auth status
-node dist/cli.mjs auth export-trust --output /private/device/.moor-security/trust-connection.json
-```
-
-导出不联网、不重新登录，只把当前远程连接写入新文件；成功输出 `data.outputFile`。路径必须绝对，父目录属于当前用户且权限为 `0700`，文件使用 `0600`，禁止符号链接、硬链接和覆盖已有文件。本机 `--connection` 登录不能导出，也不能将其实例密钥当作远程 Cookie。
-
-文件含 Moor 登录凭据，必须放在项目与程序包之外，不输出、手写或共享其中的 Cookie。服务器撤销该 CLI 登录或凭据过期会使导出连接失效；退出请求失败时不能保证已撤销。重新登录后需明确导出新文件。Google 登录允许访问对应账号的公开版本，不能代替完整根 pin 和配对指纹的独立核对。
-
-设备安全命令有 15 个动作：原有 12 个动作和新增 `read-publications` 保持本机操作，只有 `publish-trust`、`sync-trust` 请求固定的公开信任接口，不执行会话或 Agent。待发布队列最多 16 项；发布确认严格匹配原前缀，同步每次完整验证一页后以一次本机 CAS 安装。参数、容量限制与手动恢复见[公开信任版本流程](device-security.md#发布与同步公开信任版本)。公开版本同步本身不启用加密；普通远程会话命令仍使用明文桥接 v3，以下 `secure` 命令才使用加密链路。
+`auth export-trust` 与设备安全命令已退场，不再导出登录 Cookie 或生成、配对、撤销、发布设备信任。普通登录、本机连接与账号恢复继续使用各自原有边界；登录成功不表示启用了端到端加密。
 
 ## 显式加密连接
 
-先按[设备安全流程](device-security.md)准备已配对、属于同一账号与中转、已安装相同信任检查点的两个端点：执行电脑需要 `host` 角色，CLI 设备需要 `client` 角色。必须独立核对完整根 pin 和配对指纹。两端各自登录自己的个人账号会话；执行电脑用上节命令导出私有连接文件，不复制或手写 Cookie。所有设备文件与状态目录都放在项目、会话工作目录和程序包之外。
+独立加密主机、`secure` 执行命令和 `security.mjs` 已退场。旧 `--secure-endpoint`、`--secure-connection` 启动参数在读取配置、设备材料或连接网络前明确失败，不会自动切换到普通 v3 连接。Relay 的旧 v4 和公开信任分发端点返回已退场。
 
-在执行电脑明确启动加密主机，Agent 需事先在同一主机数据库中完成本机配置：
+已有设备文件、恢复码、恢复包、Host journal 和映射历史均保留；升级不删除、不重新签名、不执行或封存旧操作。加密传输的旧 CLI 原记录仍留在原私有数据库的 `secure_outbox` 与 `secure_catalog_outbox` 中，不复制到普通操作表。旧会话的 Host 数据不需要格式转换；不得将结果未知请求当作新指令发送。历史设计见[加密历史实现](end-to-end-encryption.md)。
 
-```sh
-node dist/bridge.mjs \
-  --secure-endpoint /absolute/private/.moor-security/host.json \
-  --secure-connection /absolute/private/.moor-security/trust-connection.json \
-  --runtime-data /absolute/private/runtime.sqlite \
-  --project /absolute/test-project
-```
+## 退场数据的离线归档
 
-两个 `--secure-*` 参数须同时提供，不能与 `--local`、`--desktop`、旧配对或配置命令混用。这一模式不读取旧的远程配对连接，不回落到 v3。主机断开后需手动重新启动；主机运行时独占设备与连接文件，修改或同步信任前先停主机，再明确执行设备安全命令，随后启动新连接。
-
-在已远程登录的 CLI 设备上，读取主机提示，再验证所选主机的加密目录：
+只读检查已有 CLI 状态目录，不需要登录或启动主机：
 
 ```sh
-node dist/cli.mjs secure hosts --endpoint /absolute/private/.moor-security/client.json --json
-node dist/cli.mjs secure catalog --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --json
+node dist/cli.mjs --state-dir /absolute/private/.moor-cli-v1 retired list --json
+node dist/cli.mjs --state-dir /absolute/private/.moor-cli-v1 retired export OPERATION_ID \
+  --output /absolute/private/archive/original-operation.json --json
 ```
 
-`hosts` 返回 `verified:false`，只是中转提供的在线提示；成功解密 `catalog` 后才确认对端持有已配对设备的密钥。新版目录 `catalogVersion:2` 同时包含实际运行工作区、项目和 Agent，以及由这台主机确认并持久化的 `products`：产品工作区、产品、执行副本和映射版本。选择 `--space PRODUCT_WORKSPACE_ID --replica REPLICA_ID` 后，CLI 将它唯一解析到实际运行项目；也可明确使用 `--workspace RUNTIME_WORKSPACE_ID --project LOCAL_PROJECT_ID`，新版目录下仍必须唯一对应一个可用产品副本。两种选择不能混用，也不继承普通 CLI 的 `targets use`。旧 v1 目录仍可读取，并继续接受运行范围选择。
+`list` 每张旧表最多显示 100 个原编号与 `storedState`，并返回总数和是否截断，不输出正文、回执或目标。`storedState` 是之前保存的状态，不是本次向 Host 查询的结论。`pending`、`ending` 仍是未完成确认，不会因导出而改变。
 
-```sh
-node dist/cli.mjs secure create --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID \
-  --agent AGENT_CONFIG_ID --json
-node dist/cli.mjs secure send SESSION_ID --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID \
-  --stdin --json <<'PROMPT'
-检查当前项目，说明下一步待办。
-PROMPT
-node dist/cli.mjs secure read SESSION_ID --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --space PRODUCT_WORKSPACE_ID --replica REPLICA_ID --json
-```
+`export` 只查指定原编号在两张旧表中的记录，将原 JSON 字符串和表名原样保存在带 Moor 私有文档标识的文件中。同一编号出现在两张表时一并保留。不会校正未知格式、修改状态、补造回执、联网、运行 Agent 或导入普通会话。输出父目录必须已经存在、由当前用户持有、权限为 `0700` 且无符号链接；文件必须不存在，以 `0600` 新建。每条原记录上限为 128 MiB，超过限制时保留原数据库并采用完整停机备份。导出内容可能包含私有正文，应放在项目和分发目录之外，不加入 Git、附件或共享文档。
 
-同样的明确目标参数支持 `list`、`mcp`、`stop`、`archive`、`restore`、`rename`、`pin`、`unpin`；`list` 不传会话。`rename` 从 `--stdin` 或 `--file` 读取标题，`stop --turn TURN_ID` 核对当前活动回合。`send` 可提供 `--model`、`--effort`、`--mode` 与 `--mcp-server-ids`，已有会话仍固定原 Agent 版本。当前没有审批回应、问题回答、附件上传、通用 `--wait`、`--follow` 或通知子命令；使用手动 `read` 查看结果，需要人工回应的回合仍可精确停止。
-
-选中 MCP 的 `secure send` 要求主机报告 `secure-turn-authority-v1`：先保存接受回执，再保持原授权连接，前台只读等待原操作绑定的精确回合结束，默认不设时限。可明确传入 `--timeout MS`，范围为 1–86400000 毫秒；带完整绑定的待确认 MCP 原操作在手动 `secure retry` 接受后同样等待。等待不重发指令，完成结果与接受回执分别报告，退出与撤销边界见[MCP 的 CLI 用法](mcp.md#cli)。
-
-发送前先把原请求保存到独立的私有加密操作表。接受回执丢失、请求超时或无法验证时退出码为 6，并返回原操作编号；不自动重发，也不把中转错误当成主机拒绝。手动恢复：
-
-```sh
-node dist/cli.mjs secure operations --json
-node dist/cli.mjs secure inspect OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
-node dist/cli.mjs secure retry OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
-node dist/cli.mjs secure abandon OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
-```
-
-`operations` 只读本机摘要，不含原正文；其余恢复命令从原记录选择主机与执行范围，不能另传目标。重试沿用原操作编号、正文和请求哈希，新版目录下还冻结原产品工作区、产品、副本和映射版本；恢复时不会用新目录替换它们。映射变化后仍可提交原范围核查或封存，由主机核对历史绑定。升级后的主机上，旧的无产品映射待确认操作只能 `inspect` 或 `abandon`，不能推测新映射后重发。主机已接受时返回原结果。请求封存后保持 `ending`，在主机确认前不能重试执行；已接受操作不能借封存撤销。旧 `session retry` 无法读取加密操作，避免通过旧 HTTP 发送。这里的“加密操作表”指使用加密传输的私有操作记录，SQLite 正文本身没有磁盘加密。
-
-新指令保存精确的 `userTurnId` 并纳入原请求摘要。升级前缺少此字段的旧待确认 `turn`，包括普通文字指令，只能 `secure inspect` 或 `secure abandon`，不能猜测最新回合后重试；已接受的旧记录仍可读取原回执，不重新执行。
-
-产品目录由每台主机独立保存，变更通过同一条加密链路提交。先读取 `secure catalog`，核对 `products.authority`、全局 `products.revision` 和目标副本版本；然后提供明确的动作和 `expectedRevision`。CLI 生成固定原操作编号，在独立的私有 `secure_catalog_outbox` 中保存完整动作后才发送：
-
-```sh
-node dist/cli.mjs secure organize --endpoint /absolute/private/.moor-security/client.json \
-  --host HOST_DEVICE_ID --stdin --json <<'ACTION'
-{"action":"create-workspace","expectedRevision":1,"id":"personal","name":"个人项目"}
-ACTION
-```
-
-示例中的 `expectedRevision:1` 必须换为刚核对的实际版本。输入必须为严格 JSON，不接受 `operationId`、`version` 或额外字段；编号和协议版本由 CLI 固定。
-
-| `action`           | 除 `expectedRevision` 外的动作字段                                |
-| ------------------ | ----------------------------------------------------------------- |
-| `create-workspace` | `id`、`name`                                                      |
-| `rename-workspace` | `workspaceId`、`name`                                             |
-| `create-project`   | `workspaceId`、`id`、`name`、`source`（与目录中项目来源结构相同） |
-| `assign-replica`   | `replicaId`、`projectId`、`expectedReplicaRevision`               |
-| `move-host`        | `runtimeWorkspaceId`、`targetWorkspaceId`                         |
-
-`move-host` 移动这台主机的指定运行工作区及其副本在产品目录中的归属；它不复制文件、会话历史或迁移到另一台物理主机。目录操作的明确恢复命令独立于会话操作：
-
-```sh
-node dist/cli.mjs secure catalog-operations --json
-node dist/cli.mjs secure catalog-inspect OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
-node dist/cli.mjs secure catalog-retry OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
-node dist/cli.mjs secure catalog-abandon OPERATION_ID --endpoint /absolute/private/.moor-security/client.json --json
-```
-
-`catalog-operations` 离线读取本机摘要；其余命令只使用原记录中的账号、根、客户端、主机、完整动作和预期版本，不能换目标。响应未知时保留原字节和编号，重连不会自动执行。核查未找到不代表可以自动重发；封存先持久化 `ending` 并把完整原动作交给主机，以阻止迟到的同一操作执行。封存不能撤销已经接受的目录变更。
-
-此入口已加密目录、命令和主机响应；默认桌面、Web/PWA、普通远程 CLI、watch 和通知尚未迁入。完整范围和剩余限制见[端到端加密进展](end-to-end-encryption.md)。
+归档命令只读打开现有 `moor-cli-v1.sqlite`；目录或文件不存在时失败，不创建新的空状态。它不能恢复早期版本已经丢失的数据。需要保留全部记录时，正常退出使用该目录的 CLI 后备份完整私有目录；Host 数据另按[停机备份](runtime.md#主机停机备份与恢复)处理。
 
 ## 创建、发送与阅读
+
+Moor 逐回合附加 MCP 与旧父子任务计划已退场。`session mcp` 只读旧配置摘要；新的指令不携带这些授权。旧 Host 仍可读取、停止和核查原回执，但需升级执行电脑后才能通过当前 Relay 发送新指令。410 退场错误保留明确分类：首次新请求的明确拒绝可记为 rejected；对旧结果未知原操作的人工重试仍保留 pending 和原正文。
 
 ```sh
 node dist/cli.mjs session create --agent AGENT_ID --file /absolute/title.txt
@@ -194,9 +119,7 @@ node dist/cli.mjs session stop SESSION_ID --turn ASSISTANT_TURN_ID --wait
 
 省略 `--turn` 时使用刚读取的活动助手编号，主机仍对精确回合校验。停止意图先保存；原操作不会因为查询或重试而再次取消新回合。`stopping` 表示尚未确认结束，`interrupted` 表示原回合已因重启或中断结算，不能解释为已确认正常取消。
 
-CLI 可以查看审批和提问相关历史；当前会话 CLI 不提供审批答复、附件上传、角色应用、Skills 安装、Git 写操作或任意 shell 命令。已有审批、附件、角色和 Git 等能力仍使用各自入口，Skills 安装尚未实现，不因 CLI 登录扩大权限。
-
-`session mcp SESSION_ID --json` 只读取本机登记、已启用且允许当前项目使用的 MCP 版本。审查后可在 `session send` 中明确提供 `--mcp-server-ids ID,ID`，最多 8 项且每次发送前核对；省略时不添加 Moor MCP。配置、凭据和传输能力边界见[本机 MCP](mcp.md)。
+CLI 可以查看审批和提问相关历史；当前会话 CLI 不提供审批答复、附件上传、角色应用、Skills 安装、Git 写操作或任意 shell 命令。审批、附件和 Git 等当前能力仍使用各自入口；旧角色只保留历史核查，Skills 安装尚未实现，不因 CLI 登录扩大权限。
 
 ## 整理与配置查看
 
@@ -258,10 +181,10 @@ node dist/cli.mjs operation abandon OPERATION_ID --json
 | 4      | 网络/HTTP 读取失败、响应读取不可确认、离线或未持久保存 |
 | 5      | 明确拒绝、范围/能力不匹配，或原停止已中断              |
 | 6      | 请求或核查结果未知，保留原编号手动处理                 |
-| 7      | 等待超时，或已接受的加密 MCP 回合未成功完成            |
+| 7      | 等待超时                                               |
 | 130    | Ctrl-C 中断 CLI                                        |
 
-普通 `session` 等待超时或中断不会发送停止操作。`secure` MCP 等待超时、中断或失去连接则关闭原授权通道，主机请求撤销相应回合，已接受的原记录仍保留；这不保证已经派发的外部动作已停止或回滚，需核查原结果。
+普通 `session` 等待超时或中断不会发送停止操作。旧加密执行与额外 MCP 已退场，其已接受或结果未知的原记录保持原样；不能因退场推断已派发的外部动作停止或回滚。
 
 默认状态位于 `~/.moor-cli-v1/moor-cli-v1.sqlite`，可用 `--state-dir` 指定项目外的绝对私有目录。目录使用 `0700`，数据库使用 `0600`；文件、祖先目录或身份变化时停止请求。数据库包含登录凭据、Google 待完成接续和待确认正文，没有额外文件加密，不能提交到 Git、复制到程序包或放入共享目录。同一次 Google 接续的所有命令必须使用相同的状态目录。项目文件读取与快照额外排除 CLI 保留文件名。
 

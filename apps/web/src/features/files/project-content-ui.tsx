@@ -1,5 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
+import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
+import type {
+  ProjectContentIssue,
+  ProjectDiffChange,
+  ProjectDiffFileResult,
+  ProjectDiffReference,
+  ProjectTreeResult,
+  ProjectTurnDiffResult,
+} from '@moor/protocol/project-content-protocol';
 import {
   ArrowLeft,
   ChevronRight,
@@ -10,20 +18,11 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
-import type {
-  ProjectContentIssue,
-  ProjectDiffChange,
-  ProjectDiffFileResult,
-  ProjectDiffReference,
-  ProjectTreeResult,
-  ProjectTurnDiffResult,
-} from '@moor/protocol/project-content-protocol';
+import { useEffect, useMemo, useState } from 'react';
+import { markdown } from '../../components/content';
+import { formatAttachmentSize } from '../attachments/attachments';
 import type { FileContentView } from './file-content';
 import { compareTextLines, type ProjectContentView } from './project-content';
-import { formatAttachmentSize } from '../attachments/attachments';
-import { markdown } from '../../components/content';
-import { paint } from '../../components/ui';
 
 export type ProjectTurnChoice = { id: string; label: string; reference?: ProjectDiffReference };
 export type ProjectContentPanelProps = {
@@ -505,42 +504,5 @@ export function ProjectContentPanel(props: ProjectContentPanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showProjectContentPanel(props?: ProjectContentPanelProps) {
-  paint('#project-content-view', props ? <ProjectContentPanel {...props} /> : null);
-}
-export function showProjectContentControls(props?: {
-  tree: boolean;
-  changes: boolean;
-  onTree(): void;
-  onChanges(): void;
-}) {
-  paint(
-    '#project-content-controls',
-    props ? (
-      <div className="project-content-controls">
-        <button
-          type="button"
-          aria-label="项目文件"
-          disabled={!props.tree}
-          title={!props.tree ? '执行电脑需要报告文件树能力' : '查看当前项目文件'}
-          onClick={props.onTree}
-        >
-          <FolderOpen />
-          <span>项目文件</span>
-        </button>
-        <button
-          type="button"
-          aria-label="会话变更"
-          disabled={!props.changes}
-          title={!props.changes ? '执行电脑需要报告历史变更能力' : '查看按回合保存的变化'}
-          onClick={props.onChanges}
-        >
-          <GitCompareArrows />
-          <span>会话变更</span>
-        </button>
-      </div>
-    ) : null,
   );
 }

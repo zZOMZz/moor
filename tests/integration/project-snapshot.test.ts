@@ -17,8 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
-import { PrivateEndpointFile } from '@moor/e2ee/node/private-endpoint-file';
-import { runDeviceSecurityCommand } from '../../apps/cli/src/security/commands';
+import { writePrivateArtifacts, writePrivateDocument } from '../fixtures/private-documents';
 import {
   captureProjectSnapshot,
   compareProjectSnapshots,
@@ -49,30 +48,14 @@ const directoryOnly: ProjectSnapshotOptions = {
   },
 };
 
-test('actual private endpoint files and arbitrary copies are unavailable in both Git and directory snapshots', async (t) => {
+test('retained private endpoint files and arbitrary copies are unavailable in both Git and directory snapshots', async (t) => {
   const p = project(t);
   const privateDirectory = join(p.root, 'custom');
   mkdirSync(privateDirectory, { mode: 0o700 });
   const dataFile = join(privateDirectory, 'custom-device.json'),
     codeFile = join(privateDirectory, 'custom-code.json'),
     capsuleFile = join(privateDirectory, 'custom-backup.json');
-  await runDeviceSecurityCommand(
-    {
-      action: 'initialize',
-      identity: {
-        accountId: 'synthetic-owner',
-        serverOrigin: 'https://relay.example.test',
-        deviceId: 'synthetic-mbp',
-        roles: ['host'],
-      },
-      recoveryCodeFile: codeFile,
-    },
-    { dataFile },
-  );
-  await runDeviceSecurityCommand(
-    { action: 'export-recovery', recoveryCodeFile: codeFile, outputFile: capsuleFile },
-    { dataFile },
-  );
+  writePrivateArtifacts(dataFile, codeFile, capsuleFile);
   const sensitivePaths: string[] = [];
   for (const [index, path] of [dataFile, codeFile, capsuleFile].entries()) {
     const copied = `copy-${index}.txt`;
@@ -130,9 +113,7 @@ test('reserved security paths are filtered and cannot themselves become snapshot
 test('a private endpoint file at the project root is omitted from frozen text without hiding ordinary format documentation', async (t) => {
   const p = project(t);
   chmodSync(p.root, 0o700);
-  const file = PrivateEndpointFile.open(join(p.root, 'arbitrary-name.json'));
-  file.save(null, { code: 'synthetic-secret' });
-  file.close();
+  writePrivateDocument(join(p.root, 'arbitrary-name.json'), { code: 'synthetic-secret' });
   p.write('source.ts', 'const example = "moor-private-endpoint-v1";');
   const snapshot = await captureProjectSnapshot(p.root, directoryOnly);
   strict.equal(

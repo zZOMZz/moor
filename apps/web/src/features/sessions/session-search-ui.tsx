@@ -1,8 +1,7 @@
-import { useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { Search, X } from 'lucide-react';
-import { paint } from '../../components/ui';
 import type { SearchHit } from '@moor/protocol/search-protocol';
+import { Search, X } from 'lucide-react';
+import { useState } from 'react';
 import type { SearchSession, SessionSearchView } from './session-search';
 
 export type SessionSearchPanelProps = {
@@ -126,25 +125,5 @@ export function SessionSearchPanel(props: SessionSearchPanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showSessionSearchPanel(props?: SessionSearchPanelProps) {
-  paint('#session-search-view', props ? <SessionSearchPanel {...props} /> : null);
-}
-export function showSessionSearchControl(props?: { enabled: boolean; onOpen(): void }) {
-  paint(
-    '#session-search-control',
-    props ? (
-      <button
-        type="button"
-        className="session-search-open"
-        aria-label="正文搜索"
-        disabled={!props.enabled}
-        onClick={props.onOpen}
-      >
-        <Search />
-        <span>正文搜索</span>
-      </button>
-    ) : null,
   );
 }

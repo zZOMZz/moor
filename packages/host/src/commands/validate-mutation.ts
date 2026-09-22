@@ -7,8 +7,8 @@ import {
 import { assert, type Mutation, type RuntimeWorkspace } from '@moor/protocol/protocol';
 import { Flock, LoroDoc, decode, metas, mirror } from '@moor/session/model';
 import { promptAttachmentsSchema } from '@moor/protocol/attachment-protocol';
-import { taskPlanSchema, SESSION_TASKS_FEATURE } from '@moor/protocol/task-protocol';
-import { MCP_FEATURE, mcpServerIdsSchema } from '@moor/protocol/mcp-protocol';
+import { RETIRED_SESSION_FEATURE } from '@moor/protocol/connection-authority';
+import { mcpServerIdsSchema } from '@moor/protocol/mcp-protocol';
 import { permissionItemJson } from '@moor/protocol/permission-review';
 const clone = (source: LoroDoc) => {
   const d = new LoroDoc();
@@ -195,20 +195,12 @@ export function validateMutation(
     const mcpSelection = mcpServerIdsSchema.safeParse(turn.inputConfig.mcpServerIds);
     assert(mcpSelection.success, 400, 'MCP 选择必须是本机登记的配置版本编号');
     assert(
-      !mcpSelection.data.length || ws.features?.includes(MCP_FEATURE),
-      409,
-      '执行主机尚不支持额外 MCP，请升级后重新审查',
+      mcpSelection.data.length === 0 &&
+        turn.inputConfig.taskToolsEnabled === false &&
+        turn.inputConfig.taskPlan === undefined,
+      410,
+      RETIRED_SESSION_FEATURE,
     );
-    if (turn.inputConfig.taskToolsEnabled === true) {
-      assert(ws.features?.includes(SESSION_TASKS_FEATURE), 409, '执行主机尚不支持受限子任务');
-      const plan = taskPlanSchema.safeParse(turn.inputConfig.taskPlan);
-      assert(plan.success, 400, '子任务授权清单无效，请重新审查');
-    } else
-      assert(
-        turn.inputConfig.taskToolsEnabled === false && turn.inputConfig.taskPlan === undefined,
-        400,
-        '子任务工具必须携带用户明确审查的清单',
-      );
   } else {
     assert(m.requestId && isDeepStrictEqual(beforeRows, afterRows), 400, '审批不能修改会话目标');
     let matched = false;

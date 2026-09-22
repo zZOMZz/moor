@@ -51,35 +51,9 @@ export type AgentInteractionCapabilities = {
 export type AgentSteerResult =
   | { outcome: 'injected' }
   | { outcome: 'promptRequired'; reason: 'noRunningTurn' };
-// Ephemeral execution-host capability; never persisted in AgentConfig or a
-// shared user input. The caller owns the service and revokes it with the turn.
-export type AgentMcpServer =
-  | {
-      name: string;
-      command: string;
-      args: string[];
-      env: Array<{ name: string; value: string }>;
-    }
-  | {
-      type: 'http' | 'sse';
-      name: string;
-      url: string;
-      headers: Array<{ name: string; value: string }>;
-    };
 export type AgentOpenOptions = {
   /** Host invocation guard, including recovery loads; never serialized into ACP. */
   assertCurrent?: () => void;
-  mcp?: {
-    servers: AgentMcpServer[];
-    redact: string[];
-    assertCurrent(): void;
-  };
-  taskTools?: {
-    url: string;
-    token: string;
-    assertCurrent(): void;
-    onPromptDispatch(): void;
-  };
 };
 export type AgentSession = {
   readUsage?(): Promise<AgentUsageUpdate>;

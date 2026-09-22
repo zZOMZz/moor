@@ -1,5 +1,8 @@
+import {
+  RETIRED_RECORDS_FEATURE,
+  RETIRED_SESSION_FEATURE,
+} from '@moor/protocol/connection-authority';
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -25,22 +28,14 @@ import {
   type SessionOriginalOperation,
 } from '@moor/protocol/session-control-protocol';
 import { buildSessionTurn, readClientSession } from '@moor/client/session-client';
-import {
-  MCP_FEATURE,
-  MCP_LIMITS,
-  mcpReadSchema,
-  mcpServerIdsSchema,
-  validateMcpRead,
-} from '@moor/protocol/mcp-protocol';
-import { readLocalCliConnection } from '@moor/e2ee/node/local-cli-connection';
+import { MCP_LIMITS, mcpReadSchema, validateMcpRead } from '@moor/protocol/mcp-protocol';
+import { readLocalCliConnection } from '@moor/protocol/node/local-cli-connection';
 import { CliError, type CliArgs } from './args';
 import { CliHttp, CliHttpError, connectionSchema, serverOrigin } from '@moor/client/node/http';
 import { cliInput } from './input';
 import { CliGoogleAuth } from './google-auth';
-import { EncryptedCliClient } from './encrypted-client';
-import { PrivateEndpointFile } from '@moor/e2ee/node/private-endpoint-file';
-import { trustConnectionSchema } from '@moor/e2ee/trust-client';
 import { CliState, type CliOperation, type CliTarget } from './state';
+import { exportRetiredOperation } from './retired';
 import {
   cliServerKey,
   listTargets,
@@ -321,12 +316,21 @@ export class CliClient {
       if (error instanceof CliHttpError && error.rejected && first) {
         this.state.transition(op.operationId, ['pending'], 'rejected');
         throw new CliError(
-          'rejected',
-          '主机明确拒绝了本次新操作；原记录已保留。',
+          error.status === 410 ? 'retired' : 'rejected',
+          error.status === 410
+            ? RETIRED_SESSION_FEATURE
+            : '主机明确拒绝了本次新操作；原记录已保留。',
           5,
           op.operationId,
         );
       }
+      if (error instanceof CliHttpError && error.status === 410)
+        throw new CliError(
+          'retired',
+          '此功能已退场；旧原操作状态保持不变，请核查已保存的记录。',
+          6,
+          op.operationId,
+        );
       if (error instanceof CliError && error.operationId) throw error;
       throw new CliError(
         'unknown',
@@ -432,7 +436,13 @@ export class CliClient {
     }
   }
   async run(args: CliArgs): Promise<unknown> {
-    if (args.group === 'secure') return new EncryptedCliClient(this.deps).run(args);
+    if (args.group === 'retired') {
+      if (args.command === 'list') return this.state.retiredSummaries();
+      return exportRetiredOperation(this.state, args.positional!, String(args.flags.output), () => {
+        if (this.deps.signal?.aborted) throw new CliError('interrupted', '离线导出已中断。', 130);
+        this.state.assertCurrent();
+      });
+    }
     const authRevision = args.group === 'auth' ? this.state.settingsRevision() : undefined;
     const authCurrent = () => {
       if (this.deps.signal?.aborted || this.state.settingsRevision() !== authRevision)
@@ -464,46 +474,6 @@ export class CliClient {
           authCurrent();
           return google.finish(confirmation);
         }
-      }
-    }
-    if (args.group === 'auth' && args.command === 'export-trust') {
-      let file: PrivateEndpointFile | undefined;
-      try {
-        const auth = authSchema.parse(this.state.get('auth'));
-        const revision = authRevision!;
-        const output = String(args.flags.output ?? '');
-        if (auth.kind !== 'remote' || args.flags.connection || !isAbsolute(output))
-          throw new Error();
-        const connection = trustConnectionSchema.parse({
-          kind: 'moor-trust-connection',
-          ...auth.connection,
-        });
-        if (args.flags.server && serverOrigin(String(args.flags.server)) !== connection.origin)
-          throw new Error();
-        const current = () => {
-          this.state.assertCurrent();
-          if (
-            this.deps.signal?.aborted ||
-            this.state.settingsRevision() !== revision ||
-            !isDeepStrictEqual(this.state.get('auth'), auth)
-          )
-            throw new Error();
-        };
-        current();
-        file = PrivateEndpointFile.open(output);
-        if (file.load()) throw new Error();
-        current();
-        file.save(null, connection);
-        current();
-        return { outputFile: resolve(output) };
-      } catch {
-        throw new CliError(
-          'export-trust',
-          '信任连接文件未能确认保存；请核对本机状态和目标文件，不会自动覆盖。',
-          1,
-        );
-      } finally {
-        file?.close();
       }
     }
     if (args.group === 'auth' && args.command === 'login') {
@@ -596,7 +566,10 @@ export class CliClient {
           kind: http.options.local ? 'local' : 'remote',
         };
       try {
-        await http.json('/api/logout', {});
+        await http.json(
+          '/api/logout?expectedAccount=' + encodeURIComponent(id.parse(http.owner)),
+          {},
+        );
       } finally {
         authCurrent();
         this.state.compareAndSetSettings(authRevision!, { auth: undefined, target: undefined });
@@ -675,7 +648,7 @@ export class CliClient {
     const read = await this.read(http, target);
     if (args.command === 'read') return { target, ...read };
     const readMcp = async () => {
-      requireFeature(resolved, MCP_FEATURE);
+      requireFeature(resolved, RETIRED_RECORDS_FEATURE);
       const request = mcpReadSchema.parse({
         mcpVersion: 1,
         workspaceId: target.workspaceId,
@@ -698,25 +671,12 @@ export class CliClient {
           ? resolved.agents.find((a) => a.id === read.meta.agentConfigId)
           : undefined);
       if (!agent) throw new CliError('agent', '主机未提供此会话的固定 Agent 版本；未发送。', 5);
-      const mcpServerIds = mcpServerIdsSchema.parse(
-        args.flags['mcp-server-ids'] ? String(args.flags['mcp-server-ids']).split(',') : [],
-      );
-      if (mcpServerIds.length) {
-        const catalog = await readMcp();
-        if (mcpServerIds.some((id) => !catalog.servers.some((server) => server.id === id)))
-          throw new CliError(
-            'mcp',
-            '所选 MCP 版本已停用或不属于此项目，请重新读取并审查；未发送。',
-            5,
-          );
-      }
       const turnId = this.uuid(),
         request = buildSessionTurn({
           scope: scope(target),
           read,
           agent: agentSchema.parse(agent),
           prompt: (await cliInput(args, this.deps.stdin))!,
-          mcpServerIds,
           selection: {
             ...(args.flags.model ? { modelId: String(args.flags.model) } : {}),
             ...(args.flags.effort ? { reasoningEffort: String(args.flags.effort) } : {}),

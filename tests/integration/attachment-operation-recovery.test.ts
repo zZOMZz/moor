@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostProductCatalog } from '@moor/host/commands/product-catalog';
 import { HostCommandDispatcher, type HostCommand } from '@moor/host/commands/host-command';
 import { attachmentActionSchema, type AttachmentAction } from '@moor/protocol/attachment-protocol';
 import {
@@ -15,7 +14,6 @@ import {
   validateSessionOperationResult,
 } from '@moor/protocol/session-control-protocol';
 import { validateHostResponse } from '@moor/protocol/host-response';
-import type { EncryptedProductTarget } from '@moor/e2ee/encrypted-product-catalog';
 
 function fixture(t: TestContext) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-attachment-recovery-'))),
@@ -24,15 +22,8 @@ function fixture(t: TestContext) {
   const database = join(root, 'host.sqlite');
   let runtime = new RuntimeStore(database),
     host: HostWorkspace,
-    products: HostProductCatalog,
     dispatcher: HostCommandDispatcher;
-  const projectId = runtime.registerProject(project),
-    authority = {
-      serverOrigin: 'https://relay.synthetic.invalid',
-      accountId: 'owner',
-      rootKeyId: Buffer.alloc(32, 1).toString('base64url'),
-      hostDeviceId: 'host',
-    };
+  const projectId = runtime.registerProject(project);
   const open = () => {
     host = new HostWorkspace(
       runtime,
@@ -44,15 +35,6 @@ function fixture(t: TestContext) {
       () => {},
       () => {},
     );
-    products = new HostProductCatalog({
-      db: runtime.journal.db,
-      authority,
-      runtime: () => ({
-        catalogVersion: 1,
-        machineId: host.workspace.machineId,
-        workspaces: [host.workspace],
-      }),
-    });
     dispatcher = new HostCommandDispatcher({
       ready: () => !host.closed,
       workspace: (id) => (id === host.workspace.id ? host : undefined),
@@ -73,15 +55,6 @@ function fixture(t: TestContext) {
     runtime.close();
     rmSync(root, { recursive: true, force: true });
   });
-  const selected = (): EncryptedProductTarget => {
-    const replica = products.read().replicas[0]!;
-    return {
-      catalogWorkspaceId: replica.catalogWorkspaceId,
-      replicaId: replica.id,
-      projectId: replica.projectId,
-      revision: replica.revision,
-    };
-  };
   const upload = (operationId = 'original-upload'): AttachmentAction =>
     attachmentActionSchema.parse({
       contentVersion: 1,
@@ -121,54 +94,22 @@ function fixture(t: TestContext) {
       request: { kind: 'attachment', value },
     }),
   });
-  const execute = async (target: EncryptedProductTarget, command: HostCommand) => {
-    const lease = products.acquire(target, command);
-    try {
-      products.bindOperation(target, command);
-      const raw = await dispatcher.execute(command, { current: () => lease.current() });
-      return await validateHostResponse(raw, {
-        command,
-        workspace: host.workspace,
-        current: () => lease.current(),
-      });
-    } finally {
-      lease.release();
-    }
-  };
-  const move = () => {
-    products.action({
-      version: 1,
-      action: 'create-workspace',
-      operationId: 'create-space',
-      expectedRevision: products.read().revision,
-      id: 'other-space',
-      name: 'Other',
-    });
-    products.action({
-      version: 1,
-      action: 'move-host',
-      operationId: 'move-host',
-      expectedRevision: products.read().revision,
-      runtimeWorkspaceId: scope.workspaceId,
-      targetWorkspaceId: 'other-space',
-    });
+  const execute = async (command: HostCommand) => {
+    const current = () => assert(!host.closed);
+    const raw = await dispatcher.execute(command, { current });
+    return validateHostResponse(raw, { command, workspace: host.workspace, current });
   };
   return {
     scope,
-    selected,
     upload,
     command,
     recovery,
     execute,
-    move,
     get runtime() {
       return runtime;
     },
     get host() {
       return host;
-    },
-    get products() {
-      return products;
     },
     reopen() {
       host.close();
@@ -179,11 +120,10 @@ function fixture(t: TestContext) {
   };
 }
 
-test('accepted upload/remove recovery uses the original journal after restart and product revision change, without checking present bytes', async (t) => {
+test('accepted upload/remove recovery uses the original journal after restart, without checking present bytes', async (t) => {
   const f = fixture(t),
-    selected = f.selected(),
     upload = f.upload();
-  const uploadReceipt = await f.execute(selected, f.command(upload));
+  const uploadReceipt = await f.execute(f.command(upload));
   const remove = attachmentActionSchema.parse({
     contentVersion: 1,
     workspaceId: f.scope.workspaceId,
@@ -193,22 +133,16 @@ test('accepted upload/remove recovery uses the original journal after restart an
     action: 'remove',
     attachmentId: 'attachment',
   });
-  const removeReceipt = await f.execute(selected, f.command(remove));
-  f.move();
+  const removeReceipt = await f.execute(f.command(remove));
   f.reopen();
-  assert.notDeepEqual(f.selected(), selected);
   for (const [original, receipt] of [
     [upload, uploadReceipt],
     [remove, removeReceipt],
   ] as const) {
-    await assert.rejects(f.execute(selected, f.command(original)));
-    await assert.rejects(
-      f.execute(f.selected(), f.command(original)),
-      'cannot rebind old operation',
-    );
+    assert.deepEqual(await f.execute(f.command(original)), receipt);
     for (const action of ['inspect', 'abandon'] as const) {
       const command = f.recovery(original, action),
-        raw = await f.execute(selected, command);
+        raw = await f.execute(command);
       const result = validateSessionOperationResult(raw, command.params);
       assert.equal(result.found, true);
       assert.equal(result.found && result.receipt.status, 'accepted');
@@ -226,39 +160,10 @@ test('accepted upload/remove recovery uses the original journal after restart an
   );
 });
 
-test('a claimed but absent old upload can be inspected then sealed after mapping changes; delayed exact upload cannot execute', async (t) => {
-  const f = fixture(t),
-    selected = f.selected(),
-    original = f.upload();
-  // The verified Host boundary persisted authority before an interrupted dispatch, without accepting bytes.
-  f.products.bindOperation(selected, f.command(original));
-  f.move();
-  const inspection = f.recovery(original, 'inspect');
-  assert.equal(
-    validateSessionOperationResult(await f.execute(selected, inspection), inspection.params).found,
-    false,
-  );
-  assert.equal(f.runtime.journal.has(original.operationId), false);
-  const abandon = f.recovery(original, 'abandon');
-  const sealed = validateSessionOperationResult(await f.execute(selected, abandon), abandon.params);
-  assert.equal(sealed.found && sealed.receipt.status, 'abandoned');
-  f.reopen();
-  assert.deepEqual(
-    validateSessionOperationResult(await f.execute(selected, inspection), inspection.params),
-    { ...sealed, action: 'inspect' },
-  );
-  await assert.rejects(f.host.attachmentAction(original, f.scope.localProjectId), /封存/);
-  await assert.rejects(f.execute(f.selected(), f.command(original)));
-  assert.equal(f.runtime.attachmentBytes(f.scope), 0);
-  const next = f.upload('new-explicit-upload');
-  assert.ok(await f.execute(f.selected(), f.command(next)));
-});
-
 test('sealing an absent remove keeps the uploaded file and serial races have only one durable outcome', async (t) => {
   const f = fixture(t),
-    selected = f.selected(),
     upload = f.upload();
-  await f.execute(selected, f.command(upload));
+  await f.execute(f.command(upload));
   const remove = attachmentActionSchema.parse({
     contentVersion: 1,
     workspaceId: f.scope.workspaceId,
@@ -269,7 +174,7 @@ test('sealing an absent remove keeps the uploaded file and serial races have onl
     attachmentId: 'attachment',
   });
   const abandon = f.recovery(remove, 'abandon');
-  const sealed = validateSessionOperationResult(await f.execute(selected, abandon), abandon.params);
+  const sealed = validateSessionOperationResult(await f.execute(abandon), abandon.params);
   assert.equal(sealed.found && sealed.receipt.status, 'abandoned');
   await assert.rejects(f.host.attachmentAction(remove, f.scope.localProjectId), /封存/);
   assert.equal(f.runtime.attachmentBytes(f.scope), 9);
@@ -282,13 +187,13 @@ test('sealing an absent remove keeps the uploaded file and serial races have onl
       },
     });
     const recovery = f.recovery(original, 'abandon');
-    const uploadTask = () => f.execute(selected, f.command(original));
-    const sealTask = () => f.execute(selected, recovery);
+    const uploadTask = () => f.execute(f.command(original));
+    const sealTask = () => f.execute(recovery);
     const settled = await Promise.allSettled(
       first === 'upload' ? [uploadTask(), sealTask()] : [sealTask(), uploadTask()],
     );
     const result = validateSessionOperationResult(
-      await f.execute(selected, f.recovery(original, 'inspect')),
+      await f.execute(f.recovery(original, 'inspect')),
       f.recovery(original, 'inspect').params,
     );
     assert.equal(
@@ -302,46 +207,12 @@ test('sealing an absent remove keeps the uploaded file and serial races have onl
   }
 });
 
-test('historical attachment recovery rejects changed claims, targets, authority and project generations', async (t) => {
-  const f = fixture(t),
-    selected = f.selected(),
-    original = f.upload();
-  f.products.bindOperation(selected, f.command(original));
-  f.move();
-  const request = f.recovery(original, 'inspect');
-  for (const altered of [
-    f.recovery(
-      { ...original, data: Buffer.from('different').toString('base64') } as AttachmentAction,
-      'inspect',
-    ),
-    f.recovery(
-      {
-        ...original,
-        attachment: {
-          ...(original as Extract<AttachmentAction, { action: 'upload' }>).attachment,
-          name: 'different.txt',
-        },
-      } as AttachmentAction,
-      'abandon',
-    ),
-  ])
-    await assert.rejects(f.execute(selected, altered));
-  await assert.rejects(f.execute({ ...selected, revision: selected.revision + 1 }, request));
-  const alteredScope = structuredClone(request);
-  alteredScope.params.machineId = 'another-machine';
-  await assert.rejects(f.execute(selected, alteredScope));
-  f.host.workspace.projects[0].rootPath += '-changed';
-  await assert.rejects(f.execute(selected, request));
-  assert.equal(f.runtime.journal.has(original.operationId), false);
-});
-
 test('attachment recovery schemas reject wrong nested receipt, raw authority fields and unsupported capability', async (t) => {
   const f = fixture(t),
-    selected = f.selected(),
     original = f.upload();
-  await f.execute(selected, f.command(original));
+  await f.execute(f.command(original));
   const command = f.recovery(original, 'inspect'),
-    raw = (await f.execute(selected, command)) as any;
+    raw = (await f.execute(command)) as any;
   for (const change of ['operationId', 'sessionId', 'name', 'status', 'kind']) {
     const changed = structuredClone(raw);
     if (change === 'name') changed.receipt.attachmentReceipt.attachment.name = 'other';
@@ -367,95 +238,4 @@ test('attachment recovery schemas reject wrong nested receipt, raw authority fie
       },
     }),
   );
-});
-
-test('a never-arrived attachment can inspect and seal the exact Host-published historical mapping without inventing an execution claim', async (t) => {
-  const f = fixture(t),
-    selected = f.selected(),
-    original = f.upload('never-arrived');
-  assert.equal(
-    f.runtime.journal.db.prepare('SELECT count(*) AS count FROM encrypted_product_operation').get()
-      ?.count,
-    0,
-  );
-  assert.deepEqual(
-    JSON.parse(
-      String(
-        f.runtime.journal.db.prepare('SELECT value FROM encrypted_product_mapping').get()?.value,
-      ),
-    ).target,
-    selected,
-  );
-  f.move();
-  f.reopen();
-  const inspection = f.recovery(original, 'inspect');
-  assert.equal(
-    validateSessionOperationResult(await f.execute(selected, inspection), inspection.params).found,
-    false,
-  );
-  assert.equal(
-    f.runtime.journal.db.prepare('SELECT count(*) AS count FROM encrypted_product_operation').get()
-      ?.count,
-    0,
-  );
-  assert.equal(f.runtime.journal.has(original.operationId), false);
-  const abandon = f.recovery(original, 'abandon');
-  const result = validateSessionOperationResult(await f.execute(selected, abandon), abandon.params);
-  assert.equal(result.found && result.receipt.status, 'abandoned');
-  assert.equal(
-    f.runtime.journal.db.prepare('SELECT count(*) AS count FROM encrypted_product_operation').get()
-      ?.count,
-    1,
-  );
-  assert.equal(f.runtime.attachmentBytes(f.scope), 0);
-  await assert.rejects(f.host.attachmentAction(original, f.scope.localProjectId), /封存/);
-  await assert.rejects(f.execute(selected, f.command(original)));
-  await assert.rejects(f.execute(f.selected(), f.command(original)));
-  assert.equal(
-    validateSessionOperationResult(await f.execute(selected, inspection), inspection.params).found,
-    true,
-  );
-});
-
-test('unclaimed recovery never trusts an invented target or legacy missing history, and cannot borrow a different runtime generation', async (t) => {
-  const f = fixture(t),
-    selected = f.selected(),
-    original = f.upload('never-arrived');
-  f.move();
-  const inspection = f.recovery(original, 'inspect');
-  await assert.rejects(f.execute({ ...selected, revision: selected.revision + 10 }, inspection));
-  await assert.rejects(f.execute({ ...selected, projectId: 'invented-project' }, inspection));
-  const rows = f.runtime.journal.db
-    .prepare('SELECT authority,target,value FROM encrypted_product_mapping')
-    .all();
-  const row = rows.find(
-    (row) => JSON.parse(String(row.value)).target.revision === selected.revision,
-  )!;
-  f.runtime.journal.db
-    .prepare('DELETE FROM encrypted_product_mapping WHERE authority=? AND target=?')
-    .run(row.authority!, row.target!);
-  f.reopen();
-  await assert.rejects(
-    f.execute(selected, inspection),
-    'upgrade cannot reconstruct missing old history from client fields',
-  );
-  assert.equal(f.runtime.journal.has(original.operationId), false);
-});
-
-test('Host mapping evidence is immutable, committed before publication and cannot authorize a reused local project', async (t) => {
-  const f = fixture(t),
-    selected = f.selected(),
-    original = f.upload('never-arrived');
-  const historical = f.runtime.journal.db.prepare('SELECT * FROM encrypted_product_mapping').all();
-  assert.equal(historical.length, 1);
-  f.move();
-  assert.deepEqual(
-    f.runtime.journal.db
-      .prepare('SELECT * FROM encrypted_product_mapping WHERE target=?')
-      .all(historical[0].target!),
-    historical,
-  );
-  f.host.workspace.projects[0].rootPath += '-replacement';
-  await assert.rejects(f.execute(selected, f.recovery(original, 'abandon')));
-  assert.equal(f.runtime.journal.has(original.operationId), false);
 });

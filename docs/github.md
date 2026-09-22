@@ -2,7 +2,7 @@
 
 Moor 可以读取执行电脑明确登记的 GitHub.com 仓库、分支、Issue、PR、会话评论和指定提交的 CI 状态，并将仓库、分支及 Issue/PR 关联到 Moor 会话。关联只修改 Moor 的本机记录，不会创建评论、推送提交、合并 PR 或启动 Agent。
 
-本页介绍配置、读取与会话关联，也包括 M6.2 桌面“加密工作区”的接入范围。此前 M4.3 的四项仓库检查与 612 项自动测试通过，并完成合成浏览器检查。评论、PR 操作、本地提交与推送另见[审阅与代码发布](github-writes.md)，外部写入默认关闭。真实 GitHub 账号和设备体验尚未验收，各批最新检查状态见[设备验收](validation.md)。
+本页介绍执行电脑上的配置，以及桌面和同源 Web 共享的读取与会话关联流程。评论、PR 操作、本地提交与推送另见[审阅与代码发布](github-writes.md)，外部写入默认关闭。真实 GitHub 账号和设备体验尚未验收，各批最新检查状态见[设备验收](validation.md)。
 
 ## 在执行电脑配置
 
@@ -100,15 +100,15 @@ stdin 最多 16 KiB，一次接收一个完整 JSON。成功退出码为 `0`，�
 
 本机项目从仓库 A 改绑到 B 后，A 的旧会话关联保留在主机数据库中，但读取只返回当前可访问的 B 上下文；旧关联只提供修改所需的版本，可以明确解除或重新关联。Moor 不用旧正文绕过新配置。
 
-## 桌面加密工作区
+## 共享客户端
 
-菜单中的“加密工作区”已接通上述完整读取与会话关联流程，包括仓库和本地 Git 概况、分页分支与 Issue/PR、条目正文、会话评论、精确提交的 CI，以及[PR 文件、行评论与审阅写入](github-writes.md#桌面加密工作区)。可在主机已确认的空会话中打开，无需先发送指令。
+桌面与同源 Web 共用仓库和本地 Git 概况、分页分支与 Issue/PR、条目正文、会话评论、精确提交的 CI，以及 [PR 文件、行评论与审阅写入](github-writes.md#共享客户端)。可在主机已确认的空会话中打开，无需先发送指令。
 
-可信页面通过有限加密 IPC 请求原执行主机；需要主机报告 `github-read-v1` 和 `secure-github-authority-v1`，写入面板另需 `github-write-v1`。缺少能力时提示升级，不使用旧 HTTP 接口。GitHub 请求正文与响应在客户端和执行主机之间加密；主机再通过既有固定 GitHub API 访问仓库。默认“我的所有电脑”和 Web/PWA 仍是 v3，迁移边界见[加密进展](end-to-end-encryption.md)。
+读取与关联要求主机报告 `github-read-v1`，写入面板另需 `github-write-v1`。共享控制器使用有限主机命令；本机桌面通过受限 IPC，远程请求经已认证的中转连接转发。主机使用自己的私有凭据访问固定 GitHub API。当前没有单独的加密工作区入口，也不要求旧加密入口的 `secure-github-authority-v1` 能力。远程中转进程可见转发中的请求和响应正文。
 
-读取结果只留在当前面板内存。关闭、离线、连接或目标变化会立即隐藏正文并使旧按钮与迟到结果失效；离开后再返回同一会话也需要重新读取。“加入草稿”会重新核对用户实际审阅的 Issue/PR 内容，再以版本条件追加到原会话最新草稿；正文改变或其他页面竞争修改时停止，保留待重新审阅的内容，不覆盖新草稿或自动发送。
+读取结果只留在当前面板内存。关闭、离线、连接或目标变化会使旧按钮与迟到结果失效；离开后再返回同一会话需要重新读取。“加入草稿”重新核对用户实际审阅的 Issue/PR 内容，再以版本条件追加到原会话最新草稿；正文改变或其他页面竞争修改时停止，不覆盖新草稿或自动发送。
 
-关联草稿与原请求使用独立加密工作区存储，绑定账号、中转、信任根、客户端设备、执行主机、完整产品映射和会话，不读取旧页面缓存。刷新与重连仅恢复本机记录。当前映射的待确认关联可以手动重试或撤销；产品映射改变后，“原项目映射的 GitHub 记录”保留原请求及草稿，旧关联仅可明确封存：主机若已接受则返回原确认，否则阻止原编号迟到执行，不在新映射下重新关联。恢复要求主机保留原范围证据且运行身份仍一致；缺少证据时继续保留待确认。
+手工草稿、关联原请求与最小回执保存在共享客户端账本，绑定来源、中转、账号、执行身份、产品副本和会话。刷新与重连只恢复本机记录；当前完整范围内的待确认关联可以手动重试或结束。共享客户端不提供旧产品映射的历史恢复面板，也不把旧范围记录改绑到新映射。切换账号、主机或映射后不能用当前目标核查旧请求；记录仍保留，不能据此宣称原操作未执行。
 
 ## PR、CI 与读取限制
 
@@ -128,12 +128,12 @@ CI 读取绑定刚刚确认的 PR head SHA。主机读取该 SHA 的 check runs 
 
 检查运行使用 `filter=latest`，只显示各检查的最新结果。GitHub 的该接口最多覆盖同一提交最近的 1,000 个 check suites；分页结束也不代表读取了所有历史检查，详见[检查运行接口限制](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)。
 
-提交、推送、发布评论和创建/编辑/合并 PR 通过独立的[审阅与代码发布](github-writes.md)流程进行，不由关联动作触发。网页预览与标注也已提供[可信桌面入口](preview.md#桌面加密工作区)，其余 M6 迁移继续按 [roadmap](roadmap.md)推进。
+提交、推送、发布评论和创建/编辑/合并 PR 通过独立的[审阅与代码发布](github-writes.md)流程进行，不由关联动作触发。内置网页预览已退场，原标注与回执的保留范围见[网页预览退场说明](preview.md)。
 
 ## 验收与实现入口
 
 合成测试使用临时项目、虚构 token 和注入的 GitHub HTTP 响应，覆盖 token 不回显、私有文件权限、项目外目录、仓库身份变化、权限撤销、精确 SHA、分页、原操作确认和目标切换。CLI/IPC 测试运行实际主机入口，验证锁、大小限制、晚到回复和退出不重放。真实 GitHub 授权、组织限制、限流及双 Mac/iPhone 体验仍待[专项设备验收](validation.md#m43-github-只读集成专项步骤)。
 
-实现入口：[公共协议](../packages/protocol/src/github-protocol.ts)、[主机私有配置](../packages/host/src/integrations/github/config.ts)、[GitHub 客户端](../packages/host/src/integrations/github/client.ts)、[会话关联](../packages/host/src/sessions/github.ts)、[Web 控制器](../apps/web/src/features/github/github.ts)、[可信桌面控制器](../apps/web/src/features/github/secure-github.ts)与[面板](../apps/web/src/features/github/secure-github-ui.tsx)。
+实现入口：[公共协议](../packages/protocol/src/github-protocol.ts)、[主机私有配置](../packages/host/src/integrations/github/config.ts)、[GitHub 客户端](../packages/host/src/integrations/github/client.ts)、[会话关联](../packages/host/src/sessions/github.ts)、[读取控制器](../apps/web/src/features/github/github.ts)、[共享会话控制器](../apps/web/src/features/github/github-session.ts)与[面板](../apps/web/src/features/github/github-session-ui.tsx)。
 
 返回[文档目录](README.md)。

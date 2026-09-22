@@ -28,7 +28,6 @@ test('license discovery includes the root and every application and public packa
     '@moor/app-relay',
     '@moor/app-web',
     '@moor/client',
-    '@moor/e2ee',
     '@moor/gateway',
     '@moor/host',
     '@moor/protocol',

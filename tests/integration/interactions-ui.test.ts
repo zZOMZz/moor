@@ -58,10 +58,17 @@ test('React question forms preserve all field types, save offline drafts and kee
     requestAnimationFrame: globalThis.requestAnimationFrame,
     cancelAnimationFrame: globalThis.cancelAnimationFrame,
   });
-  const { act } = await import('react');
-  const { showShell, disposeUI } = await import('../../apps/web/src/components/ui');
-  const { showQuestionPanel, showInformationPanel, closeInteractionPanel } =
-    await import('../../apps/web/src/features/interactions/interaction-ui');
+  const { act, createElement } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const { QuestionPanel } = await import('../../apps/web/src/features/interactions/interaction-ui');
+  const { SessionInformation } =
+    await import('../../apps/web/src/features/sessions/session-timeline');
+  const root = createRoot(document.getElementById('app')!);
+  const closePanel = () => root.render(null);
+  const renderQuestion = (props: Parameters<typeof QuestionPanel>[0]) =>
+    root.render(createElement(QuestionPanel, props));
+  const renderInformation = (props: Parameters<typeof SessionInformation>[0]) =>
+    root.render(createElement(SessionInformation, props));
   const request = questionRequestSchema.parse({
     interactionVersion: 1,
     workspaceId: 'runtime',
@@ -113,8 +120,6 @@ test('React question forms preserve all field types, save offline drafts and kee
       },
     ],
   });
-  let stop = 0,
-    normalSend = 0;
   const drafts: QuestionDraftValues[] = [],
     answers: QuestionAnswer['answer'][] = [],
     filled: string[] = [];
@@ -125,7 +130,7 @@ test('React question forms preserve all field types, save offline drafts and kee
     busy: false,
     pending: false,
     reason: '执行电脑离线，输入保存为草稿。',
-    onClose: closeInteractionPanel,
+    onClose: closePanel,
     onDraft: async (values) => {
       drafts.push(structuredClone(values));
     },
@@ -162,8 +167,7 @@ test('React question forms preserve all field types, save offline drafts and kee
   }
   try {
     await act(async () => {
-      showShell({ onSend: () => normalSend++, onDraft() {}, onCancel: () => stop++ });
-      showQuestionPanel(props);
+      renderQuestion(props);
     });
     assert.equal(document.querySelector('.interaction-dialog script'), null);
     assert.equal(document.querySelector('.interaction-dialog img'), null);
@@ -183,7 +187,7 @@ test('React question forms preserve all field types, save offline drafts and kee
       multi: ['a'],
     });
     assert.equal(answers.length, 0, 'offline typing never transmits answers');
-    await act(async () => showQuestionPanel({ ...props, reason: '' }));
+    await act(async () => renderQuestion({ ...props, reason: '' }));
     await act(async () => button('提交回答').click());
     assert.deepEqual(answers[0], {
       action: 'accept',
@@ -192,10 +196,8 @@ test('React question forms preserve all field types, save offline drafts and kee
     await act(async () => button('拒绝回答').click());
     await act(async () => button('取消此问题').click());
     assert.deepEqual(answers.slice(1), [{ action: 'decline' }, { action: 'cancel' }]);
-    assert.equal(stop, 0);
-    assert.equal(normalSend, 0);
     await act(async () =>
-      showQuestionPanel({
+      renderQuestion({
         ...props,
         reason: '',
         active: false,
@@ -205,42 +207,56 @@ test('React question forms preserve all field types, save offline drafts and kee
     assert.equal(button('提交回答').disabled, true);
     assert.equal(button('取消此问题').disabled, true);
     assert.match(document.querySelector('.interaction-dialog')!.textContent!, /已失效/);
-    await act(async () => closeInteractionPanel());
+    await act(async () => closePanel());
     await act(async () =>
-      showInformationPanel({
-        state: {
-          version: 1,
-          plans: [],
-          commands: [{ name: 'inspect', description: '<img src=x onerror=bad>' }],
-          contextUsage: {
-            version: 1,
-            source: 'acp',
-            kind: 'context-usage',
-            used: 0,
-            size: 100,
-            cost: { amount: 0, currency: 'USD' },
+      renderInformation({
+        history: [
+          {
+            id: 'turn',
+            role: 'assistant',
+            finished: true,
+            items: [
+              {
+                type: 'session_event',
+                event: {
+                  version: 1,
+                  source: 'acp',
+                  kind: 'commands',
+                  commands: [{ name: 'inspect', description: '<img src=x onerror=bad>' }],
+                },
+              },
+              {
+                type: 'session_event',
+                event: {
+                  version: 1,
+                  source: 'acp',
+                  kind: 'context-usage',
+                  used: 0,
+                  size: 100,
+                  cost: { amount: 0, currency: 'USD' },
+                },
+              },
+            ],
           },
-        },
-        canFill: true,
-        onFill: async (name) => {
+        ],
+        disabled: false,
+        onCommand: (name) => {
           filled.push(name);
         },
-        onClose: closeInteractionPanel,
       }),
     );
-    assert.equal(document.querySelector('.interaction-dialog img'), null);
+    assert.equal(document.querySelector('.session-information img'), null);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /0 \/ 100/);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /0 USD/);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /未提供/);
     assert.equal(document.querySelector('.agent-rate-limit'), null);
-    assert.doesNotMatch(document.querySelector('.interaction-dialog')!.textContent!, /账号额度/);
+    assert.doesNotMatch(document.querySelector('.session-information')!.textContent!, /账号额度/);
     await act(async () =>
-      document.querySelector<HTMLButtonElement>('.agent-commands button')!.click(),
+      document.querySelector<HTMLButtonElement>('.session-command button')!.click(),
     );
-    assert.deepEqual(filled, ['inspect']);
-    assert.equal(normalSend, 0);
+    assert.deepEqual(filled, ['/inspect']);
   } finally {
-    await act(async () => disposeUI());
+    await act(async () => root.unmount());
     dom.window.close();
   }
 });

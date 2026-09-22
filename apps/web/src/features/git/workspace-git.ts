@@ -1,6 +1,6 @@
 import { gitStoredSchema, type GitTarget } from './git-workspace';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export function validateWorkspaceGit(input: unknown, target: GitTarget) {
   const value = gitStoredSchema.parse(input);

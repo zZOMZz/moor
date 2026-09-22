@@ -36,19 +36,18 @@ function secondary(value: unknown) {
 /** Shared rendering only: approval and content actions keep their transport-specific bindings. */
 export function SessionTimeline({
   history,
-  variant,
   focusTurnId,
   renderItem,
   afterTurn,
   actions,
 }: {
   history: TimelineTurn[];
-  variant: 'workspace' | 'secure';
   focusTurnId?: string;
   renderItem(value: unknown, turn: TimelineTurn, index: number): ReactNode;
   afterTurn?(turn: TimelineTurn): ReactNode;
   actions?(turn: TimelineTurn): ReactNode;
 }) {
+  const variant = 'workspace';
   const container = useRef<HTMLElement>(null);
   useEffect(() => {
     const node = [

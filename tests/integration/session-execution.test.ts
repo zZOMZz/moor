@@ -1,6 +1,5 @@
 import test from 'node:test';
-import { encryptedCommandHost } from '../fixtures/encrypted-command-host';
-import { mappedHost } from '../fixtures/mapped-host';
+import { guardedCommandHost } from '../fixtures/guarded-command-host';
 import type { HostCommand } from '@moor/host/commands/host-command';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -691,14 +690,14 @@ test('external branch changes reject both the first turn and native resume befor
   assert.equal(f.opens[1]!.native, 'synthetic-native');
 });
 
-test('encrypted Git revocation before the actual subprocess dispatch leaves the branch absent and another channel can inspect the original', async (t) => {
+test('connection Git revocation before the actual subprocess dispatch leaves the branch absent and another channel can inspect the original', async (t) => {
   const f = fixture(t),
     request = f.prepare(),
     entered = signal(),
     release = signal();
-  const encrypted = await encryptedCommandHost(t, () => f.host),
-    first = await encrypted.connect(),
-    second = await encrypted.connect();
+  const guarded = await guardedCommandHost(t, () => f.host),
+    first = await guarded.connect(),
+    second = await guarded.connect();
   f.checkpoint = async (stage) => {
     if (stage === 'before-prepare') {
       entered.resolve();
@@ -730,14 +729,14 @@ test('encrypted Git revocation before the actual subprocess dispatch leaves the 
   assert.equal((await f.read()).execution.mode, 'shared');
 });
 
-test('encrypted Git revocation after the worktree write preserves its unknown original and another channel confirms without another mutation', async (t) => {
+test('connection Git revocation after the worktree write preserves its unknown original and another channel confirms without another mutation', async (t) => {
   const f = fixture(t),
     request = f.prepare(),
     entered = signal(),
     release = signal();
-  const encrypted = await encryptedCommandHost(t, () => f.host),
-    first = await encrypted.connect(),
-    second = await encrypted.connect();
+  const guarded = await guardedCommandHost(t, () => f.host),
+    first = await guarded.connect(),
+    second = await guarded.connect();
   f.checkpoint = async (stage) => {
     if (stage === 'after-prepare') {
       entered.resolve();
@@ -769,41 +768,6 @@ test('encrypted Git revocation after the worktree write preserves its unknown or
   assert.equal(inspected.result.receipt.phase, 'accepted');
   assert.equal(inspected.result.receipt.execution.status, 'ready');
   assert.equal(f.prepares, 1);
-});
-
-test('never-arrived Git operations inspect and seal a Host-proven old mapping after cold restart without creating a worktree', async (t) => {
-  const f = fixture(t),
-    request = f.prepare(),
-    mapped = mappedHost(() => f.host),
-    original = mapped.target();
-  const action: HostCommand = {
-    method: 'git-action',
-    workspaceId: 'workspace',
-    localProjectId: 'project',
-    params: request,
-  };
-  const recovery = (kind: 'inspect' | 'abandon'): HostCommand => ({
-    ...action,
-    method: 'git-operations',
-    params: { action: kind, request },
-  });
-  mapped.move();
-  f.restart();
-  mapped.reopen();
-  assert.equal(((await mapped.execute(original, recovery('inspect'))) as any).found, false);
-  assert.equal(f.store.journal.has(request.operationId), false);
-  const sealed = (await mapped.execute(original, recovery('abandon'))) as any;
-  assert.equal(sealed.receipt.phase, 'abandoned');
-  f.restart();
-  mapped.reopen();
-  assert.equal(
-    ((await mapped.execute(original, recovery('inspect'))) as any).receipt.phase,
-    'abandoned',
-  );
-  for (const target of [original, mapped.target()])
-    await assert.rejects(mapped.execute(target, action));
-  assert.equal((await f.host.gitAction(request)).phase, 'abandoned');
-  assert.equal(f.prepares, 0);
 });
 
 test('only durable never-dispatched proof permits sealing an unresolved Git reservation after restart', async (t) => {
@@ -841,55 +805,10 @@ test('only durable never-dispatched proof permits sealing an unresolved Git rese
   }
 });
 
-test('Git old-mapping recovery refuses missing Host history, directory generation changes and conflicting original claims', async (t) => {
-  for (const scenario of ['missing-history', 'generation', 'new-target-claim', 'changed-body']) {
-    const f = fixture(t),
-      request = f.prepare(),
-      mapped = mappedHost(() => f.host),
-      target = mapped.target();
-    const action: HostCommand = {
-      method: 'git-action',
-      workspaceId: 'workspace',
-      localProjectId: 'project',
-      params: request,
-    };
-    mapped.move();
-    if (scenario === 'missing-history')
-      f.store.journal.db.exec('DELETE FROM encrypted_product_mapping');
-    if (scenario === 'generation') {
-      const project = f.store.machine.get(['localProject', 'project']) as object;
-      f.store.machine.set(['localProject', 'project'], { ...project, rootPath: f.privateRoot });
-      f.host.updateCatalogue();
-      mapped.products.synchronize();
-      f.store.machine.set(['localProject', 'project'], { ...project, rootPath: f.root });
-      f.host.updateCatalogue();
-      mapped.products.synchronize();
-    }
-    if (scenario === 'new-target-claim') mapped.products.bindOperation(mapped.target(), action);
-    if (scenario === 'changed-body') {
-      await mapped.execute(target, {
-        ...action,
-        method: 'git-operations',
-        params: { action: 'abandon', request },
-      });
-      request.newBranch += '-changed';
-    }
-    for (const kind of ['inspect', 'abandon'] as const)
-      await assert.rejects(
-        mapped.execute(target, {
-          ...action,
-          method: 'git-operations',
-          params: { action: kind, request },
-        }),
-      );
-    assert.equal(f.prepares, 0);
-  }
-});
-
-test('a Host-confirmed empty session can prepare its first worktree through the encrypted channel and keeps the pinned Agent', async (t) => {
+test('a Host-confirmed empty session can prepare its first worktree through the guarded Host boundary and keeps the pinned Agent', async (t) => {
   const f = fixture(t),
-    encrypted = await encryptedCommandHost(t, () => f.host),
-    client = await encrypted.connect();
+    guarded = await guardedCommandHost(t, () => f.host),
+    client = await guarded.connect();
   const scope = f.scope();
   const created = await client.execute(
     {

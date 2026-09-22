@@ -57,7 +57,7 @@ test(
             bundled
               ? join(
                   packagedRuntime ?? 'dist',
-                  entry.includes('/bridge/') ? 'bridge.mjs' : 'cli.mjs',
+                  entry === 'apps/host/src/main.ts' ? 'bridge.mjs' : 'cli.mjs',
                 )
               : entry,
           ),

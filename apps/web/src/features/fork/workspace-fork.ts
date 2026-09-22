@@ -6,7 +6,7 @@ import {
 } from './session-fork';
 import type { GitTarget } from '../git/git-workspace';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export function workspaceForkPending(value?: ForkSaved) {
   return value?.operation && (!value.receipt || value.receipt.phase === 'unknown')

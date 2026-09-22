@@ -4,7 +4,6 @@ import { accessSync, constants, statSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import * as nodeModule from 'node:module';
 import { isAbsolute } from 'node:path';
-import { z } from 'zod';
 import {
   ClientSideConnection,
   ndJsonStream,
@@ -14,12 +13,7 @@ import {
 import { AcpConfiguration } from '../capabilities';
 import { agentAdapterEntry, inspectAgentProgram } from '../program';
 import { identifyAgentModelFailure } from '@moor/protocol/agent-errors';
-import {
-  LOCAL_CODEX_NOT_INSTALLED,
-  type AgentDriver,
-  type AgentMcpServer,
-  type AgentRunBinding,
-} from '../driver';
+import { LOCAL_CODEX_NOT_INSTALLED, type AgentDriver, type AgentRunBinding } from '../driver';
 import { canonicalMode, resolveRunSelection, selectionFromInput } from '@moor/protocol/run-config';
 import {
   agentUsageUpdateSchema,
@@ -29,7 +23,6 @@ import {
 import { readAcpUsage, supportsUsage } from './usage';
 import { promptContent } from '../../sessions/attachment-input';
 import { AppError, assert } from '@moor/protocol/protocol';
-import { CONTENT_LIMITS, isCanonicalBase64 } from '@moor/protocol/content-protocol';
 import {
   forkCapabilities,
   ForkAnchorObservation,
@@ -49,83 +42,6 @@ import {
 } from '../../sessions/events';
 const agentRequire = nodeModule.createRequire(import.meta.url);
 const runBindingSchema = steerRequestSchema.omit({ operationId: true, prompt: true }).strict();
-export const MCP_UNSUPPORTED_TRANSPORT = '此 Agent 未报告支持所选 MCP 传输，请更换配置或 Agent';
-export const MCP_AUTHORIZATION_EXPIRED = 'MCP 会话授权已失效，未继续执行';
-const MCP_INVALID_CONFIGURATION = '本机 MCP 配置不可验证，请重新检查并授权';
-const mcpName = z.string().regex(/^moor_mcp_mcpv_[a-f0-9]{32}$/);
-const mcpText = z
-  .string()
-  .max(8192)
-  .refine((value) => !value.includes('\0'));
-const mcpEnvironment = z
-  .object({
-    name: z
-      .string()
-      .max(100)
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-    value: mcpText,
-  })
-  .strict();
-const mcpHeader = z
-  .object({
-    name: z
-      .string()
-      .max(100)
-      .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/),
-    value: mcpText.refine((value) => !/[\r\n]/.test(value)),
-  })
-  .strict();
-const mcpServerSchema = z.union([
-  z
-    .object({
-      name: mcpName,
-      command: z
-        .string()
-        .min(1)
-        .max(4096)
-        .refine((value) => isAbsolute(value) && !value.includes('\0')),
-      args: z
-        .array(
-          z
-            .string()
-            .max(4096)
-            .refine((value) => !value.includes('\0')),
-        )
-        .max(128),
-      env: z
-        .array(mcpEnvironment)
-        .max(32)
-        .refine((values) => new Set(values.map((value) => value.name)).size === values.length),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.enum(['http', 'sse']),
-      name: mcpName,
-      url: z
-        .string()
-        .min(1)
-        .max(4096)
-        .url()
-        .refine((value) => {
-          const url = new URL(value);
-          return (
-            ['http:', 'https:'].includes(url.protocol) &&
-            !url.username &&
-            !url.password &&
-            !url.hash
-          );
-        }),
-      headers: z
-        .array(mcpHeader)
-        .max(32)
-        .refine(
-          (values) =>
-            new Set(values.map((value) => value.name.toLowerCase())).size === values.length,
-        ),
-    })
-    .strict(),
-]);
 const launchAcp = (command: string, args: string[], options: SpawnOptionsWithoutStdio) =>
   spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
 // Injection changes only the owned child process. Protocol handling remains real.
@@ -160,221 +76,10 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       }
     },
     async open(config, cwd, nativeId, callbacks, options) {
+      if (options && Object.keys(options).some((key) => key !== 'assertCurrent'))
+        throw new AppError(410, 'Moor 逐回合 MCP 与父子任务工具已退场', true);
       options?.assertCurrent?.();
-      const taskTools = options?.taskTools;
-      const mcp = options?.mcp;
-      let extraServers: AgentMcpServer[] = [];
-      if (mcp) {
-        const parsed = z.array(mcpServerSchema).max(8).safeParse(mcp.servers);
-        assert(
-          parsed.success &&
-            new Set(parsed.data.map((server) => server.name)).size === parsed.data.length &&
-            Buffer.byteLength(JSON.stringify(parsed.data)) <= 512 * 1024 &&
-            Array.isArray(mcp.redact) &&
-            mcp.redact.length <= 4096 &&
-            mcp.redact.every((value) => typeof value === 'string' && value.length <= 8192) &&
-            Buffer.byteLength(JSON.stringify(mcp.redact)) <= 1024 * 1024 &&
-            typeof mcp.assertCurrent === 'function',
-          400,
-          MCP_INVALID_CONFIGURATION,
-        );
-        extraServers = parsed.data;
-      }
-      let cleanTaskValue = <T>(value: T): T => value;
-      if (taskTools || mcp) {
-        // Native adapters can include MCP connection diagnostics in updates or
-        // errors. The ephemeral endpoint and bearer must stay outside Moor's
-        // shared documents even when the adapter echoes them back.
-        const privateStrings = new Set<string>(
-          [
-            ...(taskTools ? [taskTools.token, taskTools.url] : []),
-            ...(mcp?.redact ?? []),
-            ...extraServers.flatMap((server) =>
-              'type' in server
-                ? [server.url, ...server.headers.map((entry) => entry.value)]
-                : [server.command, ...server.args, ...server.env.map((entry) => entry.value)],
-            ),
-          ]
-            .filter(Boolean)
-            .flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]),
-        );
-        const pattern = [...privateStrings]
-          .sort((a, b) => b.length - a.length)
-          .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-          .join('|');
-        const privatePattern = pattern ? new RegExp(pattern, 'g') : undefined;
-        const privateBytes = [...privateStrings].map((value) => Buffer.from(value, 'utf8'));
-        const encodedLimit = 4 * Math.ceil(CONTENT_LIMITS.attachmentBytes / 3);
-        const clean = <T>(value: T): T => {
-          if (typeof value === 'string')
-            return (
-              privatePattern ? value.replace(privatePattern, '[已隐藏 MCP 配置]') : value
-            ) as T;
-          if (Array.isArray(value)) return value.map(clean) as T;
-          if (value && typeof value === 'object') {
-            const block = value as Record<string, any>;
-            const encoded =
-              block.type === 'resource'
-                ? block.resource?.blob
-                : ['image', 'audio'].includes(block.type)
-                  ? block.data
-                  : undefined;
-            if (typeof encoded === 'string') {
-              // Host attachment normalization decodes exactly this embedded
-              // base64 layer. Inspect bounded bytes before that persistence
-              // boundary; a binary artifact must never be partially rewritten.
-              if (encoded.length > encodedLimit || !isCanonicalBase64(encoded))
-                return { type: 'text', text: '[Agent 附件无法安全检查，未保存]' } as T;
-              const bytes = Buffer.from(encoded, 'base64');
-              if (
-                privateBytes.some((secret) => bytes.includes(secret)) ||
-                clean(encoded) !== encoded
-              )
-                return { type: 'text', text: '[Agent 附件包含 MCP 私有配置，未保存]' } as T;
-            }
-            return Object.fromEntries(
-              Object.entries(value).map(([key, item]) => [clean(key), clean(item)]),
-            ) as T;
-          }
-          return value;
-        };
-        cleanTaskValue = clean;
-        const original = callbacks;
-        callbacks = {
-          ...original,
-          update: (value) => original.update(clean(value)),
-          permission: (value) => {
-            const safe = clean(value);
-            // Rewritten choice identifiers would approve a different request.
-            if (
-              JSON.stringify(value.options?.map((entry: any) => entry.optionId)) !==
-              JSON.stringify(safe.options?.map((entry: any) => entry.optionId))
-            )
-              return Promise.resolve({ outcome: { outcome: 'cancelled' as const } });
-            return original.permission(safe);
-          },
-          ...(original.event
-            ? { event: (event, binding) => original.event!(clean(event), binding) }
-            : {}),
-          ...(original.forkAnchor
-            ? {
-                forkAnchor: (anchor, binding) => {
-                  if (JSON.stringify(clean(anchor)) === JSON.stringify(anchor))
-                    original.forkAnchor!(anchor, binding);
-                },
-              }
-            : {}),
-          ...(original.question
-            ? {
-                question: (request) => {
-                  const safe = clean(request);
-                  const identity = (value: typeof request) => ({
-                    ...Object.fromEntries(
-                      [
-                        'workspaceId',
-                        'localProjectId',
-                        'sessionId',
-                        'expectedTurnId',
-                        'requestId',
-                      ].map((key) => [key, (value as any)[key]]),
-                    ),
-                    fields: value.fields.map((field) => ({
-                      id: field.id,
-                      kind: field.kind,
-                      ...('options' in field
-                        ? { options: field.options.map((option) => option.value) }
-                        : {}),
-                    })),
-                  });
-                  if (JSON.stringify(identity(safe)) !== JSON.stringify(identity(request)))
-                    return Promise.resolve({
-                      interactionVersion: request.interactionVersion,
-                      workspaceId: request.workspaceId,
-                      localProjectId: request.localProjectId,
-                      sessionId: request.sessionId,
-                      expectedTurnId: request.expectedTurnId,
-                      requestId: request.requestId,
-                      operationId: randomUUID(),
-                      answer: { action: 'cancel' as const },
-                    });
-                  return original.question!(safe);
-                },
-              }
-            : {}),
-        };
-      }
-      const currentTaskTools = () => {
-        options?.assertCurrent?.();
-        if (mcp) {
-          try {
-            mcp.assertCurrent();
-          } catch {
-            throw new AppError(409, MCP_AUTHORIZATION_EXPIRED);
-          }
-        }
-        if (!taskTools) return;
-        try {
-          taskTools.assertCurrent();
-        } catch {
-          throw new AppError(409, '多 Agent 任务授权已失效，未继续执行');
-        }
-      };
-      const safeError = (error: unknown, message: string): unknown => {
-        const modelFailure = identifyAgentModelFailure(error);
-        if (modelFailure) return modelFailure;
-        if (!mcp) return error;
-        if (
-          error instanceof AppError &&
-          [
-            MCP_AUTHORIZATION_EXPIRED,
-            MCP_UNSUPPORTED_TRANSPORT,
-            MCP_INVALID_CONFIGURATION,
-            '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务',
-            '多 Agent 任务授权已失效，未继续执行',
-            '多 Agent 任务授权已失效，未派发父回合',
-          ].includes(error.message)
-        )
-          return error;
-        return new AppError(502, message);
-      };
-      currentTaskTools();
-      let taskServers: Array<{
-        type: 'http';
-        name: string;
-        url: string;
-        headers: Array<{ name: string; value: string }>;
-      }> = [];
-      if (taskTools) {
-        let url: URL;
-        try {
-          url = new URL(taskTools.url);
-        } catch {
-          throw new AppError(400, '本机任务工具连接无效');
-        }
-        assert(
-          url.protocol === 'http:' &&
-            url.hostname === '127.0.0.1' &&
-            Number(url.port) > 0 &&
-            url.pathname === '/mcp' &&
-            !url.username &&
-            !url.password &&
-            !url.search &&
-            !url.hash &&
-            url.href === taskTools.url &&
-            /^[A-Za-z0-9_-]{43}$/.test(taskTools.token) &&
-            Buffer.from(taskTools.token, 'base64url').toString('base64url') === taskTools.token,
-          400,
-          '本机任务工具连接无效',
-        );
-        taskServers = [
-          {
-            type: 'http',
-            name: 'moor_tasks',
-            url: url.href,
-            headers: [{ name: 'Authorization', value: 'Bearer ' + taskTools.token }],
-          },
-        ];
-      }
+      const assertCurrent = () => options?.assertCurrent?.();
       const custom = config.customAcp;
       if (custom && !isAbsolute(custom.command)) throw new Error('ACP 启动程序必须为本机绝对路径');
       const configuredCodexPath = config.runtimeOverrides?.codexPath,
@@ -396,7 +101,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       if (!custom && !entry) throw new Error('不支持的 Agent');
       let child: ReturnType<typeof launch>;
       try {
-        currentTaskTools();
+        assertCurrent();
         child = launch(
           custom?.command ?? process.execPath,
           custom?.args ?? [agentRequire.resolve('@agentclientprotocol/codex-acp')],
@@ -413,19 +118,13 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                 ),
               ),
               ...(configuredCodexPath ? { CODEX_PATH: configuredCodexPath } : {}),
-              // Codex ACP 1.11.0 otherwise drops explicitly supplied names that
-              // also exist in native settings. The switch only selects the supplied
-              // descriptor; it does not alter approval or sandbox policy.
-              ...(!custom && config.agentType === 'codex' && (extraServers.length || taskTools)
-                ? { DISABLE_MCP_CONFIG_FILTERING: 'true' }
-                : {}),
             },
             windowsHide: true,
             detached: process.platform !== 'win32',
           },
         );
       } catch (error) {
-        throw safeError(error, '无法启动使用 MCP 的 Agent，请检查本机配置');
+        throw identifyAgentModelFailure(error) ?? error;
       }
       child.stderr.resume(); // Raw logs may contain credentials; only protocol errors reach the UI.
       let stopped = false,
@@ -512,7 +211,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
       void failed.catch(() => {});
       const currentCallback = () => {
         try {
-          currentTaskTools();
+          assertCurrent();
           return true;
         } catch {
           void close();
@@ -600,7 +299,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                 : response;
             } catch (error) {
               if (!currentCallback()) return { outcome: { outcome: 'cancelled' as const } };
-              throw safeError(error, 'MCP Agent 的权限请求尚未确认');
+              throw identifyAgentModelFailure(error) ?? error;
             }
           },
           createElicitation: async (value) => {
@@ -638,7 +337,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               ]);
             } catch (error) {
               if (!currentCallback()) return { action: 'cancel' as const };
-              throw safeError(error, 'MCP Agent 的问题尚未确认');
+              throw identifyAgentModelFailure(error) ?? error;
             } finally {
               run?.questions.delete(requestId);
             }
@@ -650,13 +349,13 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         ),
       );
       async function authorized<T>(work: () => Promise<T>): Promise<T> {
-        currentTaskTools();
+        assertCurrent();
         try {
           const result = await work();
-          currentTaskTools();
+          assertCurrent();
           return result;
         } catch (error) {
-          currentTaskTools();
+          assertCurrent();
           throw identifyAgentModelFailure(error) ?? error;
         }
       }
@@ -691,17 +390,8 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             },
           }),
         );
-        currentTaskTools();
+        assertCurrent();
         usageSupported = supportsUsage(init);
-        if (
-          extraServers.some(
-            (server) =>
-              'type' in server && init.agentCapabilities?.mcpCapabilities?.[server.type] !== true,
-          )
-        )
-          throw new AppError(409, MCP_UNSUPPORTED_TRANSPORT);
-        if (taskTools && init.agentCapabilities?.mcpCapabilities?.http !== true)
-          throw new AppError(409, '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务');
         if (nativeId && !init.agentCapabilities?.loadSession)
           throw new Error('该 Agent 不支持恢复会话；请创建新会话');
         const response = nativeId
@@ -709,19 +399,13 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               conn.loadSession({
                 sessionId: nativeId,
                 cwd,
-                mcpServers: [...taskServers, ...extraServers],
+                mcpServers: [],
               }),
             )
-          : await bounded(() =>
-              conn.newSession({ cwd, mcpServers: [...taskServers, ...extraServers] }),
-            );
-        currentTaskTools();
+          : await bounded(() => conn.newSession({ cwd, mcpServers: [] }));
+        assertCurrent();
         const id = nativeId ?? (response as { sessionId: string }).sessionId;
-        assert(
-          typeof id === 'string' && cleanTaskValue(id) === id,
-          502,
-          'Agent 返回的会话标识无效',
-        );
+        assert(typeof id === 'string', 502, 'Agent 返回的会话标识无效');
         activeSessionId = id;
         const initialCommands = startupCommands.get(id);
         if (initialCommands) observe(initialCommands);
@@ -733,7 +417,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
         if (startupConfigurations.has(id)) configuration.replace(startupConfigurations.get(id));
         startupConfigurations.clear();
         const currentConfiguration = () => {
-          currentTaskTools();
+          assertCurrent();
           assert(!configurationFault && !stopped, 409, 'Agent 当前配置不可验证，请重新读取能力');
           return configuration!;
         };
@@ -782,7 +466,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             : {}),
           get capabilities() {
             assert(!configurationFault, 409, 'Agent 当前配置不可验证，请重新读取能力');
-            return cleanTaskValue(configuration!.capabilities);
+            return configuration!.capabilities;
           },
           async configureModel(modelId) {
             assert(
@@ -793,7 +477,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             configuring = true;
             try {
               await applyModel(modelId);
-              return cleanTaskValue(currentConfiguration().capabilities);
+              return currentConfiguration().capabilities;
             } finally {
               configuring = false;
             }
@@ -805,11 +489,10 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             return runtimeFeatureReport(init, eventState, observedQuestion);
           },
           get currentEvents() {
-            return cleanTaskValue(eventState);
+            return eventState;
           },
           close,
           async fork(input) {
-            assert(!taskTools && !mcp, 409, '带有 MCP 授权的会话不能直接派生原生 Fork');
             validateForkInput(config, input);
             if (
               stopped ||
@@ -856,7 +539,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             }
           },
           async prompt(input, binding) {
-            currentTaskTools();
+            assertCurrent();
             assert(!stopped, 409, 'Agent 已停止');
             assert(!activeRun && !steeringPending, 409, 'Agent 已有活动回合或待确认追加指令');
             assert(!configuring, 409, 'Agent 有待确认的模型配置');
@@ -875,7 +558,7 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
             activeRun = run;
             try {
               if (input.modelId) await applyModel(input.modelId);
-              currentTaskTools();
+              assertCurrent();
               const choices = currentConfiguration().capabilities;
               currentConfiguration().validateValues(input.configOptionValues ?? {});
               resolveRunSelection(selectionFromInput(input, choices), choices);
@@ -886,16 +569,16 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                     modeId: canonicalMode(input.modeId, choices)!,
                   }),
                 );
-              currentTaskTools();
+              assertCurrent();
               for (const [configId, value] of Object.entries(input.configOptionValues ?? {})) {
                 currentConfiguration().validateValues({ [configId]: value });
                 const result = await bounded(() =>
                   conn.setSessionConfigOption({ sessionId: id, configId, value: String(value) }),
                 );
                 currentConfiguration().replace(result.configOptions);
-                currentTaskTools();
+                assertCurrent();
               }
-              currentTaskTools();
+              assertCurrent();
               const confirmed = currentConfiguration().capabilities;
               currentConfiguration().validateValues(input.configOptionValues ?? {}, true);
               assert(
@@ -906,14 +589,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                 'Agent 当前模型已变化，请重新选择',
               );
               assert(!run.cancelled && !stopped, 409, '回合在发送前已取消');
-              if (taskTools) {
-                try {
-                  taskTools.onPromptDispatch();
-                } catch {
-                  throw new AppError(409, '多 Agent 任务授权已失效，未派发父回合');
-                }
-                currentTaskTools();
-              }
               acceptingUpdates = true;
               const result = await authorized(() =>
                 Promise.race([conn.prompt({ sessionId: id, prompt: content }), failed]),
@@ -936,13 +611,6 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
                 if (anchor) callbacks.forkAnchor?.(anchor, { ...run.binding });
               }
             } catch (error) {
-              if (mcp)
-                throw safeError(error, 'MCP Agent 回合结果尚未确认，请检查原回合；不会自动重发');
-              if (taskTools && !(error instanceof AppError))
-                throw new AppError(
-                  502,
-                  '任务工具 Agent 回合结果未确认，请检查原回合；不会自动重发',
-                );
               throw error;
             } finally {
               acceptingUpdates = false;
@@ -958,18 +626,13 @@ export function createAcpDriver(launch = launchAcp): AgentDriver {
               // Stopping the owned process remains available after revocation.
               await bounded(() => conn.cancel({ sessionId: id }), false);
             } catch (error) {
-              if (mcp) throw safeError(error, 'MCP Agent 停止结果尚未确认');
-              if (taskTools && !(error instanceof AppError))
-                throw new AppError(502, '任务工具 Agent 停止结果尚未确认');
               throw error;
             }
           },
         };
       } catch (error) {
         await close();
-        if (mcp) throw safeError(error, '无法连接使用 MCP 的 Agent，请检查本机配置');
-        if (taskTools && !(error instanceof AppError))
-          throw new AppError(502, '无法连接支持任务工具的 Agent，请检查本机配置');
+
         throw error;
       }
     },

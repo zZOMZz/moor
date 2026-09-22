@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'reac
 import { GitFork } from 'lucide-react';
 import { SessionForkPanel } from './session-fork-ui';
 import { GitWorkspacePanel } from '../git/git-workspace-ui';
-import { SESSION_FORK_FEATURE, SECURE_FORK_OPERATIONS_FEATURE } from '@moor/protocol/fork-protocol';
-import { GIT_WORKTREE_FEATURE, SECURE_GIT_OPERATIONS_FEATURE } from '@moor/protocol/git-protocol';
+import { SESSION_FORK_FEATURE, FORK_OPERATIONS_FEATURE } from '@moor/protocol/fork-protocol';
+import { GIT_WORKTREE_FEATURE, GIT_OPERATIONS_FEATURE } from '@moor/protocol/git-protocol';
 import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 
 export type WorkspaceForkHandle = { open(turnId?: string): boolean };
@@ -50,7 +50,7 @@ export function WorkspaceForkUI({
     : !state.project?.runtime.features?.includes(GIT_WORKTREE_FEATURE)
       ? '此执行电脑尚未提供 Git 工作目录能力。'
       : '';
-  const canInspectGit = state.project?.runtime.features?.includes(SECURE_GIT_OPERATIONS_FEATURE);
+  const canInspectGit = state.project?.runtime.features?.includes(GIT_OPERATIONS_FEATURE);
   const back = () =>
     run(async () => {
       const value = resource.current!;
@@ -110,7 +110,7 @@ export function WorkspaceForkUI({
           }
         >
           {panel.current.controller.pending &&
-            state.project?.runtime.features?.includes(SECURE_FORK_OPERATIONS_FEATURE) && (
+            state.project?.runtime.features?.includes(FORK_OPERATIONS_FEATURE) && (
               <section>
                 <button
                   disabled={busy || !!reason}

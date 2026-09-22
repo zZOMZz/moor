@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { productCanonicalJson } from '@moor/client/encrypted-product';
-import { IndexedSecureStorage, type SecureStorageBackend } from '../../platform/secure-store';
+import { productCanonicalJson } from '@moor/protocol/canonical-json';
+import { type StorageBackend } from '../../platform/indexed-storage';
 
 const MAX_ENTRIES = 96;
 const MAX_BYTES = 24 * 1024 * 1024;
@@ -17,7 +17,7 @@ export class ScopedProjectContentCache<T> {
       authority(target: T): unknown;
       namespace: string;
     },
-    readonly backend: SecureStorageBackend = new IndexedSecureStorage(),
+    readonly backend: StorageBackend,
   ) {
     this.#rowSchema = z
       .object({

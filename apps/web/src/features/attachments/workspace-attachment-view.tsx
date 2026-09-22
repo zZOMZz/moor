@@ -2,8 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import type { WorkspaceController } from '../workspace/workspace-controller';
 import type { WorkspaceScope } from '../workspace/workspace-store';
-import { attachmentPreviewUrl, attachmentText, formatAttachmentSize } from './attachments';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import {
+  attachmentPreviewUrl,
+  attachmentText,
+  formatAttachmentSize,
+  verifyAttachmentBytes,
+} from './attachments';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export function WorkspaceAttachmentView({
   controller,
@@ -84,14 +89,35 @@ export function WorkspaceAttachmentView({
               disabled={busy}
               onClick={() =>
                 run(async () => {
+                  const version = epoch.current;
+                  if (
+                    !saver &&
+                    scope.source === 'remote' &&
+                    ['http:', 'https:'].includes(window.location.protocol)
+                  ) {
+                    const bytes = await verifyAttachmentBytes(reference, value.data);
+                    if (version !== epoch.current) return;
+                    const url = URL.createObjectURL(
+                      new Blob([bytes], { type: reference.content.mediaType }),
+                    );
+                    try {
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = reference.name;
+                      link.click();
+                      setNotice('已交给浏览器下载。');
+                    } finally {
+                      setTimeout(() => URL.revokeObjectURL(url), 0);
+                    }
+                    return;
+                  }
                   if (
                     saver?.version !== 1 ||
                     typeof saver.saveAttachment !== 'function' ||
                     typeof saver.cancelAttachmentSave !== 'function'
                   )
                     throw Error('原生附件保存接口不可用，请重新打开桌面窗口。');
-                  const version = epoch.current,
-                    target = scope.target;
+                  const target = scope.target;
                   saving.current = true;
                   try {
                     const result = await saver.saveAttachment({

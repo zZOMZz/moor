@@ -111,13 +111,12 @@ export const rolesInspectResultSchema = z.discriminatedUnion('found', [
   inspected.extend({ found: z.literal(true), receipt: roleReceiptSchema }).strict(),
   inspected.extend({ found: z.literal(false) }).strict(),
 ]);
-export type Role = z.infer<typeof roleSchema>;
-export type RoleView = z.infer<typeof roleViewSchema>;
+
 export type RolesRead = z.infer<typeof rolesReadSchema>;
 export type RolesReadResult = z.infer<typeof rolesReadResultSchema>;
 export type RoleAction = z.infer<typeof roleActionSchema>;
 export type RoleReceipt = z.infer<typeof roleReceiptSchema>;
-export type RoleAcceptedReceipt = Extract<RoleReceipt, { accepted: true }>;
+
 export type RolesInspectResult = z.infer<typeof rolesInspectResultSchema>;
 export type RolesActionRequest = z.infer<typeof rolesActionRequestSchema>;
 

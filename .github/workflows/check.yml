@@ -23,3 +23,4 @@ jobs:
       - run: corepack pnpm test
       - run: corepack pnpm format:check
       - run: corepack pnpm build
+      - run: corepack pnpm production:check
