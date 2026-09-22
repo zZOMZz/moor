@@ -54,9 +54,22 @@ export class RuntimeStore {
     this.journal = new Journal(file);
     this.projectHistory = new ProjectHistoryStore(this.journal.db);
     if (file !== ':memory:') chmodSync(file, 0o600);
+    const recoveryIndexPresent = this.journal.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_recovery'")
+      .get();
     this.journal.db.exec(`
       CREATE TABLE IF NOT EXISTS runtime_state(key TEXT PRIMARY KEY, value BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS session(id TEXT PRIMARY KEY, snapshot BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_recovery(session_id TEXT PRIMARY KEY);
+      CREATE TRIGGER IF NOT EXISTS session_recovery_insert AFTER INSERT ON session BEGIN
+        INSERT OR IGNORE INTO session_recovery VALUES(NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS session_recovery_update AFTER UPDATE OF snapshot ON session BEGIN
+        INSERT OR IGNORE INTO session_recovery VALUES(NEW.id);
+      END;
+      CREATE TRIGGER IF NOT EXISTS session_recovery_delete AFTER DELETE ON session BEGIN
+        DELETE FROM session_recovery WHERE session_id=OLD.id;
+      END;
       CREATE TABLE IF NOT EXISTS agent_session(id TEXT PRIMARY KEY, native_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attachment_scope(
         workspace_id TEXT NOT NULL, user_id TEXT NOT NULL, machine_id TEXT NOT NULL,
@@ -124,7 +137,7 @@ export class RuntimeStore {
     // select a newer version. This cannot reconstruct pre-upgrade launch history.
     this.transaction(() => {
       this.rememberAgents();
-      for (const [name, meta] of Object.entries(metas(this.meta))) {
+      for (const [name, meta] of Object.entries(migrateAgentBindings ? metas(this.meta) : {})) {
         const project = meta.project as { kind?: string; localProjectId?: string } | undefined;
         if (
           !name.startsWith('session-') ||
@@ -171,13 +184,20 @@ export class RuntimeStore {
       // terminal facts. A restart never recreates an executable permission.
       this.attention = new AttentionStore(this, options.now);
       this.transaction(() => {
+        // Existing snapshots need one recovery/identity migration. Later writes
+        // register themselves atomically, including writes by older host versions.
+        if (!recoveryIndexPresent || !this.load('session-recovery-v1'))
+          this.journal.db.exec('INSERT OR IGNORE INTO session_recovery SELECT id FROM session');
         this.attention.invalidatePermissions();
         this.notifications.resolveAllApprovals();
-        for (const row of this.journal.db.prepare('SELECT id FROM session').all()) {
-          const id = String(row.id),
+        for (const row of this.journal.db
+          .prepare('SELECT session_id FROM session_recovery ORDER BY session_id')
+          .all()) {
+          const id = String(row.session_id),
             doc = this.doc(id),
             view = mirror(doc, id),
-            localProjectId = (metas(this.meta)['session-' + id]?.project as any)?.localProjectId;
+            localProjectId = (this.meta.get(['m', 'session-' + id, 'project']) as any)
+              ?.localProjectId;
           let interrupted = false,
             interactionsChanged = false,
             identityChanged = false;
@@ -240,10 +260,13 @@ export class RuntimeStore {
             });
             if (interrupted) putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
             if (interrupted || interactionsChanged || identityChanged) this.persist(id, doc);
+            this.journal.db.prepare('DELETE FROM session_recovery WHERE session_id=?').run(id);
           } finally {
             view.dispose();
+            doc.free();
           }
         }
+        this.save('session-recovery-v1', Buffer.from('1'));
       });
     } catch (error) {
       this.journal.close();
@@ -280,10 +303,41 @@ export class RuntimeStore {
   }
   persist(id: string, doc: LoroDoc) {
     doc.commit();
-    this.journal.db
-      .prepare('INSERT OR REPLACE INTO session VALUES(?,?)')
-      .run(id, doc.export({ mode: 'snapshot' }));
-    this.save('meta', this.meta.exportFile());
+    const view = mirror(doc, id);
+    let needsRecovery: boolean;
+    try {
+      const state = view.getState();
+      needsRecovery =
+        !state.session.id ||
+        state.history.some(
+          (turn) =>
+            turn.role === 'assistant' &&
+            (!turn.finished ||
+              turn.items?.some(
+                (item) =>
+                  item !== null &&
+                  typeof item === 'object' &&
+                  'type' in item &&
+                  'status' in item &&
+                  (item.type === 'question' || item.type === 'steer') &&
+                  item.status === 'pending',
+              )),
+        );
+    } finally {
+      view.dispose();
+    }
+    const write = () => {
+      this.journal.db
+        .prepare('INSERT OR REPLACE INTO session VALUES(?,?)')
+        .run(id, doc.export({ mode: 'snapshot' }));
+      this.save('meta', this.meta.exportFile());
+      // The trigger conservatively tracks every snapshot. Only the writer that
+      // has inspected that exact document may omit a settled session at startup.
+      if (!needsRecovery)
+        this.journal.db.prepare('DELETE FROM session_recovery WHERE session_id=?').run(id);
+    };
+    if (this.journal.db.isTransaction) write();
+    else this.transaction(write);
   }
   searchSource(id: string) {
     const row = this.journal.db
