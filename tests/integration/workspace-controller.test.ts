@@ -25,7 +25,7 @@ import {
   type WorkspaceClientState,
 } from '../../apps/web/src/features/workspace/workspace-controller';
 import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
-import type { SecureStorageBackend } from '../../apps/web/src/platform/secure-store';
+import type { SecureStorageBackend, StorageChange } from '../../apps/web/src/platform/secure-store';
 import {
   desktopWorkspaceCatalogSchema,
   type DesktopWorkspaceRequest,
@@ -80,6 +80,18 @@ class Memory implements SecureStorageBackend {
     if (this.failWrite) throw Error('Synthetic storage failure');
     assert.deepEqual(this.values.get(key) ?? null, expected, 'CAS conflict');
     this.values.set(key, structuredClone(value));
+  }
+  async compareAndSetMany(changes: StorageChange[], current: () => void) {
+    current();
+    if (this.failWrite) throw Error('Synthetic storage failure');
+    for (const change of changes)
+      assert.deepEqual(this.values.get(change.key) ?? null, change.expected, 'CAS conflict');
+    const next = changes.map((change) => ({
+      key: change.key,
+      value: structuredClone(change.value),
+    }));
+    current();
+    for (const change of next) this.values.set(change.key, change.value);
   }
 }
 async function fixture(

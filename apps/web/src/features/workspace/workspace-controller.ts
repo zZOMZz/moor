@@ -82,6 +82,7 @@ import {
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
 import {
   WorkspaceStore,
+  sessionPendingOperations,
   type WorkspaceScope,
   type WorkspaceDraft,
   type WorkspaceLedger,
@@ -544,7 +545,7 @@ export class WorkspaceController {
     this.#state.project = structuredClone(project);
     this.#state.offline = !project.online;
     const current = this.#current();
-    this.#state.ledger = await this.store.read(this.#state.scope, current);
+    this.#state.ledger = await this.store.read(this.#state.scope, current, []);
     this.#emit();
     await this.refreshSessions();
     const warmKey = JSON.stringify([source, target]);
@@ -754,7 +755,7 @@ export class WorkspaceController {
     let cached: Session | null;
     try {
       const [ledger, storedSession] = await Promise.all([
-        this.store.read(scope, current),
+        this.store.read(scope, current, sessionId),
         this.store.cachedSession(scope, sessionId, current),
       ]);
       current();
@@ -1188,7 +1189,9 @@ export class WorkspaceController {
       },
       read: async (requested) => {
         if (requested !== key) throw Error('Fork 缓存范围不匹配。');
-        return (await this.store.read(context.scope, current)).forks?.[sessionId];
+        return (await this.store.read(context.scope, current, context.sessionId ?? [])).forks?.[
+          sessionId
+        ];
       },
       compareWrite: async (requested, revision, value, valid) => {
         if (requested !== key) throw Error('Fork 缓存范围不匹配。');
@@ -1237,7 +1240,7 @@ export class WorkspaceController {
         'fork:' + sessionId,
         current,
         async () => {
-          const ledger = await this.store.read(context.scope, current),
+          const ledger = await this.store.read(context.scope, current, context.sessionId ?? []),
             saved = ledger.forks?.[sessionId];
           if (
             ['create', 'retry'].includes(kind) &&
@@ -1389,7 +1392,7 @@ export class WorkspaceController {
     const read = async <T>(key: string): Promise<T | undefined> => {
       const route = routeForKey(key),
         context = scoped(route);
-      const ledger = await this.store.read(context.scope, current);
+      const ledger = await this.store.read(context.scope, current, context.sessionId ?? []);
       return structuredClone(ledger.attention?.[attentionScopeKey(route)]?.entries[key]) as
         | T
         | undefined;
@@ -1486,7 +1489,7 @@ export class WorkspaceController {
       readSessionDraft: async (route, sessionId) => {
         await this.flushDraft();
         const context = scoped(route, sessionId),
-          ledger = await this.store.read(context.scope, current),
+          ledger = await this.store.read(context.scope, current, context.sessionId ?? []),
           draft = await this.store.readDraft(context.scope, sessionId, current, ledger);
         return draft?.actor && actorKey(draft.actor) === actorKey(actor)
           ? draft.text
@@ -1495,7 +1498,7 @@ export class WorkspaceController {
       prepareTurn: async (route, sessionId, text) => {
         await this.flushDraft();
         const context = scoped(route, sessionId);
-        const ledger = await this.store.read(context.scope, current),
+        const ledger = await this.store.read(context.scope, current, context.sessionId ?? []),
           draft = await this.store.readDraft(context.scope, sessionId, current, ledger);
         if (
           this.store.attentionBlocked(ledger, sessionId) ||
@@ -1528,7 +1531,7 @@ export class WorkspaceController {
             }),
           ),
         );
-        const latestLedger = await this.store.read(context.scope, current),
+        const latestLedger = await this.store.read(context.scope, current, context.sessionId ?? []),
           latest = await this.store.readDraft(context.scope, sessionId, current, latestLedger);
         if (!same(latest.selection, draft.selection))
           throw Error('运行选项已改变，请重新查看后续要求。');
@@ -1675,7 +1678,11 @@ export class WorkspaceController {
       this.#invalidateProject(source, target);
       // Only the journal changes here: a sidebar action cannot overwrite an in-memory draft.
       if (same(context.scope, this.#state.scope)) {
-        const ledger = await this.store.read(context.scope, context.current);
+        const ledger = await this.store.read(
+          context.scope,
+          context.current,
+          this.#state.sessionId ?? [],
+        );
         if (same(context.scope, this.#state.scope)) this.#state.ledger = ledger;
       }
       this.#emit();
@@ -1961,7 +1968,9 @@ export class WorkspaceController {
         forTarget: (target, check) => ({
           read: async (key) => {
             checkTarget(target, check);
-            return (await this.store.read(context.scope, check))[kindFor(target, key)]?.[sessionId];
+            return (await this.store.read(context.scope, check, sessionId))[kindFor(target, key)]?.[
+              sessionId
+            ];
           },
           compareWrite: async (key, revision, value, valid) => {
             const current = () => {
@@ -1982,7 +1991,7 @@ export class WorkspaceController {
         }),
         list: async (target, current) => {
           checkTarget(target, current);
-          const ledger = await this.store.read(context.scope, current);
+          const ledger = await this.store.read(context.scope, current, context.sessionId ?? []);
           const projected = workspaceFeatureTarget(target);
           return [
             ...(ledger.github?.[sessionId]
@@ -2008,7 +2017,7 @@ export class WorkspaceController {
       beforeWrite: async (target, current) => {
         await this.flushDraft();
         checkTarget(target, current);
-        const ledger = await this.store.read(context.scope, current);
+        const ledger = await this.store.read(context.scope, current, context.sessionId ?? []);
         if (
           this.store.githubBlocked(ledger, sessionId) ||
           this.store.attentionBlocked(ledger, sessionId) ||
@@ -2063,7 +2072,7 @@ export class WorkspaceController {
     const context = this.#context(resourceSessionId ?? this.#state.sessionId);
     if (!context.sessionId) throw Error('请先打开会话。');
     if (resourceSessionId && resourceSessionId !== this.#state.sessionId) {
-      const ledger = await this.store.read(context.scope, context.current);
+      const ledger = await this.store.read(context.scope, context.current, context.sessionId ?? []);
       const receipts = Object.values(ledger.forks ?? {}).flatMap((record) => [
         record.receipt,
         ...record.resources.map((item) => item.receipt),
@@ -2099,7 +2108,9 @@ export class WorkspaceController {
       },
       read: async (requested) => {
         if (requested !== key) throw Error('Git 缓存范围不匹配。');
-        return (await this.store.read(context.scope, current)).git?.[sessionId];
+        return (await this.store.read(context.scope, current, context.sessionId ?? [])).git?.[
+          sessionId
+        ];
       },
       compareWrite: async (requested, revision, value, valid) => {
         if (requested !== key) throw Error('Git 缓存范围不匹配。');
@@ -2140,7 +2151,7 @@ export class WorkspaceController {
       current();
       const recovery = ['retry', 'inspect', 'abandon'].includes(kind);
       return this.store.exclusiveOperation(context.scope, 'git:' + sessionId, current, async () => {
-        const ledger = await this.store.read(context.scope, current);
+        const ledger = await this.store.read(context.scope, current, context.sessionId ?? []);
         if (
           kind !== 'refresh' &&
           (!recovery || kind === 'retry') &&
@@ -2315,7 +2326,7 @@ export class WorkspaceController {
     this.#draftBuffer = undefined;
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
-    this.#state.ledger = await this.store.read(scope, current);
+    this.#state.ledger = await this.store.read(scope, current, sessionId);
     this.#state.draft = await this.store.readDraft(scope, sessionId, current, this.#state.ledger);
     this.#rememberSessionDraft(scope, sessionId);
     this.#draftWrites = Promise.resolve();
@@ -2323,7 +2334,11 @@ export class WorkspaceController {
     this.#emit();
   }
   async #reloadLedger(context: Context) {
-    this.#state.ledger = await this.store.read(context.scope, context.current);
+    this.#state.ledger = await this.store.read(
+      context.scope,
+      context.current,
+      this.#state.sessionId ?? [],
+    );
     if (this.#state.sessionId)
       this.#state.draft = await this.store.readDraft(
         context.scope,
@@ -2370,7 +2385,11 @@ export class WorkspaceController {
       'interaction:' + sessionId,
       context.current,
       async () => {
-        const ledger = await this.store.read(context.scope, context.current);
+        const ledger = await this.store.read(
+          context.scope,
+          context.current,
+          context.sessionId ?? [],
+        );
         let document = ledger.interactions?.[sessionId] ?? {
           revision: 0,
           value: emptyInteractionSaved(),
@@ -2436,7 +2455,7 @@ export class WorkspaceController {
     await this.refreshSession();
     context.current();
     const session = this.#state.session,
-      ledger = await this.store.read(context.scope, context.current);
+      ledger = await this.store.read(context.scope, context.current, context.sessionId ?? []);
     if (
       !session ||
       session.persisted === false ||
@@ -2551,7 +2570,9 @@ export class WorkspaceController {
       'tasks:' + sessionId,
       context.current,
       async () => {
-        const saved = (await this.store.read(context.scope, context.current)).tasks?.[sessionId];
+        const saved = (
+          await this.store.read(context.scope, context.current, context.sessionId ?? [])
+        ).tasks?.[sessionId];
         if (!saved?.pending || !same(saved.pending, original))
           throw Error('原任务操作已改变，请重新读取会话。');
         const request =
@@ -2604,12 +2625,8 @@ export class WorkspaceController {
     await this.refreshSession();
     await this.refreshAgentOptions();
     context.current();
-    const ledger = await this.store.read(context.scope, context.current);
-    if (
-      ledger.operations.some(
-        (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,
-      )
-    )
+    const ledger = await this.store.read(context.scope, context.current, context.sessionId ?? []);
+    if (sessionPendingOperations(ledger, sessionId).length)
       throw Error('请先核查此会话尚未确认的原操作。');
     if (this.store.attentionBlocked(ledger, sessionId)) throw Error('请先核查原待办指令或审批。');
     if (this.store.githubBlocked(ledger, sessionId))
@@ -2820,9 +2837,11 @@ export class WorkspaceController {
   }
   async #deliverOperation(context: Context, operationId: string) {
     await this.store.exclusiveOperation(context.scope, operationId, context.current, async () => {
-      const ledger = await this.store.read(context.scope, context.current);
-      const entry = ledger.operations.find(
-        (item) => item.original.value.operationId === operationId,
+      const entry = await this.store.operation(context.scope, operationId, context.current);
+      const ledger = await this.store.read(
+        context.scope,
+        context.current,
+        entry?.original.value.sessionId ?? [],
       );
       if (!entry || entry.status !== 'pending') throw Error('此原操作无需重试，请重新读取。');
       const original = entry.original;
@@ -2895,9 +2914,11 @@ export class WorkspaceController {
   async #recover(operationId: string, action: 'inspect' | 'abandon') {
     const context = this.#context();
     await this.store.exclusiveOperation(context.scope, operationId, context.current, async () => {
-      const ledger = await this.store.read(context.scope, context.current);
-      const entry = ledger.operations.find(
-        (item) => item.original.value.operationId === operationId,
+      const entry = await this.store.operation(context.scope, operationId, context.current);
+      const ledger = await this.store.read(
+        context.scope,
+        context.current,
+        entry?.original.value.sessionId ?? [],
       );
       if (!entry || entry.status !== 'pending') throw Error('此原操作无需核查。');
       const target = context.scope.target,
