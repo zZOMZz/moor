@@ -56,6 +56,7 @@ import {
   type WorkspaceClientState,
 } from '../features/workspace/workspace-controller';
 import { SecureWorkspaceController } from '../platform/secure-controller';
+import { sessionPendingOperations } from '../features/workspace/workspace-store';
 import {
   SecureApp,
   type SecureAccountApi,
@@ -250,7 +251,7 @@ function WorkspaceConversation({
   } catch (error) {
     validation = message(error);
   }
-  const pending = state.ledger?.operations.filter((entry) => entry.status === 'pending') ?? [];
+  const pending = sessionPendingOperations(state.ledger, state.sessionId);
   const retiredTask = state.ledger?.tasks?.[state.sessionId]?.pending;
   const attachments = state.ledger?.attachments?.[state.sessionId]?.items ?? [];
   const attachmentSupported = state.project?.runtime.features?.includes(ATTACHMENTS_FEATURE);
