@@ -10,6 +10,13 @@ import {
   workspaceManifestDirectories,
 } from './package-dependencies.mjs';
 const mode = process.argv[2] ?? 'relay';
+const product = JSON.parse(await readFile('package.json', 'utf8'));
+if (
+  !/^\d+\.\d+\.\d+$/.test(product.version) ||
+  !Number.isSafeInteger(product.buildNumber) ||
+  product.buildNumber < 1
+)
+  throw Error('Product version and positive buildNumber must be set in package.json');
 const desktopFiles = [
   'entry.cjs',
   'main/main.cjs',
@@ -99,7 +106,7 @@ if (mode === 'relay') {
     JSON.stringify(
       {
         name: 'moor-relay',
-        version: '0.2.0',
+        version: product.version,
         private: true,
         type: 'module',
         engines: { node: '>=24' },
@@ -116,7 +123,7 @@ if (mode === 'relay') {
     join(dest, 'README.txt'),
     'Run with Node 24+: MOOR_PUBLIC_DIR=./public MOOR_DATA_DIR=./data node server.mjs\nSee https://github.com/zZOMZz/moor#readme for HTTPS, initial setup and migration.\n',
   );
-  archiveRelay(dest, 'release/moor-relay-0.2.0.tar.gz');
+  archiveRelay(dest, `release/moor-relay-${product.version}.tar.gz`);
   console.log(dest);
 } else if (mode === 'mac') {
   if (process.platform !== 'darwin') throw new Error('macOS packaging must run on macOS');
@@ -141,7 +148,8 @@ if (mode === 'relay') {
   await cp('assets/brand/moor.icns', join(resources, 'moor.icns'));
   await writeFile(
     join(root, 'package.json'),
-    JSON.stringify({ name: 'moor', version: '0.2.0', private: true, main: 'entry.cjs' }) + '\n',
+    JSON.stringify({ name: 'moor', version: product.version, private: true, main: 'entry.cjs' }) +
+      '\n',
   );
   await licenses(root, ['host', 'client']);
   const runtime = join(root, 'runtime');
@@ -158,8 +166,8 @@ if (mode === 'relay') {
     CFBundleDisplayName: 'Moor',
     CFBundleName: 'Moor',
     CFBundleIdentifier: 'io.github.zzomzz.moor',
-    CFBundleShortVersionString: '0.2.0',
-    CFBundleVersion: '2',
+    CFBundleShortVersionString: product.version,
+    CFBundleVersion: String(product.buildNumber),
   })) {
     const re = new RegExp('(<key>' + key + '</key>\\s*<string>)[^<]*(</string>)');
     xml = xml.replace(re, (_, start, end) => start + value + end);
@@ -171,7 +179,7 @@ if (mode === 'relay') {
   if (signed.status !== 0) throw new Error('Ad-hoc signing failed');
   const zipped = spawnSync(
     'ditto',
-    ['-c', '-k', '--keepParent', app, join(dest, 'Moor-0.2.0-' + process.arch + '.zip')],
+    ['-c', '-k', '--keepParent', app, join(dest, `Moor-${product.version}-${process.arch}.zip`)],
     { stdio: 'inherit' },
   );
   if (zipped.status !== 0) throw new Error('Packaging failed');

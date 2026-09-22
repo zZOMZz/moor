@@ -1,6 +1,7 @@
 {
   "name": "moor",
   "version": "0.2.0",
+  "buildNumber": 2,
   "private": true,
   "type": "module",
   "engines": {

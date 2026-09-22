@@ -67,16 +67,16 @@ for (const directory of [...(await directories('packages')), ...(await directori
   workspaces.push({ directory, manifest, files: await files(directory) });
 }
 const names = new Set(workspaces.map((workspace) => workspace.manifest.name));
+const rootManifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 for (const name of allowedDependencies.keys())
   if (!names.has(name)) errors.push(`missing workspace package ${name}`);
 for (const workspace of workspaces) {
-  if (workspace.manifest.private !== true || workspace.manifest.version !== '0.2.0')
+  if (workspace.manifest.private !== true || workspace.manifest.version !== rootManifest.version)
     errors.push(`${workspace.manifest.name} must use the private product version`);
   for (const [name, version] of Object.entries(workspace.manifest.dependencies ?? {}))
     if (name.startsWith('@moor/') && version !== 'workspace:*')
       errors.push(`${workspace.manifest.name} must declare ${name} with workspace:*`);
 }
-const rootManifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 if (Object.keys(rootManifest.dependencies ?? {}).length)
   errors.push('root package must not own production dependencies');
 
