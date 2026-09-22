@@ -584,7 +584,12 @@ test('restart marks pending baselines interrupted and never invents after snapsh
   const row = restored.store.journal.db
     .prepare('SELECT before_snapshot,after_snapshot FROM project_diff')
     .get()!;
-  strict.ok(String(row.before_snapshot).includes('before'));
+  strict.equal(JSON.parse(String(row.before_snapshot)).storageVersion, 2);
+  strict.ok(
+    restored.store.journal.db
+      .prepare('SELECT 1 FROM project_snapshot_blob WHERE text=?')
+      .get('before'),
+  );
   strict.equal(row.after_snapshot, null);
   strict.deepEqual(await restored.host.mutate(m), receipt);
   strict.equal(restored.opens(), 0);

@@ -52,7 +52,12 @@ export class RuntimeStore {
   constructor(file: string, options: { now?: () => number; worktreeRoot?: string } = {}) {
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.journal = new Journal(file);
-    this.projectHistory = new ProjectHistoryStore(this.journal.db);
+    try {
+      this.projectHistory = new ProjectHistoryStore(this.journal.db);
+    } catch (error) {
+      this.journal.close();
+      throw error;
+    }
     if (file !== ':memory:') chmodSync(file, 0o600);
     const recoveryIndexPresent = this.journal.db
       .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_recovery'")
