@@ -7,7 +7,7 @@ import { resolve, dirname, join, basename, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { WebSocket } from 'ws';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { acquireRuntimeLock } from '@moor/e2ee/node/exclusive-lock';
+import { acquireRuntimeLock } from '@moor/protocol/node/exclusive-lock';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { acpDriver } from '@moor/host/agents/acp/driver';
 import { localCodexPath, withLocalCodex } from '@moor/host/agents/acp/local-codex';

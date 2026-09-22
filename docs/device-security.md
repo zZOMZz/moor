@@ -10,6 +10,8 @@
 
 项目读取、快照、Skills 和附件会拦截完整带 Moor 私有文件标识的文档，包括改名副本；Agent 返回的完整私有文档使用安全占位。此检查不保护拆分片段、去掉标识的内容或任意 Agent 文件系统访问，不能替代项目外存放和恢复材料的独立保管。
 
+普通工作区和加密端点共用[私有文档识别](../packages/protocol/src/private-content.ts)与[进程所有权锁](../packages/protocol/src/node/exclusive-lock.ts)。这些通用边界位于 `@moor/protocol`，不依赖加密产品；所有权锁仅通过 Node 子路径使用，不进入浏览器代码。加密功能退场不移除这些防护，私有文件标识与现有存储格式保持兼容。
+
 以下仅使用合成账号说明输入格式。实际 `accountId` 和中转 origin 必须来自已核对的个人账号，设备 ID 应唯一；不要为已有端点重新建根。
 
 ```sh

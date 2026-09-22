@@ -353,7 +353,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 
 理解恢复时分别问：服务能否访问？原操作是否接受？本轮是否结束？文件是什么状态？不要用一个“已恢复”覆盖所有答案。
 
-源码入口：[主机存储恢复](../packages/host/src/persistence/store.ts)、[所有权锁](../packages/e2ee/src/node/exclusive-lock.ts)、[桌面恢复控制](../apps/desktop/src/main/recovery.cjs)。专题：[运行与恢复](runtime.md)。
+源码入口：[主机存储恢复](../packages/host/src/persistence/store.ts)、[所有权锁](../packages/protocol/src/node/exclusive-lock.ts)、[桌面恢复控制](../apps/desktop/src/main/recovery.cjs)。专题：[运行与恢复](runtime.md)。
 
 ## 10. 扩展功能怎样接回核心流程
 

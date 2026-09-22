@@ -1,3 +1,4 @@
+// Shared by ordinary host content boundaries and private endpoint storage.
 export const PRIVATE_ENDPOINT_FILE_FORMAT = 'moor-private-endpoint-v1';
 
 export function isPrivateEndpointEnvelopeValue(value: unknown): boolean {

@@ -205,9 +205,6 @@ importers:
 
   apps/relay:
     dependencies:
-      '@moor/e2ee':
-        specifier: workspace:*
-        version: link:../../packages/e2ee
       '@moor/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway

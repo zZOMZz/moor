@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireRuntimeLock } from '@moor/e2ee/node/exclusive-lock';
+import { acquireRuntimeLock } from '@moor/protocol/node/exclusive-lock';
 test('exclusive ownership prevents a second host and releases without deleting operator data', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'moor-lock-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

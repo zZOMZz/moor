@@ -72,7 +72,7 @@ import {
   type AttachmentReference,
 } from '@moor/protocol/content-protocol';
 import { readProjectFileBytes } from '../projects/files';
-import { isPrivateEndpointEnvelope } from '@moor/e2ee/private-content';
+import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
 import { SKILLS_FEATURE, type SkillsRead } from '@moor/protocol/skills-protocol';
 import { SessionSkillsManager, type SessionSkillsOptions } from './skills';
 import {
