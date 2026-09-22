@@ -26,6 +26,7 @@ export class CollaborationExecutionStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS collaboration_execution(scope TEXT NOT NULL, id TEXT NOT NULL, sequence INTEGER NOT NULL, intent TEXT NOT NULL, state TEXT NOT NULL, claim TEXT, command TEXT, PRIMARY KEY(scope,id));
       CREATE INDEX IF NOT EXISTS collaboration_execution_order ON collaboration_execution(scope,sequence);
+      CREATE INDEX IF NOT EXISTS collaboration_execution_phase ON collaboration_execution(scope,json_extract(state,'$.phase'),sequence);
       CREATE TABLE IF NOT EXISTS collaboration_reconciled(scope TEXT PRIMARY KEY, through INTEGER NOT NULL);
     `);
     if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='collaboration_task'").get())
@@ -140,20 +141,22 @@ export class CollaborationExecutionStore {
     );
     id.parse(claimId);
     return this.state.atomic(() => {
-      const rows = this.db
-        .prepare('SELECT intent,state FROM collaboration_execution WHERE scope=? ORDER BY sequence')
-        .all(collaborationKey(scope));
+      const key = collaborationKey(scope);
       if (
-        rows.some((row) =>
-          ['claimed', 'dispatching', 'accepted', 'running'].includes(
-            taskStateSchema.parse(JSON.parse(String(row.state))).phase,
-          ),
-        )
+        this.db
+          .prepare(
+            "SELECT 1 FROM collaboration_execution WHERE scope=? AND json_extract(state,'$.phase') IN ('claimed','dispatching','accepted','running') LIMIT 1",
+          )
+          .get(key)
       )
         return;
-      for (const row of rows) {
-        const current = taskStateSchema.parse(JSON.parse(String(row.state)));
-        if (current.phase !== 'queued') continue;
+      const next = this.db.prepare(
+        "SELECT intent,state FROM collaboration_execution WHERE scope=? AND json_extract(state,'$.phase')='queued' ORDER BY sequence LIMIT 1",
+      );
+      for (;;) {
+        const row = next.get(key);
+        if (!row) return;
+        taskStateSchema.parse(JSON.parse(String(row.state)));
         const intent = migrateCollaborationOperation(JSON.parse(String(row.intent))) as TaskIntent;
         try {
           this.state.authorize(intent.author.actor, scope.workspaceId, 'submit');
@@ -250,7 +253,9 @@ export class CollaborationExecutionStore {
     );
     this.state.atomic(() => {
       const rows = this.db
-        .prepare('SELECT id,state FROM collaboration_execution WHERE scope=?')
+        .prepare(
+          "SELECT id,state FROM collaboration_execution WHERE scope=? AND json_extract(state,'$.phase') IN ('claimed','dispatching','accepted','running')",
+        )
         .all(collaborationKey(scope));
       for (const row of rows) {
         const state = taskStateSchema.parse(JSON.parse(String(row.state)));
