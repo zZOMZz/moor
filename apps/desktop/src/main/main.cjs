@@ -37,7 +37,6 @@ const { DesktopGoogleAuth } = require('./google-auth.cjs');
 const { DesktopSecureBridge } = require('./secure-client.cjs');
 const { DesktopProjectRegistration } = require('./project-registration.cjs');
 const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
-const { removeRetiredClientData } = require('./retired-client-data.cjs');
 const { createAppearance } = require('./appearance.cjs');
 const { DesktopSecureAccount } = require('./secure-account.cjs');
 const { CLIENT_SCHEME, CLIENT_PRIVILEGES } = require('./client-assets.cjs');
@@ -945,13 +944,8 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => showLocal());
   app.whenReady().then(() => {
-    try {
-      removeRetiredClientData(data);
-    } catch {
-      dialog.showErrorBox('无法清理旧客户端数据', '请检查 Moor 数据目录的访问权限后重新打开。');
-      app.quit();
-      return;
-    }
+    // Retired browser partitions may hold the only copy of drafts or unknown
+    // operations. Startup never reads, migrates or removes those partitions.
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
         {

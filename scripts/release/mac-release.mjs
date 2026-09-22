@@ -30,7 +30,6 @@ const desktopFiles = new Set([
   'main/secure-client.cjs',
   'main/workspace-bridge.cjs',
   'main/project-registration.cjs',
-  'main/retired-client-data.cjs',
   'main/secure-account.cjs',
   'main/client-window.cjs',
   'main/secure-input.cjs',
