@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { id, mutationSchema, sessionActionSchema } from './protocol';
 import { contentScopeSchema } from './content-protocol';
 import { attachmentActionSchema, attachmentReceiptSchema } from './attachment-protocol';
+import { sessionIntentCommandSchema } from './session-intent-protocol';
 
 export const SESSION_CONTROL_FEATURE = 'session-control-v1';
 export const ATTACHMENT_OPERATIONS_FEATURE = 'attachment-operations-v1';
@@ -28,6 +29,7 @@ export const sessionOriginalOperationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mutation'), value: mutationSchema }).strict(),
   z.object({ kind: z.literal('metadata'), value: sessionActionSchema }).strict(),
   z.object({ kind: z.literal('attachment'), value: attachmentActionSchema }).strict(),
+  ...sessionIntentCommandSchema.options,
 ]);
 export const sessionOperationSchema = sessionControlScopeSchema
   .extend({
@@ -49,7 +51,15 @@ export const sessionOperationSchema = sessionControlScopeSchema
 export const sessionControlReceiptSchema = base
   .extend({
     confirmed: z.literal(true),
-    kind: z.enum(['create', 'stop', 'mutation', 'metadata', 'attachment']),
+    kind: z.enum([
+      'create',
+      'stop',
+      'mutation',
+      'metadata',
+      'attachment',
+      'send-turn',
+      'respond-permission',
+    ]),
     status: z.enum(['accepted', 'abandoned', 'stopping', 'interrupted']),
     attachmentReceipt: attachmentReceiptSchema.optional(),
   })

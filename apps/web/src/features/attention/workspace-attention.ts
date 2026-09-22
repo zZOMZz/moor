@@ -1,3 +1,4 @@
+import { attentionContinueInput } from '@moor/protocol/attention';
 import { workspaceAttentionCommandSchema } from '@moor/client/workspace-attention';
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
@@ -86,10 +87,17 @@ export function validateWorkspaceAttentionEntry(
     value.itemId !== kind.itemId ||
     (value.operation.kind === 'seen') !== kind.seen ||
     (value.operation.kind === 'continue' &&
-      (value.operation.body.mutation.workspaceId !== route.runtimeWorkspaceId ||
-        value.operation.body.mutation.sessionId !== value.sessionId))
+      (attentionContinueInput(value.operation.body).workspaceId !== route.runtimeWorkspaceId ||
+        attentionContinueInput(value.operation.body).sessionId !== value.sessionId))
   )
     throw Error('待办原操作范围不匹配。');
+  if (
+    value.operation.kind === 'continue' &&
+    'turn' in value.operation.body &&
+    (value.operation.body.turn.machineId !== route.machineId ||
+      value.operation.body.turn.localProjectId !== route.localProjectId)
+  )
+    throw Error('待办原指令不属于原执行身份。');
   return value;
 }
 export function validateWorkspaceAttentionBucket(

@@ -1,5 +1,16 @@
+import { z } from 'zod';
+
 export const PERMISSION_REVIEW_FEATURE = 'permission-review-v1';
 export const PERMISSION_REVIEW_MAX_BYTES = 256 * 1024;
+export const permissionOptionIdSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((value) => !/[\x00-\x1f\x7f]/u.test(value));
+export const permissionOutcomeSchema = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('selected'), optionId: permissionOptionIdSchema }).strict(),
+  z.object({ outcome: z.literal('cancelled') }).strict(),
+]);
 
 /** Bound complete tool input before exposing it as review material. No Agent getters/hooks execute. */
 export function permissionItemJson(input: unknown): string {

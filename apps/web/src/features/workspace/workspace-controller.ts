@@ -57,12 +57,12 @@ import {
   type SessionPageRequest,
 } from '@moor/protocol/session-page';
 import {
-  buildSessionTurn,
-  buildSessionPermission,
   readClientSession,
   type SessionPermissionReview,
   type SessionPermissionOutcome,
 } from '@moor/client/session-client';
+import { buildSendTurn, buildRespondPermission } from '@moor/client/session-intent';
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
 import {
   sessionListSchema,
   mutationReceiptSchema,
@@ -76,6 +76,7 @@ import {
 } from '@moor/protocol/session-control-protocol';
 import {
   initializeRunSelection,
+  canonicalMode,
   selectionFromInput,
   approvalModeSchema,
   type RunSelection,
@@ -1226,7 +1227,14 @@ export class WorkspaceController {
         legacyCodex: session.meta.agentType === 'codex',
       },
     );
-    if (same(JSON.parse(JSON.stringify(draft.selection)), selection)) return;
+    // A historical alias already denotes the advertised preset. Rewriting only
+    // its spelling would advance Draft State during send and defeat the frozen
+    // revision's eventual confirmation cleanup.
+    const comparable = {
+      ...draft.selection,
+      modeId: canonicalMode(draft.selection.modeId, session.agent?.runConfig),
+    };
+    if (same(JSON.parse(JSON.stringify(comparable)), selection)) return;
     await this.store.saveDraft(
       context.scope,
       context.sessionId,
@@ -1805,7 +1813,9 @@ export class WorkspaceController {
           latest = await this.store.readDraft(context.scope, sessionId, current, latestLedger);
         if (!same(latest.selection, draft.selection))
           throw Error('运行选项已改变，请重新查看后续要求。');
-        return buildSessionTurn({
+        if (!context.project.runtime.features?.includes(SESSION_INTENTS_FEATURE))
+          throw Error('请先升级执行电脑，再发送新的待办后续指令。');
+        return buildSendTurn({
           scope: { ...context.scope.target, sessionId },
           read,
           agent,
@@ -1813,8 +1823,6 @@ export class WorkspaceController {
           selection: draft.selection,
           operationId: this.#uuid(),
           turnId: this.#uuid(),
-          peerId: this.#uuid(),
-          now: (this.options.now ?? (() => new Date().toISOString()))(),
         });
       },
       continued: async (route, sessionId) => {
@@ -2885,6 +2893,8 @@ export class WorkspaceController {
     const context = this.#context(),
       sessionId = context.sessionId;
     if (!sessionId || !this.#state.draft) throw Error('请先打开会话。');
+    if (!context.project.runtime.features?.includes(SESSION_INTENTS_FEATURE))
+      throw Error('执行电脑不支持新的会话发送接口，请升级主机；草稿未发送。');
     const draft = structuredClone(this.#state.draft);
     const mcpRevision = this.#state.ledger?.mcp?.[sessionId]?.cacheRevision ?? 0;
     const taskRevision = this.#state.ledger?.tasks?.[sessionId]?.cacheRevision ?? 0;
@@ -2903,7 +2913,7 @@ export class WorkspaceController {
       throw Error('请先确认 GitHub 原操作，再发送新指令。');
     if (ledger.git?.[sessionId]?.pending) throw Error('请先确认原 Git 操作，再发送新指令。');
     if (this.store.forkBlocked(ledger, sessionId)) throw Error('请先核查原 Fork，再发送新指令。');
-    const value = buildSessionTurn({
+    const value = buildSendTurn({
       scope: { ...context.scope.target, sessionId },
       read: this.#state.session,
       agent: this.#state.session!.agent!,
@@ -2911,13 +2921,11 @@ export class WorkspaceController {
       selection: draft.selection,
       operationId: this.#uuid(),
       turnId: this.#uuid(),
-      peerId: this.#uuid(),
-      now: (this.options.now ?? (() => new Date().toISOString()))(),
       attachments: attachments.items.map((item) => item.reference),
     });
     await this.store.stage(
       context.scope,
-      { kind: 'mutation', value },
+      { kind: 'send-turn', value },
       {
         sessionId,
         revision: draft.revision,
@@ -3059,16 +3067,23 @@ export class WorkspaceController {
   async respondPermission(review: SessionPermissionReview, outcome: SessionPermissionOutcome) {
     const context = this.#context();
     if (!context.sessionId) throw Error('请先打开会话。');
+    if (!context.project.runtime.features?.includes(SESSION_INTENTS_FEATURE))
+      throw Error('执行电脑不支持新的审批接口，请升级主机；审批未发送。');
     await this.refreshSession();
     context.current();
-    const value = buildSessionPermission({
+    const value = buildRespondPermission({
       scope: { ...context.scope.target, sessionId: context.sessionId },
       read: this.#state.session,
       review,
       outcome,
       operationId: this.#uuid(),
     });
-    await this.store.stage(context.scope, { kind: 'mutation', value }, undefined, context.current);
+    await this.store.stage(
+      context.scope,
+      { kind: 'respond-permission', value },
+      undefined,
+      context.current,
+    );
     await this.#reloadLedger(context);
     await this.retry(value.operationId);
   }
@@ -3116,7 +3131,12 @@ export class WorkspaceController {
       if (!entry || entry.status !== 'pending') throw Error('此原操作无需重试，请重新读取。');
       const original = entry.original;
       if (
-        original.kind === 'mutation' &&
+        (original.kind === 'send-turn' || original.kind === 'respond-permission') &&
+        !context.project.runtime.features?.includes(SESSION_INTENTS_FEATURE)
+      )
+        throw Error('执行电脑不支持原会话请求接口，请升级主机后手动核查。');
+      if (
+        ['mutation', 'send-turn', 'respond-permission'].includes(original.kind) &&
         (ledger.git?.[original.value.sessionId]?.pending ||
           this.store.forkBlocked(ledger, original.value.sessionId) ||
           this.store.githubBlocked(ledger, original.value.sessionId) ||
@@ -3131,7 +3151,9 @@ export class WorkspaceController {
             ? 'session-action'
             : original.kind === 'attachment'
               ? 'attachment-action'
-              : 'mutate',
+              : original.kind === 'send-turn' || original.kind === 'respond-permission'
+                ? original.kind
+                : 'mutate',
         original.value,
       );
       const raw = await this.#execute({ ...context, sessionId: original.value.sessionId }, command);

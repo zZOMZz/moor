@@ -27,7 +27,13 @@ import {
   type SessionControlScope,
   type SessionOriginalOperation,
 } from '@moor/protocol/session-control-protocol';
-import { buildSessionTurn, readClientSession } from '@moor/client/session-client';
+import { readClientSession } from '@moor/client/session-client';
+import { buildSendTurn } from '@moor/client/session-intent';
+import {
+  SESSION_INTENTS_FEATURE,
+  sendTurnSchema,
+  respondPermissionSchema,
+} from '@moor/protocol/session-intent-protocol';
 import { MCP_LIMITS, mcpReadSchema, validateMcpRead } from '@moor/protocol/mcp-protocol';
 import { readLocalCliConnection } from '@moor/protocol/node/local-cli-connection';
 import { CliError, type CliArgs } from './args';
@@ -79,11 +85,15 @@ function scope(target: CliTarget): SessionControlScope {
 }
 function original(op: CliOperation): SessionOriginalOperation {
   const value = JSON.parse(op.body);
-  return op.kind === 'turn'
-    ? { kind: 'mutation', value: mutationSchema.parse(value) }
-    : op.kind === 'session-action'
-      ? { kind: 'metadata', value: sessionActionSchema.parse(value) }
-      : { kind: 'control', value: sessionControlActionSchema.parse(value) };
+  return op.kind === 'send-turn'
+    ? { kind: 'send-turn', value: sendTurnSchema.parse(value) }
+    : op.kind === 'respond-permission'
+      ? { kind: 'respond-permission', value: respondPermissionSchema.parse(value) }
+      : op.kind === 'turn'
+        ? { kind: 'mutation', value: mutationSchema.parse(value) }
+        : op.kind === 'session-action'
+          ? { kind: 'metadata', value: sessionActionSchema.parse(value) }
+          : { kind: 'control', value: sessionControlActionSchema.parse(value) };
 }
 function summary(op: CliOperation) {
   return {
@@ -239,11 +249,30 @@ export class CliClient {
         op.operationId,
       );
     try {
+      const request = original(op);
+      if (
+        request.value.operationId !== op.operationId ||
+        request.value.workspaceId !== op.target.workspaceId ||
+        request.value.sessionId !== op.target.sessionId ||
+        ('localProjectId' in request.value &&
+          request.value.localProjectId !== op.target.localProjectId) ||
+        ('userId' in request.value &&
+          (request.value.userId !== op.target.userId ||
+            request.value.machineId !== op.target.machineId))
+      )
+        throw new CliError(
+          'corrupt-outbox',
+          '原操作与完整执行范围不匹配；未发送。',
+          5,
+          op.operationId,
+        );
       const mapped = await resolveTarget(http, op.target, (roots) =>
         this.state.assertOutsideProjects(roots),
       );
       if (http.options.local && mapped.rootPath)
         this.state.assertOutsideProjects([mapped.rootPath]);
+      if (request.kind === 'send-turn' || request.kind === 'respond-permission')
+        requireFeature(mapped, SESSION_INTENTS_FEATURE);
       http = new CliHttp(http.connection, {
         ...http.options,
         current: () => {
@@ -264,16 +293,17 @@ export class CliClient {
         },
       });
       const suffix =
-        op.kind === 'turn'
-          ? '/mutations'
-          : op.kind === 'session-action'
-            ? '/session-actions'
-            : '/session-control';
+        op.kind === 'send-turn' || op.kind === 'respond-permission'
+          ? '/' + op.kind
+          : op.kind === 'turn'
+            ? '/mutations'
+            : op.kind === 'session-action'
+              ? '/session-actions'
+              : '/session-control';
       const raw = (await http.request(replicaBase(mapped.target) + suffix, op.body, 64 * 1024))
         .value;
       let receipt: unknown,
         state: CliOperation['state'] = 'accepted';
-      const request = original(op);
       if (request.kind === 'control') {
         const parsed = validateSessionControlReceipt(raw, scope(op.target), request);
         receipt = parsed;
@@ -296,7 +326,11 @@ export class CliClient {
           );
         }
         if (parsed.status === 'abandoned') state = 'abandoned';
-      } else if (request.kind === 'mutation') {
+      } else if (
+        request.kind === 'mutation' ||
+        request.kind === 'send-turn' ||
+        request.kind === 'respond-permission'
+      ) {
         const parsed = mutationReceiptSchema.parse(raw);
         if (parsed.operationId !== op.operationId) throw new Error();
         receipt = parsed;
@@ -663,6 +697,7 @@ export class CliClient {
     if (args.command === 'mcp') return { target, ...(await readMcp()) };
     if (args.command === 'send') {
       requireFeature(resolved, SESSION_CONTROL_FEATURE);
+      requireFeature(resolved, SESSION_INTENTS_FEATURE);
       if (args.flags.agent && args.flags.agent !== read.meta.agentConfigId)
         throw new CliError('agent', '已有会话的 Agent 版本固定；请选择新的会话。', 5);
       const agent =
@@ -672,7 +707,7 @@ export class CliClient {
           : undefined);
       if (!agent) throw new CliError('agent', '主机未提供此会话的固定 Agent 版本；未发送。', 5);
       const turnId = this.uuid(),
-        request = buildSessionTurn({
+        request = buildSendTurn({
           scope: scope(target),
           read,
           agent: agentSchema.parse(agent),
@@ -684,10 +719,8 @@ export class CliClient {
           },
           operationId: this.uuid(),
           turnId,
-          peerId: this.uuid().replaceAll('-', '').slice(0, 16),
-          now: new Date(this.now()).toISOString(),
         });
-      const op = this.stage(target, 'turn', replicaBase(target) + '/mutations', request),
+      const op = this.stage(target, 'send-turn', replicaBase(target) + '/send-turn', request),
         confirmation = await this.deliver(http, op, true);
       return args.flags.wait || args.flags.follow
         ? { operation: confirmation, result: await this.wait(http, target, args, turnId) }

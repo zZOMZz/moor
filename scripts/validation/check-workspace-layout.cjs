@@ -199,6 +199,56 @@ app
       );
       await wait('[aria-label="调整侧栏宽度"][aria-valuenow="260"]');
     }
+    await win.loadURL(url + '/?grouped=1');
+    await wait('.workspace-logical-project');
+    const groupedSelection = await win.webContents.executeJavaScript(
+      'window.__moorFixture.selection()',
+    );
+    await win.webContents.executeJavaScript(
+      `const select=document.querySelector('[aria-label="筛选项目分组"]');select.value=select.options[1].value;select.dispatchEvent(new Event('change',{bubbles:true}));`,
+    );
+    await win.webContents.executeJavaScript(
+      `new Promise(resolve=>{const check=()=>{if(document.querySelectorAll('.workspace-project-group').length===2){observer.disconnect();resolve();}};const observer=new MutationObserver(check);observer.observe(document,{subtree:true,childList:true});check();})`,
+    );
+    assert.deepEqual(
+      await win.webContents.executeJavaScript('window.__moorFixture.selection()'),
+      groupedSelection,
+      'project filtering never navigates the current session',
+    );
+    assert.deepEqual(await win.webContents.executeJavaScript('window.__moorFixture.calls'), []);
+    await shot('grouped-projects');
+    await win.webContents.executeJavaScript(
+      `document.querySelectorAll('.workspace-project-group .workspace-project')[1].click()`,
+    );
+    await wait('.workspace-project-group:nth-last-child(1) .workspace-session-open');
+    await win.webContents.executeJavaScript(
+      `document.querySelectorAll('.workspace-project-group')[1].querySelector('.workspace-session-open').click()`,
+    );
+    await win.webContents.executeJavaScript(
+      `new Promise(resolve=>{const check=()=>{if(document.querySelector('.workspace-session-header h1')?.textContent==='另一台电脑的会话 2'){observer.disconnect();resolve();}};const observer=new MutationObserver(check);observer.observe(document,{subtree:true,childList:true});check();})`,
+    );
+    const selectedReplica = await win.webContents.executeJavaScript(
+      'window.__moorFixture.selection()',
+    );
+    assert.equal(selectedReplica.scope.source, 'remote');
+    assert.equal(selectedReplica.scope.target.deviceId, 'other-device');
+    assert.equal(selectedReplica.scope.target.localProjectId, 'project-0');
+    assert.equal(selectedReplica.sessionId, 'session-2');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="搜索会话"]').click();const input=document.querySelector('[aria-label="筛选当前工作区会话"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Mac mini');input.dispatchEvent(new Event('input',{bubbles:true}));`,
+    );
+    await win.webContents.executeJavaScript(
+      `new Promise(resolve=>{const check=()=>{const rows=[...document.querySelectorAll('.workspace-recent .workspace-session-context')];if(rows.length===2&&rows.every(row=>row.textContent==='Mac mini')){observer.disconnect();resolve();}};const observer=new MutationObserver(check);observer.observe(document,{subtree:true,childList:true,attributes:true});check();})`,
+    );
+    assert(
+      await win.webContents.executeJavaScript(
+        `window.__moorFixture.pageReads.some(read=>read.projectId==='project-0'&&read.query===''&&read.limit===30)`,
+      ),
+      'computer-name matches load only bounded summaries',
+    );
+    await shot('computer-search');
+    await win.loadURL(url);
+    await wait('.workspace-history');
     await win.webContents.executeJavaScript('window.__moorFixture.newConversation()');
     await wait('.workspace-welcome');
     assert.equal(

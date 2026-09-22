@@ -84,6 +84,8 @@ async function fixture(t: TestContext) {
     failMove = false,
     changes = 0,
     statusOwner = 'owner-a';
+  let managedWorkspaces = structuredClone(workspaces),
+    catalogWait: Promise<void> | undefined;
   dom.window.confirm = (message) => {
     confirmations.push(message ?? '');
     return confirm;
@@ -101,8 +103,13 @@ async function fixture(t: TestContext) {
           google: { enabled: false },
         },
       };
-    if (request.action === 'catalog')
-      return { ok: true, value: { action: 'catalog', workspaces: structuredClone(workspaces) } };
+    if (request.action === 'catalog') {
+      await catalogWait;
+      return {
+        ok: true,
+        value: { action: 'catalog', workspaces: structuredClone(managedWorkspaces) },
+      };
+    }
     if (request.action === 'devices')
       return {
         ok: true,
@@ -158,6 +165,12 @@ async function fixture(t: TestContext) {
   await render();
   return {
     accountApi,
+    setWorkspaces: (value: ManagedWorkspace[]) => {
+      managedWorkspaces = structuredClone(value);
+    },
+    waitForCatalog: (value: Promise<void>) => {
+      catalogWait = value;
+    },
     setOwner: (owner: string) => {
       statusOwner = owner;
     },
@@ -182,9 +195,23 @@ async function fixture(t: TestContext) {
 test('shared account panel pairs and explicitly revokes a computer with the verified owner', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.requests, [{ action: 'status' }]);
+  await f.render({ pairingScope: { source: 'remote', target } });
   await f.click('添加电脑');
+  assert(
+    !f.requests.some((request) => request.action === 'pair'),
+    'multiple workspaces require an explicit choice',
+  );
+  assert.equal(
+    f.dom.window.document.querySelector<HTMLSelectElement>('[aria-label="配对工作区"]')?.value,
+    'workspace-a',
+  );
+  await f.click('生成配对码');
   assert.equal(f.dom.window.document.querySelector('output')?.textContent, 'synthetic1234567');
-  assert.deepEqual(f.requests.at(-1), { action: 'pair', owner: 'owner-a' });
+  assert.deepEqual(f.requests.at(-1), {
+    action: 'pair',
+    owner: 'owner-a',
+    workspaceId: 'workspace-a',
+  });
   await f.click('已连接电脑');
   f.setConfirm(false);
   await f.click('撤销授权');
@@ -300,4 +327,63 @@ test('logout retains the reviewed owner across draft flush and cannot sign out a
     /未退出当前账号/,
   );
   assert(f.button('退出账号'), 'the newly verified account remains signed in');
+});
+
+test('one remote workspace pairs directly, while a local or foreign scope cannot select a remote destination', async (t) => {
+  const f = await fixture(t);
+  f.setWorkspaces(workspaces.slice(0, 1));
+  await f.render({ pairingScope: { source: 'local', target } });
+  await f.click('添加电脑');
+  assert.deepEqual(f.requests.at(-1), {
+    action: 'pair',
+    owner: 'owner-a',
+    workspaceId: 'workspace-a',
+  });
+  assert.equal(f.dom.window.document.querySelector('[aria-label="配对工作区"]'), null);
+  f.setWorkspaces(workspaces);
+  for (const scope of [
+    { source: 'local' as const, target },
+    { source: 'remote' as const, target: { ...target, serverKey: 'https://other.invalid' } },
+    { source: 'remote' as const, target: { ...target, owner: 'other-owner' } },
+  ]) {
+    await f.render({ pairingScope: scope });
+    await f.click('添加电脑');
+    assert.equal(
+      f.dom.window.document.querySelector<HTMLSelectElement>('[aria-label="配对工作区"]')!.value,
+      '',
+    );
+    assert(f.button('生成配对码').disabled);
+    await f.click('取消配对');
+  }
+  assert.equal(f.requests.filter((request) => request.action === 'pair').length, 1);
+  await f.click('添加电脑');
+  const select =
+    f.dom.window.document.querySelector<HTMLSelectElement>('[aria-label="配对工作区"]')!;
+  await f.act(async () => {
+    select.value = 'workspace-b';
+    select.dispatchEvent(new f.dom.window.Event('change', { bubbles: true }));
+  });
+  await f.click('生成配对码');
+  assert.deepEqual(f.requests.at(-1), {
+    action: 'pair',
+    owner: 'owner-a',
+    workspaceId: 'workspace-b',
+  });
+});
+
+test('switching account during pairing catalog read never dispatches the old account pair request', async (t) => {
+  const f = await fixture(t);
+  f.setWorkspaces(workspaces.slice(0, 1));
+  let release!: () => void;
+  f.waitForCatalog(
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
+  await f.click('添加电脑');
+  f.setOwner('owner-b');
+  await f.render({ accountApi: (request) => f.accountApi(request) });
+  await f.act(async () => release());
+  assert(!f.requests.some((request) => request.action === 'pair'));
+  assert.equal(f.dom.window.document.querySelector('output'), null);
 });

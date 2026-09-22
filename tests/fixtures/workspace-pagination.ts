@@ -4,6 +4,7 @@ import { AppError } from '@moor/protocol/protocol';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
 import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
 import { readSessionPage } from '@moor/host/sessions/page';
+import { syntheticSessionPageIndex } from './session-page-index';
 import {
   desktopWorkspaceCatalogSchema,
   type DesktopWorkspaceRequest,
@@ -116,6 +117,8 @@ export async function paginationFixture(
   const calls: DesktopWorkspaceRequest[] = [],
     memory = new Memory(),
     store = new WorkspaceStore(memory);
+  const projection = syntheticSessionPageIndex(rows);
+  t.after(() => projection.close());
   const failures = new Map<
     string,
     { code: string; status: number | null; rejected: boolean; message: string }
@@ -133,16 +136,17 @@ export async function paginationFixture(
       const entry = catalog.targets.find((entry) => entry.target.localProjectId === project)!;
       try {
         let value;
-        if (input.command.method === 'sessions-page')
+        if (input.command.method === 'sessions-page') {
+          projection.sync();
           value = readSessionPage(
             {
               workspace: entry.runtime,
-              list: (id) => rows.filter((item) => item.project.localProjectId === id),
+              index: projection.index,
             },
             input.command.params,
             input.command.localProjectId,
           );
-        else if (input.command.method === 'sessions')
+        } else if (input.command.method === 'sessions')
           value = rows.filter((item) => item.project.localProjectId === project);
         else throw Error('Unexpected execution command: ' + input.command.method);
         await controls.after?.(input);

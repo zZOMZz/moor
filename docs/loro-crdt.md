@@ -424,7 +424,7 @@ sequenceDiagram
 
 图中省略了具体传输层。客户端收到回执与 Agent 实际开始运行的时间先后可能受异步调度和网络影响；必须满足的是先持久接受，再允许执行副作用。
 
-在 [buildSessionTurn](../packages/session/src/session-operations.ts) 中，关键步骤是先从主机读取结果建立新文档，然后保存 `before = vv(doc)`，通过 Mirror 追加输入，最后导出 `delta(doc, before)`。同时，它为 Flock 保存单独的基线并导出 `metaBundle`。
+新普通客户端已使用[窄业务意图](session-intents.md)，由 Host 生成文档修改。下面的 [buildSessionTurn](../packages/session/src/session-operations.ts) 中，关键步骤是先从主机读取结果建立新文档，然后保存 `before = vv(doc)`，通过 Mirror 追加输入，最后导出 `delta(doc, before)`。同时，它为 Flock 保存单独的基线并导出 `metaBundle`。
 
 Mutation 是业务请求封套，主要字段包括：
 
@@ -445,7 +445,7 @@ Mutation 是业务请求封套，主要字段包括：
 
 普通发送要求只追加一个用户回合，原历史保持不变，并核对执行目标、内容、Agent 配置和状态。审批只允许改变指定请求的合法决定，并由 HostWorkspace 核对仍存在的活动请求。通过后才持久接受这份候选结果。Mirror 忽略未知属性的映射选项不能当成安全保证。
 
-正文快照、元数据和原操作凭据通过同一个数据库事务保存；校验或保存失败不得开始执行。只有执行主机能把客户端提交的用户操作正式接受进主机持久状态。客户端仍会导入主机返回的数据以显示历史、构造本地候选变更；这两个动作的权限不同。
+正文快照、元数据和原操作凭据通过同一个数据库事务保存；校验或保存失败不得开始执行。只有执行主机能把客户端提交的用户操作正式接受进主机持久状态。客户端仍导入主机返回的数据以显示历史；旧兼容构造器与 Host 内部任务适配还可构造候选变更，但这不代表接受或执行授权。
 
 中转转发请求，不保存会话正文或 CRDT 操作历史。上游 Loro 文档中展示的“保存 OpLog 的通用 relay”是另一种应用架构，不能直接套入 Moor。
 
@@ -508,7 +508,7 @@ CRDT 库可以支持离线编辑，但 Moor 的未发送草稿不会因为恢复
 在仓库根目录运行已有的合成测试：
 
 ```sh
-corepack pnpm exec tsx --test --test-name-pattern='delivery commits document|concurrent and offline turns|failed persistence rolls back|restart retains receipt' tests/host.test.ts
+corepack pnpm exec tsx --test --test-name-pattern='delivery commits document|concurrent and offline turns|failed persistence rolls back|restart retains receipt' tests/integration/host.test.ts
 ```
 
 预期观察：持久接受后才派发；并发新输入只接受一条；保存失败没有接受凭据也不派发；重启保留原回执但不重放任务。
@@ -516,7 +516,7 @@ corepack pnpm exec tsx --test --test-name-pattern='delivery commits document|con
 审批另看：
 
 ```sh
-corepack pnpm exec tsx --test tests/session-client-permission.test.ts
+corepack pnpm exec tsx --test tests/integration/session-client-permission.test.ts
 ```
 
 这些实验覆盖真实 Loro/Mirror 和 Moor 逻辑，使用合成 Agent、身份与临时数据。它们不验证两台真实设备的网络、浏览器后台挂起、真实 Agent 行为或发布环境；真机范围见[设备验收](validation.md)。更多故障练习见[学习实验与自测](learning-lab.md)。

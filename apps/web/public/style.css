@@ -3893,6 +3893,54 @@ dialog pre {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.workspace-session-context {
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+.workspace-project-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.workspace-project-filter h2 {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+.workspace-project-filter select {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+  padding: 3px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+}
+.workspace-logical-project {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 8px 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.workspace-logical-project span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-logical-project small {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
 .workspace-session-list li > button small {
   font-size: 10px;
   max-width: 60px;

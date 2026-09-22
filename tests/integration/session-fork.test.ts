@@ -414,6 +414,16 @@ function observeForkRecoveryCalls(f: ReturnType<typeof fixture>) {
 test('native Fork confirms one independent context with frozen provenance and an empty child activity history', async (t) => {
   const f = fixture(t);
   await f.prompt();
+  const pageRequest = {
+    pageVersion: 1 as const,
+    workspaceId: 'workspace',
+    localProjectId: 'project',
+    archived: 'active' as const,
+    pinned: 'all' as const,
+    query: '',
+    limit: 30,
+  };
+  const beforePage = f.host.readSessionPage(pageRequest, 'project');
   const original = vv(f.store.doc('source')),
     native = f.store.nativeSession('source'),
     request = await f.request(),
@@ -426,6 +436,9 @@ test('native Fork confirms one independent context with frozen provenance and an
   assert.deepEqual(history(f.store, 'child'), []);
   assert.deepEqual(result.execution, { mode: 'shared', status: 'ready', revision: 0 });
   assert.deepEqual((await f.host.read('child')).meta.forkOrigin, result.origin);
+  const afterPage = f.host.readSessionPage(pageRequest, 'project');
+  assert.notEqual(afterPage.revision, beforePage.revision);
+  assert.deepEqual(afterPage.items.find((row) => row.id === 'child')!.forkOrigin, result.origin);
   assert.equal(JSON.stringify(await f.host.read('child')).includes('fork-native-1'), false);
   await f.prompt('source', 'later source');
   assert.deepEqual(await f.host.forkSession(request), result);
@@ -584,6 +597,20 @@ test('a dispatched Fork without a returned native ID remains unknown across rest
 test('a failed acceptance transaction keeps the known native result durable and manual retry confirms locally without another fork', async (t) => {
   const f = fixture(t);
   await f.prompt();
+  const page = () =>
+    f.host.readSessionPage(
+      {
+        pageVersion: 1,
+        workspaceId: 'workspace',
+        localProjectId: 'project',
+        archived: 'active',
+        pinned: 'all',
+        query: '',
+        limit: 30,
+      },
+      'project',
+    );
+  const beforePage = page();
   const request = await f.request();
   f.store.journal.db.exec(
     "CREATE TRIGGER fail_fork_receipt BEFORE UPDATE ON operation WHEN NEW.phase='fork-accepted' BEGIN SELECT RAISE(ABORT,'Synthetic receipt failure'); END",
@@ -593,6 +620,11 @@ test('a failed acceptance transaction keeps the known native result durable and 
   assert.equal(f.store.searchSource('child'), undefined);
   assert.equal(metas(f.store.meta)['session-child'], undefined);
   assert.equal(f.store.nativeSession('child'), undefined);
+  assert.equal(page().revision, beforePage.revision);
+  assert.equal(
+    page().items.some((row) => row.id === 'child'),
+    false,
+  );
   await f.prompt('source', 'later source');
   f.restart();
   f.store.journal.db.exec('DROP TRIGGER fail_fork_receipt');

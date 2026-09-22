@@ -5,7 +5,8 @@ import type {
   AccountManagementValue,
 } from '@moor/protocol/account-management';
 import type { DesktopWorkspaceTarget } from '@moor/client/workspace-protocol';
-import { CatalogManagement } from './catalog-management';
+import { CatalogManagement, type ManagedWorkspace } from './catalog-management';
+import type { WorkspaceScope } from '../workspace/workspace-store';
 import { GoogleStart } from './google-login';
 import {
   readRetiredSecureRecords,
@@ -25,6 +26,7 @@ export function WorkspaceAccountPanel({
   beforeMove,
   endView,
   visible = true,
+  pairingScope,
 }: {
   accountApi: AccountApi;
   onAccountVerified(value: Account | null): void;
@@ -36,6 +38,7 @@ export function WorkspaceAccountPanel({
   beforeMove?(): Promise<void>;
   endView?(): Promise<void>;
   visible?: boolean;
+  pairingScope?: WorkspaceScope;
 }) {
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true),
@@ -47,8 +50,27 @@ export function WorkspaceAccountPanel({
   const [records, setRecords] = useState<RetiredRecord[]>();
   const [devices, setDevices] =
     useState<Extract<AccountManagementValue, { action: 'devices' }>['devices']>();
-  const [pair, setPair] = useState<Extract<AccountManagementValue, { action: 'pair' }>>();
+  const [pair, setPair] = useState<
+    Extract<AccountManagementValue, { action: 'pair' }> & { workspaceName?: string }
+  >();
+  const [pairing, setPairing] = useState<{
+    account: Account & { owner: string };
+    workspaces: ManagedWorkspace[];
+    selected: string;
+  }>();
   const locked = useRef(false);
+  const latest = useRef({ account, visible, pairingScope, active: true });
+  latest.current = { ...latest.current, account, visible, pairingScope };
+  useEffect(() => {
+    latest.current.active = true;
+    return () => {
+      latest.current.active = false;
+    };
+  }, []);
+  useEffect(() => {
+    setPair(undefined);
+    setPairing(undefined);
+  }, [account?.origin, account?.owner]);
   useEffect(() => {
     let current = true;
     void accountApi({ action: 'status' })
@@ -96,6 +118,48 @@ export function WorkspaceAccountPanel({
     return result.value as Extract<AccountManagementValue, { action: T['action'] }>;
   };
   const changed = () => window.dispatchEvent(new Event('moor:catalog-changed'));
+  const assertPairCurrent = (reviewed: Account) => {
+    const current = latest.current;
+    if (
+      !current.active ||
+      !current.visible ||
+      current.account?.owner !== reviewed.owner ||
+      current.account.origin !== reviewed.origin
+    )
+      throw Error('账号或页面已改变，本次没有继续创建配对码。');
+  };
+  const createPair = async (
+    reviewed: Account & { owner: string },
+    workspace?: ManagedWorkspace,
+  ) => {
+    assertPairCurrent(reviewed);
+    const value = await manage({
+      action: 'pair',
+      owner: reviewed.owner,
+      ...(workspace ? { workspaceId: workspace.id } : {}),
+    });
+    assertPairCurrent(reviewed);
+    setPair({ ...value, workspaceName: workspace?.name });
+    setPairing(undefined);
+  };
+  const beginPair = async () => {
+    if (!account?.owner) return;
+    const reviewed = { ...account, owner: account.owner };
+    setPair(undefined);
+    setPairing(undefined);
+    const workspaces = (await manage({ action: 'catalog', owner: reviewed.owner })).workspaces;
+    assertPairCurrent(reviewed);
+    if (workspaces.length <= 1) return createPair(reviewed, workspaces[0]);
+    const preferred = latest.current.pairingScope;
+    const selected =
+      preferred?.source === 'remote' &&
+      preferred.target.owner === reviewed.owner &&
+      preferred.target.serverKey === reviewed.origin &&
+      workspaces.some((workspace) => workspace.id === preferred.target.catalogWorkspaceId)
+        ? preferred.target.catalogWorkspaceId
+        : '';
+    setPairing({ account: reviewed, workspaces, selected });
+  };
   return (
     <section className="workspace-account-panel">
       <h1>账号与连接</h1>
@@ -106,18 +170,45 @@ export function WorkspaceAccountPanel({
         <>
           <p>已连接 {account.origin}</p>
           <p>其他电脑的项目会出现在工作区中。</p>
-          <button
-            disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                setPair(await manage({ action: 'pair', owner: account.owner! }));
-              })
-            }
-          >
+          <button disabled={busy} onClick={() => void run(beginPair)}>
             添加电脑
           </button>
+          {pairing && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const chosen = pairing.workspaces.find(
+                  (workspace) => workspace.id === pairing.selected,
+                );
+                if (chosen) void run(() => createPair(pairing.account, chosen));
+              }}
+            >
+              <label>
+                新电脑加入的工作区
+                <select
+                  aria-label="配对工作区"
+                  required
+                  disabled={busy}
+                  value={pairing.selected}
+                  onChange={(event) => setPairing({ ...pairing, selected: event.target.value })}
+                >
+                  <option value="">选择工作区</option>
+                  {pairing.workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button disabled={busy || !pairing.selected}>生成配对码</button>
+              <button type="button" disabled={busy} onClick={() => setPairing(undefined)}>
+                取消配对
+              </button>
+            </form>
+          )}
           {pair && (
             <div role="status">
+              {pair.workspaceName && <p>新电脑将加入：{pair.workspaceName}</p>}
               <p>
                 在另一台电脑的 Moor 连接设置中输入服务器地址与配对码。配对码有效期 {pair.expiresIn}{' '}
                 秒。

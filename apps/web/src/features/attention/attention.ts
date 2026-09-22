@@ -3,6 +3,7 @@ import {
   actorKey,
   actorSchema,
   attentionContinueSchema,
+  attentionContinueInput,
   attentionDispositionSchema,
   attentionPermissionSchema,
   attentionSeenSchema,
@@ -17,6 +18,7 @@ import {
   type AttentionReceipt,
 } from '@moor/protocol/attention';
 import type { Mutation } from '@moor/protocol/protocol';
+import { SESSION_INTENTS_FEATURE, type SendTurn } from '@moor/protocol/session-intent-protocol';
 import { ApiError } from '../../platform/api';
 
 import {
@@ -151,7 +153,7 @@ export function attentionEndpoint(route: AttentionRoute, sessionId?: string, ite
 }
 export function attentionOperationId(operation: AttentionOperation) {
   return operation.kind === 'continue'
-    ? operation.body.mutation.operationId
+    ? attentionContinueInput(operation.body).operationId
     : operation.body.operationId;
 }
 export function routeAttention(operation: PendingAttention, target: AttentionRoute) {
@@ -276,7 +278,11 @@ export type AttentionDependencies = {
     route: AttentionRoute,
     sessionId: string,
   ) => Promise<string | { text: string; unscoped: boolean }>;
-  prepareTurn: (route: AttentionRoute, sessionId: string, text: string) => Promise<Mutation>;
+  prepareTurn: (
+    route: AttentionRoute,
+    sessionId: string,
+    text: string,
+  ) => Promise<SendTurn | Mutation>;
   deliver?: (
     original: PendingAttention,
     retry: boolean,
@@ -406,6 +412,14 @@ export class AttentionController {
   canWrite(followup = false) {
     const target = this.target();
     return !!(this.state.context?.connected && target?.online && this.supported(target, followup));
+  }
+  private canWriteOperation(operation: AttentionOperation) {
+    return (
+      this.canWrite(operation.kind === 'continue') &&
+      (operation.kind !== 'continue' ||
+        !('turn' in operation.body) ||
+        this.target()?.features.includes(SESSION_INTENTS_FEATURE) === true)
+    );
   }
   total() {
     return this.state.context &&
@@ -776,7 +790,7 @@ export class AttentionController {
     if (seen ? this.state.seenBusy : this.state.busy) throw new Error('请等待当前操作确认。');
     const target = this.target(),
       selected = this.state.selected;
-    if (!target || !selected || !this.canWrite(operation.kind === 'continue'))
+    if (!target || !selected || !this.canWriteOperation(operation))
       throw new Error('当前无法连接支持此操作的执行电脑。');
     if (!retry && (!this.state.detailFresh || (seen ? this.state.seenPending : this.state.pending)))
       throw new Error('请先刷新事项并确认上一次请求。');
@@ -814,7 +828,7 @@ export class AttentionController {
         ? await this.deps.deliver(
             original,
             !!retry,
-            () => !!current() && this.canWrite(operation.kind === 'continue'),
+            () => !!current() && this.canWriteOperation(operation),
             (pending) => {
               if (current()) {
                 if (seen) this.state.seenPending = pending;
@@ -827,7 +841,7 @@ export class AttentionController {
             read: this.deps.read,
             compareAndSet: this.deps.compareAndSet,
             request: this.deps.request,
-            isAuthorized: () => !!current() && this.canWrite(operation.kind === 'continue'),
+            isAuthorized: () => !!current() && this.canWriteOperation(operation),
             onPending: (pending) => {
               if (current()) {
                 if (seen) this.state.seenPending = pending;
@@ -968,7 +982,7 @@ export class AttentionController {
       selected = this.state.selected;
     this.state.busy = true;
     this.changed();
-    let mutation: Mutation;
+    let mutation: SendTurn | Mutation;
     try {
       mutation = await this.deps.prepareTurn(target, detail.item.sessionId, draft.text);
     } finally {
@@ -982,17 +996,19 @@ export class AttentionController {
     if (
       mutation.sessionId !== detail.item.sessionId ||
       mutation.workspaceId !== target.runtimeWorkspaceId ||
-      mutation.kind !== 'turn'
+      (!('intentVersion' in mutation) && mutation.kind !== 'turn')
     )
       throw new Error('后续回合与原事项不匹配。');
+    if ('intentVersion' in mutation && !target.features.includes(SESSION_INTENTS_FEATURE))
+      throw Error('请先升级执行电脑，再发送新的待办后续指令。');
     await this.perform(
       {
         kind: 'continue',
-        body: {
-          mutation,
+        body: attentionContinueSchema.parse({
+          ...('intentVersion' in mutation ? { turn: mutation } : { mutation }),
           eventRevision: detail.item.eventRevision,
           observationRevision: detail.item.observationRevision,
-        },
+        }),
       },
       true,
       undefined,

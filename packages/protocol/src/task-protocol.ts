@@ -3,8 +3,6 @@ import { assert, id } from './protocol';
 import { contentScopeSchema } from './content-protocol';
 import { gitBranchSchema, sessionExecutionSchema } from './git-protocol';
 
-export const SESSION_TASKS_FEATURE = 'session-tasks-v1';
-
 export const TASK_LIMITS = {
   tasks: 8,
   parallel: 4,

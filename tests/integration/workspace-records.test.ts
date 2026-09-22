@@ -339,3 +339,101 @@ test('pending references have no count-based eviction and malformed cross-scope 
   await assert.rejects(store.read(scope, current, 'session-0'), /引用不完整/);
   await assert.rejects(store.operation(scope, 'pending-0', current), /引用不完整/);
 });
+
+test('semantic originals retain immutable attachment selection and atomically confirm without clearing newer drafts', async () => {
+  const memory = new Memory(),
+    store = new WorkspaceStore(memory);
+  const sessionId = 'semantic-session';
+  const item = await createAttachmentDraftItem(
+    new File(['frozen bytes'], 'frozen.txt', { type: 'text/plain' }),
+    'semantic-attachment',
+  );
+  await store.saveAttachments(scope, sessionId, 0, [item], current);
+  const upload: SessionOriginalOperation = {
+    kind: 'attachment',
+    value: {
+      contentVersion: 1,
+      operationId: 'semantic-upload',
+      workspaceId: scope.target.workspaceId,
+      localProjectId: scope.target.localProjectId,
+      sessionId,
+      action: 'upload',
+      attachment: item.reference,
+      data: item.data,
+    },
+  };
+  await store.stage(scope, upload, undefined, current);
+  await store.finish(scope, upload, 'confirmed', current);
+  const saved = (await store.read(scope, current, sessionId)).attachments![sessionId]!;
+  const draft = await store.saveDraft(
+    scope,
+    sessionId,
+    0,
+    'Reviewed prompt',
+    { modelId: 'model' },
+    current,
+  );
+  const original: SessionOriginalOperation = {
+    kind: 'send-turn',
+    value: {
+      intentVersion: 1,
+      operationId: 'semantic-turn',
+      workspaceId: scope.target.workspaceId,
+      localProjectId: scope.target.localProjectId,
+      userId: scope.target.userId,
+      machineId: scope.target.machineId,
+      sessionId,
+      expectedTurnId: null,
+      turnId: 'semantic-user-turn',
+      agentId: 'agent',
+      prompt: 'Reviewed prompt',
+      selection: { modelId: 'model' },
+      attachments: [item.reference],
+    },
+  };
+  const frozenDraft = { sessionId, revision: draft.revision, attachmentRevision: saved.revision };
+  await assert.rejects(
+    store.stage(
+      scope,
+      { ...original, value: { ...original.value, attachments: [] } },
+      frozenDraft,
+      current,
+    ),
+    /附件草稿/,
+  );
+  await store.stage(scope, original, frozenDraft, current);
+  const restarted = new WorkspaceStore(memory);
+  assert.deepEqual(
+    (await restarted.operation(scope, original.value.operationId, current))!.original,
+    original,
+  );
+  await restarted.saveDraft(scope, sessionId, draft.revision, 'Newer unsent prompt', {}, current);
+  memory.fail = true;
+  await assert.rejects(
+    restarted.finish(scope, original, 'confirmed', current),
+    /transaction failure/,
+  );
+  memory.fail = false;
+  assert.equal(
+    (await restarted.operation(scope, original.value.operationId, current))!.status,
+    'pending',
+  );
+  assert.equal(
+    (await restarted.read(scope, current, sessionId)).attachments![sessionId]!.items.length,
+    1,
+  );
+  await restarted.finish(scope, original, 'confirmed', current);
+  assert.equal(
+    (await restarted.operation(scope, original.value.operationId, current))!.status,
+    'confirmed',
+  );
+  assert.equal(
+    (await restarted.read(scope, current, sessionId)).attachments![sessionId]!.items.length,
+    0,
+  );
+  assert.equal((await restarted.readDraft(scope, sessionId, current)).text, 'Newer unsent prompt');
+  assert.deepEqual(
+    (await restarted.operation(scope, original.value.operationId, current))!.original,
+    original,
+  );
+});

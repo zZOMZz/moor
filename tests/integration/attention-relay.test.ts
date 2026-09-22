@@ -11,6 +11,7 @@ import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 import { PROTOCOL, type RuntimeWorkspace } from '@moor/protocol/protocol';
 import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
+import { SESSION_INTENTS_FEATURE, sendTurnSchema } from '@moor/protocol/session-intent-protocol';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
@@ -40,7 +41,9 @@ const nextMessage = (socket: WebSocket, matches: (message: any) => boolean) =>
     socket.on('message', listener);
   });
 
-async function fixture(options: { localOnly?: boolean; authenticatedHello?: boolean } = {}) {
+async function fixture(
+  options: { localOnly?: boolean; authenticatedHello?: boolean; typed?: boolean } = {},
+) {
   const store = new Store(':memory:');
   const secret = await store.setup('synthetic@example.invalid', 'synthetic-password-only');
   const accountId = store.owner(secret);
@@ -67,7 +70,13 @@ async function fixture(options: { localOnly?: boolean; authenticatedHello?: bool
     projects: [{ id: 'local-project', name: 'Synthetic project', rootPath: '/synthetic/project' }],
     agents: [],
     features:
-      options.authenticatedHello === false ? features : [...features, RETIRED_RECORDS_FEATURE],
+      options.authenticatedHello === false
+        ? features
+        : [
+            ...features,
+            RETIRED_RECORDS_FEATURE,
+            ...(options.typed === false ? [] : [SESSION_INTENTS_FEATURE]),
+          ],
   };
   const requests: any[] = [];
   const socket = new WebSocket(origin.replace('http:', 'ws:') + '/bridge', {
@@ -129,6 +138,47 @@ async function fixture(options: { localOnly?: boolean; authenticatedHello?: bool
     },
   };
 }
+
+test('typed attention followups require the intent capability and bind every execution identity without CRDT fallback', async (t) => {
+  for (const typed of [false, true]) {
+    const f = await fixture({ typed });
+    t.after(() => f.close());
+    const turn = sendTurnSchema.parse({
+      intentVersion: 1,
+      operationId: 'typed-followup',
+      workspaceId: f.runtime.id,
+      localProjectId: f.replica.localProjectId,
+      sessionId: 'session-one',
+      userId: f.runtime.userId,
+      machineId: f.runtime.machineId,
+      expectedTurnId: 'old-user',
+      agentId: 'agent',
+      turnId: 'new-user',
+      prompt: 'Reviewed followup',
+      selection: {},
+      attachments: [],
+    });
+    const continuation = { turn, eventRevision: 1, observationRevision: 0 };
+    const path = f.prefix + '/sessions/session-one/attention/outcome%3Aold-turn/continue';
+    assert.equal((await f.api(path, continuation)).status, typed ? 200 : 409);
+    assert.equal(f.requests.length, typed ? 1 : 0);
+    if (typed) assert.deepEqual(f.requests[0].params.input, continuation);
+    const count = f.requests.length;
+    for (const patch of [
+      { userId: 'foreign' },
+      { machineId: 'foreign' },
+      { localProjectId: 'foreign' },
+      { update: 'hidden-crdt' },
+      { metaBundle: {} },
+    ])
+      assert.equal(
+        (await f.api(path, { ...continuation, turn: { ...turn, ...patch } })).status,
+        400,
+      );
+    assert.equal(f.requests.length, count);
+    assert(f.requests.every((request) => request.method === 'attention-continue'));
+  }
+});
 
 test('authority survives reopening and identity APIs separate local and remote accounts', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'moor-attention-authority-'));

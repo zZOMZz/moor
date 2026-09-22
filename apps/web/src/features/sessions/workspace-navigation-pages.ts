@@ -26,6 +26,45 @@ export function navigationProjects(state: WorkspaceClientState): NavigationProje
   );
 }
 
+export function logicalProjectGroups(projects: NavigationProject[]) {
+  const groups = new Map<
+    string,
+    { key: string; name: string; workspaceName: string; projects: NavigationProject[] }
+  >();
+  for (const project of projects) {
+    const key = project.target.catalogProjectId
+      ? canonical([workspaceKey(project), project.target.catalogProjectId])
+      : projectKey(project);
+    let group = groups.get(key);
+    if (!group)
+      groups.set(
+        key,
+        (group = {
+          key,
+          name: project.projectName,
+          workspaceName: project.workspaceName,
+          projects: [],
+        }),
+      );
+    group.projects.push(project);
+  }
+  return [...groups.values()];
+}
+
+/** A matching project/computer exposes its bounded summaries. Other projects
+ * still ask the host to search session title/id; no full-history client scan. */
+export function navigationSessionQuery(project: NavigationProject, query: string) {
+  const value = query.trim();
+  const context = `${project.projectName} ${project.hostName}`.toLocaleLowerCase();
+  return value &&
+    value
+      .toLocaleLowerCase()
+      .split(/\s+/)
+      .every((word) => context.includes(word))
+    ? ''
+    : value;
+}
+
 type Kind = 'pinned' | 'recent' | 'all';
 type Entry = {
   connection: string;
@@ -72,8 +111,8 @@ export function useNavigationSessions(
     (paged ? (['pinned', 'recent'] as const) : (['all'] as const)).map((kind) => ({
       project,
       kind: kind as Kind,
-      query: query.trim(),
-      key: canonical([projectKey(project), kind, query.trim()]),
+      query: navigationSessionQuery(project, query),
+      key: canonical([projectKey(project), kind, navigationSessionQuery(project, query)]),
       connection: canonical([
         state.catalogs[project.source]?.connectionId,
         state.catalogs[project.source]?.actor ?? null,

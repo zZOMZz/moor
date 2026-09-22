@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { id, mutationSchema } from './protocol';
+import { sendTurnSchema } from './session-intent-protocol';
 
 export const ATTENTION_FEATURE = 'attention-v1';
 export const ACTOR_FEATURE = 'actor-context-v1';
@@ -45,13 +46,21 @@ export const attentionPermissionSchema = attentionSeenSchema
     optionId: z.string().min(1).max(200).nullable(),
   })
   .strict();
-export const attentionContinueSchema = z
+const legacyAttentionContinueSchema = z
   .object({
     mutation: mutationSchema.refine((m) => m.kind === 'turn', '继续必须是用户回合'),
     eventRevision: revision,
     observationRevision: revision,
   })
   .strict();
+// Keep the legacy branch and its property order unchanged: persisted originals
+// and Host journal fingerprints must remain readable byte for byte.
+export const attentionContinueSchema = z.union([
+  legacyAttentionContinueSchema,
+  z
+    .object({ turn: sendTurnSchema, eventRevision: revision, observationRevision: revision })
+    .strict(),
+]);
 export const attentionListQuerySchema = z
   .object({
     view: z.enum(['pending', 'processed']).default('pending'),
@@ -63,6 +72,9 @@ export type AttentionSeen = z.infer<typeof attentionSeenSchema>;
 export type AttentionDisposition = z.infer<typeof attentionDispositionSchema>;
 export type AttentionPermission = z.infer<typeof attentionPermissionSchema>;
 export type AttentionContinue = z.infer<typeof attentionContinueSchema>;
+export function attentionContinueInput(request: AttentionContinue) {
+  return 'turn' in request ? request.turn : request.mutation;
+}
 export type AttentionListQuery = z.infer<typeof attentionListQuerySchema>;
 export type AttentionCause =
   | 'agent_returned'

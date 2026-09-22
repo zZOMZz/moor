@@ -26,6 +26,7 @@ import {
   projectKey,
   appendNavigationPage,
   sessionPageError,
+  navigationSessionQuery,
   type NavigationProject,
 } from './workspace-navigation-pages';
 export {
@@ -33,6 +34,8 @@ export {
   navigationProjects,
   projectKey,
   workspaceKey,
+  logicalProjectGroups,
+  navigationSessionQuery,
   type NavigationProject,
 } from './workspace-navigation-pages';
 
@@ -49,6 +52,7 @@ export function NavigationSessionRow({
   disabled,
   online,
   title,
+  context,
   onOpen,
   onAction,
 }: {
@@ -57,6 +61,7 @@ export function NavigationSessionRow({
   disabled: boolean;
   online: boolean;
   title?: string;
+  context?: string;
   onOpen(): void;
   onAction: RowAction;
 }) {
@@ -103,6 +108,7 @@ export function NavigationSessionRow({
             onClick={onOpen}
           >
             <span className="workspace-session-title">{label}</span>
+            {context && <span className="workspace-session-context">{context}</span>}
             <small>{session.isArchived ? '已归档' : working ? '进行中' : session.agentType}</small>
           </button>
           {working && <span className="session-working" aria-label="进行中" title="进行中" />}
@@ -265,6 +271,7 @@ export function NavigationSessions({
               disabled={disabled}
               online={project.online}
               title={session.title + ' · ' + project.projectName + ' · ' + project.hostName}
+              context={project.hostName}
               onOpen={() => onOpen(project, session)}
               onAction={(...args) => onAction(project, ...args)}
             />
@@ -299,6 +306,7 @@ export function NavigationProjectGroup({
   onRefresh,
   controller,
   revision = 0,
+  grouped = false,
 }: {
   project: NavigationProject;
   sessions?: SessionMetadata[];
@@ -313,11 +321,13 @@ export function NavigationProjectGroup({
   onRefresh(project: NavigationProject): void;
   controller?: WorkspaceController;
   revision?: number;
+  grouped?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false),
     [all, setAll] = useState(false),
     [archived, setArchived] = useState(false);
   const paged = typeof controller?.listProjectSessionPage === 'function';
+  const effectiveQuery = navigationSessionQuery(project, query);
   const open = expanded;
   const [page, setPage] = useState<WorkspaceSessionPage>();
   const [pageError, setPageError] = useState<string>();
@@ -327,7 +337,7 @@ export function NavigationProjectGroup({
     projectKey(project),
     project.online,
     revision,
-    query.trim(),
+    effectiveQuery,
     archived,
   ]);
   const loadPage = async (more = false, fresh = false) => {
@@ -341,7 +351,7 @@ export function NavigationProjectGroup({
       const next = await controller.listProjectSessionPage(project.source, project.target, {
         archived: archived ? 'archived' : 'active',
         pinned: archived ? 'all' : 'unpinned',
-        query: query.trim(),
+        query: effectiveQuery,
         limit: 30,
         ...(more ? { cursor: previous!.nextCursor! } : {}),
         fresh: fresh || more,
@@ -371,7 +381,10 @@ export function NavigationProjectGroup({
           (session) =>
             Boolean(session.isArchived) === archived &&
             (archived || !session.isPinned) &&
-            (session.title || '未命名会话').toLocaleLowerCase().includes(query.toLocaleLowerCase()),
+            ((session.title || '未命名会话')
+              .toLocaleLowerCase()
+              .includes(effectiveQuery.toLocaleLowerCase()) ||
+              session.id.toLocaleLowerCase().includes(effectiveQuery.toLocaleLowerCase())),
         )
         .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
   const visible =
@@ -391,9 +404,13 @@ export function NavigationProjectGroup({
             <ChevronRight size={15} data-expanded={open} />
           </span>
           <span>
-            {project.projectName}
+            {grouped ? project.hostName : project.projectName}
             <small>
-              {project.hostName}
+              {grouped
+                ? (project.runtime.projects.find(
+                    (entry) => entry.id === project.target.localProjectId,
+                  )?.rootPath ?? project.projectName)
+                : project.hostName}
               {project.source === 'local' ? ' · 本机' : ''}
               {project.online ? '' : ' · 离线'}
             </small>

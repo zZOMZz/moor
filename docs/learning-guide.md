@@ -152,7 +152,7 @@ Session S
 
 Loro 的版本向量表达访问端已知哪些文档操作，主机据此返回增量。`expectedTurnId` 则表达用户基于哪条输入继续会话，用于业务并发判断。二者解决不同问题。
 
-CRDT 可以使文档副本合并，但不会判断一条指令是否应该运行。Moor 仍要求主机在隔离副本上导入用户变更，验证只包含合法追加或当前审批回应。客户端能构造一个可导入的 CRDT 增量，并不代表它有权改写历史。
+CRDT 可以使文档副本合并，但不会判断一条指令是否应该运行。新普通指令和审批提交窄业务意图，由 Host 生成文档操作；兼容 Mutation 仍在隔离副本导入并验证合法追加或当前审批回应。能构造可导入的增量，并不意味着有权改写历史。
 
 原理、版本向量、容器合并粒度和可运行示例见 [Loro 与 CRDT 学习文档](loro-crdt.md)。
 
@@ -207,7 +207,7 @@ sequenceDiagram
 
 ### 6.1 客户端：先保存原请求，再发送
 
-浏览器在自己读过的会话副本中追加用户条目，生成增量与元数据变化。一个简化的请求如下，编号均为虚构：
+新版客户端从已核验的会话构造 `send-turn` 或 `respond-permission`，固定文本、运行选择、附件或完整审批审阅，不携带 CRDT 操作。Host 将业务输入变成文档修改，详见[会话业务意图](session-intents.md)。下例用于解释仍保留的旧 Mutation 兼容路径，编号均为虚构；旧 pending 不迁写成新请求：
 
 ```text
 operationId: op-1
@@ -231,11 +231,11 @@ metaBundle: 本次允许的 Flock 变化
 
 ### 6.3 主机：先确定合法性，再提交事务
 
-沿 `HostWorkspace.mutate` 和 `mutateAccepted` 阅读，可以看到以下关键顺序。这里是教学概括，不是可直接调用的 API：
+沿 `HostWorkspace.sendTurn`、`respondPermission`、兼容 `mutate` 和共同的 `acceptSessionCommand` 阅读，可以看到以下关键顺序。这里是教学概括，不是可直接调用的 API：
 
 1. 按会话串行进入，检查执行身份、项目、会话与相关执行锁。
 2. 查原操作编号及指纹。已接受的同一操作返回原结果；同编号不同内容拒绝。
-3. 在副本文档和元数据中导入增量，比较前后状态，检查最近用户回合、活动状态和固定 Agent。
+3. 新意图由 Host 构造允许的文档修改；旧 Mutation 在副本中导入并比较前后状态。两者都检查最近用户回合、活动状态和固定 Agent。
 4. 新指令只允许追加一个合法用户回合。不得夹带历史修改、其他会话元数据或远程启动参数。
 5. 主机添加助手回合，并在同一 SQLite 事务中保存会话、元数据、固定绑定与操作凭据。使用附件或授权时，相应记录也参与事务。
 6. 事务完成后，才调用执行流程或把审批结果交给等待中的 Agent。
@@ -248,7 +248,7 @@ Agent 回调进入主机，由主机将内容写入 Moor 历史。`changed` 是�
 
 **理解检查：** 应该在写数据库之前还是之后启动 Agent？若反过来，写入失败会造成什么不可解释的状态？
 
-源码入口：[Web 的 `sendTurn`、`prepareTurnMutation`、`submit`](../apps/web/src/features/workspace/workspace-controller.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
+源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../apps/web/src/features/workspace/workspace-controller.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
 
 ## 7. 断线、重试与一致性
 
@@ -464,25 +464,25 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 
 先读短的数据定义，再跟一条请求，最后读专题模块。不要一开始顺序通读大型 UI 文件。
 
-| 顺序 | 入口                                                                                                                                                 | 本轮只找什么                                                    |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                                         | `history`、用户/助手关联、版本向量与增量                        |
-| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                                               | RuntimeWorkspace、Mutation、产品目标与本地目标的区别            |
-| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                                                           | 导入前后比较、允许字段、`expectedTurnId`、历史不可改            |
-| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts)                                     | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`       |
-| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                                                      | `mutate`、`mutateAccepted`、事务之后的 `execute`、审批与停止    |
-| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)                                               | `open/prompt/cancel/close`，new/load、能力与回调                |
-| 7    | [WorkspaceController](../apps/web/src/features/workspace/workspace-controller.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `sendTurn`、`prepareTurnMutation`、`submit`，先存原请求再发网络 |
-| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                                         | 路由与响应范围、共同方法校验和分发                              |
-| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                                           | 用断言核验自己对顺序与恢复的解释                                |
-| 10   | [开发文档](development.md#从行为找到实现)                                                                                                            | 按感兴趣的功能查专门实现及测试                                  |
+| 顺序 | 入口                                                                                                                                                 | 本轮只找什么                                                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                                         | `history`、用户/助手关联、版本向量与增量                             |
+| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                                               | RuntimeWorkspace、Mutation、产品目标与本地目标的区别                 |
+| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                                                           | 导入前后比较、允许字段、`expectedTurnId`、历史不可改                 |
+| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts)                                     | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`            |
+| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                                                      | `sendTurn`、`acceptSessionCommand`、事务之后的 `execute`、审批与停止 |
+| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)                                               | `open/prompt/cancel/close`，new/load、能力与回调                     |
+| 7    | [WorkspaceController](../apps/web/src/features/workspace/workspace-controller.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
+| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                                         | 路由与响应范围、共同方法校验和分发                                   |
+| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                                           | 用断言核验自己对顺序与恢复的解释                                     |
+| 10   | [开发文档](development.md#从行为找到实现)                                                                                                            | 按感兴趣的功能查专门实现及测试                                       |
 
 可在仓库根目录使用以下只读搜索。文件以符号定位，比记住容易变化的行号更可靠。
 
 ```sh
-rg -n 'mutateAccepted|transaction\(|journal\.accept|run.done = this.execute' packages/host/src/sessions/workspace.ts
+rg -n 'acceptSessionCommand|transaction\(|journal\.accept|run.done = this.execute' packages/host/src/sessions/workspace.ts
 rg -n 'expectedTurnId|仅允许追加|原执行|不允许远程' packages/host/src/commands/validate-mutation.ts
-rg -n 'async function (submit|sendTurn|prepareTurnMutation)' apps/web/src/features/workspace/workspace-controller.ts
+rg -n 'async (send|respondPermission|retry)\(' apps/web/src/features/workspace/workspace-controller.ts
 rg -n 'fingerprint|lookup\(|stage\(|accept\(' packages/host/src/persistence/journal.ts
 ```
 

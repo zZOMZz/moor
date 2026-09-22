@@ -571,7 +571,10 @@ export class WorkspaceStore {
   ) {
     if (plainTurn && (mcpReview || annotations || taskReview)) throw conflict();
     original = sessionOriginalOperationSchema.parse(original);
+    if (original.kind === 'send-turn') plainTurn = true;
     draft = draft === undefined ? undefined : operationSchema.shape.draft.parse(draft);
+    if (original.kind === 'respond-permission' && draft)
+      throw Error('审批原操作不能清除聊天草稿。');
     this.#validateOriginal(scope, original);
     mcpReview = mcpReview === undefined ? undefined : mcpReviewSchema.parse(mcpReview);
     taskReview = taskReview === undefined ? undefined : taskReviewedSchema.parse(taskReview);
@@ -690,7 +693,12 @@ export class WorkspaceStore {
           const attachments = state.attachments?.[draft.sessionId] ?? emptyWorkspaceAttachments();
           if (
             (draft.attachmentRevision ?? 0) !== attachments.revision ||
-            attachments.items.some((item) => !item.uploaded || item.pending)
+            attachments.items.some((item) => !item.uploaded || item.pending) ||
+            (original.kind === 'send-turn' &&
+              !same(
+                original.value.attachments,
+                attachments.items.map((item) => item.reference),
+              ))
           )
             throw Error('附件草稿已改变或尚未上传，请重新读取后继续。');
         }
@@ -897,10 +905,12 @@ export class WorkspaceStore {
             throw Error('请先核查原会话操作，再发送待办指令或审批。');
         }
         if (pending.operation.kind === 'continue')
-          this.#validateOriginal(scope, {
-            kind: 'mutation',
-            value: pending.operation.body.mutation,
-          });
+          this.#validateOriginal(
+            scope,
+            'turn' in pending.operation.body
+              ? { kind: 'send-turn', value: pending.operation.body.turn }
+              : { kind: 'mutation', value: pending.operation.body.mutation },
+          );
       }
       const entries = { ...bucket.entries };
       if (value === undefined) delete entries[key];

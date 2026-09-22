@@ -1,12 +1,8 @@
-import { RETIRED_RECORDS_FEATURE } from './connection-authority';
-import type { HostCommand, HostCommandMethod } from './host-command';
+import { hostCommandContracts, hostCommandRecoveryFeature } from './host-command-contract';
+
+import type { HostCommand } from './host-command';
+import { validateSessionPageResult } from './session-page';
 import {
-  SESSION_PAGE_FEATURE,
-  SESSION_PAGE_LIMITS,
-  validateSessionPageResult,
-} from './session-page';
-import {
-  AGENT_CONTROLS_FEATURE,
   AGENT_RUN_DEFAULTS_FEATURE,
   agentUsageResponseSchema,
   runDefaultsResponseSchema,
@@ -20,7 +16,6 @@ import {
   type RuntimeWorkspace,
 } from './protocol';
 import {
-  SESSION_RESPONSE_LIMITS,
   sessionListSchema,
   sessionReadResponseSchema,
   mutationReceiptSchema,
@@ -29,128 +24,42 @@ import {
   validateSessionBundle,
   type SessionMetadata,
 } from './session-responses';
+import { isCanonicalBase64, projectFileResultSchema } from './content-protocol';
+import { attachmentReceiptSchema, attachmentContentSchema } from './attachment-protocol';
 import {
-  FILE_CONTENT_FEATURE,
-  isCanonicalBase64,
-  projectFileResultSchema,
-} from './content-protocol';
-import {
-  ATTACHMENTS_FEATURE,
-  attachmentReceiptSchema,
-  attachmentContentSchema,
-} from './attachment-protocol';
-import {
-  PROJECT_TREE_FEATURE,
-  PROJECT_DIFF_FEATURE,
   projectTreeResultSchema,
   projectTurnDiffResultSchema,
   projectDiffFileResultSchema,
 } from './project-content-protocol';
+import { questionReceiptSchema, steerReceiptSchema } from './interaction-protocol';
+import { sessionSearchResultSchema } from './search-protocol';
 import {
-  QUESTIONS_FEATURE,
-  STEER_FEATURE,
-  questionReceiptSchema,
-  steerReceiptSchema,
-} from './interaction-protocol';
-import { SESSION_SEARCH_FEATURE, sessionSearchResultSchema } from './search-protocol';
-import {
-  GIT_WORKTREE_FEATURE,
-  GIT_OPERATIONS_FEATURE,
   validateGitOperationResult,
   gitStateResultSchema,
   gitActionReceiptSchema,
 } from './git-protocol';
 import {
-  SESSION_FORK_FEATURE,
-  FORK_OPERATIONS_FEATURE,
   validateForkActionReceipt,
   validateForkOperationResult,
   forkOptionsResultSchema,
 } from './fork-protocol';
-import { GITHUB_FEATURE, githubReadResultSchema, githubReceiptSchema } from './github-protocol';
+import { githubReadResultSchema, githubReceiptSchema } from './github-protocol';
+import { githubWriteReadResultSchema, githubWriteReceiptSchema } from './github-write-protocol';
 import {
-  GITHUB_WRITE_FEATURE,
-  githubWriteReadResultSchema,
-  githubWriteReceiptSchema,
-} from './github-write-protocol';
-import {
-  PREVIEW_FEATURE,
   previewReadResultSchema,
   previewReceiptSchema,
   type PreviewFrame,
 } from './preview-protocol';
-import { SKILLS_FEATURE, validateSkillsRead } from './skills-protocol';
+import { validateSkillsRead } from './skills-protocol';
+import { validateRolesRead, validateRoleReceipt, validateRolesInspect } from './role-protocol';
+import { validateMcpRead } from './mcp-protocol';
 import {
-  ROLE_FEATURE,
-  ROLE_LIMITS,
-  validateRolesRead,
-  validateRoleReceipt,
-  validateRolesInspect,
-} from './role-protocol';
-import { MCP_FEATURE, MCP_LIMITS, validateMcpRead } from './mcp-protocol';
-import {
-  SESSION_CONTROL_FEATURE,
-  ATTACHMENT_OPERATIONS_FEATURE,
-  SESSION_CONTROL_LIMITS,
   validateSessionControlReceipt,
   validateSessionOperationResult,
 } from './session-control-protocol';
-import {
-  SESSION_TASKS_FEATURE,
-  TASK_LIMITS,
-  validateTaskReadResult,
-  validateTaskActionResult,
-} from './task-protocol';
+import { validateTaskReadResult, validateTaskActionResult } from './task-protocol';
 
 export const HOST_RESPONSE_FAILED = '主机响应不可验证，请手动重新读取或核查原操作';
-const KiB = 1024,
-  MiB = 1024 * KiB;
-// Limits apply to the received value before schemas can strip any private fields.
-const policies = {
-  sessions: [undefined, SESSION_RESPONSE_LIMITS.listBytes],
-  'sessions-page': [SESSION_PAGE_FEATURE, SESSION_PAGE_LIMITS.responseBytes],
-  'agent-options': [undefined, 16 * MiB],
-  'agent-usage': [AGENT_CONTROLS_FEATURE, 256 * KiB],
-  'run-preferences': [AGENT_CONTROLS_FEATURE, 16 * KiB],
-  session: [undefined, SESSION_RESPONSE_LIMITS.readBytes],
-  'roles-read': [RETIRED_RECORDS_FEATURE, ROLE_LIMITS.responseBytes],
-  'mcp-read': [RETIRED_RECORDS_FEATURE, MCP_LIMITS.responseBytes],
-  'session-control': [SESSION_CONTROL_FEATURE, SESSION_CONTROL_LIMITS.responseBytes],
-  'session-operations': [SESSION_CONTROL_FEATURE, SESSION_CONTROL_LIMITS.responseBytes],
-  'tasks-read': [RETIRED_RECORDS_FEATURE, TASK_LIMITS.responseBytes],
-  'tasks-action': [RETIRED_RECORDS_FEATURE, TASK_LIMITS.responseBytes],
-  'roles-action': [RETIRED_RECORDS_FEATURE, ROLE_LIMITS.responseBytes],
-  'skills-read': [SKILLS_FEATURE, 2 * MiB],
-  'preview-read': [PREVIEW_FEATURE, 6 * MiB],
-  'preview-action': [PREVIEW_FEATURE, 6 * MiB],
-  'preview-inspect': [RETIRED_RECORDS_FEATURE, 6 * MiB],
-  'preview-close': [PREVIEW_FEATURE, 6 * MiB],
-  'github-write-read': [GITHUB_WRITE_FEATURE, 3 * MiB],
-  'github-write-action': [GITHUB_WRITE_FEATURE, 16 * KiB],
-  'github-write-inspect': [GITHUB_WRITE_FEATURE, 16 * KiB],
-  'github-write-abandon': [GITHUB_WRITE_FEATURE, 16 * KiB],
-  'github-read': [GITHUB_FEATURE, 2 * MiB],
-  'github-action': [GITHUB_FEATURE, 2 * MiB],
-  'github-abandon': [GITHUB_FEATURE, 2 * MiB],
-  mutate: [undefined, SESSION_RESPONSE_LIMITS.receiptBytes],
-  'session-action': [undefined, SESSION_RESPONSE_LIMITS.receiptBytes],
-  'file-content': [FILE_CONTENT_FEATURE, 2 * MiB],
-  'attachment-action': [ATTACHMENTS_FEATURE, 64 * KiB],
-  'read-attachment': [ATTACHMENTS_FEATURE, 12 * MiB],
-  'read-project-tree': [PROJECT_TREE_FEATURE, 16 * MiB],
-  'read-turn-diff': [PROJECT_DIFF_FEATURE, 48 * MiB],
-  'read-diff-file': [PROJECT_DIFF_FEATURE, 16 * MiB],
-  'answer-question': [QUESTIONS_FEATURE, 64 * KiB],
-  steer: [STEER_FEATURE, 64 * KiB],
-  'search-sessions': [SESSION_SEARCH_FEATURE, 2 * MiB],
-  'git-state': [GIT_WORKTREE_FEATURE, 2 * MiB],
-  'git-action': [GIT_WORKTREE_FEATURE, 2 * MiB],
-  'git-operations': [GIT_OPERATIONS_FEATURE, 2 * MiB],
-  'fork-options': [SESSION_FORK_FEATURE, 2 * MiB],
-  'fork-operations': [FORK_OPERATIONS_FEATURE, 2 * MiB],
-  'fork-action': [SESSION_FORK_FEATURE, 2 * MiB],
-  cancel: [undefined, SESSION_RESPONSE_LIMITS.receiptBytes],
-} satisfies Record<HostCommandMethod, readonly [string | undefined, number]>;
 
 function requireValue(condition: unknown): asserts condition {
   if (!condition) throw new AppError(502, HOST_RESPONSE_FAILED);
@@ -209,7 +118,7 @@ export async function validateHostResponse(
     current();
     const command = structuredClone(context.command),
       workspace = runtimeWorkspaceSchema.parse(context.workspace);
-    const policy = policies[command.method];
+    const policy = hostCommandContracts[command.method];
     requireValue(
       policy &&
         workspace.id === command.workspaceId &&
@@ -217,12 +126,14 @@ export async function validateHostResponse(
         new Set(workspace.agents.map((a) => a.id)).size === workspace.agents.length &&
         (!command.localProjectId ||
           workspace.projects.some((p) => p.id === command.localProjectId)) &&
-        (!policy[0] || workspace.features?.includes(policy[0])),
+        (!policy.feature || workspace.features?.includes(policy.feature)),
     );
-    if (command.method === 'session-operations' && command.params.request.kind === 'attachment')
-      requireValue(workspace.features?.includes(ATTACHMENT_OPERATIONS_FEATURE));
+    const recoveryFeature = hostCommandRecoveryFeature(command);
+    if (recoveryFeature) requireValue(workspace.features?.includes(recoveryFeature));
     const json = JSON.stringify(raw);
-    requireValue(typeof json === 'string' && new TextEncoder().encode(json).length <= policy[1]);
+    requireValue(
+      typeof json === 'string' && new TextEncoder().encode(json).length <= policy.responseBytes,
+    );
     // Keep caller-owned values from changing during WebCrypto awaits. No parsed
     // response or original request reference is returned to caller-owned objects.
     raw = structuredClone(raw);
@@ -372,6 +283,8 @@ export async function validateHostResponse(
           }
           return result;
         }
+        case 'send-turn':
+        case 'respond-permission':
         case 'mutate': {
           const result = mutationReceiptSchema.parse(raw);
           requireValue(result.operationId === command.params.operationId);

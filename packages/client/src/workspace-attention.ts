@@ -6,6 +6,7 @@ import {
   attentionDispositionSchema,
   attentionPermissionSchema,
   attentionContinueSchema,
+  attentionContinueInput,
 } from '@moor/protocol/attention';
 import {
   attentionPageSchema,
@@ -41,10 +42,18 @@ export function workspaceAttentionRoute(
     throw Error('待办请求缺少原项目或会话范围。');
   if (
     command.kind === 'continue' &&
-    (command.input.mutation.workspaceId !== target.workspaceId ||
-      command.input.mutation.sessionId !== target.sessionId)
+    (attentionContinueInput(command.input).workspaceId !== target.workspaceId ||
+      attentionContinueInput(command.input).sessionId !== target.sessionId)
   )
     throw Error('待办后续指令不属于原会话。');
+  if (
+    command.kind === 'continue' &&
+    'turn' in command.input &&
+    (command.input.turn.userId !== target.userId ||
+      command.input.turn.machineId !== target.machineId ||
+      command.input.turn.localProjectId !== target.localProjectId)
+  )
+    throw Error('待办后续指令不属于原执行身份。');
   const e = encodeURIComponent;
   let path = `/api/workspaces/${e(target.catalogWorkspaceId)}/replicas/${e(target.replicaId)}/`;
   path += command.kind === 'list' ? 'attention' : `sessions/${e(target.sessionId!)}/attention`;
@@ -113,7 +122,9 @@ export function validateWorkspaceAttentionResponse(
   }
   const receipt = receiptSchema.parse(input);
   const operationId =
-    command.kind === 'continue' ? command.input.mutation.operationId : command.input.operationId;
+    command.kind === 'continue'
+      ? attentionContinueInput(command.input).operationId
+      : command.input.operationId;
   if (receipt.operationId !== operationId) throw Error('待办回执与原操作编号不匹配。');
   if (receipt.item) checkItem(receipt.item);
   return receipt;

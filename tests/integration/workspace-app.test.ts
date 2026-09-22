@@ -817,7 +817,7 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(calls.includes('settings'), false);
     assert.match(dom.window.document.body.textContent!, /项目已添加/);
     await act(async () => project.click());
-    await act(async () => visibleButton('Local sessionsynthetic').click());
+    await act(async () => visibleButton('Local sessionMy Macsynthetic').click());
     assert.match(
       dom.window.document.querySelector('.workspace-history')!.textContent!,
       /Hello <script>unsafe\(\)<\/script>/,
@@ -831,11 +831,11 @@ test('packaged workspace opens local projects without an account and preserves d
     sessionRefresh = new Promise<void>((resolve) => {
       finishSessionRefresh = resolve;
     });
-    await act(async () => visibleButton('Local sessionsynthetic').click());
+    await act(async () => visibleButton('Local sessionMy Macsynthetic').click());
     assert.equal(state.offline, false);
     assert.deepEqual(state.sessionLoad, { status: 'refreshing', source: 'cache' });
     assert.equal(project.disabled, false);
-    assert.equal(visibleButton('Local sessionsynthetic').disabled, false);
+    assert.equal(visibleButton('Local sessionMy Macsynthetic').disabled, false);
     assert.equal(visibleButton('连接其他电脑').disabled, false);
     const sync = dom.window.document.querySelector<HTMLElement>('.workspace-session-sync');
     assert(sync);
@@ -1207,7 +1207,7 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.workspace-conversation')!.hasAttribute('hidden'),
       true,
     );
-    await act(async () => visibleButton('Local sessionsynthetic').click());
+    await act(async () => visibleButton('Local sessionMy Macsynthetic').click());
     assert.equal(
       dom.window.document.querySelector('.workspace-conversation')!.hasAttribute('hidden'),
       false,
@@ -1283,7 +1283,7 @@ test('packaged workspace opens local projects without an account and preserves d
       false,
       'expanding a project does not navigate during an attachment save',
     );
-    assert.equal(visibleButton('Local sessionsynthetic').disabled, true);
+    assert.equal(visibleButton('Local sessionMy Macsynthetic').disabled, true);
     await act(async () => {
       state.session!.history[0]!.items!.pop();
       emit();
@@ -1387,7 +1387,7 @@ test('packaged workspace opens local projects without an account and preserves d
         bubbles: true,
         cancelable: true,
       });
-    await act(async () => visibleButton('Sidebar 0synthetic').dispatchEvent(contextKey()));
+    await act(async () => visibleButton('Sidebar 0My Macsynthetic').dispatchEvent(contextKey()));
     assert.match(
       dom.window.document.querySelector('[role="menu"]')!.textContent!,
       /重命名.*置顶.*归档/s,
@@ -1402,7 +1402,7 @@ test('packaged workspace opens local projects without an account and preserves d
     assert(
       dom.window.document.querySelector('.workspace-pinned')!.textContent!.includes('Sidebar 0'),
     );
-    await act(async () => visibleButton('Sidebar 0synthetic').dispatchEvent(contextKey()));
+    await act(async () => visibleButton('Sidebar 0My Macsynthetic').dispatchEvent(contextKey()));
     await act(async () =>
       Array.from(dom.window.document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
         .find((item) => item.textContent === '重命名')!

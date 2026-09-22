@@ -72,7 +72,7 @@ const runtime = {
 const project = {
   target,
   projectName: 'Moor 客户端设计与长名称项目',
-  hostName: 'MacBook · 本机',
+  hostName: 'MacBook',
   workspaceName: 'Workspace',
   online: true,
   runtime,
@@ -112,6 +112,30 @@ const sessions = Array.from({ length: 40 }, (_, i) => ({
   isArchived: i >= 37,
   status: { type: 'idle' },
 }));
+const grouped = new URLSearchParams(location.search).has('grouped');
+if (grouped) {
+  catalog.source = 'remote';
+  catalog.origin = 'https://synthetic-relay.invalid';
+  catalog.owner = 'synthetic-account';
+  for (const entry of catalog.targets) {
+    entry.target.serverKey = catalog.origin;
+    entry.target.owner = catalog.owner;
+  }
+  const other = catalog.targets[1]!;
+  other.projectName = project.projectName;
+  other.hostName = 'Mac mini';
+  other.target.catalogProjectId = target.catalogProjectId;
+  other.target.deviceId = 'other-device';
+  other.target.machineId = 'other-machine';
+  other.runtime = { ...other.runtime, machineId: 'other-machine' };
+  for (const index of [2, 3])
+    sessions.push({
+      ...sessions[index]!,
+      machineId: 'other-machine',
+      title: `另一台电脑的会话 ${index}`,
+      project: { kind: 'local', localProjectId: other.target.localProjectId },
+    });
+}
 const history = [
   {
     id: 'user-turn',
@@ -153,10 +177,10 @@ const history = [
   },
 ];
 let state: any = {
-  catalogs: { local: catalog },
+  catalogs: { [catalog.source]: catalog },
   errors: {},
   sessions,
-  scope: { source: 'local', target },
+  scope: { source: catalog.source, target },
   project,
   sessionId: sessions[0]!.id,
   session: {
@@ -179,7 +203,13 @@ const emit = () => {
   listeners.forEach((fn) => fn());
 };
 const calls: string[] = [];
-const pageReads: { projectId: string; pinned: string; limit: number; cursor?: string }[] = [];
+const pageReads: {
+  projectId: string;
+  pinned: string;
+  limit: number;
+  query: string;
+  cursor?: string;
+}[] = [];
 const controller: any = {
   get state() {
     return state;
@@ -257,6 +287,7 @@ const controller: any = {
       projectId: selected.localProjectId,
       pinned: request.pinned,
       limit: request.limit,
+      query: request.query,
       cursor: request.cursor,
     });
     return { ...result, source: 'host', partial: result.nextCursor !== null };
@@ -267,11 +298,12 @@ const controller: any = {
     );
     emit();
   },
-  async selectProject(_source: string, selected: any) {
+  async selectProject(source: string, selected: any) {
+    if (grouped) calls.push(`select:${source}:${selected.deviceId}:${selected.localProjectId}`);
     state.project = catalog.targets.find(
       (entry) => entry.target.localProjectId === selected.localProjectId,
     );
-    state.scope = { source: 'local', target: selected };
+    state.scope = { source, target: selected };
     state.session = undefined;
     state.sessionId = undefined;
     state.sessions = sessions.filter(
@@ -293,11 +325,16 @@ const controller: any = {
     return id;
   },
   async openSession(id: string) {
+    if (grouped)
+      calls.push(`open:${state.scope.target.deviceId}:${state.scope.target.localProjectId}:${id}`);
     state.draft ??= { revision: 0, text: '', selection: {} };
     state.ledger ??= { operations: [] };
     state.sessionId = id;
     state.session = {
-      meta: sessions.find((entry) => entry.id === id),
+      meta: sessions.find(
+        (entry) =>
+          entry.id === id && entry.project.localProjectId === state.scope.target.localProjectId,
+      ),
       history,
       agent,
       online: true,
@@ -328,6 +365,7 @@ const controller: any = {
 const fixture = {
   calls,
   pageReads,
+  selection: () => ({ scope: state.scope, sessionId: state.sessionId }),
   empty() {
     state = {
       catalogs: { local: { ...catalog, targets: [] } },
@@ -359,6 +397,7 @@ Object.assign(window, { __moorFixture: fixture });
 createRoot(document.getElementById('app')!).render(
   <WorkspaceApp
     controller={controller}
+    localAvailable={!grouped}
     accountApi={async () => ({ ok: false, error: { message: 'Synthetic offline account' } })}
     openSettings={async () => {
       calls.push('settings');

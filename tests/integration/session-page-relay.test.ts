@@ -15,6 +15,7 @@ import {
 } from '@moor/protocol/session-page';
 import { readSessionPage } from '@moor/host/sessions/page';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
+import { syntheticSessionPageIndex } from '../fixtures/session-page-index';
 
 function signal() {
   let resolve!: () => void;
@@ -38,6 +39,7 @@ async function hello(peer: Awaited<ReturnType<typeof syntheticRelay>>['hosts'][n
 }
 async function fixture() {
   const relay = await syntheticRelay();
+  const projections: ReturnType<typeof syntheticSessionPageIndex>[] = [];
   const controls: {
     hold?: () => Promise<void>;
     transform?: (page: SessionPageResult) => unknown;
@@ -47,7 +49,10 @@ async function fixture() {
     peer.runtime.features!.push(SESSION_PAGE_FEATURE);
     const metadata: SessionMetadata[] = peer.runtime.projects.flatMap((project) =>
       Array.from({ length: 75 }, (_, index) => ({
-        id: 'session-' + String(index).padStart(3, '0'),
+        id:
+          'session-' +
+          String(index).padStart(3, '0') +
+          (project.id === 'local-moor' ? '' : '-' + project.id),
         userId: peer.runtime.userId,
         machineId: peer.runtime.machineId,
         project: { kind: 'local' as const, localProjectId: project.id },
@@ -62,12 +67,15 @@ async function fixture() {
       })),
     );
     rows.set(peer.device.id, metadata);
+    const projection = syntheticSessionPageIndex(metadata);
+    projections.push(projection);
     peer.responses.set('sessions-page', async (message) => {
       try {
+        projection.sync();
         const page = readSessionPage(
           {
             workspace: peer.runtime,
-            list: (project) => metadata.filter((row) => row.project.localProjectId === project),
+            index: projection.index,
           },
           sessionPageRequestSchema.parse(message.params),
           message.localProjectId,
@@ -110,6 +118,10 @@ async function fixture() {
     });
   return {
     ...relay,
+    close: async () => {
+      await relay.close();
+      for (const projection of projections) projection.close();
+    },
     controls,
     rows,
     space,

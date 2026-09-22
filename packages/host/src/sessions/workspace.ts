@@ -8,7 +8,18 @@ import { randomUUID, createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import { readSessionPage } from './page';
+import type { SessionPageRequest } from '@moor/protocol/session-page';
 import { appendSessionText } from '@moor/session/session-output';
+import {
+  SESSION_INTENTS_FEATURE,
+  sendTurnSchema,
+  respondPermissionSchema,
+  type SendTurn,
+  type RespondPermission,
+  type SessionIntentCommand,
+} from '@moor/protocol/session-intent-protocol';
+import { assertSessionIntentScope, prepareSessionIntent } from '../commands/prepare-session-intent';
 import {
   AppError,
   AGENT_VERSIONS_FEATURE,
@@ -56,6 +67,7 @@ import {
   attentionDispositionSchema,
   attentionPermissionSchema,
   attentionContinueSchema,
+  attentionContinueInput,
   attentionListQuerySchema,
   type AttentionActor,
   type AttentionContext,
@@ -469,6 +481,7 @@ export class HostWorkspace {
       ATTACHMENT_OPERATIONS_FEATURE,
       COLLABORATION_FEATURE,
       RETIRED_RECORDS_FEATURE,
+      SESSION_INTENTS_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -757,6 +770,14 @@ export class HostWorkspace {
       .map(([, m]) => m)
       .sort((a: any, b: any) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
   }
+  readSessionPage(request: SessionPageRequest, localProjectId?: string) {
+    this.ensureConnected();
+    return readSessionPage(
+      { workspace: this.workspace, index: this.store.sessionPages },
+      request,
+      localProjectId,
+    );
+  }
   checkProject(sessionId: string, localProjectId?: string) {
     const meta = metas(this.meta)['session-' + sessionId];
     assert(
@@ -883,7 +904,7 @@ export class HostWorkspace {
         ...(['pin', 'unpin'].includes(action.action) ? { isPinned: action.action === 'pin' } : {}),
       });
       const result = this.store.transaction(() => {
-        this.store.save('meta', next.exportFile());
+        this.store.saveMetadata(next, [action.sessionId]);
         return journal.acceptSessionAction(this.workspace.id, action, metas(next)[name]);
       });
       this.store.meta = next;
@@ -1614,26 +1635,38 @@ export class HostWorkspace {
     const context = this.attentionTarget(input, true);
     this.checkExecutionIdle(context.sessionId!);
     this.checkAttentionAuthority(context, authority);
+    const checkTurnIdentity = () => {
+      if ('turn' in request)
+        assert(
+          request.turn.userId === this.workspace.userId &&
+            request.turn.machineId === this.workspace.machineId &&
+            request.turn.localProjectId === context.localProjectId,
+          400,
+          '后续指令与原待办执行身份不匹配',
+        );
+    };
+    checkTurnIdentity();
     assert(
-      request.mutation.sessionId === context.sessionId &&
-        request.mutation.workspaceId === context.runtimeWorkspaceId,
+      attentionContinueInput(request).sessionId === context.sessionId &&
+        attentionContinueInput(request).workspaceId === context.runtimeWorkspaceId,
       400,
       '后续指令与原待办执行目标不匹配',
     );
     return this.serial(context.sessionId!, async () => {
       this.attentionTarget(context, true);
       this.checkAttentionAuthority(context, authority);
+      checkTurnIdentity();
       const previous = this.store.attention.lookupReceipt(
         context,
         itemId,
         'continue',
         request,
-        request.mutation.operationId,
+        attentionContinueInput(request).operationId,
       );
       if (previous) return previous;
       this.store.attention.prepareContinue(context, itemId, request);
-      const result = await this.mutateAccepted(
-        request.mutation,
+      const result = await this.acceptSessionCommand(
+        'turn' in request ? { kind: 'send-turn', value: request.turn } : request.mutation,
         context.localProjectId,
         {
           binding: this.attentionBinding(context, itemId, 'continue', request),
@@ -1706,7 +1739,7 @@ export class HostWorkspace {
         requestId: request.requestId,
         update: delta(candidate, before),
       };
-      return this.mutateAccepted(
+      return this.acceptSessionCommand(
         mutation,
         context.localProjectId,
         {
@@ -1742,14 +1775,35 @@ export class HostWorkspace {
     );
     assert(!this.executionManager.busy.has(sessionId), 409, '此会话正在处理 Git 操作，指令未送达');
   }
+  async sendTurn(input: SendTurn, localProjectId?: string, authority?: ConnectionAuthorityLease) {
+    const value = sendTurnSchema.parse(input);
+    return this.serial(value.sessionId, () =>
+      this.acceptSessionCommand({ kind: 'send-turn', value }, localProjectId, undefined, authority),
+    );
+  }
+  async respondPermission(
+    input: RespondPermission,
+    localProjectId?: string,
+    authority?: ConnectionAuthorityLease,
+  ) {
+    const value = respondPermissionSchema.parse(input);
+    return this.serial(value.sessionId, () =>
+      this.acceptSessionCommand(
+        { kind: 'respond-permission', value },
+        localProjectId,
+        undefined,
+        authority,
+      ),
+    );
+  }
   async mutate(m: Mutation, localProjectId?: string, authority?: ConnectionAuthorityLease) {
     this.checkExecutionIdle(m.sessionId);
     return this.serial(m.sessionId, () =>
-      this.mutateAccepted(m, localProjectId, undefined, authority),
+      this.acceptSessionCommand(m, localProjectId, undefined, authority),
     );
   }
-  private async mutateAccepted(
-    m: Mutation,
+  private async acceptSessionCommand(
+    input: Mutation | SessionIntentCommand,
     localProjectId?: string,
     effect?: {
       binding: unknown;
@@ -1757,6 +1811,22 @@ export class HostWorkspace {
     },
     authority?: ConnectionAuthorityLease,
   ) {
+    const intent = 'value' in input ? input : undefined;
+    const originalInput = intent ? intent.value : (input as Mutation);
+    const m: Pick<
+      Mutation,
+      'operationId' | 'workspaceId' | 'sessionId' | 'kind' | 'expectedTurnId' | 'requestId'
+    > = intent
+      ? {
+          operationId: intent.value.operationId,
+          workspaceId: intent.value.workspaceId,
+          sessionId: intent.value.sessionId,
+          expectedTurnId: intent.value.expectedTurnId,
+          kind: intent.kind === 'send-turn' ? 'turn' : 'permission',
+          ...(intent.kind === 'respond-permission' ? { requestId: intent.value.requestId } : {}),
+        }
+      : (input as Mutation);
+    if (intent) assertSessionIntentScope(this.workspace, intent.value, localProjectId);
     this.ensureConnected();
     authority?.current();
     this.checkExecutionIdle(m.sessionId);
@@ -1776,7 +1846,7 @@ export class HostWorkspace {
         localProjectId,
       );
     const journal = this.store.journal;
-    const record = journal.lookup(this.workspace.id, m, effect?.binding);
+    const record = journal.lookup(this.workspace.id, originalInput, effect?.binding);
     if (metas(this.meta)['session-' + m.sessionId] || record)
       this.checkProject(m.sessionId, localProjectId);
     if (record && ['accepted', 'operation-abandoned'].includes(record.phase))
@@ -1809,17 +1879,31 @@ export class HostWorkspace {
     const validationWorkspace = boundAgent
       ? { ...this.workspace, agents: [this.agentDescriptor(boundAgent)] }
       : this.workspace;
-    const validated = validateMutation(
-      original,
-      this.meta,
-      validationWorkspace,
-      m,
-      (agentId, projectId, boundSessionId) => {
-        const config = boundAgent ?? this.store.agents.get(agentId);
-        assert(config?.id === agentId, 409, 'Agent 配置版本不可用');
-        return this.agentDescriptor(config, projectId, boundSessionId).runConfig;
-      },
-    );
+    const validated = intent
+      ? prepareSessionIntent(
+          original,
+          this.meta,
+          currentMeta ?? {},
+          {
+            ...validationWorkspace,
+            agents: boundAgent
+              ? [this.agentDescriptor(boundAgent, intent.value.localProjectId, m.sessionId)]
+              : [],
+          },
+          intent,
+          new Date().toISOString(),
+        )
+      : validateMutation(
+          original,
+          this.meta,
+          validationWorkspace,
+          input as Mutation,
+          (agentId, projectId, boundSessionId) => {
+            const config = boundAgent ?? this.store.agents.get(agentId);
+            assert(config?.id === agentId, 409, 'Agent 配置版本不可用');
+            return this.agentDescriptor(config, projectId, boundSessionId).runConfig;
+          },
+        );
     const meta = metas(validated.flock)['session-' + m.sessionId];
     if (!metas(this.meta)['session-' + m.sessionId])
       putMeta(validated.flock, 'session-' + m.sessionId, {
@@ -1936,7 +2020,7 @@ export class HostWorkspace {
     try {
       result = this.store.transaction(() => {
         authority?.current();
-        journal.stage(this.workspace.id, m, turnId, undefined, effect?.binding);
+        journal.stage(this.workspace.id, originalInput, turnId, undefined, effect?.binding);
         this.store.agents.bind(attachmentScope, agent);
         this.store.reserveAttachmentScope(attachmentScope);
         for (const attachment of attachments)
@@ -1963,7 +2047,7 @@ export class HostWorkspace {
             m.requestId!,
             'resolved',
           );
-        const accepted = journal.accept(m);
+        const accepted = journal.accept(originalInput);
         return effect?.commit(turnId) ?? accepted;
       });
     } catch (error) {
