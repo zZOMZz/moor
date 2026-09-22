@@ -64,7 +64,6 @@ const runtimeFiles = new Set([
   'security.mjs',
   'desktop-client.mjs',
   'workspace-client.mjs',
-  'server.mjs',
   'preview-renderer.cjs',
 ]);
 const codexAdapterManifest = `${programRoot}/runtime/node_modules/@agentclientprotocol/codex-acp/package.json`;
@@ -78,7 +77,6 @@ const required = [
   `${programRoot}/runtime/bridge.mjs`,
   `${programRoot}/runtime/cli.mjs`,
   `${programRoot}/runtime/security.mjs`,
-  `${programRoot}/runtime/server.mjs`,
   `${programRoot}/runtime/desktop-client.mjs`,
   `${programRoot}/runtime/workspace-client.mjs`,
   `${programRoot}/runtime/preview-renderer.cjs`,

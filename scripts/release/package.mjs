@@ -49,18 +49,22 @@ async function copyRuntime(dest) {
     'security.mjs',
     'desktop-client.mjs',
     'workspace-client.mjs',
-    'server.mjs',
-    'preview-renderer.cjs',
   ])
     await cp('dist/' + file, join(dest, file));
+  await cp('dist/desktop/runtime/preview-renderer.cjs', join(dest, 'preview-renderer.cjs'));
   await cp('dist/desktop/runtime/public', join(dest, 'public'), { recursive: true });
   for (const pkg of ['ws', 'loro-crdt']) await copyPackage(pkg, dest);
 }
-async function licenses(dest) {
+async function licenses(dest, groups) {
   await mkdir(join(dest, 'licenses'), { recursive: true });
   await cp('LICENSE', join(dest, 'licenses', 'Moor-LICENSE'));
   await cp('NOTICE', join(dest, 'licenses', 'Moor-NOTICE'));
-  await cp('dist/THIRD_PARTY_NOTICES.txt', join(dest, 'licenses', 'BUNDLED-NOTICES.txt'));
+  await writeFile(
+    join(dest, 'licenses', 'BUNDLED-NOTICES.txt'),
+    (
+      await Promise.all(groups.map((group) => readFile('dist/' + group + '-NOTICES.txt', 'utf8')))
+    ).join('\n'),
+  );
   const copied = new Set();
   for (const from of await workspaceManifestDirectories()) {
     const manifest = JSON.parse(await readFile(join(from, 'package.json'), 'utf8'));
@@ -105,7 +109,7 @@ if (mode === 'relay') {
       2,
     ) + '\n',
   );
-  await licenses(dest);
+  await licenses(dest, ['relay']);
   await cp('deploy/Dockerfile', join(dest, 'Dockerfile'));
   await cp('deploy/.dockerignore', join(dest, '.dockerignore'));
   await writeFile(
@@ -139,7 +143,7 @@ if (mode === 'relay') {
     join(root, 'package.json'),
     JSON.stringify({ name: 'moor', version: '0.2.0', private: true, main: 'entry.cjs' }) + '\n',
   );
-  await licenses(root);
+  await licenses(root, ['host', 'client']);
   const runtime = join(root, 'runtime');
   await copyRuntime(runtime);
   await copyCodexAdapter(runtime);

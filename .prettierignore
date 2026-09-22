@@ -1,5 +1,5 @@
 node_modules
 .runtime
 dist
-release
+/release
 assets/brand/*.iconset

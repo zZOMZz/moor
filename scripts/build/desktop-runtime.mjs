@@ -2,18 +2,11 @@ import { context } from 'esbuild';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { repository, workspaceSources } from './workspace-sources.mjs';
+import { runtimeGroups, runtimeBuildOptions } from './runtime-build.mjs';
 
 export const desktopRuntimeGroups = Object.freeze({
-  host: {
-    bridge: 'apps/host/src/main.ts',
-    cli: 'apps/cli/src/main.ts',
-    security: 'apps/cli/src/security/main.ts',
-  },
-  client: {
-    'desktop-client': 'apps/desktop/src/main/desktop-client.ts',
-    'workspace-client': 'apps/desktop/src/main/workspace-client-entry.ts',
-  },
+  host: runtimeGroups.host,
+  client: runtimeGroups.client,
 });
 
 // A failed rebuild publishes nothing. Revisions signal successful builds only.
@@ -45,22 +38,12 @@ export async function buildDesktopRuntime({ appRoot, watch = false }) {
   try {
     for (const [group, entryPoints] of Object.entries(desktopRuntimeGroups)) {
       const buildContext = await context({
-        absWorkingDir: repository,
+        ...runtimeBuildOptions,
         entryPoints,
-        bundle: true,
-        platform: 'node',
-        target: 'node22',
-        format: 'esm',
-        sourcemap: true,
         outdir: join(appRoot, 'runtime'),
-        outExtension: { '.js': '.mjs' },
-        external: ['ws', 'loro-crdt'],
         write: false,
-        banner: {
-          js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
-        },
         plugins: [
-          workspaceSources,
+          ...runtimeBuildOptions.plugins,
           {
             name: 'moor-runtime-revision',
             setup(build) {

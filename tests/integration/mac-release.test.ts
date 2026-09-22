@@ -75,7 +75,6 @@ async function fixture(t: TestContext) {
     [`${appRoot}/runtime/bridge.mjs`]: '// synthetic host',
     [`${appRoot}/runtime/cli.mjs`]: '// synthetic cli',
     [`${appRoot}/runtime/security.mjs`]: '// synthetic local device security CLI',
-    [`${appRoot}/runtime/server.mjs`]: '// synthetic relay',
     [`${appRoot}/runtime/desktop-client.mjs`]: '// synthetic secure client',
     [`${appRoot}/runtime/workspace-client.mjs`]: '// synthetic workspace client',
     [`${appRoot}/runtime/preview-renderer.cjs`]: '// synthetic preview worker',
