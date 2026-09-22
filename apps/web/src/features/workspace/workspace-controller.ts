@@ -25,7 +25,7 @@ import { workspaceAttentionKey, workspaceAttentionRequest } from '../attention/w
 import { validateWorkspaceAttentionResponse } from '@moor/client/workspace-attention';
 import { searchSessionContent, type SessionSearchView } from '../sessions/session-search';
 import { SESSION_SEARCH_FEATURE, type SearchHit } from '@moor/protocol/search-protocol';
-import { GithubSessionController, type SecureGithubMode } from '../github/secure-github';
+import { GithubSessionController, type GithubSessionMode } from '../github/github-session';
 import { githubKey } from '../github/github';
 import { githubWriteKey } from '../github/github-write';
 import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
@@ -48,6 +48,14 @@ import {
 } from '@moor/protocol/protocol';
 import type { HostCommand } from '@moor/protocol/host-command';
 import { validateHostResponse } from '@moor/protocol/host-response';
+import {
+  SESSION_PAGE_FEATURE,
+  sessionPageRequestSchema,
+  validateSessionPageResult,
+  sessionPageMatches,
+  compareSessionPageItems,
+  type SessionPageRequest,
+} from '@moor/protocol/session-page';
 import {
   buildSessionTurn,
   buildSessionPermission,
@@ -87,7 +95,7 @@ import {
   type WorkspaceDraft,
   type WorkspaceLedger,
 } from './workspace-store';
-import { productCanonicalJson } from '@moor/client/encrypted-product';
+import { productCanonicalJson } from '@moor/protocol/canonical-json';
 import { createAttachmentDraftItem } from '../attachments/attachments';
 import { emptyWorkspaceAttachments } from '../attachments/workspace-attachments';
 import {
@@ -125,7 +133,7 @@ import { SessionForkController, sessionForkKey, type ForkSaved } from '../fork/s
 import { workspaceForkPending } from '../fork/workspace-fork';
 import {
   SESSION_FORK_FEATURE,
-  SECURE_FORK_OPERATIONS_FEATURE,
+  FORK_OPERATIONS_FEATURE,
   forkCutoffSchema,
   forkDirectorySchema,
   validateForkOperationResult,
@@ -135,11 +143,38 @@ import {
 import { GitWorkspaceController, gitWorkspaceKey, type GitSaved } from '../git/git-workspace';
 import {
   GIT_WORKTREE_FEATURE,
-  SECURE_GIT_OPERATIONS_FEATURE,
+  GIT_OPERATIONS_FEATURE,
   validateGitOperationResult,
 } from '@moor/protocol/git-protocol';
 
 type Project = DesktopWorkspaceCatalog['targets'][number];
+export type WorkspaceSessionPageOptions = Partial<
+  Pick<SessionPageRequest, 'archived' | 'pinned' | 'query' | 'limit' | 'cursor'>
+> & { fresh?: boolean };
+export type WorkspaceSessionPage = {
+  items: SessionMetadata[];
+  nextCursor: string | null;
+  revision?: string;
+  source: 'host' | 'cache';
+  partial: boolean;
+  legacy: boolean;
+};
+const projectListingIdentity = (project: Project) => ({
+  target: project.target,
+  online: project.online,
+  runtime: {
+    id: project.runtime.id,
+    userId: project.runtime.userId,
+    machineId: project.runtime.machineId,
+    project: project.runtime.projects.find((entry) => entry.id === project.target.localProjectId),
+    features: project.runtime.features,
+    agents: project.runtime.agents.map(({ id, cliType, agentType }) => ({
+      id,
+      cliType,
+      agentType,
+    })),
+  },
+});
 type Session = ReturnType<typeof readClientSession>;
 type Context = {
   scope: WorkspaceScope;
@@ -154,6 +189,8 @@ export type WorkspaceClientState = {
   scope?: WorkspaceScope;
   project?: Project;
   sessions: SessionMetadata[];
+  sessionPage?: WorkspaceSessionPage;
+  sessionListError?: string;
   sessionId?: string;
   session?: Session;
   offline: boolean;
@@ -193,13 +230,29 @@ const resultSchema = z.discriminatedUnion('ok', [
     .strict(),
 ]);
 const same = (a: unknown, b: unknown) => productCanonicalJson(a) === productCanonicalJson(b);
+export class WorkspaceRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number | null,
+    readonly rejected: boolean,
+  ) {
+    super(message);
+  }
+}
+const offlineFailure = (error: unknown) =>
+  error instanceof WorkspaceRequestError &&
+  (error.code === 'network' || (!error.rejected && [502, 503, 504].includes(error.status ?? 0)));
+export const isWorkspaceListOfflineFailure = (error: unknown) =>
+  error instanceof WorkspaceRequestError &&
+  (error.code === 'network' || (!error.rejected && [503, 504].includes(error.status ?? 0)));
 const DRAFT_SAVE_DELAY_MS = 300;
 const SESSION_LOADING_DELAY_MS = 120;
 const SESSION_VIEW_LIMIT = 30;
 const SESSION_VIEW_BYTES = 32 * 1024 * 1024;
 type SessionView = { session: Session; draft: WorkspaceDraft; bytes: number };
 
-/** Plain local/relay controller. Encrypted targets retain their own authenticated transport. */
+/** Shared browser/desktop controller over the finite local or relay transport. */
 export class WorkspaceController {
   #catalogAttempts = new Map<string, string | undefined>();
   #warmScopes = new Set<string>();
@@ -232,7 +285,15 @@ export class WorkspaceController {
   #sessionListReadVersion = 0;
   #modelReadVersion = 0;
   #projectRevisions = new Map<string, number>();
-  #syncPending = new Map<DesktopWorkspaceSource, DesktopWorkspaceChange>();
+  #sessionPages = new Map<string, { page: WorkspaceSessionPage; scope: string; bytes: number }>();
+  #sessionPageBytes = 0;
+  #sessionPagesReading = new Map<string, Promise<WorkspaceSessionPage>>();
+  #legacyListsReading = new Map<string, Promise<SessionMetadata[]>>();
+  #catalogFailures = new Map<DesktopWorkspaceSource, unknown>();
+  #syncPending = new Map<
+    DesktopWorkspaceSource,
+    DesktopWorkspaceChange & { catalogOnly: boolean }
+  >();
   #syncing?: Promise<void>;
   #cancelSync?: () => void;
   #sessionReads = 0;
@@ -248,6 +309,11 @@ export class WorkspaceController {
       uuid?: () => string;
       now?: () => string;
       schedule?: (ms: number, work: () => void) => () => void;
+      restoreLegacy?: (
+        scope: WorkspaceScope,
+        sessionId: string,
+        current: () => void,
+      ) => Promise<void>;
     },
   ) {
     this.store = options.store ?? new WorkspaceStore();
@@ -274,6 +340,14 @@ export class WorkspaceController {
   #invalidateProject(source: DesktopWorkspaceSource, target: Project['target']) {
     const key = productCanonicalJson([source, target]);
     this.#projectRevisions.set(key, this.projectRevision(source, target) + 1);
+    this.#forgetSessionPages(key);
+  }
+  #forgetSessionPages(scope: string) {
+    for (const [key, value] of this.#sessionPages)
+      if (value.scope === scope) {
+        this.#sessionPages.delete(key);
+        this.#sessionPageBytes -= value.bytes;
+      }
   }
   #enqueueSync(raw?: unknown) {
     if (this.#closed) return;
@@ -308,7 +382,8 @@ export class WorkspaceController {
       this.#emit();
       return;
     }
-    const prior = this.#syncPending.get(notice.source);
+    const prior = this.#syncPending.get(notice.source),
+      catalogOnly = notice.kind === 'changed' && !notice.workspaceId && !notice.sessionId;
     this.#syncPending.set(
       notice.source,
       prior
@@ -318,8 +393,9 @@ export class WorkspaceController {
             deviceId: prior.deviceId === notice.deviceId ? notice.deviceId : undefined,
             workspaceId: prior.workspaceId === notice.workspaceId ? notice.workspaceId : undefined,
             sessionId: prior.sessionId === notice.sessionId ? notice.sessionId : undefined,
+            catalogOnly: prior.catalogOnly && catalogOnly,
           }
-        : notice,
+        : { ...notice, catalogOnly },
     );
   }
   /** Read-only catch-up. Never retries a draft, approval or pending operation. */
@@ -352,11 +428,16 @@ export class WorkspaceController {
               this.#syncAfterCatalog.add(notice.source);
               continue;
             }
+            const selected = this.#state.scope,
+              selectedRevision = selected
+                ? this.projectRevision(selected.source, selected.target)
+                : undefined;
             if (notice.kind === 'connected' || !notice.workspaceId)
               await this.refreshCatalog(notice.source);
             const targets = this.#state.catalogs[notice.source]?.targets ?? [];
             for (const { target } of targets)
               if (
+                !notice.catalogOnly &&
                 (!notice.deviceId || target.deviceId === notice.deviceId) &&
                 (!notice.workspaceId || target.workspaceId === notice.workspaceId)
               )
@@ -368,6 +449,12 @@ export class WorkspaceController {
               scope.source !== notice.source ||
               (notice.deviceId && scope.target.deviceId !== notice.deviceId) ||
               (notice.workspaceId && scope.target.workspaceId !== notice.workspaceId)
+            )
+              continue;
+            if (
+              notice.catalogOnly &&
+              same(selected, scope) &&
+              selectedRevision === this.projectRevision(scope.source, scope.target)
             )
               continue;
             const current = this.#current();
@@ -464,11 +551,14 @@ export class WorkspaceController {
     const result = resultSchema.parse(await this.options.request(structuredClone(request)));
     current();
     if (!result.ok)
-      throw Error(
+      throw new WorkspaceRequestError(
         publicAgentFailure(
           Error(result.error.message),
           '执行电脑暂不可用，原草稿和待确认操作已保留。',
         ),
+        result.error.code,
+        result.error.status,
+        result.error.rejected,
       );
     return result.value;
   }
@@ -496,7 +586,24 @@ export class WorkspaceController {
       )
         this.#clearSelection();
       this.#state.catalogs[source] = catalog;
-      for (const { target } of catalog.targets) this.#invalidateProject(source, target);
+      const identityChanged =
+        !previous ||
+        previous.connectionId !== catalog.connectionId ||
+        previous.owner !== catalog.owner ||
+        !same(previous.actor ?? null, catalog.actor ?? null);
+      for (const project of catalog.targets) {
+        const old = previous?.targets.find((entry) => same(entry.target, project.target));
+        if (
+          identityChanged ||
+          !old ||
+          !same(projectListingIdentity(old), projectListingIdentity(project)) ||
+          !same(old.runtime.agents, project.runtime.agents)
+        )
+          this.#invalidateProject(source, project.target);
+      }
+      for (const old of previous?.targets ?? [])
+        if (!catalog.targets.some((entry) => same(entry.target, old.target)))
+          this.#invalidateProject(source, old.target);
       if (this.#state.scope?.source === source) {
         const active = catalog.targets.find((entry) =>
           same(entry.target, this.#state.scope!.target),
@@ -505,8 +612,10 @@ export class WorkspaceController {
         this.#state.offline = !active.online;
       }
       delete this.#state.errors[source];
+      this.#catalogFailures.delete(source);
     } catch (error) {
       current();
+      this.#catalogFailures.set(source, error);
       this.#state.errors[source] = '暂时无法连接此电脑列表。';
       if (this.#state.scope?.source === source) {
         this.#generation++;
@@ -518,6 +627,19 @@ export class WorkspaceController {
       if (!this.#catalogReads[source] && this.#syncAfterCatalog.delete(source)) this.scheduleSync();
       if (!this.#closed && this.#catalogVersions[source] === version) this.#emit();
     }
+  }
+  async disconnectSource(source: DesktopWorkspaceSource) {
+    if (this.#state.scope?.source === source) {
+      await this.flushDraft();
+      this.#clearSelection();
+    }
+    this.#catalogVersions[source]++;
+    this.#syncPending.delete(source);
+    delete this.#state.catalogs[source];
+    this.#catalogFailures.delete(source);
+    delete this.#state.errors[source];
+    if (this.#state.syncDisconnected) delete this.#state.syncDisconnected[source];
+    this.#emit();
   }
   #clearSelection() {
     this.#cancelDraftSave?.();
@@ -624,26 +746,20 @@ export class WorkspaceController {
       if (version !== this.#sessionListReadVersion) throw Error('会话列表读取已由较新的请求替代。');
     };
     try {
-      const sessions = sessionListSchema.parse(
-        await this.#execute(
-          { ...context, sessionId: undefined },
-          this.#command(context.scope, 'sessions', {}),
-        ),
-      );
-      if (
-        sessions.some(
-          (item) =>
-            item.userId !== context.scope.target.userId ||
-            item.machineId !== context.scope.target.machineId ||
-            item.project.localProjectId !== context.scope.target.localProjectId,
-        )
-      )
-        throw Error('会话列表执行范围不匹配。');
-      this.#state.sessions = sessions;
-      this.#state.offline = false;
+      const page = await this.listProjectSessionPage(context.scope.source, context.scope.target, {
+        fresh: true,
+      });
+      context.current();
+      this.#state.sessions = page.items;
+      this.#state.sessionPage = page;
+      delete this.#state.sessionListError;
+      this.#state.offline = page.source === 'cache';
     } catch (error) {
       context.current();
-      this.#state.offline = true;
+      if (isWorkspaceListOfflineFailure(error)) this.#state.offline = true;
+      this.#state.sessions = [];
+      delete this.#state.sessionPage;
+      this.#state.sessionListError = '会话列表尚未确认，请重新读取。';
       throw error;
     } finally {
       this.#sessionListReads--;
@@ -656,26 +772,179 @@ export class WorkspaceController {
     }
   }
   async listProjectSessions(source: DesktopWorkspaceSource, target: Project['target']) {
+    return (await this.listProjectSessionPage(source, target, { fresh: true })).items;
+  }
+  async refreshProjectSessions(source: DesktopWorkspaceSource, target: Project['target']) {
+    await this.refreshCatalog(source);
     const context = this.#projectContext(source, target);
-    const version = this.#catalogVersions[source],
+    context.current();
+    this.#invalidateProject(source, target);
+    this.#emit();
+    if (same(this.#state.scope, context.scope)) await this.refreshSessions();
+  }
+  async listProjectSessionPage(
+    source: DesktopWorkspaceSource,
+    target: Project['target'],
+    options: WorkspaceSessionPageOptions = {},
+  ): Promise<WorkspaceSessionPage> {
+    const context = this.#projectContext(source, target);
+    const revision = this.projectRevision(source, target),
+      identity = projectListingIdentity(context.project),
       current = context.current;
     context.current = () => {
       current();
-      if (version !== this.#catalogVersions[source]) throw Error('项目列表已改变，请重新读取。');
-    };
-    const sessions = sessionListSchema.parse(
-      await this.#execute(context, this.#command(context.scope, 'sessions', {})),
-    );
-    if (
-      sessions.some(
-        (item) =>
-          item.userId !== target.userId ||
-          item.machineId !== target.machineId ||
-          item.project.localProjectId !== target.localProjectId,
+      const latest = this.#state.catalogs[source]?.targets.find((entry) =>
+        same(entry.target, target),
+      );
+      if (
+        !latest ||
+        revision !== this.projectRevision(source, target) ||
+        !same(identity, projectListingIdentity(latest))
       )
-    )
-      throw Error('会话列表执行范围不匹配。');
-    return sessions;
+        throw Error('项目列表已改变，请重新读取。');
+    };
+    const { fresh = false, ...filters } = options;
+    const request = sessionPageRequestSchema.parse({
+      pageVersion: 1,
+      workspaceId: target.workspaceId,
+      localProjectId: target.localProjectId,
+      ...filters,
+    });
+    const key = productCanonicalJson([
+      context.scope,
+      context.connectionId,
+      identity,
+      revision,
+      request,
+    ]);
+    context.current();
+    if (!fresh && context.project.online && !this.#state.errors[source]) {
+      const saved = this.#sessionPages.get(key);
+      if (saved) return structuredClone(saved.page);
+    }
+    const active = this.#sessionPagesReading.get(key);
+    if (active) return structuredClone(await active);
+    const read = (async (): Promise<WorkspaceSessionPage> => {
+      const paged = context.project.runtime.features?.includes(SESSION_PAGE_FEATURE) === true;
+      let online = context.project.online;
+      const checkItems = (items: SessionMetadata[]) => {
+        if (
+          items.some(
+            (item) =>
+              item.userId !== target.userId ||
+              item.machineId !== target.machineId ||
+              item.project.localProjectId !== target.localProjectId,
+          )
+        )
+          throw Error('会话列表执行范围不匹配。');
+      };
+      if (paged) {
+        let page;
+        try {
+          if (this.#state.errors[source])
+            throw this.#catalogFailures.get(source) ?? Error('请重新连接原电脑。');
+          if (!online) throw new WorkspaceRequestError('执行电脑离线。', 'network', null, false);
+          page = validateSessionPageResult(
+            request,
+            await this.#execute(context, this.#command(context.scope, 'sessions-page', request)),
+          );
+          checkItems(page.items);
+          await this.store
+            .sessionPage(context.scope, context.current, request, page)
+            .catch(() => context.current());
+        } catch (error) {
+          context.current();
+          this.#forgetSessionPages(productCanonicalJson([source, target]));
+          if (!isWorkspaceListOfflineFailure(error)) throw error;
+          page = await this.store.sessionPage(context.scope, context.current, request);
+          if (!page) throw error;
+          online = false;
+        }
+        return {
+          items: page.items,
+          nextCursor: page.nextCursor,
+          revision: page.revision,
+          source: online ? 'host' : 'cache',
+          partial: !online || page.nextCursor !== null,
+          legacy: false,
+        };
+      }
+      if (request.cursor) throw Error('旧主机没有可继续的分页游标，请重新读取。');
+      // Only an unadvertised capability chooses this compatibility path. An
+      // unsuccessful modern page never retries using the full-list endpoint.
+      let sessions: SessionMetadata[];
+      try {
+        if (this.#state.errors[source])
+          throw this.#catalogFailures.get(source) ?? Error('请重新连接原电脑。');
+        if (!online) throw new WorkspaceRequestError('执行电脑离线。', 'network', null, false);
+        const legacyKey = productCanonicalJson([
+          context.scope,
+          context.connectionId,
+          identity,
+          revision,
+        ]);
+        let pending = this.#legacyListsReading.get(legacyKey);
+        if (!pending) {
+          pending = (async () => {
+            const items = sessionListSchema.parse(
+              await this.#execute(context, this.#command(context.scope, 'sessions', {})),
+            );
+            checkItems(items);
+            await this.store
+              .sessionList(context.scope, context.current, items)
+              .catch(() => context.current());
+            return items;
+          })().finally(() => this.#legacyListsReading.delete(legacyKey));
+          this.#legacyListsReading.set(legacyKey, pending);
+        }
+        sessions = await pending;
+      } catch (error) {
+        context.current();
+        this.#forgetSessionPages(productCanonicalJson([source, target]));
+        if (!isWorkspaceListOfflineFailure(error)) throw error;
+        const cached = await this.store.sessionList(context.scope, context.current);
+        if (!cached) throw error;
+        sessions = cached;
+        online = false;
+      }
+      return {
+        items: sessions
+          .filter((item) => sessionPageMatches(item, request))
+          .sort(compareSessionPageItems),
+        nextCursor: null,
+        source: online ? 'host' : 'cache',
+        partial: !online,
+        legacy: true,
+      };
+    })()
+      .then((page) => {
+        context.current();
+        if (page.source === 'host') {
+          const bytes = new TextEncoder().encode(JSON.stringify(page)).byteLength;
+          const previous = this.#sessionPages.get(key);
+          if (previous) {
+            this.#sessionPages.delete(key);
+            this.#sessionPageBytes -= previous.bytes;
+          }
+          if (bytes <= 8 * 1024 * 1024) {
+            this.#sessionPages.set(key, {
+              page: structuredClone(page),
+              scope: productCanonicalJson([source, target]),
+              bytes,
+            });
+            this.#sessionPageBytes += bytes;
+          }
+          while (this.#sessionPages.size > 64 || this.#sessionPageBytes > 8 * 1024 * 1024) {
+            const oldest = this.#sessionPages.keys().next().value!;
+            this.#sessionPageBytes -= this.#sessionPages.get(oldest)!.bytes;
+            this.#sessionPages.delete(oldest);
+          }
+        }
+        return page;
+      })
+      .finally(() => this.#sessionPagesReading.delete(key));
+    this.#sessionPagesReading.set(key, read);
+    return structuredClone(await read);
   }
   #projectContext(
     source: DesktopWorkspaceSource,
@@ -754,6 +1023,7 @@ export class WorkspaceController {
     }
     let cached: Session | null;
     try {
+      await this.options.restoreLegacy?.(scope, sessionId, current);
       const [ledger, storedSession] = await Promise.all([
         this.store.read(scope, current, sessionId),
         this.store.cachedSession(scope, sessionId, current),
@@ -1267,7 +1537,7 @@ export class WorkspaceController {
           else {
             if (
               this.#state.offline ||
-              !this.#state.project?.runtime.features?.includes(SECURE_FORK_OPERATIONS_FEATURE)
+              !this.#state.project?.runtime.features?.includes(FORK_OPERATIONS_FEATURE)
             )
               throw Error('此执行电脑尚不支持核查原 Fork。');
             const query = { action: kind, request: pending!.request };
@@ -1925,7 +2195,7 @@ export class WorkspaceController {
       },
     });
   }
-  async openGithub(changed: () => void = () => {}, mode: SecureGithubMode = 'read') {
+  async openGithub(changed: () => void = () => {}, mode: GithubSessionMode = 'read') {
     await this.flushDraft();
     const context = this.#context();
     if (!context.sessionId) throw Error('请先打开会话。');
@@ -2173,7 +2443,7 @@ export class WorkspaceController {
         else if (kind === 'inspect' || kind === 'abandon') {
           if (
             this.#state.offline ||
-            !this.#state.project?.runtime.features?.includes(SECURE_GIT_OPERATIONS_FEATURE)
+            !this.#state.project?.runtime.features?.includes(GIT_OPERATIONS_FEATURE)
           )
             throw Error('此执行电脑尚不支持核查 Git 原操作。');
           const query = { action: kind, request: pending!.request };
@@ -2959,6 +3229,8 @@ export class WorkspaceController {
     this.#closed = true;
     this.#sessionViews.clear();
     this.#sessionViewBytes = 0;
+    this.#sessionPages.clear();
+    this.#sessionPageBytes = 0;
     this.#generation++;
     this.#listeners.clear();
     this.store.close();

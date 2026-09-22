@@ -88,7 +88,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
         },
       });
       windows.push(this);
-      if (options.webPreferences.preload.endsWith('secure-preload.cjs')) clientCreated.enter();
+      if (options.webPreferences.preload.endsWith('workspace-preload.cjs')) clientCreated.enter();
     }
     isDestroyed() {
       return this.destroyed;
@@ -294,13 +294,10 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       senderFrame: { ...settingsWindow.webContents.mainFrame },
     },
   ])
-    for (const method of [
-      'personal:appearance',
-      'personal:skills-config',
-      'personal:agent-config',
-      'personal:mcp-config',
-    ])
+    for (const method of ['personal:appearance', 'personal:skills-config', 'personal:agent-config'])
       assert.throws(() => invoke(method, { action: 'read' }, event), /无效的本机设置请求/);
+  assert.equal(handlers.has('personal:mcp-config'), false);
+  assert.equal(handlers.has('personal:mcp-executable'), false);
   await t.test(
     'saving only the reviewed computer name preserves the running desktop host',
     async () => {
@@ -382,27 +379,6 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     }),
     /无效的本机设置请求/,
   );
-  const mcpReading = invoke('personal:mcp-config', { action: 'read' });
-  const mcpRequest = children[0].sent.at(-1);
-  assert.equal(mcpRequest.type, 'mcp-config');
-  children[0].emit('message', {
-    type: 'mcp-config-result',
-    requestId: mcpRequest.requestId,
-    ok: true,
-    state: { revision: 0, projects: [], presets: [], privateMetadata: 'not-public' },
-  });
-  assert.deepEqual(await mcpReading, { revision: 0, projects: [], presets: [] });
-  assert.equal(await invoke('personal:mcp-executable'), null);
-  const mcpPickerGate = gate();
-  directoryGate = mcpPickerGate;
-  const mcpExecutable = invoke('personal:mcp-executable');
-  const staleMcpExecutable = assert.rejects(mcpExecutable, /无效的本机设置请求/);
-  await mcpPickerGate.entered;
-  const mcpFrame = settingsWindow.webContents.mainFrame;
-  settingsWindow.webContents.mainFrame = { ...mcpFrame };
-  mcpPickerGate.release();
-  await staleMcpExecutable;
-  settingsWindow.webContents.mainFrame = mcpFrame;
   assert.equal(await invoke('personal:agent-executable'), null);
   const executableGate = gate();
   directoryGate = executableGate;
@@ -510,9 +486,31 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
       sender: localWindow.webContents,
       senderFrame: localWindow.webContents.mainFrame,
     });
-  assert.match(localWindow.options.webPreferences.preload, /secure-preload\.cjs$/);
+  assert.match(localWindow.options.webPreferences.preload, /workspace-preload\.cjs$/);
   assert.equal(localWindow.options.webPreferences.sandbox, true);
   assert.equal(localWindow.options.webPreferences.nodeIntegration, false);
+  assert.equal(handlers.has('moor:secure-client'), false);
+  const archive = {
+    format: 'moor-retired-secure-v1',
+    records: [
+      { key: 'synthetic-original', value: { operationId: 'original-id', state: 'pending' } },
+    ],
+  };
+  dialogResult = { canceled: false, filePath: join(directory, 'retired-records.json') };
+  assert.equal((await invoke('moor:retired-data-export', archive, localEvent())).canceled, false);
+  assert.deepEqual(JSON.parse(await readFile(dialogResult.filePath, 'utf8')), archive);
+  await assert.rejects(
+    invoke('moor:retired-data-export', { ...archive, path: '/untrusted' }, localEvent()),
+    /格式无效/,
+  );
+  await assert.rejects(
+    invoke('moor:retired-data-export', archive, {
+      ...localEvent(),
+      senderFrame: { ...localWindow.webContents.mainFrame },
+    }),
+    /主窗口/,
+  );
+  dialogResult = { canceled: true };
   assert.throws(
     () =>
       invoke(
@@ -627,7 +625,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     /当前 Moor 主窗口/,
   );
   const openCount = windows.length;
-  for (const mode of ['local', 'remote', 'secure']) await invoke('personal:open', mode);
+  for (const mode of ['local', 'remote']) await invoke('personal:open', mode);
+  await assert.rejects(invoke('personal:open', 'secure'), /已退场/);
   assert.equal(windows.length, openCount);
   assert.equal(invoke('moor:open-settings', undefined, mainEvent()).opened, true);
   assert.equal(url.searchParams.has('approve'), false);
@@ -641,46 +640,42 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     assert.equal(prevented, true);
   }
   const webBridge = new Map<string, any>();
-  runInNewContext(await readFile(resolve('apps/desktop/src/preload/web-preload.cjs'), 'utf8'), {
-    require: () => ({
-      contextBridge: { exposeInMainWorld: (key: string, value: any) => webBridge.set(key, value) },
-      ipcRenderer: {
-        on() {},
-        removeListener() {},
-        invoke: (name: string, value: unknown) =>
-          Promise.resolve(
-            invoke(name, value, {
-              sender: reopened.webContents,
-              senderFrame: reopened.webContents.mainFrame,
-            }),
-          ),
-      },
-    }),
-  });
+  runInNewContext(
+    await readFile(resolve('apps/desktop/src/preload/workspace-preload.cjs'), 'utf8'),
+    {
+      process: { platform: 'darwin' },
+      require: () => ({
+        contextBridge: {
+          exposeInMainWorld: (key: string, value: any) => webBridge.set(key, value),
+        },
+        ipcRenderer: {
+          on() {},
+          removeListener() {},
+          invoke: (name: string, value: unknown) =>
+            Promise.resolve(
+              invoke(name, value, {
+                sender: reopened.webContents,
+                senderFrame: reopened.webContents.mainFrame,
+              }),
+            ),
+        },
+      }),
+    },
+  );
   assert.deepEqual(Object.keys(webBridge.get('moorDesktop')).sort(), [
+    'appearance',
     'cancelAttachmentSave',
     'googleAuth',
+    'onAppearance',
+    'openSettings',
+    'platform',
     'saveAttachment',
     'version',
   ]);
   assert.equal(webBridge.has('personal'), false);
   assert.equal(webBridge.has('moorSecure'), false);
-  for (const senderFrame of [
-    reopened.webContents.mainFrame,
-    { ...reopened.webContents.mainFrame },
-  ]) {
-    const secure = await invoke(
-      'moor:secure-client',
-      { action: 'connect' },
-      {
-        sender: reopened.webContents,
-        senderFrame,
-      },
-    );
-    assert.equal(secure.ok, false);
-    assert.equal(secure.error.rejected, false);
-    assert.equal(secure.error.code, 'unavailable');
-  }
+  assert.equal(handlers.has('moor:secure-client'), false);
+  assert.equal(handlers.has('moor:account'), true);
   await t.test(
     'Google handoff IPC rejects local content and unregistered sender frames',
     async () => {
@@ -851,11 +846,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   // Restart invalidates pending settings requests without recreating retired browser partitions.
   const skillsBeforeRestart = invoke('personal:skills-config', { action: 'read' });
   const skillsRestartRejection = assert.rejects(skillsBeforeRestart, /已重启/);
-  const mcpBeforeRestart = invoke('personal:mcp-config', { action: 'read' });
-  const mcpRestartRejection = assert.rejects(mcpBeforeRestart, /已重启/);
   await invoke('personal:recover');
   await skillsRestartRejection;
-  await mcpRestartRejection;
   await emitMessage(children.at(-1), {
     type: 'local-ready',
     origin: 'http://127.0.0.1:4532',
@@ -870,7 +862,7 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
     windows.filter(
       (window) =>
         !window.isDestroyed() &&
-        window.options.webPreferences.preload.endsWith('secure-preload.cjs'),
+        window.options.webPreferences.preload.endsWith('workspace-preload.cjs'),
     ).length,
     1,
   );

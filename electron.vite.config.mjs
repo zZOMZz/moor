@@ -4,6 +4,7 @@ import { normalizePath } from 'vite';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { repository, workspaceAliases } from './scripts/build/workspace-sources.mjs';
+import { productionGraphPlugin } from './scripts/validation/production-graph.mjs';
 import {
   desktopShellAssets,
   desktopRendererAssets,
@@ -40,7 +41,15 @@ export default defineConfig(({ command }) => {
       envDir: false,
       envPrefix: '__MOOR_NO_CLIENT_ENV__',
       define: { __MOOR_DESKTOP_DEVELOPMENT__: JSON.stringify(development) },
-      plugins: [desktopShellAssets({ appRoot, development })],
+      plugins: [
+        desktopShellAssets({ appRoot, development }),
+        productionGraphPlugin('desktop-main', {
+          copiedSources: {
+            'entry.cjs': 'apps/desktop/src/entry.cjs',
+            'settings/settings.js': 'apps/desktop/src/settings/settings.js',
+          },
+        }),
+      ],
       build: {
         outDir: appRoot,
         emptyOutDir: !development,
@@ -48,9 +57,7 @@ export default defineConfig(({ command }) => {
         lib: { entry: { 'main/main': join(desktop, 'src/main/main.cjs') }, formats: ['cjs'] },
         commonjsOptions: { include: [/\.cjs$/, /node_modules/] },
         rollupOptions: {
-          external: (id, importer) =>
-            id === './runtime/preview-renderer.cjs' ||
-            (id === './main/main.cjs' && importer?.endsWith('/entry.cjs')),
+          external: (id, importer) => id === './main/main.cjs' && importer?.endsWith('/entry.cjs'),
           output: { entryFileNames: '[name].cjs', chunkFileNames: 'main/chunks/[name]-[hash].cjs' },
         },
       },
@@ -62,6 +69,7 @@ export default defineConfig(({ command }) => {
       // imports to standalone CJS. Shared Rollup helpers cannot be required by
       // Electron's sandboxed preload loader.
       plugins: [
+        productionGraphPlugin('desktop-preload'),
         {
           name: 'moor-standalone-preload',
           enforce: 'pre',
@@ -84,7 +92,7 @@ export default defineConfig(({ command }) => {
         externalizeDeps: false,
         lib: {
           entry: Object.fromEntries(
-            ['preload', 'secure-preload', 'web-preload'].map((name) => [
+            ['preload', 'workspace-preload'].map((name) => [
               name,
               join(desktop, 'src/preload', name + '.cjs'),
             ]),
@@ -148,6 +156,7 @@ export default defineConfig(({ command }) => {
         desktopRendererAssets({ token }),
         desktopBrowserWasm(),
         react(),
+        productionGraphPlugin('desktop-renderer'),
       ],
       build: {
         outDir: join(appRoot, 'runtime/public'),

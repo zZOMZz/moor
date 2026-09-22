@@ -1,5 +1,4 @@
 import test from 'node:test';
-import { mappedHost } from '../fixtures/mapped-host';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -899,35 +898,4 @@ test('an encrypted bind cannot persist after its original channel retires during
   await assert.rejects(pending);
   assert.equal(f.store.github.get(f.fullScope()).revision, 0);
   assert.equal(f.store.journal.has(request.operationId), false);
-});
-
-test('never-arrived GitHub binds seal the original Host mapping after restart and cannot bind late on any mapping', async (t) => {
-  const f = fixture(t),
-    request = f.bind(),
-    mapped = mappedHost(() => f.host),
-    target = mapped.target();
-  mapped.move();
-  f.restart();
-  mapped.reopen();
-  const receipt = (await mapped.execute(target, {
-    method: 'github-abandon',
-    workspaceId: 'workspace',
-    localProjectId: 'project',
-    params: request,
-  })) as any;
-  assert.equal(receipt.abandoned, true);
-  f.restart();
-  mapped.reopen();
-  for (const selected of [target, mapped.target()])
-    await assert.rejects(
-      mapped.execute(selected, {
-        method: 'github-action',
-        workspaceId: 'workspace',
-        localProjectId: 'project',
-        params: request,
-      }),
-    );
-  assert.equal((await f.host.githubAction(request)).abandoned, true);
-  assert.equal(f.store.github.get(f.fullScope()).revision, 0);
-  assert.equal(f.requests.length, 0);
 });

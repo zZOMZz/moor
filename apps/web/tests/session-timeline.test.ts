@@ -24,12 +24,11 @@ const turn: TimelineTurn = {
     { type: 'tool_call', title: 'failed tool', status: 'failed' },
   ],
 };
-test('both timelines retain actionable records and share plain text, collapsed tools and separate information', () => {
-  for (const variant of ['workspace', 'secure'] as const) {
+test('shared timeline retains actionable records and share plain text, collapsed tools and separate information', () => {
+  {
     const html = renderToStaticMarkup(
       createElement(SessionTimeline, {
         history: [turn],
-        variant,
         renderItem: (item: any) => createElement('p', null, item.title),
       }),
     );

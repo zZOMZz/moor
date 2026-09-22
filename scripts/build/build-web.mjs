@@ -5,6 +5,7 @@ import { workspaceSources } from './workspace-sources.mjs';
 import { buildWebStyles } from '../../apps/web/scripts/build-styles.mjs';
 import { mkdir, cp, readFile, writeFile, rm } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
+import { recordEsbuildGraph } from '../validation/production-graph.mjs';
 
 await mkdir('dist/public', { recursive: true });
 await rm('dist/public/assets', { recursive: true, force: true });
@@ -44,6 +45,8 @@ const notificationWorkerBuild = await build({
 const scripts = Object.keys(browserBuild.metafile.outputs).filter((file) =>
   /\.(js|wasm)$/.test(file),
 );
+await recordEsbuildGraph('web', browserBuild.metafile);
+await recordEsbuildGraph('web-worker', notificationWorkerBuild.metafile);
 const entry = Object.entries(browserBuild.metafile.outputs)
   .find(([, output]) => output.entryPoint === 'apps/web/src/app/entry.ts')[0]
   .replace('dist/public', '');

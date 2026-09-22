@@ -27,8 +27,7 @@ import {
 import { putMeta } from '@moor/session/model';
 import { readProjectFileBytes, type ProjectFileReadOptions } from '@moor/host/projects/files';
 import { RuntimeStore } from '@moor/host/persistence/store';
-import { runDeviceSecurityCommand } from '../../apps/cli/src/security/commands';
-import { PrivateEndpointFile } from '@moor/e2ee/node/private-endpoint-file';
+import { writePrivateArtifacts, writePrivateDocument } from '../fixtures/private-documents';
 
 function directory(t: { after(fn: () => void): void }) {
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'moor-project-files-')));
@@ -88,30 +87,14 @@ function fixture(
 }
 const status = (expected: number) => (error: any) => error.status === expected;
 
-test('actual device vault, recovery code, capsule and arbitrary copies never enter project responses', async (t) => {
+test('retained private vault, recovery code, capsule and arbitrary copies never enter project responses', async (t) => {
   const f = fixture(t);
   const privateDirectory = join(f.root, 'private');
   mkdirSync(privateDirectory, { mode: 0o700 });
   const dataFile = join(privateDirectory, 'custom-vault.json');
   const recoveryCodeFile = join(privateDirectory, 'custom-code.json');
   const outputFile = join(privateDirectory, 'custom-backup.json');
-  await runDeviceSecurityCommand(
-    {
-      action: 'initialize',
-      identity: {
-        accountId: 'synthetic-owner',
-        serverOrigin: 'https://relay.example.test',
-        deviceId: 'synthetic-mbp',
-        roles: ['host'],
-      },
-      recoveryCodeFile,
-    },
-    { dataFile },
-  );
-  await runDeviceSecurityCommand(
-    { action: 'export-recovery', recoveryCodeFile, outputFile },
-    { dataFile },
-  );
+  writePrivateArtifacts(dataFile, recoveryCodeFile, outputFile);
   const before = f.store.meta.exportJson();
   for (const [index, file] of [dataFile, recoveryCodeFile, outputFile].entries()) {
     const copied = `arbitrary-${index}.txt`;
@@ -145,9 +128,10 @@ test('structured private markers are rejected while ordinary source and unrelate
   const f = directory(t);
   chmodSync(f.root, 0o700);
   const privateFile = join(f.root, 'arbitrary.data');
-  const store = PrivateEndpointFile.open(privateFile);
-  store.save(null, { kind: 'synthetic-private-value', secret: 'synthetic-secret' });
-  store.close();
+  writePrivateDocument(privateFile, {
+    kind: 'synthetic-private-value',
+    secret: 'synthetic-secret',
+  });
   await strict.rejects(readProjectFileBytes(f.root, 'arbitrary.data'), status(403));
   for (const [path, text] of [
     ['source.ts', 'export const FORMAT = "moor-private-endpoint-v1";'],

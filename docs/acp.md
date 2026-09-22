@@ -418,7 +418,7 @@ Client 应同时把仍待处理的权限请求回答为 `cancelled`；Agent 应�
 - MCP 解决 Agent 或模型怎样发现和调用工具、资源与外部服务。
 - `session/new` 和 `session/load` 可以把 MCP 连接描述交给 Agent，但这不会把 MCP 变成 ACP，也不意味着两套协议共用一条线路。
 
-在 Moor 中，额外 MCP 配置和凭据留在执行主机，只把本回合已授权的连接描述交给 Agent；具体边界见[本机 MCP](mcp.md)。
+Moor 不再提供逐回合额外 MCP 配置或连接注入；ACP new/load 始终传空的 mcpServers 数组，拒绝旧运行参数后才可能启动 Agent。Agent 自己的本机配置仍由用户管理，具体边界见[MCP 退场](mcp.md)。
 
 ## 在 Moor 中怎样映射
 

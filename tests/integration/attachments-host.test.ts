@@ -20,7 +20,7 @@ import {
 } from '@moor/protocol/attachment-protocol';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import { runDeviceSecurityCommand } from '../../apps/cli/src/security/commands';
+import { writePrivateArtifacts } from '../fixtures/private-documents';
 
 async function privateArtifactBytes(t: { after(fn: () => void): void }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-private-attachments-')));
@@ -28,23 +28,7 @@ async function privateArtifactBytes(t: { after(fn: () => void): void }) {
   const dataFile = join(root, 'custom-vault.json'),
     recoveryCodeFile = join(root, 'custom-code.json'),
     outputFile = join(root, 'custom-backup.json');
-  await runDeviceSecurityCommand(
-    {
-      action: 'initialize',
-      identity: {
-        accountId: 'synthetic-owner',
-        serverOrigin: 'https://relay.example.test',
-        deviceId: 'synthetic-mbp',
-        roles: ['host'],
-      },
-      recoveryCodeFile,
-    },
-    { dataFile },
-  );
-  await runDeviceSecurityCommand(
-    { action: 'export-recovery', recoveryCodeFile, outputFile },
-    { dataFile },
-  );
+  writePrivateArtifacts(dataFile, recoveryCodeFile, outputFile);
   return [dataFile, recoveryCodeFile, outputFile].map((path) => readFileSync(path));
 }
 

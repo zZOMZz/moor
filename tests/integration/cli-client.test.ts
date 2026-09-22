@@ -10,7 +10,10 @@ import { metas } from '@moor/session/model';
 import { CliState } from '../../apps/cli/src/state';
 import { CliClient } from '../../apps/cli/src/client';
 import { CliHttp } from '@moor/client/node/http';
-import { localCliProof, type LocalCliConnectionLease } from '@moor/e2ee/node/local-cli-connection';
+import {
+  localCliProof,
+  type LocalCliConnectionLease,
+} from '@moor/protocol/node/local-cli-connection';
 import { CliError, parseCliArgs } from '../../apps/cli/src/args';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 import type { AgentOpenOptions } from '@moor/host/agents/driver';
@@ -69,6 +72,7 @@ async function fixture(t: TestContext) {
   const fault: {
     lost?: 'before' | 'after';
     reject?: boolean;
+    retired?: boolean;
     wrongReceipt?: boolean;
     catalog?: string;
     device?: string;
@@ -139,6 +143,11 @@ async function fixture(t: TestContext) {
     if (fault.hung || (fault.mutationHung && suffix === 'mutations'))
       return new Promise<Response>(() => {});
     const writing = ['session-control', 'mutations', 'session-actions'].includes(suffix);
+    if (writing && fault.retired)
+      return Response.json(
+        { rejected: true, error: '此功能已退场；仅可读取原记录，不会执行或改写原状态。' },
+        { status: 410 },
+      );
     if (writing && fault.reject)
       return Response.json({ rejected: true, error: 'SYNTHETIC_PRIVATE_ERROR' }, { status: 409 });
     if (writing && fault.lost === 'before') {
@@ -316,66 +325,44 @@ test('CLI creates without Agent, builds host-accepted turn, waits, stops exact a
   assert.ok(!JSON.stringify(config).includes('personal='));
   assert.ok(!JSON.stringify(config).includes('SYNTHETIC_PASSWORD'));
 });
-test('CLI reads MCP without execution, grants exact versions only on manual send and retries original authorization', async (t) => {
+test('CLI rejects new per-turn MCP before storage or dispatch and can read an empty retired catalog', async (t) => {
   const f = await fixture(t);
   await f.run(['session', 'create', '--agent', 'agent']);
-  const target = f.state.target()!;
-  const state = await f.host.mcpSettings.handle({
-    action: 'save',
-    expectedRevision: 0,
-    name: 'Synthetic MCP',
-    description: 'Review these tools',
-    projectIds: [target.localProjectId],
-    enabled: true,
-    connection: {
-      transport: 'http',
-      url: 'https://synthetic.invalid/mcp',
-      headers: { Authorization: 'Bearer SYNTHETIC_PRIVATE_MCP' },
-    },
-  });
-  const preset = state.presets[0]!;
-  const catalog = (await f.run(['session', 'mcp'])) as any;
-  assert.equal(catalog.servers[0].id, preset.versionId);
-  assert.doesNotMatch(JSON.stringify(catalog), /SYNTHETIC_PRIVATE_MCP|Authorization/);
-  assert.equal(f.counts().opens, 0);
   const before = f.state.operations().length;
-  await assert.rejects(
-    f.run(['session', 'send', '--stdin', '--mcp-server-ids', 'unknown-version'], 'blocked'),
-    /未发送/,
+  assert.throws(
+    () => f.run(['session', 'send', '--stdin', '--mcp-server-ids', 'old-version'], 'blocked'),
+    /已退场/,
   );
   assert.equal(f.state.operations().length, before);
-  f.fault.lost = 'after';
+  assert.equal(f.counts().opens, 0);
+  const result = (await f.run(['session', 'mcp'])) as any;
+  assert.deepEqual(result.servers, []);
+});
+test('CLI retains explicit retirement errors and does not convert an older unknown original into a new rejection', async (t) => {
+  const f = await fixture(t);
+  await f.run(['session', 'create', '--agent', 'agent']);
+  f.fault.retired = true;
   await assert.rejects(
-    f.run(
-      ['session', 'send', '--stdin', '--mcp-server-ids', preset.versionId],
-      'Authorize synthetic MCP',
-    ),
-    /原请求/,
+    f.run(['session', 'send', '--stdin'], 'New explicit input'),
+    (error: any) => error.code === 'retired' && error.exitCode === 5,
   );
-  await f.started.promise;
-  assert.equal(f.agentOptions?.mcp?.servers.length, 1);
-  const operation = f.state.operations().find((op) => op.kind === 'turn')!;
-  assert.doesNotMatch(operation.body, /SYNTHETIC_PRIVATE_MCP|Authorization/);
-  await f.finish();
-  await f.host.mcpSettings.handle({
-    action: 'enabled',
-    expectedRevision: 1,
-    id: preset.id,
-    enabled: false,
-  });
-  const reads = f.requests.filter((r) => r.path.endsWith('/mcp/read')).length;
-  f.restart();
-  await f.run(['operation', 'retry', operation.operationId]);
-  assert.equal(f.requests.filter((r) => r.path.endsWith('/mcp/read')).length, reads);
-  const writes = f.requests.filter((r) => r.path.endsWith('/mutations'));
-  assert.equal(writes.length, 2);
-  assert.equal(writes[1]!.body, operation.body);
-  assert.equal(f.counts().prompts, 1);
-  f.next();
-  await f.run(['session', 'send', '--stdin'], 'Next turn has no extra MCP');
-  await f.started.promise;
-  assert.equal(f.agentOptions?.mcp, undefined);
-  assert.equal(f.counts().prompts, 2);
+  assert.equal(
+    f.state.operations().find((operation) => operation.kind === 'turn')!.state,
+    'rejected',
+  );
+  f.fault.retired = false;
+  f.fault.lost = 'before';
+  await assert.rejects(f.run(['session', 'send', '--stdin'], 'Older unknown input'));
+  const original = f.state
+    .operations()
+    .find((operation) => operation.kind === 'turn' && operation.state === 'pending')!;
+  f.fault.retired = true;
+  await assert.rejects(
+    f.run(['operation', 'retry', original.operationId]),
+    (error: any) => error.code === 'retired' && error.exitCode === 6,
+  );
+  assert.deepEqual(f.state.operation(original.operationId), original);
+  assert.equal(f.counts().opens, 0);
 });
 test('lost confirmation survives restart; inspect never dispatches, retry uses exact original bytes and original Agent', async (t) => {
   const f = await fixture(t);

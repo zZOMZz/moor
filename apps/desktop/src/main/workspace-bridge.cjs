@@ -1,4 +1,4 @@
-const { snapshotSecureInput } = require('./secure-input.cjs');
+const { snapshotJsonInput } = require('./json-input.cjs');
 const { clientDocumentMatches } = require('./client-policy.cjs');
 
 const ERROR = Object.freeze({
@@ -178,7 +178,7 @@ class DesktopWorkspaceBridge {
     try {
       const context = this.context(event);
       check(this.active < LIMITS.pending);
-      reservation = snapshotSecureInput(input, LIMITS.requestBytes);
+      reservation = snapshotJsonInput(input, LIMITS.requestBytes);
       check(this.bytes + reservation.bytes <= LIMITS.pendingBytes);
       const value = reservation.value;
       check(
@@ -204,7 +204,7 @@ class DesktopWorkspaceBridge {
       this.current(slot);
       const result = await client.request(value);
       this.current(slot);
-      return snapshotSecureInput(result, LIMITS.requestBytes).value;
+      return snapshotJsonInput(result, LIMITS.requestBytes).value;
     } catch {
       return structuredClone(ERROR);
     } finally {

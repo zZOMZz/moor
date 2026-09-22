@@ -1,7 +1,7 @@
 import { schema } from 'loro-mirror';
 
 // Moor session format v1. The host validates all browser edits before persistence.
-// Any infers containers at runtime; content text remains a primitive string.
+// Any accepts legacy scalar text and Host-authored LoroText; both read as strings.
 // Turn identity and lifecycle use explicit CRDT fields.
 export const sessionDocSchema = schema({
   session: schema.LoroMap({ id: schema.String() }),

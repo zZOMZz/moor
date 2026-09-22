@@ -5,6 +5,7 @@ import { WebSocket } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 import { PROTOCOL, sessionActionSchema, type RuntimeWorkspace } from '@moor/protocol/protocol';
+import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
 import { Flock, LoroDoc, decode, delta, metas, mirror, putMeta } from '@moor/session/model';
 import {
   CONTENT_VERSION,
@@ -51,7 +52,7 @@ export async function syntheticRelay(port = 0) {
           runConfig: syntheticCapabilities,
         },
       ],
-      features: ['session-actions', FILE_CONTENT_FEATURE],
+      features: ['session-actions', FILE_CONTENT_FEATURE, RETIRED_RECORDS_FEATURE],
     };
     const meta = new Flock(),
       docs = new Map<string, LoroDoc>(),

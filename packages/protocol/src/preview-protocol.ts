@@ -4,7 +4,7 @@ import { contentScopeSchema, contentVersionSchema, isCanonicalBase64 } from './c
 import { sessionExecutionSchema } from './git-protocol';
 
 export const PREVIEW_FEATURE = 'project-preview-v1';
-export const SECURE_PREVIEW_AUTHORITY_FEATURE = 'secure-preview-authority-v1';
+
 export const PREVIEW_LIMITS = {
   imageBytes: 4 * 1024 * 1024,
   width: 1920,
@@ -45,7 +45,7 @@ export const previewPathSchema = z
 export const previewServiceSchema = z
   .object({ id, label: z.string().min(1).max(100), version, startPath: previewPathSchema })
   .strict();
-export type PreviewService = z.infer<typeof previewServiceSchema>;
+
 export const previewImageSchema = z
   .object({
     mediaType: z.literal('image/png'),
@@ -96,7 +96,7 @@ export const previewElementSchema = z
     password: z.boolean(),
   })
   .strict();
-export type PreviewElement = z.infer<typeof previewElementSchema>;
+
 const instance = previewScopeSchema.extend({ clientId: id, previewId: id });
 const point = {
   x: z.number().finite().nonnegative().max(PREVIEW_LIMITS.width),
@@ -108,7 +108,7 @@ export const previewReadSchema = z.discriminatedUnion('view', [
   instance.extend({ view: z.literal('status') }).strict(),
   instance.extend({ view: z.literal('locate'), frameId: id, ...point }).strict(),
 ]);
-export type PreviewRead = z.infer<typeof previewReadSchema>;
+
 export const previewReadResultSchema = z.discriminatedUnion('view', [
   previewScopeSchema
     .extend({
@@ -145,7 +145,7 @@ export const previewReadResultSchema = z.discriminatedUnion('view', [
     })
     .strict(),
 ]);
-export type PreviewReadResult = z.infer<typeof previewReadResultSchema>;
+
 const action = previewScopeSchema.extend({
   clientId: id,
   operationId: id,
@@ -160,7 +160,7 @@ export const previewOpenSchema = action
     viewport: previewViewportSchema,
   })
   .strict();
-export type PreviewOpen = z.infer<typeof previewOpenSchema>;
+
 const interact = action.extend({ previewId: id, frameId: id });
 export const previewActionSchema = z.discriminatedUnion('action', [
   previewOpenSchema,
@@ -226,4 +226,3 @@ export const previewReceiptSchema = previewScopeSchema
       (!v.frame || (!v.closed && v.previewId === v.frame.previewId)) &&
       (v.phase !== 'closed' || v.closed),
   );
-export type PreviewReceipt = z.infer<typeof previewReceiptSchema>;

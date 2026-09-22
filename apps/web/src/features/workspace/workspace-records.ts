@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
-import type { SecureStorageBackend, StorageChange } from '../../platform/secure-store';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import type { StorageBackend, StorageChange } from '../../platform/indexed-storage';
 import type { WorkspaceLedger, WorkspaceOperation, WorkspaceScope } from './workspace-store';
 
 export const WORKSPACE_RECENT_OPERATIONS = 64;
@@ -72,7 +72,7 @@ type Loaded = {
  * Completed operations leave the hot index, but remain addressable by their original ID.
  */
 export class WorkspaceRecords {
-  constructor(readonly backend: SecureStorageBackend) {}
+  constructor(readonly backend: StorageBackend) {}
 
   #parse(raw: unknown, scope: WorkspaceScope, kind: string, id: string, expectedRevision?: number) {
     const record = recordSchema.parse(raw);

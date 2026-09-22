@@ -20,17 +20,15 @@ if (
 const desktopFiles = [
   'entry.cjs',
   'main/main.cjs',
-  'main/secure-client.cjs',
   'main/workspace-bridge.cjs',
   'main/project-registration.cjs',
-  'main/secure-account.cjs',
+  'main/account.cjs',
   'main/client-window.cjs',
-  'main/secure-input.cjs',
+  'main/json-input.cjs',
   'main/content-authority.cjs',
   'main/client-assets.cjs',
   'main/client-policy.cjs',
   'main/appearance.cjs',
-  'main/preview-renderer.cjs',
   'main/notifications.cjs',
   'main/github-settings.cjs',
   'main/attachment-save.cjs',
@@ -38,27 +36,18 @@ const desktopFiles = [
   'main/recovery.cjs',
   'main/agent-settings.cjs',
   'main/device-metadata.cjs',
-  'main/mcp-settings.cjs',
   'main/google-auth.cjs',
   'main/page-loader.cjs',
   'preload/preload.cjs',
-  'preload/web-preload.cjs',
-  'preload/secure-preload.cjs',
+  'preload/workspace-preload.cjs',
   'settings/settings.css',
   'settings/settings.html',
   'settings/settings.js',
 ];
 async function copyRuntime(dest) {
   await mkdir(dest, { recursive: true });
-  for (const file of [
-    'bridge.mjs',
-    'cli.mjs',
-    'security.mjs',
-    'desktop-client.mjs',
-    'workspace-client.mjs',
-  ])
+  for (const file of ['bridge.mjs', 'cli.mjs', 'workspace-client.mjs'])
     await cp('dist/' + file, join(dest, file));
-  await cp('dist/desktop/runtime/preview-renderer.cjs', join(dest, 'preview-renderer.cjs'));
   await cp('dist/desktop/runtime/public', join(dest, 'public'), { recursive: true });
   for (const pkg of ['ws', 'loro-crdt']) await copyPackage(pkg, dest);
 }

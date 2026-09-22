@@ -1,8 +1,14 @@
+import {
+  RETIRED_RECORDS_FEATURE,
+  RETIRED_SESSION_FEATURE,
+  type ConnectionAuthorityLease,
+} from '@moor/protocol/connection-authority';
 import { PERMISSION_REVIEW_FEATURE } from '@moor/protocol/permission-review';
 import { randomUUID, createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import { appendSessionText } from '@moor/session/session-output';
 import {
   AppError,
   AGENT_VERSIONS_FEATURE,
@@ -75,35 +81,22 @@ import { readProjectFileBytes } from '../projects/files';
 import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
 import { SKILLS_FEATURE, type SkillsRead } from '@moor/protocol/skills-protocol';
 import { SessionSkillsManager, type SessionSkillsOptions } from './skills';
-import {
-  ROLE_FEATURE,
-  type RolesRead,
-  type RolesActionRequest,
-} from '@moor/protocol/role-protocol';
-import { SessionRolesManager } from './roles';
+import { type RolesRead, type RolesActionRequest } from '@moor/protocol/role-protocol';
 import { SessionControlManager } from './control';
 import {
   SESSION_CONTROL_FEATURE,
   ATTACHMENT_OPERATIONS_FEATURE,
 } from '@moor/protocol/session-control-protocol';
-import { SessionTaskManager } from './tasks';
-import { createTaskMcp } from '../integrations/task-mcp';
-import { McpSettings } from '../integrations/mcp-settings';
+import type { McpRead } from '@moor/protocol/mcp-protocol';
+import type { TaskRead, TaskAction } from '@moor/protocol/task-protocol';
 import {
-  MCP_FEATURE,
-  mcpReadSchema,
-  validateMcpRead,
-  mcpServerIdsSchema,
-  type McpRead,
-} from '@moor/protocol/mcp-protocol';
-import { MCP_UNSUPPORTED_TRANSPORT, MCP_AUTHORIZATION_EXPIRED } from '../agents/acp/driver';
-import {
-  SESSION_TASKS_FEATURE,
-  SECURE_TURN_AUTHORITY_FEATURE,
-  taskPlanSchema,
-  type TaskPlan,
-  type TaskAuthorityLease,
-} from '@moor/protocol/task-protocol';
+  readRetiredRoles,
+  inspectRetiredRole,
+  inspectRetiredPreview,
+  readRetiredTasks,
+  inspectRetiredTask,
+  readRetiredMcp,
+} from './retired';
 import {
   normalizeAgentText,
   normalizeAgentContent,
@@ -176,7 +169,7 @@ import {
 } from '@moor/protocol/notification-protocol';
 import {
   GIT_WORKTREE_FEATURE,
-  SECURE_GIT_OPERATIONS_FEATURE,
+  GIT_OPERATIONS_FEATURE,
   type GitOperation,
   type GitAction,
   type GitStateRead,
@@ -185,14 +178,7 @@ import { SessionExecutionManager, type ExecutionLease } from './execution';
 import { HostCollaborationService } from './collaboration-service';
 import { COLLABORATION_FEATURE } from '@moor/protocol/collaboration-protocol';
 import { SessionForkManager } from './fork';
-import { SessionPreviewManager, type SessionPreviewOptions } from './preview';
-import {
-  PREVIEW_FEATURE,
-  SECURE_PREVIEW_AUTHORITY_FEATURE,
-  type PreviewRead,
-  type PreviewAction,
-  type PreviewOpen,
-} from '@moor/protocol/preview-protocol';
+import { type PreviewAction } from '@moor/protocol/preview-protocol';
 import { SessionGithubManager, type SessionGithubOptions } from './github';
 import { SessionGithubWriteManager, type SessionGithubWriteOptions } from './github-write';
 import {
@@ -209,7 +195,7 @@ import {
 } from '@moor/protocol/github-protocol';
 import {
   SESSION_FORK_FEATURE,
-  SECURE_FORK_OPERATIONS_FEATURE,
+  FORK_OPERATIONS_FEATURE,
   type ForkOperation,
   type ForkOptionsRead,
   type SessionFork,
@@ -231,16 +217,6 @@ type Active = {
   terminal?: { status: string; message?: string };
   finalizing?: Promise<void>;
   attentionSettlementFailed?: boolean;
-  mcp?: {
-    lease: ReturnType<McpSettings['authorize']>;
-    authority: TaskAuthorityLease;
-  };
-  task?: {
-    grantId: string;
-    authority: TaskAuthorityLease;
-    promptStarted: boolean;
-    server?: Awaited<ReturnType<typeof createTaskMcp>>;
-  };
   permissions: Map<
     string,
     { options: any[]; toolCall: unknown; resolve: (value: { outcome: PermissionOutcome }) => void }
@@ -264,12 +240,8 @@ export class HostWorkspace {
   forkManager: SessionForkManager;
   githubManager: SessionGithubManager;
   githubWriteManager: SessionGithubWriteManager;
-  previewManager: SessionPreviewManager;
   skillsManager: SessionSkillsManager;
-  rolesManager: SessionRolesManager;
   controlManager: SessionControlManager;
-  taskManager: SessionTaskManager;
-  mcpSettings: McpSettings;
   watches = new Set<string>();
   get workspace() {
     return this.store.workspace;
@@ -290,7 +262,6 @@ export class HostWorkspace {
     git?: ConstructorParameters<typeof SessionExecutionManager>[1],
     github?: SessionGithubOptions,
     githubWrite?: SessionGithubWriteOptions,
-    preview?: SessionPreviewOptions,
     skills?: SessionSkillsOptions,
   ) {
     this.collaboration = new HostCollaborationService(this);
@@ -301,15 +272,8 @@ export class HostWorkspace {
     };
     this.executionManager = new SessionExecutionManager(this, git);
     this.forkManager = new SessionForkManager(this, driver);
-    this.previewManager = new SessionPreviewManager(this, preview);
     this.skillsManager = new SessionSkillsManager(this, skills);
-    this.rolesManager = new SessionRolesManager(this);
     this.controlManager = new SessionControlManager(this);
-    this.taskManager = new SessionTaskManager(this);
-    this.mcpSettings = new McpSettings(store, () => {
-      this.invalidateMcp();
-      this.catalogue();
-    });
     this.githubManager = new SessionGithubManager(this, github);
     this.githubWriteManager = new SessionGithubWriteManager(this, {
       config: github?.config,
@@ -474,6 +438,7 @@ export class HostWorkspace {
   updateCatalogue() {
     this.workspace.features = [
       'session-actions',
+      'session-page-v1',
       PERMISSION_REVIEW_FEATURE,
       FILE_CONTENT_FEATURE,
       ATTACHMENTS_FEATURE,
@@ -487,16 +452,13 @@ export class HostWorkspace {
       STEER_FEATURE,
       NOTIFICATIONS_FEATURE,
       GIT_WORKTREE_FEATURE,
-      SECURE_GIT_OPERATIONS_FEATURE,
+      GIT_OPERATIONS_FEATURE,
       SESSION_FORK_FEATURE,
-      SECURE_FORK_OPERATIONS_FEATURE,
+      FORK_OPERATIONS_FEATURE,
       GITHUB_FEATURE,
       SECURE_GITHUB_AUTHORITY_FEATURE,
       GITHUB_WRITE_FEATURE,
-      PREVIEW_FEATURE,
-      SECURE_PREVIEW_AUTHORITY_FEATURE,
       SKILLS_FEATURE,
-      ROLE_FEATURE,
       AGENT_VERSIONS_FEATURE,
       AGENT_MODEL_OPTIONS_FEATURE,
       AGENT_CATALOG_CACHE_FEATURE,
@@ -505,10 +467,8 @@ export class HostWorkspace {
       AGENT_USAGE_FEATURE,
       SESSION_CONTROL_FEATURE,
       ATTACHMENT_OPERATIONS_FEATURE,
-      SESSION_TASKS_FEATURE,
       COLLABORATION_FEATURE,
-      SECURE_TURN_AUTHORITY_FEATURE,
-      MCP_FEATURE,
+      RETIRED_RECORDS_FEATURE,
     ];
     this.workspace.projects = this.machine
       .scan({ prefix: ['localProject'] })
@@ -525,68 +485,16 @@ export class HostWorkspace {
           this.machine.get(['disabledAgent', a.id]) !== true,
       )
       .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
-    this.taskManager.invalidateUnavailable();
-    this.invalidateMcp();
-    this.previewManager.invalidateUnavailable();
     this.catalogue();
   }
   readMcp(input: McpRead, localProjectId?: string) {
-    this.ensureConnected();
-    const request = mcpReadSchema.parse(input);
-    const execution = this.executionLease(request, localProjectId, true);
-    const scope: AttachmentScope = {
-      workspaceId: execution.workspaceId,
-      userId: execution.userId,
-      machineId: execution.machineId,
-      localProjectId: execution.localProjectId,
-      sessionId: execution.sessionId,
-    };
-    const servers = this.mcpSettings.catalog(scope);
-    assert(
-      isDeepStrictEqual(this.executionLease(request, localProjectId, true), execution),
-      409,
-      'MCP 读取的执行目录已变化',
-    );
-    return validateMcpRead(
-      {
-        ...request,
-        confirmed: true,
-        catalogRevision: this.mcpSettings.read().revision,
-        servers,
-      },
-      request,
-    );
+    return readRetiredMcp(this, input, localProjectId);
   }
-  invalidateMcp() {
-    for (const [id, run] of this.active) {
-      if (!run.mcp || run.stopped) continue;
-      try {
-        this.checkExecutionLease(run.execution);
-        run.mcp.authority.current();
-        run.mcp.lease.assertCurrent();
-      } catch {
-        // Withdraw this exact turn before awaiting process cleanup. The native
-        // Agent may already have dispatched an upstream action; this is not a
-        // confirmation that that remote action has been undone or stopped.
-        run.stopped = true;
-        run.terminal = {
-          status: 'canceled',
-          message: '本回合 MCP 授权已撤销，已请求停止执行；已派发的外部操作请核查原结果。',
-        };
-        this.interactions.cancelPending(id, run);
-        for (const permission of run.permissions.values())
-          permission.resolve({ outcome: { outcome: 'cancelled' } });
-        void Promise.resolve()
-          .then(async () => {
-            try {
-              await run.session?.cancel();
-            } finally {
-              await run.session?.close();
-            }
-          })
-          .catch(() => {});
-      }
-    }
+  readTasks(input: TaskRead, localProjectId?: string) {
+    return readRetiredTasks(this, input, localProjectId);
+  }
+  inspectTask(input: TaskAction, localProjectId?: string) {
+    return inspectRetiredTask(this, input, localProjectId);
   }
   private capabilityScope(a: AgentConfig, localProjectId: string, sessionId?: string) {
     const project = this.workspace.projects.find((p) => p.id === localProjectId);
@@ -1034,36 +942,23 @@ export class HostWorkspace {
   readGitState(input: GitStateRead, localProjectId?: string, checkpoint?: () => void) {
     return this.executionManager.read(input, localProjectId, checkpoint);
   }
-  readPreview(input: PreviewRead, localProjectId?: string, authority?: TaskAuthorityLease) {
-    return this.previewManager.read(input, localProjectId, authority);
-  }
   readSkills(input: SkillsRead, localProjectId?: string) {
     return this.skillsManager.read(input, localProjectId);
   }
   readRoles(input: RolesRead, localProjectId?: string) {
-    return this.rolesManager.read(input, localProjectId);
+    return readRetiredRoles(this, input, localProjectId);
   }
-  async roleAction(input: RolesActionRequest, localProjectId?: string) {
-    const result = await this.rolesManager.action(input, localProjectId);
-    if (input.action !== 'inspect') this.changed();
-    return result;
-  }
-  previewAction(input: PreviewAction, localProjectId?: string, authority?: TaskAuthorityLease) {
-    return this.previewManager.action(input, localProjectId, authority);
+  roleAction(input: RolesActionRequest, localProjectId?: string) {
+    assert(input.action === 'inspect', 410, RETIRED_SESSION_FEATURE);
+    return inspectRetiredRole(this, input, localProjectId);
   }
   inspectPreview(
     input: { request: PreviewAction },
     localProjectId?: string,
-    authority?: TaskAuthorityLease,
+    authority?: ConnectionAuthorityLease,
   ) {
-    return this.previewManager.inspect(input, localProjectId, authority);
-  }
-  closePreview(
-    input: { request: PreviewOpen },
-    localProjectId?: string,
-    authority?: TaskAuthorityLease,
-  ) {
-    return this.previewManager.close(input, localProjectId, authority);
+    authority?.current();
+    return inspectRetiredPreview(this, input, localProjectId);
   }
   async readGithub(input: GithubRead, localProjectId?: string, checkpoint?: () => void) {
     try {
@@ -1128,8 +1023,7 @@ export class HostWorkspace {
   }
   async forkSession(input: SessionFork, localProjectId?: string, checkpoint?: () => void) {
     assert(
-      this.taskManager.allowsGit(input.sessionId, input.operationId) &&
-        this.taskManager.allowsCreate(input.childSessionId, input.operationId),
+      this.store.tasks.allows(input.sessionId) && this.store.tasks.allows(input.childSessionId),
       409,
       '协作子任务尚未结束或原操作需要核查，不能 Fork',
     );
@@ -1237,6 +1131,7 @@ export class HostWorkspace {
   ) {
     this.ensureConnected();
     assert(!run || this.active.get(id) === run, 409, '原交互回合已变化');
+    const from = run && edit ? run.doc.version() : undefined;
     const doc = run && edit ? new LoroDoc() : undefined;
     if (doc) doc.import(run!.doc.export({ mode: 'snapshot' }));
     const view = doc ? mirror(doc, id) : undefined;
@@ -1248,13 +1143,14 @@ export class HostWorkspace {
             assert(turn, 409, '原交互回合已变化');
             edit!(turn);
           });
-          this.store.persist(id, doc);
+          this.store.persist(id, doc, from);
         }
         write?.();
       });
       if (doc) run!.doc = doc;
     } finally {
       view?.dispose();
+      from?.free();
     }
     if (doc) this.changed(id);
   }
@@ -1712,7 +1608,7 @@ export class HostWorkspace {
     input: AttentionContext,
     itemId: string,
     inputRequest: AttentionContinue,
-    authority?: TaskAuthorityLease,
+    authority?: ConnectionAuthorityLease,
   ) {
     const request = attentionContinueSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
@@ -1754,7 +1650,7 @@ export class HostWorkspace {
     input: AttentionContext,
     itemId: string,
     inputRequest: AttentionPermission,
-    authority?: TaskAuthorityLease,
+    authority?: ConnectionAuthorityLease,
   ) {
     const request = attentionPermissionSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
@@ -1828,7 +1724,7 @@ export class HostWorkspace {
       );
     });
   }
-  private checkAttentionAuthority(context: AttentionContext, authority?: TaskAuthorityLease) {
+  private checkAttentionAuthority(context: AttentionContext, authority?: ConnectionAuthorityLease) {
     if (!authority) return;
     assert(
       authority.ownerId === context.actor.accountId &&
@@ -1846,7 +1742,7 @@ export class HostWorkspace {
     );
     assert(!this.executionManager.busy.has(sessionId), 409, '此会话正在处理 Git 操作，指令未送达');
   }
-  async mutate(m: Mutation, localProjectId?: string, authority?: TaskAuthorityLease) {
+  async mutate(m: Mutation, localProjectId?: string, authority?: ConnectionAuthorityLease) {
     this.checkExecutionIdle(m.sessionId);
     return this.serial(m.sessionId, () =>
       this.mutateAccepted(m, localProjectId, undefined, authority),
@@ -1859,7 +1755,7 @@ export class HostWorkspace {
       binding: unknown;
       commit: (userTurnId: string) => AttentionReceipt;
     },
-    authority?: TaskAuthorityLease,
+    authority?: ConnectionAuthorityLease,
   ) {
     this.ensureConnected();
     authority?.current();
@@ -1887,7 +1783,7 @@ export class HostWorkspace {
       return JSON.parse(record.result);
     if (m.kind === 'turn')
       assert(
-        this.taskManager.allowsMutation(m.sessionId, m.operationId),
+        this.store.tasks.allows(m.sessionId),
         409,
         '协作子任务的原操作或授权尚未结束，请先核查',
       );
@@ -1977,29 +1873,11 @@ export class HostWorkspace {
     const inputConfig =
       m.kind === 'turn'
         ? (inputView.getState().history.at(-1)!.inputConfig as {
-            taskPlan?: TaskPlan;
-            mcpServerIds: string[];
             attachments?: AttachmentReference[];
           })
         : undefined;
     const attachments = inputConfig?.attachments ?? [];
     inputView.dispose();
-    const mcpServerIds = inputConfig ? mcpServerIdsSchema.parse(inputConfig.mcpServerIds) : [];
-    const mcpLease = mcpServerIds.length
-      ? this.mcpSettings.authorize(attachmentScope, mcpServerIds)
-      : undefined;
-    if (mcpLease) {
-      assert(authority, 409, 'MCP 授权需要当前账号与设备连接，请升级后重新发送');
-      authority.current();
-      mcpLease.assertCurrent();
-    }
-    const taskPlan = inputConfig?.taskPlan ? taskPlanSchema.parse(inputConfig.taskPlan) : undefined;
-    if (taskPlan) {
-      assert(authority, 409, '子任务授权需要当前账号与设备连接，请升级中转并重新发送');
-      authority.current();
-      const { current: _current, ...identity } = authority;
-      this.taskManager.validatePlan(attachmentScope, taskPlan, identity);
-    }
     if (attachments.length) {
       this.attachmentData(attachmentScope, attachments);
       const capabilities = validationWorkspace.agents.find(
@@ -2026,7 +1904,6 @@ export class HostWorkspace {
     const previousMeta = this.store.meta;
     let result: ReturnType<typeof journal.accept>;
     const assistantId = randomUUID();
-    let taskGrantId: string | undefined;
     if (m.kind === 'turn') {
       const view = mirror(validated.doc, m.sessionId);
       view.setState((s) => {
@@ -2055,44 +1932,11 @@ export class HostWorkspace {
         status: { type: 'working' },
       });
     }
+    const from = original.version();
     try {
       result = this.store.transaction(() => {
         authority?.current();
         journal.stage(this.workspace.id, m, turnId, undefined, effect?.binding);
-        if (mcpLease) {
-          authority!.current();
-          mcpLease.assertCurrent();
-          const { current: _current, ...identity } = authority!;
-          const grant = {
-            version: 1,
-            scope: attachmentScope,
-            authority: identity,
-            operationId: m.operationId,
-            userTurnId: turnId,
-            assistantTurnId: assistantId,
-            serverIds: mcpServerIds,
-          };
-          // Private authorization is accepted atomically with the original
-          // input and receipt. Startup never activates or replays this record.
-          const key =
-            'mcp-grant-v1/' +
-            createHash('sha256')
-              .update(JSON.stringify([attachmentScope, turnId]))
-              .digest('hex');
-          assert(!this.store.load(key), 409, '原 MCP 回合授权已经存在');
-          this.store.save(key, Buffer.from(JSON.stringify(grant)));
-        }
-        if (taskPlan) {
-          authority!.current();
-          const { current: _current, ...identity } = authority!;
-          taskGrantId = this.store.tasks.prepareGrant(
-            attachmentScope,
-            turnId,
-            assistantId,
-            taskPlan,
-            identity,
-          ).id;
-        }
         this.store.agents.bind(attachmentScope, agent);
         this.store.reserveAttachmentScope(attachmentScope);
         for (const attachment of attachments)
@@ -2106,7 +1950,7 @@ export class HostWorkspace {
           });
           view.dispose();
         }
-        this.store.persist(m.sessionId, validated.doc);
+        this.store.persist(m.sessionId, validated.doc, from);
         if (m.kind === 'permission')
           this.store.notifications.resolveApprovals(
             { ...attachmentScope, turnId: active!.turnId },
@@ -2125,6 +1969,8 @@ export class HostWorkspace {
     } catch (error) {
       this.store.meta = previousMeta;
       throw error;
+    } finally {
+      from.free();
     }
     if (m.kind === 'permission') {
       active!.doc = validated.doc;
@@ -2142,10 +1988,6 @@ export class HostWorkspace {
         agent,
         snapshotIssues: [],
         permissions: new Map(),
-        ...(mcpLease ? { mcp: { lease: mcpLease, authority: authority! } } : {}),
-        ...(taskGrantId
-          ? { task: { grantId: taskGrantId, authority: authority!, promptStarted: false } }
-          : {}),
       };
       this.active.set(m.sessionId, run);
       run.done = this.execute(m.sessionId, run).catch((error) => {
@@ -2172,8 +2014,10 @@ export class HostWorkspace {
     persist?: (turn: any) => void,
   ) {
     if ((run.stopped && !terminal) || this.closed) return;
-    const candidate = new LoroDoc();
-    candidate.import(run.doc.export({ mode: 'snapshot' }));
+    const previous = run.doc;
+    const from = previous.version();
+    const candidate = previous.fork();
+    candidate.setPeerId(previous.peerIdStr);
     const view = mirror(candidate, id);
     try {
       this.store.transaction(() => {
@@ -2181,7 +2025,7 @@ export class HostWorkspace {
         // records, document references and attention facts commit together.
         view.setState((s) => edit(s.history.find((t) => t.id === run.turnId)!));
         const turn = view.getState().history.find((t) => t.id === run.turnId)!;
-        this.store.persist(id, candidate);
+        this.store.persist(id, candidate, from);
         persist?.(turn);
       });
       run.doc = candidate;
@@ -2190,10 +2034,44 @@ export class HostWorkspace {
       throw error;
     } finally {
       view.dispose();
+      from.free();
+      if (run.doc === candidate) previous.free();
+      else candidate.free();
     }
     this.changed(id);
   }
   update(id: string, run: Active, update: any) {
+    if (
+      ['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate) &&
+      update.content?.type === 'text'
+    ) {
+      if (run.stopped || this.closed || this.active.get(id) !== run) return;
+      assert(this.meta.get(['m', 'session-' + id, 'id']) === id, 409, '输出会话已变化');
+      this.attachmentScope(run.projectScope);
+      const previous = run.doc;
+      const candidate = previous.fork();
+      candidate.setPeerId(previous.peerIdStr);
+      const from = previous.version();
+      try {
+        appendSessionText(
+          candidate,
+          id,
+          run.turnId,
+          update.sessionUpdate === 'agent_message_chunk' ? 'text' : 'thought',
+          normalizeAgentText(update.content.text).text,
+        );
+        this.store.persistOutput(id, candidate, from);
+      } catch (error) {
+        candidate.free();
+        throw error;
+      } finally {
+        from.free();
+      }
+      run.doc = candidate;
+      previous.free();
+      this.changed(id);
+      return;
+    }
     this.edit(id, run, (turn) => {
       const items = (turn.items ??= []);
       const meta = metas(this.meta)['session-' + id];
@@ -2215,16 +2093,7 @@ export class HostWorkspace {
         this.store.referenceAttachment(scope, reference.attachmentId);
         return reference;
       };
-      if (
-        ['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate) &&
-        update.content?.type === 'text'
-      ) {
-        const type = update.sessionUpdate === 'agent_message_chunk' ? 'text' : 'thought';
-        const content = normalizeAgentText(update.content.text);
-        const last = items.at(-1);
-        if (last?.type === type) last.text += content.text;
-        else items.push({ type, text: content.text });
-      } else if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate)) {
+      if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate)) {
         items.push(normalizeAgentContent(update.content, save));
       } else if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
         let tool = items.findLast(
@@ -2262,167 +2131,106 @@ export class HostWorkspace {
       const project = this.workspace.projects.find(
         (p) => p.id === (meta.project as any).localProjectId,
       )!;
-      const currentMcp = () => {
-        if (!run.mcp) return;
-        assert(this.boundRun(id, run, this.runBinding(id, run)), 409, MCP_AUTHORIZATION_EXPIRED);
-        run.mcp.authority.current();
-        run.mcp.lease.assertCurrent();
-      };
-      currentMcp();
-      let taskTools: ReturnType<SessionTaskManager['activate']> | undefined;
-      if (run.task) {
-        const task = run.task;
-        taskTools = this.taskManager.activate(
-          task.grantId,
-          () => {
-            task.authority.current();
-            assert(this.boundRun(id, run, this.runBinding(id, run)), 409, '父任务活动回合已结束');
-          },
-          {
-            canDispatch: () =>
-              assert(task.promptStarted, 409, '父任务尚未发送指令，协作工具暂不可执行'),
-          },
-        );
-        task.server = await createTaskMcp({ current: taskTools.current, call: taskTools.call });
-        taskTools.current();
-      }
       const session = await this.driver
-        .open(
-          agent,
-          run.rootPath,
-          this.store.nativeSession(id, run.execution, agent.id),
-          {
-            update: (value) => this.update(id, run, value),
-            usage: (update) => {
-              if (!this.boundRun(id, run, this.runBinding(id, run))) return;
-              try {
-                const context = this.controlsContext(
-                  { agentId: agent.id, sessionId: id },
-                  run.projectScope.localProjectId,
+        .open(agent, run.rootPath, this.store.nativeSession(id, run.execution, agent.id), {
+          update: (value) => this.update(id, run, value),
+          usage: (update) => {
+            if (!this.boundRun(id, run, this.runBinding(id, run))) return;
+            try {
+              const context = this.controlsContext(
+                { agentId: agent.id, sessionId: id },
+                run.projectScope.localProjectId,
+              );
+              this.usageCache.update(context.key, update);
+              this.changed();
+            } catch {
+              /* Revoked scopes and invalid telemetry cannot change the visible account. */
+            }
+          },
+          event: (event, binding) => this.sessionEvent(id, run, event, binding),
+          forkAnchor: (anchor, binding) => {
+            if (!this.boundRun(id, run, binding)) return;
+            try {
+              if (anchor.sourceNativeId === this.store.nativeSession(id, run.execution))
+                this.store.transaction(() =>
+                  this.store.forks.saveAnchor(
+                    run.projectScope,
+                    run.execution,
+                    run.turnId,
+                    anchor,
+                    agent,
+                  ),
                 );
-                this.usageCache.update(context.key, update);
-                this.changed();
-              } catch {
-                /* Revoked scopes and invalid telemetry cannot change the visible account. */
-              }
-            },
-            event: (event, binding) => this.sessionEvent(id, run, event, binding),
-            forkAnchor: (anchor, binding) => {
-              if (!this.boundRun(id, run, binding)) return;
-              try {
-                if (anchor.sourceNativeId === this.store.nativeSession(id, run.execution))
-                  this.store.transaction(() =>
-                    this.store.forks.saveAnchor(
-                      run.projectScope,
-                      run.execution,
-                      run.turnId,
-                      anchor,
-                      agent,
-                    ),
-                  );
-              } catch {
-                /* Missing or unpersisted anchors remain unavailable for a turn cutoff. */
-              }
-            },
-            question: (input) => {
-              const request = questionRequestSchema.parse(input);
-              const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
-              return this.boundRun(id, run, {
-                workspaceId,
-                localProjectId,
-                sessionId,
-                expectedTurnId,
-              })
-                ? this.interactions.receiveQuestion(request)
-                : Promise.resolve(cancelledQuestionAnswer(request));
-            },
-            permission: (value) => {
-              if (!this.boundRun(id, run, this.runBinding(id, run)))
-                return Promise.resolve({ outcome: { outcome: 'cancelled' } });
-              const requestId = randomUUID();
-              return new Promise((resolve) => {
-                const request = structuredClone(value);
-                run.permissions.set(requestId, {
-                  options: request.options,
-                  toolCall: request.toolCall,
-                  resolve,
-                });
-                try {
-                  this.edit(
-                    id,
-                    run,
-                    (turn) => {
-                      let item = turn.items.findLast(
-                        (i: any) =>
-                          i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
-                      );
-                      // A tool may ask again or have concurrent permission requests.
-                      // Keep every request addressable by its own immutable id.
-                      if (!item || item.permissionRequest) turn.items.push((item = {}));
-                      Object.assign(item, request.toolCall, {
-                        type: 'tool_call',
-                        permissionRequest: { requestId, options: request.options },
-                      });
-                    },
-                    false,
-                    () => {
-                      this.store.notifications.record(
-                        { ...run.projectScope, turnId: run.turnId },
-                        'approval-required',
-                        requestId,
-                      );
-                      this.store.attention.recordPermission({
-                        sessionId: id,
-                        assistantTurnId: run.turnId,
-                        userTurnId: run.userTurnId,
-                        localProjectId: project.id,
-                        requestId,
-                        summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
-                      });
-                    },
-                  );
-                } catch (error) {
-                  run.permissions.delete(requestId);
-                  resolve({ outcome: { outcome: 'cancelled' } });
-                  throw error;
-                }
+            } catch {
+              /* Missing or unpersisted anchors remain unavailable for a turn cutoff. */
+            }
+          },
+          question: (input) => {
+            const request = questionRequestSchema.parse(input);
+            const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
+            return this.boundRun(id, run, {
+              workspaceId,
+              localProjectId,
+              sessionId,
+              expectedTurnId,
+            })
+              ? this.interactions.receiveQuestion(request)
+              : Promise.resolve(cancelledQuestionAnswer(request));
+          },
+          permission: (value) => {
+            if (!this.boundRun(id, run, this.runBinding(id, run)))
+              return Promise.resolve({ outcome: { outcome: 'cancelled' } });
+            const requestId = randomUUID();
+            return new Promise((resolve) => {
+              const request = structuredClone(value);
+              run.permissions.set(requestId, {
+                options: request.options,
+                toolCall: request.toolCall,
+                resolve,
               });
-            },
-          },
-          {
-            ...(run.mcp
-              ? {
-                  mcp: {
-                    servers: run.mcp.lease.servers,
-                    redact: run.mcp.lease.redact,
-                    assertCurrent: currentMcp,
+              try {
+                this.edit(
+                  id,
+                  run,
+                  (turn) => {
+                    let item = turn.items.findLast(
+                      (i: any) =>
+                        i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
+                    );
+                    // A tool may ask again or have concurrent permission requests.
+                    // Keep every request addressable by its own immutable id.
+                    if (!item || item.permissionRequest) turn.items.push((item = {}));
+                    Object.assign(item, request.toolCall, {
+                      type: 'tool_call',
+                      permissionRequest: { requestId, options: request.options },
+                    });
                   },
-                }
-              : {}),
-            ...(run.task?.server && taskTools
-              ? {
-                  taskTools: {
-                    ...run.task.server.endpoint,
-                    assertCurrent: taskTools.current,
-                    onPromptDispatch: () => {
-                      taskTools!.current();
-                      run.task!.promptStarted = true;
-                    },
+                  false,
+                  () => {
+                    this.store.notifications.record(
+                      { ...run.projectScope, turnId: run.turnId },
+                      'approval-required',
+                      requestId,
+                    );
+                    this.store.attention.recordPermission({
+                      sessionId: id,
+                      assistantTurnId: run.turnId,
+                      userTurnId: run.userTurnId,
+                      localProjectId: project.id,
+                      requestId,
+                      summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
+                    });
                   },
-                }
-              : {}),
+                );
+              } catch (error) {
+                run.permissions.delete(requestId);
+                resolve({ outcome: { outcome: 'cancelled' } });
+                throw error;
+              }
+            });
           },
-        )
+        })
         .catch((error) => {
-          if (
-            error instanceof AppError &&
-            error.status === 409 &&
-            ((run.task &&
-              error.message === '此 Agent 不支持 HTTP MCP，无法执行已授权的多 Agent 任务') ||
-              (run.mcp &&
-                [MCP_UNSUPPORTED_TRANSPORT, MCP_AUTHORIZATION_EXPIRED].includes(error.message)))
-          )
-            throw error;
           throw new AppError(
             502,
             publicAgentFailure(error, 'Agent 启动或恢复失败，请在执行电脑检查本机配置'),
@@ -2434,7 +2242,6 @@ export class HostWorkspace {
         return;
       }
       this.checkExecutionLease(run.execution);
-      currentMcp();
       this.store.agents.assertCurrent(run.projectScope, agent);
       this.store.setNativeSession(id, session.id, run.execution, agent.id);
       this.saveAgentFeatures(id, run, session, agent);
@@ -2467,9 +2274,7 @@ export class HostWorkspace {
         if (effortConfigId && typeof values[effortConfigId] !== 'string')
           input.configOptionValues = { ...values, [effortConfigId]: initialReasoningEffort };
       }
-      const effectiveInput = taskTools
-        ? { ...input, prompt: String(input.prompt ?? '') + '\n\n' + taskTools.promptContext }
-        : input;
+      const effectiveInput = input;
       await session.prompt(
         attachmentData.length ? { ...effectiveInput, attachmentData } : effectiveInput,
         this.runBinding(id, run),
@@ -2485,13 +2290,6 @@ export class HostWorkspace {
       run.permissions.clear();
       run.stopped = true;
       this.interactions.cancelPending(id, run);
-      if (run.task) {
-        await run.task.server?.close().catch(() => {});
-        if (!this.closed)
-          await this.taskManager
-            .endParent(run.projectScope, run.turnId, 'canceled')
-            .catch(() => {});
-      }
       await Promise.resolve(run.session?.close()).catch(() => {});
       if (!this.closed) {
         try {
@@ -2625,27 +2423,6 @@ export class HostWorkspace {
   async cancel(sessionId: string, turnId: string, localProjectId?: string) {
     return this.serial(sessionId, () => this.cancelLocked(sessionId, turnId, localProjectId));
   }
-  // Internal grant revocation must still stop its exact turn after a project is unregistered.
-  async cancelTaskTurn(scope: AttachmentScope, assistantTurnId: string, userTurnId: string) {
-    await this.serial(scope.sessionId, async () => {
-      const run = this.active.get(scope.sessionId);
-      if (
-        !run ||
-        run.stopped ||
-        run.turnId !== assistantTurnId ||
-        run.userTurnId !== userTurnId ||
-        !isDeepStrictEqual(run.projectScope, scope)
-      )
-        return;
-      run.terminal = { status: 'canceled' };
-      run.stopped = true;
-      this.interactions.cancelPending(scope.sessionId, run);
-      for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
-      await run.session?.cancel().catch(() => {});
-      await Promise.resolve(run.session?.close()).catch(() => {});
-      await run.done;
-    });
-  }
   sessionChanged(sessionId: string) {
     this.changed(sessionId);
   }
@@ -2677,13 +2454,6 @@ export class HostWorkspace {
   close() {
     if (this.closed) return;
     this.collaboration.close();
-    try {
-      this.taskManager.close();
-    } catch {
-      // Persistence failure must not retain live capabilities or Agent processes.
-    }
-    for (const run of this.active.values()) void run.task?.server?.close().catch(() => {});
-    void this.previewManager.closeAll().catch(() => {});
     const errors: unknown[] = [];
     for (const [id, run] of this.active) {
       try {

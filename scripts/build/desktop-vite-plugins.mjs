@@ -20,7 +20,6 @@ export function desktopShellAssets({ appRoot, development }) {
     'settings/settings.html': 'apps/desktop/src/settings/settings.html',
     'settings/settings.css': 'apps/desktop/src/settings/settings.css',
     'settings/settings.js': 'apps/desktop/src/settings/settings.js',
-    'runtime/preview-renderer.cjs': 'apps/desktop/src/main/preview-renderer.cjs',
   };
   return {
     name: 'moor-desktop-shell-assets',

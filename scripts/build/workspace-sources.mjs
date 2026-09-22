@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 export const repository = fileURLToPath(new URL('../../', import.meta.url));
 const escapePattern = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -9,7 +9,10 @@ const escapePattern = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // development cannot silently combine new source with an omitted package's dist.
 export function workspaceSourceAliases(root = repository) {
   return readdirSync(resolve(root, 'packages'), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter(
+      (entry) =>
+        entry.isDirectory() && existsSync(resolve(root, 'packages', entry.name, 'package.json')),
+    )
     .sort((a, b) => a.name.localeCompare(b.name))
     .flatMap((entry) => {
       const directory = resolve(root, 'packages', entry.name);

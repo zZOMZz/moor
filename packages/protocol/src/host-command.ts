@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { agentUsageRequestSchema, runPreferencesRequestSchema } from './agent-controls';
 import { AppError, assert, id, mutationSchema, sessionActionSchema } from './protocol';
 import { agentOptionsRequestSchema } from './protocol';
+import { sessionPageRequestSchema } from './session-page';
 import { sessionBase64Schema, sessionCancelSchema } from './session-responses';
 import { projectFileReadSchema } from './content-protocol';
 import { attachmentActionSchema, attachmentReadSchema } from './attachment-protocol';
@@ -23,7 +24,7 @@ import {
 } from './github-write-protocol';
 import { mcpReadSchema } from './mcp-protocol';
 import { sessionControlActionSchema, sessionOperationSchema } from './session-control-protocol';
-import { taskReadSchema, taskActionSchema, type TaskAuthorityLease } from './task-protocol';
+import { taskReadSchema, taskActionSchema } from './task-protocol';
 import { skillsReadSchema } from './skills-protocol';
 import { rolesReadSchema, rolesActionRequestSchema } from './role-protocol';
 import {
@@ -38,6 +39,7 @@ import {
 // can have unknown delivery outcomes and retain their original operation identity.
 export const HOST_COMMAND_METHODS = [
   'sessions',
+  'sessions-page',
   'agent-options',
   'agent-usage',
   'run-preferences',
@@ -83,6 +85,7 @@ export const HOST_COMMAND_METHODS = [
 export type HostCommandMethod = (typeof HOST_COMMAND_METHODS)[number];
 export const hostCommandSchemas = {
   sessions: z.object({}).strict(),
+  'sessions-page': sessionPageRequestSchema,
   'agent-options': agentOptionsRequestSchema,
   'agent-usage': agentUsageRequestSchema,
   'run-preferences': runPreferencesRequestSchema,

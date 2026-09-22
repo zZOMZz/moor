@@ -6,7 +6,6 @@ const commands: Record<string, readonly string[]> = {
     'login',
     'status',
     'logout',
-    'export-trust',
     'google-start',
     'google-review',
     'google-confirm',
@@ -28,30 +27,7 @@ const commands: Record<string, readonly string[]> = {
   ],
   operation: ['list', 'inspect', 'retry', 'abandon'],
   config: ['show'],
-  secure: [
-    'hosts',
-    'catalog',
-    'organize',
-    'catalog-operations',
-    'catalog-inspect',
-    'catalog-retry',
-    'catalog-abandon',
-    'list',
-    'create',
-    'read',
-    'send',
-    'mcp',
-    'stop',
-    'archive',
-    'restore',
-    'rename',
-    'pin',
-    'unpin',
-    'operations',
-    'inspect',
-    'retry',
-    'abandon',
-  ],
+  retired: ['list', 'export'],
 };
 const booleans = new Set(['json', 'stdin', 'follow', 'wait', 'help']);
 const values = new Set([
@@ -104,11 +80,18 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   }
   if (flags.help) return { group: 'help', command: 'show', flags };
   const [group, command, positional] = words;
+  if (flags['mcp-server-ids'])
+    throw new CliError('retired', 'Moor逐回合附加MCP已退场；不会保存或发送新授权。');
+  if (group === 'secure' || (group === 'auth' && command === 'export-trust'))
+    throw new CliError(
+      'retired',
+      '加密执行与信任导出已退场；使用 retired list 查看本机旧记录，或 retired export ID --output 私有路径离线归档。',
+    );
   if (!group || !command || !commands[group]?.includes(command) || words.length > 3)
     throw new CliError('usage', '请指定受支持的命令，例如 targets list；使用 --help 查看帮助。');
   if (
     positional &&
-    (!['operation', 'session', 'secure'].includes(group) ||
+    (!['operation', 'session', 'retired'].includes(group) ||
       !/^[A-Za-z0-9_:-]{1,160}$/.test(positional))
   )
     throw new CliError('usage', '位置参数只接受会话或操作编号；正文请用 --stdin 或 --file。');
@@ -125,53 +108,17 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   if ((flags.follow || flags.wait) && group !== 'session')
     throw new CliError('usage', '--follow/--wait 仅用于会话读取、发送或停止后的等待。');
   const allowed = new Set(['json', 'state-dir']);
-  if (group === 'secure') {
-    const recovery = [
-        'inspect',
-        'retry',
-        'abandon',
-        'catalog-inspect',
-        'catalog-retry',
-        'catalog-abandon',
-      ].includes(command),
-      listing = ['operations', 'catalog-operations'].includes(command),
-      organization = command === 'organize',
-      business = !['hosts', 'catalog', 'organize'].includes(command) && !listing && !recovery;
-    if (!listing) {
-      allowed.add('endpoint');
-      if (!flags.endpoint) throw new CliError('usage', '加密命令需要明确 --endpoint 私有文件。');
-    }
-    if (command === 'catalog' || business || organization) {
-      allowed.add('host');
-      if (!flags.host) throw new CliError('usage', '请明确选择 --host 设备编号。');
-    }
-    if (business)
-      for (const key of ['workspace', 'project', 'space', 'replica', 'session']) allowed.add(key);
-    if (['create', 'send', 'rename', 'organize'].includes(command))
-      for (const key of ['stdin', 'file']) allowed.add(key);
-    if (['create', 'send'].includes(command)) allowed.add('agent');
-    if (command === 'send')
-      for (const key of ['model', 'effort', 'mode', 'mcp-server-ids']) allowed.add(key);
-    if (command === 'stop') allowed.add('turn');
-    if (['send', 'retry'].includes(command)) allowed.add('timeout');
-    const runtimeSelection = !!flags.workspace && !!flags.project && !flags.space && !flags.replica,
-      productSelection = !!flags.space && !!flags.replica && !flags.workspace && !flags.project;
+  if (group === 'retired') {
+    if (command === 'export') allowed.add('output');
     if (
       Object.keys(flags).some((key) => !allowed.has(key)) ||
-      (business && !runtimeSelection && !productSelection) ||
-      (organization && !flags.stdin && !flags.file)
+      (command === 'list' && positional) ||
+      (command === 'export' && (!positional || !flags.output))
     )
       throw new CliError(
         'usage',
-        '业务命令需要 --space/--replica 或 --workspace/--project；目录变更需要 --stdin 或 --file。',
+        '离线归档仅支持 retired list 或 retired export ID --output 私有文件路径。',
       );
-    if (
-      (recovery && !positional) ||
-      (positional &&
-        (['hosts', 'catalog', 'organize', 'list', 'create'].includes(command) || listing)) ||
-      (positional && flags.session)
-    )
-      throw new CliError('usage', '请明确且只指定一次原操作或会话编号。');
     return { group, command, positional, flags };
   }
   const google = group === 'auth' && command.startsWith('google-');
@@ -184,12 +131,8 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
       if (!flags.stdin) throw new CliError('usage', 'Google 登录确认需要 --stdin 核对邮箱和代码。');
     }
   } else if (group !== 'config' && !(group === 'operation' && command === 'list')) {
-    if (!(group === 'auth' && command === 'export-trust')) allowed.add('connection');
+    allowed.add('connection');
     allowed.add('server');
-  }
-  if (group === 'auth' && command === 'export-trust') {
-    allowed.add('output');
-    if (!flags.output) throw new CliError('usage', '导出信任连接需要 --output 私有文件路径。');
   }
   if (group === 'auth' && command === 'login' && flags.connection && (flags.stdin || flags.file))
     throw new CliError('usage', '本机连接登录不接受远程登录资料。');
@@ -202,7 +145,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     for (const name of ['stdin', 'file']) allowed.add(name);
   if (group === 'session' && ['create', 'send'].includes(command)) allowed.add('agent');
   if (group === 'session' && command === 'send')
-    for (const name of ['model', 'effort', 'mode', 'mcp-server-ids']) allowed.add(name);
+    for (const name of ['model', 'effort', 'mode']) allowed.add(name);
   if (group === 'session' && command === 'stop') allowed.add('turn');
   if (group === 'session' && ['read', 'send', 'stop'].includes(command))
     for (const name of ['wait', 'follow', 'timeout']) allowed.add(name);
@@ -227,28 +170,18 @@ export const cliHelp = `Moor CLI (cliVersion 1)
   auth google-review                             手动读取待确认邮箱、服务器和代码
   auth google-confirm --stdin                     输入 {"expectedEmail":"...","expectedCode":"..."}
   auth google-cancel                              取消当前 Google 登录流程
-  auth export-trust --output PATH               将当前远程登录导出为新的私有信任连接文件
   targets list | targets use --workspace ID --replica ID
   session create --agent ID [--stdin | --file PATH]  可选标题文本
   session list | session read [ID] [--follow | --wait] [--timeout MS]
   session send [ID] --stdin | --file PATH [--model ID] [--effort ID] [--mode ID] [--wait]
-  session mcp [ID]                                读取本机授权的 MCP 配置版本
-  session send [ID] --stdin --mcp-server-ids ID,ID  明确授权该回合使用这些版本
+  session mcp [ID]                                只读查看已退场的Moor MCP配置摘要
   session stop [ID] [--turn ID] [--wait]
   session archive|restore|pin|unpin [ID]
   session rename [ID] --stdin | --file PATH
   operation list | operation inspect|retry|abandon ID
   config show
-  secure hosts --endpoint PATH                   读取公开在线提示（须解密目录才确认主机）
-  secure catalog --endpoint PATH --host ID       读取已认证的加密运行和产品目录
-  secure list|create|read|send|stop|mcp|rename|archive|restore|pin|unpin [ID]
-    --endpoint PATH --host ID --space ID --replica ID
-    或明确使用 --workspace ID --project ID 选择对应运行项目
-  secure send [ID] ... --mcp-server-ids ID,ID [--timeout MS]
-    保持前台连接直到原 MCP 回合结束；Ctrl-C 或显式超时会撤销该连接授权
-  secure operations | secure inspect|retry|abandon ID --endpoint PATH
-  secure organize --endpoint PATH --host ID --stdin | --file PATH
-  secure catalog-operations | secure catalog-inspect|catalog-retry|catalog-abandon ID --endpoint PATH
+  retired list                                   离线查看已退场加密记录的原编号和已存状态
+  retired export ID --output PATH                 将原记录导出到新的私有文件，不发送或改写状态
 通用：--json、--state-dir PATH、--connection PATH
-默认不会发送恢复的请求；重试与结束只作用于原编号。普通会话等待超时或 Ctrl-C 不发送停止操作；加密 MCP 等待退出会关闭授权连接，已派发的外部操作请核查原结果。
+默认不会发送恢复的请求；重试与结束只作用于原编号。普通会话等待超时或 Ctrl-C 不发送停止操作。
 `;

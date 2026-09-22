@@ -1,3 +1,4 @@
+import { BrowserWorkspaceClient } from '../src/browser-workspace-client';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DesktopWorkspaceClient } from '@moor/client/node/workspace-client';
@@ -14,7 +15,7 @@ function gate() {
 }
 const isBusinessRequest = (call: { path: string }) =>
   call.path.includes('/replicas/') && !call.path.endsWith('/context');
-function fixture(source: 'local' | 'remote' = 'local') {
+function fixture(source: 'local' | 'remote' = 'local', browser = false) {
   const identity = {
     owner: 'account',
     deviceId: 'device',
@@ -75,7 +76,8 @@ function fixture(source: 'local' | 'remote' = 'local') {
     rejected: false,
     errorMessage: 'SYNTHETIC_PRIVATE_RESPONSE',
   };
-  const client = new DesktopWorkspaceClient({
+  const Client = browser ? BrowserWorkspaceClient : DesktopWorkspaceClient;
+  const client = new Client({
     source,
     origin: 'https://relay.synthetic.invalid',
     cookie: 'personal=SYNTHETIC_COOKIE_123456789',
@@ -85,9 +87,10 @@ function fixture(source: 'local' | 'remote' = 'local') {
     },
     fetch: (async (url: string, options: RequestInit) => {
       assert.equal(options.redirect, 'error');
+      if (browser) assert.equal(options.credentials, 'same-origin');
       assert.equal(
         new Headers(options.headers).get('Cookie'),
-        'personal=SYNTHETIC_COOKIE_123456789',
+        browser ? null : 'personal=SYNTHETIC_COOKIE_123456789',
       );
       const path = new URL(url).pathname;
       calls.push({ path, method: options.method!, body: options.body as string | undefined });
@@ -464,3 +467,23 @@ test('desktop attention rejects results after actor authority changes during an 
   assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
   f.client.close();
 });
+
+for (const browser of [false, true]) {
+  test(`${browser ? 'browser' : 'node'} adapter uses the same bounded routes and discards changed account responses`, async () => {
+    const f = fixture('remote', browser);
+    const request = await f.request();
+    f.calls.length = 0;
+    assert.deepEqual(await f.client.request(request), { ok: true, value: [] });
+    assert.equal(f.calls.length, 3);
+    assert.equal(f.calls.filter((call) => call.path.endsWith('/sessions')).length, 1);
+    const before = f.calls.length;
+    assert.equal(
+      ((await f.client.request({ ...request, url: 'https://foreign.invalid/' })) as any).ok,
+      false,
+    );
+    assert.equal(f.calls.length, before);
+    f.state.owner = 'different-account';
+    assert.equal(((await f.client.request(request)) as any).ok, false);
+    f.client.close();
+  });
+}

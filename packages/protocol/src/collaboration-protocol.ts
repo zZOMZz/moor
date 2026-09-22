@@ -111,7 +111,6 @@ export type TaskIntent = z.infer<typeof taskIntentSchema>;
 export const taskWithdrawalSchema = operationBase
   .extend({ kind: z.literal('withdraw'), taskId: id })
   .strict();
-export type TaskWithdrawal = z.infer<typeof taskWithdrawalSchema>;
 
 export const collaborationOperationSchema = z
   .discriminatedUnion('kind', [taskIntentSchema, taskWithdrawalSchema])

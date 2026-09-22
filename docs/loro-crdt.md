@@ -383,6 +383,8 @@ history 中的回合 → LoroMap
 
 因此，业务代码可以整项替换内容，但不能据此断言底层所有嵌套字段都是原子值；同时，普通 `text` 字段也不会自动获得 `LoroText` 的字符合并能力。阅读时以实际容器和锁定版本行为为准。相关推导可在已安装包的 `loro-mirror/src/schema/types.ts` 中核对；产品合法性仍由 [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts) 判断。
 
+当前主机对流式输出另有明确的追加实现：[session-output.ts](../packages/session/src/session-output.ts)将新助手文本和思考的 `text` 创建为 LoroText，避免每个片段重复保存累计字符串。这不是 Any 的默认推导。旧历史中的普通字符串保持原样，只有继续追加的活动项会转换；两种容器经 Mirror 都读作字符串。原始增量与完整检查点保留版本向量连续性，详见[流式输出的持久化](runtime.md#流式输出的持久化)。
+
 ### 7.3 持久历史与活动进程分开
 
 Loro 保存已发生的回合与内容。当前 Agent 会话、等待审批的回调和停止标记属于执行主机的活动状态。历史里有一张未完成审批卡片，不能证明原 Agent 进程现在还在等待它。

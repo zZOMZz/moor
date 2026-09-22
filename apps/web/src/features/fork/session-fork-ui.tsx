@@ -1,9 +1,8 @@
-import { useState, type ReactNode } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { GitFork, X } from 'lucide-react';
-import { paint } from '../../components/ui';
-import { sessionForkKey, type SessionForkController } from './session-fork';
-import type { ForkCutoff, ForkDirectory, ForkOrigin } from '@moor/protocol/fork-protocol';
+import type { ForkCutoff, ForkDirectory } from '@moor/protocol/fork-protocol';
+import { X } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { type SessionForkController } from './session-fork';
 
 export type SessionForkPanelProps = {
   controller?: SessionForkController;
@@ -270,49 +269,5 @@ export function SessionForkPanel(p: SessionForkPanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showSessionForkPanel(props?: SessionForkPanelProps) {
-  paint(
-    '#session-fork-view',
-    props ? (
-      <SessionForkPanel
-        key={`${props.controller ? sessionForkKey(props.controller.target) : 'loading'}/${props.initialTurnId ?? ''}`}
-        {...props}
-      />
-    ) : null,
-  );
-}
-export function showSessionForkControl(props?: { onOpen(): void; disabled?: boolean }) {
-  paint(
-    '#session-fork-control',
-    props ? (
-      <button
-        title="创建会话副本"
-        aria-label="创建会话副本"
-        disabled={props.disabled}
-        onClick={props.onOpen}
-      >
-        <GitFork size={16} />
-        <span>会话副本</span>
-      </button>
-    ) : null,
-  );
-}
-export function showForkOrigin(props?: { origin: ForkOrigin; onOpen(): void }) {
-  paint(
-    '#session-fork-origin',
-    props ? (
-      <aside className="fork-origin">
-        <span>
-          来自「{props.origin.sourceTitle || '未命名会话'}」 ·{' '}
-          {props.origin.cutoff.kind === 'current'
-            ? '创建时 Agent 已保存上下文'
-            : '指定完成回合结束'}{' '}
-          · {props.origin.directory === 'worktree' ? '独立工作目录' : '沿用源目录'}
-        </span>
-        <button onClick={props.onOpen}>查看来源与截止点</button>
-      </aside>
-    ) : null,
   );
 }

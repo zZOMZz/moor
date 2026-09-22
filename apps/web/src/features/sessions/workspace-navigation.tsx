@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import { Menu } from '@base-ui/react/menu';
 import { Dialog } from '@base-ui/react/dialog';
@@ -13,144 +13,28 @@ import {
   Ellipsis,
   RefreshCw,
 } from 'lucide-react';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
-import type { DesktopWorkspaceSource } from '@moor/client/workspace-protocol';
+import {
+  isWorkspaceListOfflineFailure,
+  type WorkspaceController,
+  type WorkspaceSessionPage,
+} from '../workspace/workspace-controller';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
 import type { SessionAction } from '@moor/protocol/protocol';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
-export type NavigationProject = NonNullable<WorkspaceClientState['project']> & {
-  source: DesktopWorkspaceSource;
-};
-export const projectKey = (entry: NavigationProject) => canonical([entry.source, entry.target]);
-export const workspaceKey = (entry: NavigationProject) =>
-  canonical([
-    entry.source,
-    entry.target.serverKey,
-    entry.target.owner,
-    entry.target.catalogWorkspaceId,
-  ]);
-export function navigationProjects(state: WorkspaceClientState): NavigationProject[] {
-  return (['local', 'remote'] as const).flatMap((source) =>
-    (state.catalogs[source]?.targets ?? []).map((entry) => ({ ...entry, source })),
-  );
-}
-export function useNavigationSessions(
-  controller: WorkspaceController,
-  state: WorkspaceClientState,
-) {
-  type Entry = {
-    connection: string;
-    revision: number;
-    sessions: SessionMetadata[];
-    unavailable: boolean;
-    online: boolean;
-  };
-  const [result, setResult] = useState<Record<string, Entry>>({});
-  const reads = navigationProjects(state).map((project) => ({
-    project,
-    key: projectKey(project),
-    connection: canonical([
-      state.catalogs[project.source]?.connectionId,
-      state.catalogs[project.source]?.actor ?? null,
-    ]),
-    revision:
-      controller.projectRevision?.(project.source, project.target) ??
-      controller.navigationRevision ??
-      0,
-  }));
-  const signature = canonical(reads.map(({ project, ...read }) => [read, project.online]));
-  const reader = useMemo(
-    () => ({
-      active: true,
-      running: false,
-      desired: [] as typeof reads,
-      cache: {} as Record<string, Entry>,
-      inFlight: new Set<string>(),
-    }),
-    [controller],
-  );
-  useEffect(() => {
-    reader.active = true;
-    return () => {
-      reader.active = false;
-    };
-  }, [reader]);
-  useEffect(() => {
-    reader.desired = reads;
-    const keys = new Set(reads.map((read) => read.key));
-    for (const key of Object.keys(reader.cache)) if (!keys.has(key)) delete reader.cache[key];
-    const needed = (read: (typeof reads)[number]) => {
-      const previous = reader.cache[read.key];
-      return (
-        !previous ||
-        previous.connection !== read.connection ||
-        previous.revision !== read.revision ||
-        previous.online !== read.project.online
-      );
-    };
-    const publish = () => {
-      if (reader.active) setResult({ ...reader.cache });
-    };
-    const start = () => {
-      if (!reader.active || reader.running) return;
-      reader.running = true;
-      async function worker() {
-        while (reader.active) {
-          const read = reader.desired.find(
-            (entry) => !reader.inFlight.has(entry.key) && needed(entry),
-          );
-          if (!read) return;
-          reader.inFlight.add(read.key);
-          const { project, key, connection, revision } = read;
-          let sessions: SessionMetadata[] = [],
-            unavailable = false;
-          try {
-            sessions = await controller.listProjectSessions(project.source, project.target);
-          } catch {
-            unavailable = true;
-            if (reader.cache[key]?.connection === connection)
-              sessions = reader.cache[key]!.sessions;
-          } finally {
-            reader.inFlight.delete(key);
-          }
-          if (
-            reader.desired.some((entry) => entry.key === key && entry.connection === connection)
-          ) {
-            reader.cache[key] = {
-              connection,
-              revision,
-              online: project.online,
-              sessions,
-              unavailable,
-            };
-            publish();
-          }
-        }
-      }
-      // Keep four workers across invalidations. A burst only replaces the desired revision;
-      // it cannot restart another batch while older network reads are still pending.
-      void Promise.all(Array.from({ length: 4 }, worker)).finally(() => {
-        reader.running = false;
-        if (reader.desired.some(needed)) start();
-      });
-    };
-    publish();
-    start();
-  }, [controller, reader, signature]);
-  const sessions: Record<string, SessionMetadata[]> = {},
-    unavailable: string[] = [];
-  for (const read of reads) {
-    const entry = result[read.key];
-    if (entry?.connection === read.connection) {
-      sessions[read.key] = entry.sessions;
-      if (entry.unavailable) unavailable.push(read.key);
-    }
-  }
-  if (state.project && state.scope)
-    sessions[projectKey({ ...state.project, source: state.scope.source })] = state.sessions;
-  return { sessions, unavailable };
-}
+import {
+  projectKey,
+  appendNavigationPage,
+  sessionPageError,
+  type NavigationProject,
+} from './workspace-navigation-pages';
+export {
+  useNavigationSessions,
+  navigationProjects,
+  projectKey,
+  workspaceKey,
+  type NavigationProject,
+} from './workspace-navigation-pages';
 
 type RowAction = (
   session: SessionMetadata,
@@ -331,6 +215,13 @@ export function NavigationSessions({
   onOpen,
   onAction,
   kind,
+  more = false,
+  loading = false,
+  cached = false,
+  legacy = false,
+  error = false,
+  onLoadMore,
+  onRefresh,
 }: {
   entries: { project: NavigationProject; session: SessionMetadata }[];
   selected?: string;
@@ -338,6 +229,13 @@ export function NavigationSessions({
   onOpen(project: NavigationProject, session: SessionMetadata): void;
   onAction: ProjectAction;
   kind: 'pinned' | 'recent';
+  more?: boolean;
+  loading?: boolean;
+  cached?: boolean;
+  legacy?: boolean;
+  error?: boolean;
+  onLoadMore?(): void;
+  onRefresh?(): void;
 }) {
   return (
     <section
@@ -345,6 +243,17 @@ export function NavigationSessions({
       aria-label={kind === 'pinned' ? '置顶会话' : '最近会话'}
     >
       <h2>{kind === 'pinned' ? '置顶' : '最近'}</h2>
+      {cached && (
+        <p className="workspace-muted" role="status">
+          仅显示本机已缓存的会话
+        </p>
+      )}
+      {legacy && <p className="workspace-muted">含旧主机兼容目录</p>}
+      {error && (
+        <p className="workspace-muted" role="status">
+          部分列表尚未确认 <button onClick={onRefresh}>重新读取</button>
+        </p>
+      )}
       <ul>
         {entries.map(({ project, session }) => {
           const key = canonical([projectKey(project), session.id]);
@@ -367,6 +276,11 @@ export function NavigationSessions({
           {kind === 'pinned' ? '置顶的会话会显示在这里' : '还没有最近会话'}
         </p>
       )}
+      {more && (
+        <button className="workspace-show-more" disabled={loading || disabled} onClick={onLoadMore}>
+          {loading ? '正在读取…' : `加载更多${kind === 'pinned' ? '置顶' : '最近'}会话`}
+        </button>
+      )}
     </section>
   );
 }
@@ -383,6 +297,8 @@ export function NavigationProjectGroup({
   onAction,
   onCreate,
   onRefresh,
+  controller,
+  revision = 0,
 }: {
   project: NavigationProject;
   sessions?: SessionMetadata[];
@@ -395,31 +311,84 @@ export function NavigationProjectGroup({
   onAction: ProjectAction;
   onCreate(project: NavigationProject): void;
   onRefresh(project: NavigationProject): void;
+  controller?: WorkspaceController;
+  revision?: number;
 }) {
   const [expanded, setExpanded] = useState(false),
     [all, setAll] = useState(false),
     [archived, setArchived] = useState(false);
-  const shown = (sessions ?? [])
-    .filter(
-      (session) =>
-        Boolean(session.isArchived) === archived &&
-        (archived || !session.isPinned) &&
-        (session.title || '未命名会话').toLocaleLowerCase().includes(query.toLocaleLowerCase()),
-    )
-    .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
-  const visible = all || query || archived ? shown : shown.slice(0, 5);
+  const paged = typeof controller?.listProjectSessionPage === 'function';
+  const open = expanded;
+  const [page, setPage] = useState<WorkspaceSessionPage>();
+  const [pageError, setPageError] = useState<string>();
+  const [pageLoading, setPageLoading] = useState(false);
+  const readVersion = useRef(0);
+  const pageIdentity = canonical([
+    projectKey(project),
+    project.online,
+    revision,
+    query.trim(),
+    archived,
+  ]);
+  const loadPage = async (more = false, fresh = false) => {
+    if (!paged || !controller || (more && !page?.nextCursor)) return;
+    const serial = ++readVersion.current,
+      previous = page;
+    setPageLoading(true);
+    setPageError(undefined);
+    if (!more) setPage(undefined);
+    try {
+      const next = await controller.listProjectSessionPage(project.source, project.target, {
+        archived: archived ? 'archived' : 'active',
+        pinned: archived ? 'all' : 'unpinned',
+        query: query.trim(),
+        limit: 30,
+        ...(more ? { cursor: previous!.nextCursor! } : {}),
+        fresh: fresh || more,
+      });
+      if (readVersion.current === serial)
+        setPage(more ? appendNavigationPage(previous!, next) : next);
+    } catch (error) {
+      if (readVersion.current === serial) {
+        const cached = more && previous && isWorkspaceListOfflineFailure(error);
+        setPage(cached ? { ...previous, source: 'cache', partial: true } : undefined);
+        setPageError(cached ? '下一页尚未缓存，请连接后再读取。' : sessionPageError(error));
+      }
+    } finally {
+      if (readVersion.current === serial) setPageLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (open && paged) void loadPage(false, true);
+    return () => {
+      readVersion.current++;
+    };
+  }, [controller, open, pageIdentity]);
+  const shown = paged
+    ? (page?.items ?? [])
+    : (sessions ?? [])
+        .filter(
+          (session) =>
+            Boolean(session.isArchived) === archived &&
+            (archived || !session.isPinned) &&
+            (session.title || '未命名会话').toLocaleLowerCase().includes(query.toLocaleLowerCase()),
+        )
+        .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
+  const visible =
+    paged && !page?.legacy ? shown : all || query || archived ? shown : shown.slice(0, 5);
+  const listOnline = project.online && !unavailable && !pageError && page?.source !== 'cache';
   return (
     <section className="workspace-project-group" aria-label={project.projectName}>
       <div className="workspace-project-heading" data-selected={selected || undefined}>
         <button
           className="workspace-project"
-          aria-expanded={expanded}
+          aria-expanded={open}
           title={`${project.projectName} · ${project.hostName}${project.online ? '' : ' · 离线'}`}
           onClick={() => setExpanded((value) => !value)}
         >
           <span className="workspace-project-marker">
             <Folder size={15} />
-            <ChevronRight size={15} data-expanded={expanded} />
+            <ChevronRight size={15} data-expanded={open} />
           </span>
           <span>
             {project.projectName}
@@ -463,29 +432,37 @@ export function NavigationProjectGroup({
           <button
             aria-label={`在 ${project.projectName} 中新建对话`}
             title="新建对话"
-            disabled={disabled || !project.online || !project.runtime.agents.length}
+            disabled={disabled || !listOnline || !project.runtime.agents.length}
             onClick={() => onCreate(project)}
           >
             <SquarePen size={15} />
           </button>
         </div>
       </div>
-      {expanded && (
+      {open && (
         <div className="workspace-session-list">
           {archived && (
             <div className="workspace-archived-label">
               已归档<button onClick={() => setArchived(false)}>返回最近</button>
             </div>
           )}
-          {unavailable && (
+          {(paged ? pageError : unavailable) && (
             <p className="workspace-muted" role="status">
-              暂时无法同步
-              <button disabled={disabled} onClick={() => onRefresh(project)}>
-                重试
+              {pageError ?? '暂时无法同步'}
+              <button disabled={disabled || pageLoading} onClick={() => onRefresh(project)}>
+                重新读取
               </button>
             </p>
           )}
-          {!sessions && !unavailable && <p className="workspace-muted">正在读取会话…</p>}
+          {(paged ? pageLoading && !page : !sessions && !unavailable) && (
+            <p className="workspace-muted">正在读取会话…</p>
+          )}
+          {page?.source === 'cache' && (
+            <p className="workspace-muted" role="status">
+              仅显示本机已缓存的 {shown.length} 项；未缓存页面不可读取。
+            </p>
+          )}
+          {page?.legacy && <p className="workspace-muted">旧主机兼容目录</p>}
           <ul>
             {visible.map((session) => (
               <NavigationSessionRow
@@ -493,18 +470,38 @@ export function NavigationProjectGroup({
                 session={session}
                 selected={selected && selectedSession === session.id}
                 disabled={disabled}
-                online={project.online}
+                online={listOnline}
                 onOpen={() => onOpen(project, session)}
                 onAction={(...args) => onAction(project, ...args)}
               />
             ))}
           </ul>
-          {sessions && !shown.length && (
+          {(paged ? page : sessions) && !shown.length && (
             <p className="workspace-muted">
-              {query ? '没有匹配的会话' : archived ? '还没有归档会话' : '还没有会话'}
+              {page?.source === 'cache'
+                ? '当前缓存没有匹配的会话'
+                : query
+                  ? '没有匹配的会话'
+                  : archived
+                    ? '还没有归档会话'
+                    : '还没有会话'}
             </p>
           )}
-          {!query && !archived && shown.length > 5 && (
+          {paged && page?.nextCursor && (
+            <button
+              className="workspace-show-more"
+              disabled={disabled || pageLoading}
+              onClick={() => void loadPage(true)}
+            >
+              {pageLoading ? '正在读取…' : '加载更多会话'}
+            </button>
+          )}
+          {paged && page && !page.legacy && (
+            <p className="workspace-muted">
+              已加载 {shown.length} 项{page.nextCursor ? '，还有更多会话' : ''}
+            </p>
+          )}
+          {(!paged || page?.legacy) && !query && !archived && shown.length > 5 && (
             <button className="workspace-show-more" onClick={() => setAll(!all)}>
               {all ? '收起' : '展开显示'}
             </button>

@@ -20,14 +20,11 @@
   },
   "dependencies": {
     "@moor/client": "workspace:*",
-    "@moor/e2ee": "workspace:*",
     "@moor/protocol": "workspace:*",
-    "ws": "8.18.3",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
-    "@types/ws": "8.18.1",
     "typescript": "5.9.3"
   }
 }

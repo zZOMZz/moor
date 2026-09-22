@@ -960,14 +960,15 @@ test('desktop Google expiry and network timeout use injected timers without poll
 test('desktop Google preload offers only typed handoff methods and no generic browser or network proxy', async () => {
   const calls: unknown[][] = [];
   let exposed: any;
-  runInNewContext(await readFile('apps/desktop/src/preload/web-preload.cjs', 'utf8'), {
+  runInNewContext(await readFile('apps/desktop/src/preload/workspace-preload.cjs', 'utf8'), {
+    process: { platform: 'darwin' },
     require(name: string) {
       assert.equal(name, 'electron');
       return {
         contextBridge: {
           exposeInMainWorld(name: string, api: unknown) {
-            assert.equal(name, 'moorDesktop');
-            exposed = api;
+            if (name === 'moorDesktop') exposed = api;
+            else assert.equal(name, 'moorWorkspace');
           },
         },
         ipcRenderer: {

@@ -148,7 +148,7 @@ export class SessionControlManager {
       if (known) return known.status === 'stopping' ? this.settleStop(action, original) : known;
       if (action.action === 'create') {
         assert(
-          this.host.taskManager.allowsCreate(action.sessionId, action.operationId),
+          this.host.store.tasks.allows(action.sessionId),
           409,
           '协作子任务槽位只允许原授权创建',
         );

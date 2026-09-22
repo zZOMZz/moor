@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync, chmodSync, statSync, realpathSync } from 'node:fs';
 import { dirname, basename, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { Flock, LoroDoc, metas, mirror, putMeta } from '@moor/session/model';
+import { Flock, LoroDoc, metas, mirror, putMeta, VersionVector } from '@moor/session/model';
 import { Journal } from './journal';
 import { AttentionStore } from './attention-store';
 import { assert, type RuntimeWorkspace } from '@moor/protocol/protocol';
@@ -18,7 +18,7 @@ import { SessionForkStore } from '../sessions/fork';
 import { SessionGithubStore } from '../sessions/github';
 import { SessionAgentStore, agentConfigSnapshot } from '../sessions/agent';
 import type { AgentConfig } from '../agents/driver';
-import { TaskStore } from '../sessions/tasks';
+import { RetiredTaskRecords } from './retired-tasks';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -44,12 +44,26 @@ export class RuntimeStore {
   forks: SessionForkStore;
   github: SessionGithubStore;
   agents: SessionAgentStore;
-  tasks: TaskStore;
+  tasks: RetiredTaskRecords;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
   attention: AttentionStore;
-  constructor(file: string, options: { now?: () => number; worktreeRoot?: string } = {}) {
+  private readonly outputCheckpoint: { updates: number; bytes: number };
+  private readonly documentBases = new WeakMap<LoroDoc, { id: string; version?: Uint8Array }>();
+  private afterCommit: (() => void)[] | undefined;
+  constructor(
+    file: string,
+    options: {
+      now?: () => number;
+      worktreeRoot?: string;
+      /** Host-injected limits; never accepted from a remote request. */
+      outputCheckpoint?: { updates: number; bytes: number };
+    } = {},
+  ) {
+    this.outputCheckpoint = options.outputCheckpoint ?? { updates: 512, bytes: 1024 * 1024 };
+    for (const value of Object.values(this.outputCheckpoint))
+      assert(Number.isSafeInteger(value) && value > 0, 500, '输出检查点限制无效');
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     this.journal = new Journal(file);
     try {
@@ -65,6 +79,17 @@ export class RuntimeStore {
     this.journal.db.exec(`
       CREATE TABLE IF NOT EXISTS runtime_state(key TEXT PRIMARY KEY, value BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS session(id TEXT PRIMARY KEY, snapshot BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_checkpoint(session_id TEXT PRIMARY KEY,version BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_delta(
+        session_id TEXT NOT NULL,sequence INTEGER NOT NULL,update_bytes BLOB NOT NULL,version BLOB NOT NULL,
+        PRIMARY KEY(session_id,sequence)
+      );
+      CREATE TRIGGER IF NOT EXISTS session_checkpoint_insert AFTER INSERT ON session BEGIN
+        DELETE FROM session_checkpoint WHERE session_id=NEW.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS session_checkpoint_update AFTER UPDATE OF snapshot ON session BEGIN
+        DELETE FROM session_checkpoint WHERE session_id=NEW.id;
+      END;
       CREATE TABLE IF NOT EXISTS session_recovery(session_id TEXT PRIMARY KEY);
       CREATE TRIGGER IF NOT EXISTS session_recovery_insert AFTER INSERT ON session BEGIN
         INSERT OR IGNORE INTO session_recovery VALUES(NEW.id);
@@ -99,6 +124,10 @@ export class RuntimeStore {
       CREATE TRIGGER IF NOT EXISTS search_source_update AFTER UPDATE OF snapshot ON session BEGIN
         INSERT INTO search_source VALUES(NEW.id,1) ON CONFLICT(session_id) DO UPDATE SET revision=revision+1;
       END;
+      CREATE TRIGGER IF NOT EXISTS session_delta_insert AFTER INSERT ON session_delta BEGIN
+        INSERT INTO search_source VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET revision=revision+1;
+        INSERT OR IGNORE INTO session_recovery VALUES(NEW.session_id);
+      END;
       PRAGMA user_version=1;
     `);
     this.sessionSearch = new SessionSearchIndex(this.journal.db);
@@ -106,7 +135,7 @@ export class RuntimeStore {
     this.forks = new SessionForkStore(this.journal.db);
     this.github = new SessionGithubStore(this.journal.db);
     this.agents = new SessionAgentStore(this.journal.db);
-    this.tasks = new TaskStore(this.journal.db, options);
+    this.tasks = new RetiredTaskRecords(this.journal.db);
     this.executions = new SessionExecutionStore(
       this.journal.db,
       options.worktreeRoot ??
@@ -291,22 +320,96 @@ export class RuntimeStore {
   }
   doc(id: string) {
     const doc = new LoroDoc();
-    const row = this.journal.db.prepare('SELECT snapshot FROM session WHERE id=?').get(id);
-    if (row) doc.import(row.snapshot as Uint8Array);
-    return doc;
-  }
-  transaction<T>(fn: () => T): T {
-    this.journal.db.exec('BEGIN IMMEDIATE');
     try {
-      const result = fn();
-      this.journal.db.exec('COMMIT');
-      return result;
+      const row = this.journal.db.prepare('SELECT snapshot FROM session WHERE id=?').get(id);
+      if (row) doc.import(row.snapshot as Uint8Array);
+      for (const update of this.journal.db
+        .prepare(
+          'SELECT update_bytes,version FROM session_delta WHERE session_id=? ORDER BY sequence',
+        )
+        .all(id)) {
+        assert(row, 503, '会话输出缺少历史检查点');
+        const imported = doc.import(update.update_bytes as Uint8Array);
+        assert(
+          !imported.pending?.size &&
+            Buffer.from(doc.version().encode()).equals(update.version as Uint8Array),
+          503,
+          '会话输出增量不完整或版本不匹配',
+        );
+      }
+      this.documentBases.set(doc, { id, version: row ? this.documentVersion(doc) : undefined });
+      return doc;
     } catch (error) {
-      this.journal.db.exec('ROLLBACK');
+      doc.free();
       throw error;
     }
   }
-  persist(id: string, doc: LoroDoc) {
+  transaction<T>(fn: () => T): T {
+    this.journal.db.exec('BEGIN IMMEDIATE');
+    const committed: (() => void)[] = [];
+    this.afterCommit = committed;
+    try {
+      const result = fn();
+      this.journal.db.exec('COMMIT');
+      for (const remember of committed) remember();
+      return result;
+    } catch (error) {
+      if (this.journal.db.isTransaction) this.journal.db.exec('ROLLBACK');
+      throw error;
+    } finally {
+      this.afterCommit = undefined;
+    }
+  }
+  private documentVersion(doc: LoroDoc) {
+    const version = doc.version();
+    try {
+      return version.encode();
+    } finally {
+      version.free();
+    }
+  }
+  private rememberDocument(id: string, doc: LoroDoc) {
+    const version = this.documentVersion(doc);
+    const remember = () => this.documentBases.set(doc, { id, version });
+    if (this.afterCommit) this.afterCommit.push(remember);
+    // A transaction opened outside RuntimeStore must reread its document after
+    // commit. Do not advance an in-memory base before an unknown outer commit.
+    else if (!this.journal.db.isTransaction) remember();
+  }
+  private durableVersion(id: string): Uint8Array | undefined {
+    const header =
+      this.journal.db
+        .prepare(
+          'SELECT version FROM session_delta WHERE session_id=? ORDER BY sequence DESC LIMIT 1',
+        )
+        .get(id) ??
+      this.journal.db.prepare('SELECT version FROM session_checkpoint WHERE session_id=?').get(id);
+    if (header) return header.version as Uint8Array;
+    // Legacy databases have a snapshot but no version header. Read its actual
+    // version without rewriting it or assuming an empty persistence baseline.
+    const row = this.journal.db.prepare('SELECT snapshot FROM session WHERE id=?').get(id);
+    if (!row) return undefined;
+    const original = new LoroDoc();
+    try {
+      original.import(row.snapshot as Uint8Array);
+      return this.documentVersion(original);
+    } finally {
+      original.free();
+    }
+  }
+  private matchesBase(actual: Uint8Array | undefined, expected: Uint8Array | undefined) {
+    if (actual) return expected !== undefined && Buffer.from(actual).equals(expected);
+    if (!expected) return true;
+    const version = VersionVector.decode(expected);
+    try {
+      return version.toJSON().size === 0;
+    } finally {
+      version.free();
+    }
+  }
+  persist(id: string, doc: LoroDoc, from?: VersionVector) {
+    const remembered = this.documentBases.get(doc);
+    const expected = from?.encode() ?? (remembered?.id === id ? remembered.version : undefined);
     doc.commit();
     const view = mirror(doc, id);
     let needsRecovery: boolean;
@@ -332,14 +435,90 @@ export class RuntimeStore {
       view.dispose();
     }
     const write = () => {
-      this.journal.db
-        .prepare('INSERT OR REPLACE INTO session VALUES(?,?)')
-        .run(id, doc.export({ mode: 'snapshot' }));
+      this.checkpoint(id, doc, expected);
       this.save('meta', this.meta.exportFile());
       // The trigger conservatively tracks every snapshot. Only the writer that
       // has inspected that exact document may omit a settled session at startup.
       if (!needsRecovery)
         this.journal.db.prepare('DELETE FROM session_recovery WHERE session_id=?').run(id);
+      this.rememberDocument(id, doc);
+    };
+    if (this.journal.db.isTransaction) write();
+    else this.transaction(write);
+  }
+  private checkpoint(id: string, doc: LoroDoc, expected: Uint8Array | undefined) {
+    const durable = this.durableVersion(id);
+    assert(
+      this.matchesBase(durable, expected),
+      409,
+      '检查点原持久版本已变化，不能覆盖已经保存的输出',
+    );
+    const tail = this.journal.db
+      .prepare(
+        'SELECT sequence,version FROM session_delta WHERE session_id=? ORDER BY sequence DESC LIMIT 1',
+      )
+      .get(id);
+    if (durable) {
+      const stored = VersionVector.decode(durable);
+      const current = doc.version();
+      try {
+        const order = current.compare(stored);
+        assert(order !== undefined && order >= 0, 409, '检查点未包含已经保存的输出');
+      } finally {
+        stored.free();
+        current.free();
+      }
+    }
+    this.journal.db
+      .prepare('INSERT OR REPLACE INTO session VALUES(?,?)')
+      .run(id, doc.export({ mode: 'snapshot' }));
+    this.journal.db
+      .prepare('INSERT OR REPLACE INTO session_checkpoint VALUES(?,?)')
+      .run(id, doc.version().encode());
+    if (tail)
+      this.journal.db
+        .prepare('DELETE FROM session_delta WHERE session_id=? AND sequence<=?')
+        .run(id, tail.sequence);
+  }
+  /** Persist exact CRDT operations before publishing output. The base must still
+   * be the durable head; a stale candidate cannot overwrite a newer tail. */
+  persistOutput(id: string, candidate: LoroDoc, from: VersionVector) {
+    candidate.commit();
+    assert(candidate.getMap('session').get('id') === id, 409, '输出会话身份不匹配');
+    const write = () => {
+      assert(
+        this.journal.db.prepare('SELECT 1 FROM session WHERE id=?').get(id),
+        409,
+        '会话检查点不存在',
+      );
+      const previous = this.journal.db
+        .prepare(
+          'SELECT sequence,version FROM session_delta WHERE session_id=? ORDER BY sequence DESC LIMIT 1',
+        )
+        .get(id);
+      const head = this.durableVersion(id)!;
+      const expected = from.encode();
+      assert(this.matchesBase(head, expected), 409, '持久会话已更新，不能覆盖新的输出');
+      if (Buffer.from(candidate.version().encode()).equals(head)) return;
+      const update = candidate.export({ mode: 'update', from });
+      const tail = this.journal.db
+        .prepare(
+          'SELECT COUNT(*) AS count,COALESCE(SUM(length(update_bytes)),0) AS bytes FROM session_delta WHERE session_id=?',
+        )
+        .get(id)!;
+      if (
+        Number(tail.count) + 1 >= this.outputCheckpoint.updates ||
+        Number(tail.bytes) + update.byteLength >= this.outputCheckpoint.bytes
+      ) {
+        // Snapshot, tail removal, search revision and recovery registration share
+        // the caller's transaction. Preserve history for old client version vectors.
+        this.checkpoint(id, candidate, expected);
+      } else {
+        this.journal.db
+          .prepare('INSERT INTO session_delta VALUES(?,?,?,?)')
+          .run(id, Number(previous?.sequence ?? 0) + 1, update, candidate.version().encode());
+      }
+      this.rememberDocument(id, candidate);
     };
     if (this.journal.db.isTransaction) write();
     else this.transaction(write);
@@ -347,7 +526,7 @@ export class RuntimeStore {
   searchSource(id: string) {
     const row = this.journal.db
       .prepare(
-        'SELECT s.revision,length(d.snapshot) AS bytes FROM search_source s JOIN session d ON d.id=s.session_id WHERE s.session_id=?',
+        'SELECT s.revision,length(d.snapshot)+COALESCE((SELECT SUM(length(update_bytes)) FROM session_delta WHERE session_id=s.session_id),0) AS bytes FROM search_source s JOIN session d ON d.id=s.session_id WHERE s.session_id=?',
       )
       .get(id);
     return row ? { revision: Number(row.revision), bytes: Number(row.bytes) } : undefined;

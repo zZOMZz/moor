@@ -12,15 +12,10 @@ import {
   validatePushEndpoint,
   validatePushSubscription,
   type WebPushResult,
-  type WebPushState,
   type WebPushTransport,
 } from '@moor/gateway/notifications';
-export {
-  PUSH_PROVIDERS,
-  validatePushEndpoint,
-  validatePushSubscription,
-} from '@moor/gateway/notifications';
-export type { WebPushResult, WebPushState, WebPushTransport };
+export { validatePushEndpoint, validatePushSubscription } from '@moor/gateway/notifications';
+export type { WebPushResult, WebPushTransport };
 
 export type WebPushRequest = {
   endpoint: string;

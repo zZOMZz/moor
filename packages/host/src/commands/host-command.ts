@@ -1,6 +1,8 @@
+import { RETIRED_SESSION_FEATURE } from '@moor/protocol/connection-authority';
 import { AppError, assert } from '@moor/protocol/protocol';
-import type { TaskAuthorityLease } from '@moor/protocol/task-protocol';
+import type { ConnectionAuthorityLease } from '@moor/protocol/connection-authority';
 import type { HostWorkspace } from '../sessions/workspace';
+import { readSessionPage } from '../sessions/page';
 import {
   HOST_COMMAND_METHODS,
   hostCommandSchemas,
@@ -16,19 +18,19 @@ export type { HostCommand, HostCommandInput, HostCommandMethod };
 export type HostCommandWorkspace = Pick<
   HostWorkspace,
   | 'closed'
+  | 'workspace'
   | 'list'
   | 'refreshAgentOptions'
   | 'readAgentUsage'
   | 'runPreferences'
   | 'read'
   | 'readRoles'
+  | 'readTasks'
+  | 'inspectTask'
   | 'readMcp'
   | 'roleAction'
   | 'readSkills'
-  | 'readPreview'
-  | 'previewAction'
   | 'inspectPreview'
-  | 'closePreview'
   | 'readGithubWrite'
   | 'githubWriteAction'
   | 'inspectGithubWrite'
@@ -56,7 +58,6 @@ export type HostCommandWorkspace = Pick<
   | 'cancel'
 > & {
   controlManager: Pick<HostWorkspace['controlManager'], 'control' | 'recover'>;
-  taskManager: Pick<HostWorkspace['taskManager'], 'read' | 'action'>;
 };
 export interface HostCommandDependencies {
   ready(): boolean;
@@ -65,7 +66,7 @@ export interface HostCommandDependencies {
 }
 export interface HostCommandContext {
   // Construct only from an authenticated connection; never take authority from params.
-  authority?: TaskAuthorityLease;
+  authority?: ConnectionAuthorityLease;
   // Optional entry guard for verified transports. Delivery checks remain with the caller.
   current?(): void;
 }
@@ -95,11 +96,19 @@ export class HostCommandDispatcher {
     if (typeof method === 'string' && !HOST_COMMAND_METHODS.includes(method as HostCommandMethod))
       throw new AppError(400, '不支持的操作');
     const command = hostCommandSchema.parse(raw);
+    if (
+      ['preview-read', 'preview-action', 'preview-close'].includes(command.method) ||
+      ((command.method === 'roles-action' || command.method === 'tasks-action') &&
+        command.params.action !== 'inspect')
+    )
+      throw new AppError(410, RETIRED_SESSION_FEATURE);
     context.current?.();
     const workspace = this.dependencies.workspace(command.workspaceId);
     assert(this.dependencies.ready() && workspace && !workspace.closed, 409, '本机执行服务不可达');
     let result: unknown;
     if (command.method === 'sessions') result = workspace.list(command.localProjectId);
+    else if (command.method === 'sessions-page')
+      result = readSessionPage(workspace, command.params, command.localProjectId);
     else if (command.method === 'agent-options')
       result = await workspace.refreshAgentOptions(
         command.params.agentId,
@@ -129,31 +138,19 @@ export class HostCommandDispatcher {
     else if (command.method === 'session-operations')
       result = await workspace.controlManager.recover(command.params, command.localProjectId);
     else if (command.method === 'tasks-read')
-      result = await workspace.taskManager.read(command.params, command.localProjectId);
+      result = await workspace.readTasks(command.params, command.localProjectId);
     else if (command.method === 'tasks-action')
-      result = await workspace.taskManager.action(command.params, command.localProjectId);
+      result = await workspace.inspectTask(command.params, command.localProjectId);
     else if (command.method === 'roles-action')
       result = await workspace.roleAction(command.params, command.localProjectId);
     else if (command.method === 'skills-read') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
       result = await workspace.readSkills(input, command.localProjectId);
-    } else if (command.method === 'preview-read') {
-      const input = command.params;
-      assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.readPreview(input, command.localProjectId, context.authority);
-    } else if (command.method === 'preview-action') {
-      const input = command.params;
-      assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.previewAction(input, command.localProjectId, context.authority);
     } else if (command.method === 'preview-inspect') {
       const input = command.params;
       assert(input.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
       result = await workspace.inspectPreview(input, command.localProjectId, context.authority);
-    } else if (command.method === 'preview-close') {
-      const input = command.params;
-      assert(input.request.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.closePreview(input, command.localProjectId, context.authority);
     } else if (command.method === 'github-write-read') {
       const input = command.params;
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');

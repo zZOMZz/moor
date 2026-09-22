@@ -2,7 +2,7 @@ import { context } from 'esbuild';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { runtimeGroups, runtimeBuildOptions } from './runtime-build.mjs';
+import { runtimeGroups, runtimeBuildOptions, removeRetiredRuntimeFiles } from './runtime-build.mjs';
 
 export const desktopRuntimeGroups = Object.freeze({
   host: runtimeGroups.host,
@@ -34,6 +34,7 @@ export async function publishRuntime(result, revisionFile) {
 }
 
 export async function buildDesktopRuntime({ appRoot, watch = false }) {
+  await removeRetiredRuntimeFiles(join(appRoot, 'runtime'));
   const contexts = [];
   try {
     for (const [group, entryPoints] of Object.entries(desktopRuntimeGroups)) {

@@ -1,7 +1,7 @@
 import { gitTargetSchema, type GitTarget } from '../git/git-workspace';
 import { mcpStoredSchema } from './mcp';
 import { mcpServerIdsSchema } from '@moor/protocol/mcp-protocol';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export function workspaceFeatureTarget(target: GitTarget): GitTarget {
   const {

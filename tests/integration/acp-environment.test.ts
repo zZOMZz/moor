@@ -8,6 +8,35 @@ import { acpDriver, createAcpDriver } from '@moor/host/agents/acp/driver';
 import { LOCAL_CODEX_NOT_INSTALLED } from '@moor/host/agents/driver';
 import { AppError } from '@moor/protocol/protocol';
 
+test('retired per-turn tool injection fails before an adapter or authority callback can run', async () => {
+  let launches = 0;
+  let callbacks = 0;
+  const driver = createAcpDriver(() => {
+    launches++;
+    throw Error('must not launch');
+  });
+  for (const field of ['mcp', 'taskTools'])
+    await assert.rejects(
+      driver.open(
+        {
+          id: 'synthetic',
+          name: 'Synthetic',
+          cliType: 'custom',
+          agentType: 'synthetic',
+          machineId: 'machine',
+          customAcp: { command: process.execPath, args: [] },
+        },
+        '/synthetic',
+        undefined,
+        { update() {}, permission: async () => ({ outcome: { outcome: 'cancelled' } }) },
+        { [field]: { assertCurrent: () => callbacks++ }, assertCurrent: () => callbacks++ } as any,
+      ),
+      (error: unknown) => error instanceof AppError && error.status === 410 && error.rejected,
+    );
+  assert.equal(launches, 0);
+  assert.equal(callbacks, 0);
+});
+
 test('builtin ACP rejects missing or unsupported local providers before adapter launch', async () => {
   let launches = 0;
   const driver = createAcpDriver(() => {

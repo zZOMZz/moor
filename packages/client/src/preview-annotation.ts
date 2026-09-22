@@ -64,4 +64,3 @@ export const previewAnnotationSchema = z
     selectionId: id.optional(),
   })
   .strict();
-export type PreviewAnnotation = z.infer<typeof previewAnnotationSchema>;

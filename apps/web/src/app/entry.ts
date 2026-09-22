@@ -1,19 +1,11 @@
-import { api, type Identity } from '../platform/api';
+import { api, ApiError, type Identity } from '../platform/api';
 import { firstStartupSource } from './bootstrap';
 
 // Fetch identity alongside the UI. Signing in never needs the session WASM runtime.
 export async function start() {
-  if ((window as unknown as { moorSecure?: { version: number } }).moorSecure?.version === 1) {
-    if (
-      (window as unknown as { moorWorkspace?: { version: number } }).moorWorkspace?.version === 1
-    ) {
-      const { bootWorkspace } = await import('./workspace-app');
-      await bootWorkspace();
-      window.dispatchEvent(new Event('moor:ready'));
-      return;
-    }
-    const { bootSecure } = await import('./secure-app');
-    await bootSecure();
+  if ((window as unknown as { moorWorkspace?: { version: number } }).moorWorkspace?.version === 1) {
+    const { bootWorkspace } = await import('./workspace-app');
+    await bootWorkspace();
     window.dispatchEvent(new Event('moor:ready'));
     return;
   }
@@ -38,16 +30,20 @@ export async function start() {
     window.dispatchEvent(new Event('moor:ready'));
     return;
   }
-  const cache = await import('../platform/cache');
-  const identity = api('/api/me').catch(() => null) as Promise<Identity | null>;
-  const cachedOwner = cache.read<string>('last-owner').catch(() => undefined);
+  const { browserCachedOwner, forgetBrowserOwner } = await import('../platform/browser-storage');
+  const identity = api('/api/me').catch((error) =>
+    error instanceof ApiError && [401, 403].includes(error.status)
+      ? { owner: null, needsSetup: false }
+      : null,
+  ) as Promise<Identity | null>;
+  const cachedOwner = browserCachedOwner(location.origin).catch(() => undefined);
   const [source, { showAuth }] = await Promise.all([
     firstStartupSource(identity, cachedOwner),
     import('../components/ui'),
   ]);
   if (source.kind === 'identity' && source.identity && !source.identity.owner) {
     const me = source.identity;
-    void cache.write('last-owner', undefined).catch(() => {});
+    void forgetBrowserOwner(location.origin).catch(() => {});
     showAuth({
       setup: me.needsSetup,
       googleEnabled: me.google?.enabled,
@@ -70,8 +66,9 @@ export async function start() {
     }
   }
   if (status) status.textContent = '正在恢复工作区…';
-  const app = await import('./app');
-  await app.boot(identity, cachedOwner);
+  const { bootBrowserWorkspace } = await import('./browser-workspace-app');
+  await bootBrowserWorkspace(identity, cachedOwner);
+  window.dispatchEvent(new Event('moor:ready'));
   if (
     'serviceWorker' in navigator &&
     !['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname)

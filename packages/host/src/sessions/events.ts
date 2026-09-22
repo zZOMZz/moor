@@ -3,7 +3,6 @@ import {
   runtimeFeatureReportSchema,
   sessionEventSchema,
   sessionEventStateSchema,
-  type AccountRateLimit,
   type RuntimeFeatureReport,
   type SessionEvent,
   type SessionEventState,
@@ -17,7 +16,7 @@ export {
   sessionEventSchema,
   sessionEventStateSchema,
 };
-export type { AccountRateLimit, RuntimeFeatureReport, SessionEvent, SessionEventState };
+export type { RuntimeFeatureReport, SessionEvent, SessionEventState };
 
 export type SessionEventResult =
   | { status: 'accepted'; event: SessionEvent }

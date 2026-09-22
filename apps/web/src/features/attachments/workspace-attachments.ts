@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { attachmentDraftSchema, verifyAttachmentBytes } from './attachments';
 import { MAX_SESSION_ATTACHMENT_BYTES } from '@moor/protocol/attachment-protocol';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export const workspaceAttachmentDraftSchema = z
   .object({

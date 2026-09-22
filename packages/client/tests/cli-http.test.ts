@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CliHttp, serverOrigin } from '@moor/client/node/http';
-import { localCliProof, type LocalCliConnectionLease } from '@moor/e2ee/node/local-cli-connection';
+import {
+  localCliProof,
+  type LocalCliConnectionLease,
+} from '@moor/protocol/node/local-cli-connection';
 const local: LocalCliConnectionLease = {
   connection: {
     version: 1,

@@ -4267,29 +4267,10 @@ dialog pre {
 .workspace-body > .workspace-error:first-of-type {
   margin-top: 48px;
 }
-.workspace-secure-content {
+.workspace-connections {
   min-height: 0;
   flex: 1;
   overflow: auto;
-}
-.workspace-secure-content .secure-app-embedded {
-  min-height: 100%;
-  height: 100%;
-}
-.workspace-secure-content .secure-layout-embedded {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-}
-.workspace-secure-content .secure-layout-embedded > .secure-sidebar {
-  width: 100%;
-  overflow: auto;
-  border: 0;
-  padding-top: 52px;
-}
-.workspace-secure-content .secure-layout-embedded > .secure-workspace {
-  width: 100%;
-  min-width: 0;
 }
 .workspace-navigation-backdrop {
   display: none;
@@ -4873,29 +4854,6 @@ dialog pre {
   }
 }
 
-.secure-composer-tool-slot .secure-actions {
-  display: grid;
-  gap: 4px;
-}
-.secure-composer-tool-slot button {
-  text-align: left;
-  padding: 6px 8px;
-  border-color: transparent;
-  border-radius: 6px;
-  background: transparent;
-}
-.secure-session-header > .secure-actions {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-}
-@media (max-width: 700px) {
-  .secure-session-header {
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-}
-
 @media (min-width: 701px) {
   .workspace-app[data-navigation='open'] .workspace-navigation-bar {
     display: none;
@@ -5083,4 +5041,14 @@ dialog pre {
 }
 .usage-window + .usage-window {
   margin-top: 12px;
+}
+.workspace-account-panel {
+  max-width: 720px;
+  margin: 32px auto;
+  padding: 24px;
+}
+.workspace-account-panel > details {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
 }

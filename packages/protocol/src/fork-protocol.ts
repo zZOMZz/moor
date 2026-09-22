@@ -9,7 +9,7 @@ import {
 } from './git-protocol';
 
 export const SESSION_FORK_FEATURE = 'session-fork-v1';
-export const SECURE_FORK_OPERATIONS_FEATURE = 'secure-fork-operations-v1';
+export const FORK_OPERATIONS_FEATURE = 'secure-fork-operations-v1';
 export const FORK_LIMITS = { turns: 200, message: 1000 } as const;
 const reason = z.string().min(1).max(FORK_LIMITS.message);
 export const forkCutoffSchema = z.discriminatedUnion('kind', [

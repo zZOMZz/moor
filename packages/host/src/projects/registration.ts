@@ -2,7 +2,7 @@ import { accessSync, constants, realpathSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { id, assert } from '@moor/protocol/protocol';
-import { assertPrivatePathsOutsideProjects } from '@moor/e2ee/node/private-project-path';
+import { assertPrivatePathsOutsideProjects } from '@moor/protocol/node/private-project-path';
 import type { RuntimeStore } from '../persistence/store';
 
 const identity = z

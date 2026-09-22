@@ -31,7 +31,7 @@ import {
 import { WorkspaceAttentionUI } from '../features/attention/workspace-attention-ui';
 import { WorkspaceSessionTools } from '../features/workspace/workspace-session-tools';
 import { WorkspaceGithubUI } from '../features/github/workspace-github-ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Folder,
@@ -55,19 +55,14 @@ import {
   WorkspaceController,
   type WorkspaceClientState,
 } from '../features/workspace/workspace-controller';
-import { SecureWorkspaceController } from '../platform/secure-controller';
+import { WorkspaceAccountPanel } from '../features/auth/workspace-account';
+import type { Account, AccountApi } from '../platform/account';
 import { sessionPendingOperations } from '../features/workspace/workspace-store';
-import {
-  SecureApp,
-  type SecureAccountApi,
-  type SecureUiController,
-  type Account,
-} from './secure-app';
+
 import type {
   DesktopWorkspaceRequest,
   DesktopWorkspaceSource,
 } from '@moor/client/workspace-protocol';
-import type { DesktopSecureRequest } from '@moor/client/desktop-secure-protocol';
 import {
   desktopWorkspaceContextSchema,
   desktopAddProjectResultSchema,
@@ -77,7 +72,7 @@ import { RunControls } from '../components/ui';
 import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
 import { markdown } from '../components/content';
 import { sessionPermissionReviews } from '@moor/client/session-client';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import {
   attachmentInputReason,
   attachmentPreviewUrl,
@@ -398,7 +393,6 @@ function WorkspaceConversation({
       )}
       <SessionTimeline
         history={session.history}
-        variant="workspace"
         focusTurnId={state.focusedTurnId ?? state.searchFocus?.turnId}
         renderItem={(item, turn, index) => {
           if (!item || typeof item !== 'object') return null;
@@ -853,7 +847,6 @@ function WorkspaceConversation({
 
 export function WorkspaceApp({
   controller,
-  secure,
   accountApi,
   onAccountVerified,
   openSettings,
@@ -861,31 +854,31 @@ export function WorkspaceApp({
   readDesktopContext,
   subscribeDesktopChanges,
   subscribeSessionChanges,
+  localAvailable = true,
+  accountExtras,
 }: {
   controller: WorkspaceController;
-  secure: SecureUiController;
-  accountApi: SecureAccountApi;
+  accountApi: AccountApi;
   onAccountVerified?: (account: Account | null) => void;
   openSettings?: () => Promise<unknown>;
   addLocalProject?: () => Promise<unknown>;
   readDesktopContext?: () => Promise<unknown>;
   subscribeDesktopChanges?: (listener: () => void) => () => void;
   subscribeSessionChanges?: (listener: (notice: unknown) => void) => () => void;
+  localAvailable?: boolean;
+  accountExtras?: ReactNode;
 }) {
-  const [state, setState] = useState(controller.state),
-    [encrypted, setEncrypted] = useState(secure.state);
-  const [view, setView] = useState<'plain' | 'secure' | 'connections'>('plain');
+  const [state, setState] = useState(controller.state);
+  const [view, setView] = useState<'plain' | 'connections'>('plain');
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
-    [plainDirty, setPlainDirty] = useState(false),
-    [secureBlocked, setSecureBlocked] = useState(false);
+    [plainDirty, setPlainDirty] = useState(false);
   const [agentId, setAgentId] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false),
     [workspace, setWorkspace] = useState(''),
     [searchOpen, setSearchOpen] = useState(false),
     [account, setAccount] = useState<Account | null>(null);
-  const navigation = useNavigationSessions(controller, state);
   const allProjects = navigationProjects(state);
   const workspaces = [
     ...new Map(allProjects.map((entry) => [workspaceKey(entry), entry.workspaceName])).entries(),
@@ -897,8 +890,21 @@ export function WorkspaceApp({
   const layout = useWorkspaceLayout();
   const navigationOpen = layout.open,
     setNavigationOpen = layout.setOpen;
-  const [sessionFilter, setSessionFilter] = useState('active'),
-    [sessionQuery, setSessionQuery] = useState('');
+  const [sessionQuery, setSessionQuery] = useState('');
+  const [pinnedShown, setPinnedShown] = useState(30),
+    [recentShown, setRecentShown] = useState(30);
+  const navigation = useNavigationSessions(controller, state, projects, sessionQuery);
+  useEffect(() => {
+    const refresh = () => {
+      void controller.refreshCatalog('remote').catch(() => {});
+    };
+    window.addEventListener('moor:catalog-changed', refresh);
+    return () => window.removeEventListener('moor:catalog-changed', refresh);
+  }, [controller]);
+  useEffect(() => {
+    setPinnedShown(30);
+    setRecentShown(30);
+  }, [activeWorkspace, sessionQuery]);
   const rootElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!layout.narrow || !navigationOpen) return;
@@ -933,7 +939,6 @@ export function WorkspaceApp({
       unsubscribe();
     };
   }, [controller]);
-  useEffect(() => secure.subscribe(setEncrypted), [secure]);
   useEffect(() => {
     const catchUp = () => {
       if (document.visibilityState !== 'hidden') controller.scheduleSync?.();
@@ -950,11 +955,11 @@ export function WorkspaceApp({
     };
   }, [controller, subscribeSessionChanges]);
   useEffect(() => {
-    if (readDesktopContext) return;
+    if (readDesktopContext || !localAvailable) return;
     void controller.refreshCatalog('local').catch((reason: unknown) => {
       if (mounted.current) setError(message(reason));
     });
-  }, [controller, readDesktopContext]);
+  }, [controller, readDesktopContext, localAvailable]);
   useEffect(() => {
     if (!readDesktopContext) return;
     let active = true,
@@ -981,9 +986,10 @@ export function WorkspaceApp({
     (account: Account | null) => {
       setAccount(account);
       onAccountVerified?.(account);
-      if (account?.owner) void controller.refreshCatalog('remote').catch(() => {});
+      if (account?.owner && localAvailable)
+        void controller.refreshCatalog('remote').catch(() => {});
     },
-    [controller, onAccountVerified],
+    [controller, onAccountVerified, localAvailable],
   );
   const run: Run = (task) => {
     if (action.current) return false;
@@ -1001,7 +1007,7 @@ export function WorkspaceApp({
     return true;
   };
   const navigate: Run = (task) => {
-    if (action.current || plainDirty || secureBlocked) return false;
+    if (action.current || plainDirty) return false;
     const version = ++navigationAction.current;
     setError('');
     void task().catch((reason: unknown) => {
@@ -1009,7 +1015,7 @@ export function WorkspaceApp({
     });
     return true;
   };
-  const blocked = busy || plainDirty || secureBlocked;
+  const blocked = busy || plainDirty;
   useEffect(() => {
     if (!desktop || blocked || desktopHandled.current === desktop.serial) return;
     desktopHandled.current = desktop.serial;
@@ -1038,17 +1044,8 @@ export function WorkspaceApp({
       hideMobileNavigation();
     });
   }, [desktop, blocked, controller]);
-  const sessions = view === 'plain' ? state.sessions : encrypted.sessions;
-  const selectedSession = view === 'plain' ? state.sessionId : encrypted.session?.meta.id;
-  const secureReplica = encrypted.catalog?.products.replicas.find(
-    (entry) => entry.id === encrypted.replicaId,
-  );
-  const agents =
-    view === 'plain'
-      ? (state.project?.runtime.agents ?? [])
-      : (encrypted.catalog?.workspaces.find(
-          (workspace) => workspace.id === secureReplica?.runtimeWorkspaceId,
-        )?.agents ?? []);
+  const sessions = state.sessions;
+  const agents = state.project?.runtime.agents ?? [];
   const selectedAgent = agents.some((agent) => agent.id === agentId)
     ? agentId
     : (agents[0]?.id ?? '');
@@ -1093,85 +1090,37 @@ export function WorkspaceApp({
       }
     : undefined;
   const scopeKey = canonical([state.scope ?? null, state.sessionId ?? null]);
-  const sessionList = (
-    <section className="workspace-session-list" aria-label="会话列表">
-      <div className="workspace-list-title">
-        <select
-          aria-label="会话筛选"
-          value={sessionFilter}
-          onChange={(event) => setSessionFilter(event.target.value)}
-        >
-          <option value="active">最近会话</option>
-          <option value="archived">已归档</option>
-          <option value="all">全部会话</option>
-        </select>
-        <button
-          aria-label="刷新会话列表"
-          disabled={blocked || (view === 'plain' ? !state.project : !secureReplica)}
-          onClick={() =>
-            run(() => (view === 'plain' ? controller.refreshSessions() : secure.refreshSessions()))
-          }
-        >
-          <RefreshCw size={14} />
-        </button>
-      </div>
-
-      <ul>
-        {sessions
-          .filter(
-            (session) =>
-              (sessionFilter === 'all' ||
-                (sessionFilter === 'archived' ? session.isArchived : !session.isArchived)) &&
-              !session.isPinned &&
-              (session.title || '未命名会话')
-                .toLocaleLowerCase()
-                .includes(sessionQuery.toLocaleLowerCase()),
-          )
-          .sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned))
-          .slice(0, sessionQuery || sessionFilter !== 'active' ? undefined : 5)
-          .map((session) => (
-            <li key={session.id}>
-              <button
-                aria-current={selectedSession === session.id ? 'page' : undefined}
-                disabled={blocked}
-                onClick={() =>
-                  navigate(async () => {
-                    if (view === 'plain') await controller.openSession(session.id);
-                    else await secure.openSession(session.id);
-                    hideMobileNavigation();
-                  })
-                }
-              >
-                <span className="workspace-session-title">
-                  {session.isPinned ? '置顶 · ' : ''}
-                  {session.title || '未命名会话'}
-                </span>
-                <small>
-                  {session.isArchived
-                    ? '已归档'
-                    : session.status?.type === 'working'
-                      ? '进行中'
-                      : session.agentType}
-                </small>
-              </button>
-            </li>
-          ))}
-      </ul>
-    </section>
-  );
   const navigationEntries = projects
     .flatMap((project) =>
       (navigation.sessions[projectKey(project)] ?? [])
         .filter(
           (session) =>
             !session.isArchived &&
-            (session.title || '未命名会话')
-              .toLocaleLowerCase()
-              .includes(sessionQuery.toLocaleLowerCase()),
+            ((session.title || '未命名会话')
+              .toLowerCase()
+              .includes(sessionQuery.trim().toLowerCase()) ||
+              session.id.toLowerCase().includes(sessionQuery.trim().toLowerCase())),
         )
-        .map((session) => ({ project, session })),
+        .map((session) => ({
+          project: {
+            ...project,
+            online:
+              project.online &&
+              !navigation.cached.includes(projectKey(project)) &&
+              !navigation.unavailable.includes(projectKey(project)),
+          },
+          session,
+        })),
     )
-    .sort((a, b) => (b.session.lastMessageAt ?? 0) - (a.session.lastMessageAt ?? 0));
+    .sort(
+      (a, b) =>
+        (b.session.lastMessageAt ?? 0) - (a.session.lastMessageAt ?? 0) ||
+        canonical([projectKey(a.project), a.session.id]).localeCompare(
+          canonical([projectKey(b.project), b.session.id]),
+        ),
+    );
+  const pinnedEntries = navigationEntries.filter((entry) => entry.session.isPinned),
+    recentEntries = navigationEntries.filter((entry) => !entry.session.isPinned);
   const navigationSelected =
     view === 'plain' && state.project && state.scope
       ? canonical([projectKey({ ...state.project, source: state.scope.source }), state.sessionId])
@@ -1256,19 +1205,25 @@ export function WorkspaceApp({
         <header className="workspace-sidebar-top">
           <label className="workspace-switcher">
             <span className="workspace-avatar">M</span>
-            <select
-              aria-label="切换工作区"
-              value={activeWorkspace}
-              onChange={(event) => setWorkspace(event.target.value)}
-            >
-              <option value="">全部工作区</option>
-              {workspaces.map(([key, name]) => (
-                <option key={key} value={key}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={14} />
+            {workspaces.length > 1 ? (
+              <>
+                <select
+                  aria-label="切换工作区"
+                  value={activeWorkspace}
+                  onChange={(event) => setWorkspace(event.target.value)}
+                >
+                  <option value="">全部工作区</option>
+                  {workspaces.map(([key, name]) => (
+                    <option key={key} value={key}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={14} />
+              </>
+            ) : (
+              <span>{workspaces[0]?.[1] ?? 'Moor'}</span>
+            )}
           </label>
           <button
             className="workspace-navigation-close"
@@ -1285,11 +1240,10 @@ export function WorkspaceApp({
               event.preventDefault();
               if (!selectedAgent || blocked) return;
               run(async () => {
-                if (view === 'plain') {
-                  const id = await controller.createSession(selectedAgent);
-                  await controller.refreshSessions();
-                  await controller.openSession(id);
-                } else await secure.createSession(selectedAgent);
+                const id = await controller.createSession(selectedAgent);
+                await controller.refreshSessions();
+                await controller.openSession(id);
+                setView('plain');
                 hideMobileNavigation();
               });
             }}
@@ -1337,6 +1291,7 @@ export function WorkspaceApp({
             hidden={!searchOpen}
             aria-label="筛选当前工作区会话"
             placeholder="筛选会话"
+            maxLength={200}
             value={sessionQuery}
             onChange={(event) => setSessionQuery(event.target.value)}
           />{' '}
@@ -1358,7 +1313,24 @@ export function WorkspaceApp({
           )}
           <NavigationSessions
             kind="pinned"
-            entries={navigationEntries.filter((entry) => entry.session.isPinned)}
+            entries={pinnedEntries.slice(0, pinnedShown)}
+            more={navigation.summaries.pinned.more || pinnedEntries.length > pinnedShown}
+            loading={navigation.summaries.pinned.loading}
+            cached={navigation.summaries.pinned.cached}
+            legacy={navigation.summaries.pinned.legacy}
+            error={navigation.summaries.pinned.error}
+            onLoadMore={() => {
+              void navigation.loadMore('pinned').then((current) => {
+                if (current) setPinnedShown((value) => value + 30);
+              });
+            }}
+            onRefresh={() =>
+              run(async () => {
+                for (const source of new Set(projects.map((project) => project.source)))
+                  await controller.refreshCatalog(source);
+                navigation.refresh('pinned');
+              })
+            }
             selected={navigationSelected}
             disabled={blocked}
             onOpen={openNavigationSession}
@@ -1379,81 +1351,64 @@ export function WorkspaceApp({
                 selectedSession={state.sessionId}
                 disabled={blocked}
                 query={sessionQuery}
+                controller={controller}
+                revision={
+                  controller.projectRevision?.(project.source, project.target) ??
+                  controller.navigationRevision ??
+                  0
+                }
                 unavailable={navigation.unavailable.includes(projectKey(project))}
                 onOpen={openNavigationSession}
                 onAction={manageNavigationSession}
                 onCreate={createProjectSession}
                 onRefresh={(project) =>
                   run(() =>
-                    controller.synchronize({
-                      source: project.source,
-                      connectionId: state.catalogs[project.source]!.connectionId,
-                      owner: project.target.owner,
-                      kind: 'connected',
-                      deviceId: project.target.deviceId,
-                      workspaceId: project.target.workspaceId,
-                    }),
+                    typeof controller.refreshProjectSessions === 'function'
+                      ? controller.refreshProjectSessions(project.source, project.target)
+                      : controller.synchronize({
+                          source: project.source,
+                          connectionId: state.catalogs[project.source]!.connectionId,
+                          owner: project.target.owner,
+                          kind: 'connected',
+                          deviceId: project.target.deviceId,
+                          workspaceId: project.target.workspaceId,
+                        }),
                   )
                 }
               />
             ))}
-            {encrypted.status?.connection?.hosts.map((host) => (
-              <div key={host.deviceId}>
-                <button
-                  className="workspace-project"
-                  disabled={blocked}
-                  onClick={() =>
-                    run(async () => {
-                      setView('secure');
-                      await secure.selectHost(host.deviceId);
-                    })
-                  }
-                >
-                  <Monitor size={16} />
-                  <span>
-                    {encrypted.hostId === host.deviceId
-                      ? (encrypted.catalog?.deviceMetadata?.name ?? host.deviceId)
-                      : host.deviceId}
-                  </span>
-                </button>
-                {encrypted.hostId === host.deviceId &&
-                  encrypted.catalog?.products.replicas.map((replica) => (
-                    <button
-                      className="workspace-project"
-                      key={replica.id}
-                      disabled={blocked || !replica.available}
-                      aria-current={
-                        view === 'secure' && encrypted.replicaId === replica.id ? 'page' : undefined
-                      }
-                      onClick={() =>
-                        run(async () => {
-                          setView('secure');
-                          await secure.selectReplica(replica.id);
-                        })
-                      }
-                    >
-                      <Folder size={16} />
-                      <span>
-                        {encrypted.catalog?.products.projects.find(
-                          (project) => project.id === replica.projectId,
-                        )?.name ?? replica.localProjectId}
-                      </span>
-                    </button>
-                  ))}
-              </div>
-            ))}
-            {view === 'secure' && secureReplica && sessionList}
           </section>
           <NavigationSessions
             kind="recent"
-            entries={navigationEntries.filter((entry) => !entry.session.isPinned).slice(0, 30)}
+            entries={recentEntries.slice(0, recentShown)}
+            more={navigation.summaries.recent.more || recentEntries.length > recentShown}
+            loading={navigation.summaries.recent.loading}
+            cached={navigation.summaries.recent.cached}
+            legacy={navigation.summaries.recent.legacy}
+            error={navigation.summaries.recent.error}
+            onLoadMore={() => {
+              void navigation.loadMore('recent').then((current) => {
+                if (current) setRecentShown((value) => value + 30);
+              });
+            }}
+            onRefresh={() =>
+              run(async () => {
+                for (const source of new Set(projects.map((project) => project.source)))
+                  await controller.refreshCatalog(source);
+                navigation.refresh('recent');
+              })
+            }
             selected={navigationSelected}
             disabled={blocked}
             onOpen={openNavigationSession}
             onAction={manageNavigationSession}
           />
           {!Object.values(state.catalogs).some((catalog) => catalog.targets.length) && (
-            <p className="workspace-muted">点击“添加项目”，选择本机文件夹。</p>
+            <p className="workspace-muted">
+              {addProject
+                ? '点击“添加项目”，选择本机文件夹。'
+                : '暂无已连接项目，请在执行电脑登记项目并连接。'}
+            </p>
           )}
         </nav>
 
@@ -1469,8 +1424,10 @@ export function WorkspaceApp({
           >
             <CircleUserRound size={22} />
             <span>
-              {account?.owner ? '已连接账号' : '本机账号'}
-              <small>{account?.owner ? '账号与设备' : 'Local workspace'}</small>
+              {account?.owner ? '已连接账号' : localAvailable ? '本机账号' : '离线账号'}
+              <small>
+                {account?.owner ? '账号与设备' : localAvailable ? 'Local workspace' : '本机缓存'}
+              </small>
             </span>
           </button>
           <WorkspaceToolMenu>
@@ -1584,13 +1541,21 @@ export function WorkspaceApp({
             }
           />
         </main>
-        <div hidden={view === 'plain'} className="workspace-secure-content">
-          <SecureApp
-            controller={secure}
+        <div hidden={view === 'plain'} className="workspace-connections">
+          <WorkspaceAccountPanel
+            visible={view === 'connections'}
             accountApi={accountApi}
             onAccountVerified={verified}
-            layout={view === 'connections' ? 'connections' : 'session'}
-            onNavigationBlocked={setSecureBlocked}
+            onBeforeLogout={() => controller.disconnectSource('remote')}
+            activeTarget={state.scope?.source === 'remote' ? state.scope.target : undefined}
+            beforeMove={() => controller.flushDraft()}
+            endView={async () => {
+              await controller.disconnectSource('remote');
+              await controller.refreshCatalog('remote');
+            }}
+            onBack={() => setView('plain')}
+            openSettings={openSettings ? () => run(openSettings) : undefined}
+            extras={accountExtras}
           />
         </div>
       </div>
@@ -1603,39 +1568,25 @@ export async function bootWorkspace() {
     moorWorkspace?: {
       version: number;
       request(value: DesktopWorkspaceRequest): Promise<unknown>;
+      account: AccountApi;
       context(): Promise<unknown>;
       addProject(): Promise<unknown>;
       onChange(listener: () => void): () => void;
       onSync(listener: (notice: unknown) => void): () => void;
     };
-    moorSecure?: {
-      version: number;
-      request(value: DesktopSecureRequest): Promise<unknown>;
-      account: SecureAccountApi;
-    };
     moorDesktop?: { openSettings?: () => Promise<unknown> };
   };
-  if (bridges.moorWorkspace?.version !== 1 || bridges.moorSecure?.version !== 1)
-    throw Error('桌面工作区接口不可用。');
+  if (bridges.moorWorkspace?.version !== 1) throw Error('桌面工作区接口不可用。');
   const container = document.getElementById('app');
   if (!container) throw Error('桌面页面容器不可用。');
-  let account: Account | null = null;
   const controller = new WorkspaceController({
     request: (value) => bridges.moorWorkspace!.request(value),
-  });
-  const secure = new SecureWorkspaceController({
-    request: (value) => bridges.moorSecure!.request(value),
-    account: () => (account?.owner ? { origin: account.origin, owner: account.owner } : null),
   });
   const root = createRoot(container);
   root.render(
     <WorkspaceApp
       controller={controller}
-      secure={secure}
-      accountApi={(value) => bridges.moorSecure!.account(value)}
-      onAccountVerified={(value) => {
-        account = value;
-      }}
+      accountApi={(value) => bridges.moorWorkspace!.account(value)}
       openSettings={bridges.moorDesktop?.openSettings}
       addLocalProject={bridges.moorWorkspace.addProject}
       readDesktopContext={bridges.moorWorkspace.context}
@@ -1647,7 +1598,6 @@ export async function bootWorkspace() {
     'pagehide',
     () => {
       root.unmount();
-      secure.close();
       void controller.flushDraft().finally(() => controller.close());
     },
     { once: true },

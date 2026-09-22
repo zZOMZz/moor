@@ -142,12 +142,7 @@ test(
     const read = await f.cli({ action: 'read' });
     assert.equal(read.code, 0, read.stderr);
     assert.deepEqual(read.json(), { revision: 0, sources: [] });
-    for (const flags of [
-      ['--desktop'],
-      ['--pair', 'synthetic'],
-      ['--preview-config-stdin'],
-      ['--github-config-stdin'],
-    ]) {
+    for (const flags of [['--desktop'], ['--pair', 'synthetic'], ['--github-config-stdin']]) {
       const result = await f.cli({ action: 'read' }, flags);
       assert.equal(result.code, 1);
       assert.match(result.json().error, /不能同时/);

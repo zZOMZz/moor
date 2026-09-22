@@ -49,10 +49,3 @@ export function previewFrame(
     image: previewPng(viewport),
   };
 }
-export function previewSignal() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}

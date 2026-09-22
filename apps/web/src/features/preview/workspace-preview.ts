@@ -1,5 +1,5 @@
 import type { GitTarget } from '../git/git-workspace';
-import { productCanonicalJson as canonical } from '@moor/client/encrypted-product';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
 import {
   previewAnnotationsStoredSchema,

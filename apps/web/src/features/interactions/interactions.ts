@@ -1,5 +1,3 @@
-import { z } from 'zod';
-import { id } from '@moor/protocol/protocol';
 import {
   questionAnswerSchema,
   questionReceiptSchema,
@@ -10,14 +8,16 @@ import {
   type QuestionAnswer,
   type QuestionRequest,
 } from '@moor/protocol/interaction-protocol';
+import { id } from '@moor/protocol/protocol';
 import {
   sessionEventSchema,
   type AccountRateLimit,
   type SessionEventState,
 } from '@moor/protocol/session-events';
 import { applySessionEvent } from '@moor/session/session-events';
-import { ApiError } from '../../platform/api';
+import { z } from 'zod';
 import { esc, markdown } from '../../components/content';
+import { ApiError } from '../../platform/api';
 
 const scopeSchema = z
   .object({
@@ -347,7 +347,6 @@ export const interactionCapabilitiesSchema = z.object({
   steerUnavailableReason: z.string().optional(),
 });
 export type QuestionItem = z.infer<typeof questionItemSchema>;
-export type SteerItem = z.infer<typeof steerItemSchema>;
 export const questionStatus = {
   pending: '等待回答',
   answered: '已回答',

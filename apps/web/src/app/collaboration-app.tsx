@@ -7,7 +7,7 @@ import {
 } from '@moor/protocol/collaboration-protocol';
 import { CollaborationClient, type CollaborationDocument } from '@moor/client/collaboration-client';
 import { readClientSession } from '@moor/client/session-client';
-import { IndexedSecureStorage } from '../platform/secure-store';
+import { IndexedStorage } from '../platform/indexed-storage';
 import { api, ApiError, type Identity } from '../platform/api';
 import { z } from 'zod';
 import { paint } from '../components/ui';
@@ -368,7 +368,7 @@ export async function bootCollaboration(owner: string, identity: Promise<Identit
   }
   const route =
     '/api/collaboration/' + [workspace, replica, session].map(encodeURIComponent).join('/');
-  const storage = new IndexedSecureStorage({ databaseName: 'moor-collaboration-v1' });
+  const storage = new IndexedStorage({ databaseName: 'moor-collaboration-v1' });
   const descriptorKey = JSON.stringify([
     'collaboration-view',
     location.origin,

@@ -132,7 +132,7 @@ corepack pnpm exec tsx --test tests/acp.test.ts tests/runtime.test.ts
 corepack pnpm exec tsx --test tests/host.test.ts tests/catalog.test.ts tests/acp.test.ts tests/runtime.test.ts
 ```
 
-进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/integration/cli-host.test.ts)；显式加密链路见 [encrypted-cli-host.test.ts](../tests/integration/encrypted-cli-host.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。
+进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/integration/cli-host.test.ts)；已退场加密入口的拒绝与旧数据离线保留见 [retired-e2ee.test.ts](../tests/integration/retired-e2ee.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。
 
 ## 三、闭卷自测与参考答案
 

@@ -1,8 +1,7 @@
-import { useRef, useState, type ReactNode } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { GitBranch, X } from 'lucide-react';
-import { paint } from '../../components/ui';
-import { gitWorkspaceKey, type GitWorkspaceController } from './git-workspace';
+import { X } from 'lucide-react';
+import { useRef, useState, type ReactNode } from 'react';
+import { type GitWorkspaceController } from './git-workspace';
 export type GitWorkspacePanelProps = {
   controller?: GitWorkspaceController;
   newSession: boolean;
@@ -373,31 +372,5 @@ export function GitWorkspacePanel(p: GitWorkspacePanelProps) {
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
-  );
-}
-export function showGitWorkspacePanel(props?: GitWorkspacePanelProps) {
-  paint(
-    '#git-workspace-view',
-    props ? (
-      <GitWorkspacePanel
-        key={props.controller ? gitWorkspaceKey(props.controller.target) : 'loading'}
-        {...props}
-      />
-    ) : null,
-  );
-}
-export function showGitWorkspaceControl(props?: {
-  onOpen(): void;
-  disabled?: boolean;
-  label?: string;
-}) {
-  paint(
-    '#git-workspace-control',
-    props ? (
-      <button className="project-content-trigger" onClick={props.onOpen} disabled={props.disabled}>
-        <GitBranch size={16} />
-        {props.label || 'Git 与工作目录'}
-      </button>
-    ) : null,
   );
 }

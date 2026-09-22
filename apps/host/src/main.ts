@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync, unlinkSync } from 'node:fs';
-import { resolve, dirname, join, basename, isAbsolute } from 'node:path';
+import { resolve, dirname, join, basename } from 'node:path';
 import { z } from 'zod';
 import { WebSocket } from 'ws';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
@@ -31,21 +31,11 @@ import {
   type AttentionContext,
 } from '@moor/protocol/attention';
 import {
-  EncryptedHostTransport,
-  openSecureHostEndpoint,
-} from '@moor/host/transport/encrypted-host';
-import { assertPrivatePathsOutsideProjects } from '@moor/e2ee/node/private-project-path';
-import { HostProductCatalog } from '@moor/host/commands/product-catalog';
-import { encryptedHostCatalogSchema } from '@moor/host/commands/encrypted-host-command';
-import {
   NotificationDispatcher,
   relayNotificationChannel,
 } from '@moor/host/integrations/notification-dispatch';
 import { GitHubConfig } from '@moor/host/integrations/github/config';
-import { PreviewConfig, type PreviewLocalTarget } from '@moor/host/integrations/preview/config';
-import { createPreviewRenderer } from '@moor/host/integrations/preview/renderer';
 import { SkillsConfig } from '@moor/host/integrations/skills-config';
-import { McpSettings } from '@moor/host/integrations/mcp-settings';
 import { AgentSettings } from '@moor/host/agents/settings';
 import { registerDesktopProject } from '@moor/host/projects/registration';
 import { HostDeviceMetadata } from '@moor/host/persistence/device-metadata';
@@ -54,13 +44,13 @@ import {
   type DeviceMetadata,
   type DeviceMetadataState,
 } from '@moor/protocol/device-metadata';
-import { taskAuthoritySchema } from '@moor/protocol/task-protocol';
+import { connectionAuthoritySchema } from '@moor/protocol/connection-authority';
 import { collaborationContextSchema } from '@moor/protocol/collaboration-protocol';
 import {
   assertLocalCliConnectionPath,
   publishLocalCliConnection,
   localCliProof,
-} from '@moor/e2ee/node/local-cli-connection';
+} from '@moor/protocol/node/local-cli-connection';
 const { values } = parseArgs({
   options: {
     server: { type: 'string' },
@@ -84,54 +74,16 @@ const { values } = parseArgs({
   },
 });
 const configurationOnly =
-  values['github-config-stdin'] ||
-  values['preview-config-stdin'] ||
-  values['skills-config-stdin'] ||
-  values['agent-config-stdin'] ||
-  values['mcp-config-stdin'];
-const secureMode =
-  values['secure-endpoint'] !== undefined || values['secure-connection'] !== undefined;
-let secureProjectRoots = (): string[] => (values.project ?? []).map((path) => resolve(path));
-if (
-  secureMode &&
-  (!values['secure-endpoint'] ||
-    !values['secure-connection'] ||
-    values.local ||
-    values.pair ||
-    configurationOnly)
-) {
-  writeFileSync(
-    process.stdout.fd,
-    JSON.stringify({
-      error: '加密主机需要同时指定私有设备和连接文件，不能混用仅本机、旧配对或配置命令',
-    }) + '\n',
-  );
+  values['github-config-stdin'] || values['skills-config-stdin'] || values['agent-config-stdin'];
+if (values['preview-config-stdin'] || values['mcp-config-stdin']) {
+  console.error('网页预览与Moor逐回合附加MCP已退场；原私有配置保留，本次未修改或启动服务。');
   process.exit(1);
 }
-let secureEndpoint: Awaited<ReturnType<typeof openSecureHostEndpoint>> | undefined;
-if (secureMode) {
-  const paths = [values['secure-endpoint']!, values['secure-connection']!];
-  assert(
-    paths.every((path) => isAbsolute(path) && path === resolve(path)),
-    400,
-    '设备路径无效',
-  );
-  assertPrivatePathsOutsideProjects(paths, secureProjectRoots());
-  try {
-    secureEndpoint = await openSecureHostEndpoint({
-      endpointFile: values['secure-endpoint']!,
-      connectionFile: values['secure-connection']!,
-      server: values.server,
-      projectRoots: () => secureProjectRoots(),
-    });
-  } catch (error) {
-    if (!values.desktop) throw error;
-    // An unavailable remote identity never authorizes a legacy connection and
-    // does not prevent the independently authenticated local desktop starting.
-  }
+// Retired arguments fail before reading credentials, opening data or connecting.
+if (values['secure-endpoint'] !== undefined || values['secure-connection'] !== undefined) {
+  console.error('加密主机已退场；本次未读取设备材料或连接其他传输，请保留原数据。');
+  process.exit(1);
 }
-process.once('exit', () => secureEndpoint?.close());
-let secureTransport: EncryptedHostTransport | undefined;
 if (
   values.local &&
   (values.desktop || values.pair || values.server !== undefined || configurationOnly)
@@ -142,37 +94,14 @@ if (
   );
   process.exit(1);
 }
-const configurationLabel = values['mcp-config-stdin']
-  ? 'MCP'
-  : values['agent-config-stdin']
-    ? 'Agent'
-    : values['skills-config-stdin']
-      ? 'Skills'
-      : values['preview-config-stdin']
-        ? '预览'
-        : 'GitHub';
-if (
-  values['mcp-config-stdin'] &&
-  (values.desktop ||
-    values.pair ||
-    values['agent-config-stdin'] ||
-    values['skills-config-stdin'] ||
-    values['preview-config-stdin'] ||
-    values['github-config-stdin'])
-) {
-  writeFileSync(
-    process.stdout.fd,
-    JSON.stringify({ error: 'MCP 本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
-  );
-  process.exit(1);
-}
+const configurationLabel = values['agent-config-stdin']
+  ? 'Agent'
+  : values['skills-config-stdin']
+    ? 'Skills'
+    : 'GitHub';
 if (
   values['agent-config-stdin'] &&
-  (values.desktop ||
-    values.pair ||
-    values['github-config-stdin'] ||
-    values['preview-config-stdin'] ||
-    values['skills-config-stdin'])
+  (values.desktop || values.pair || values['github-config-stdin'] || values['skills-config-stdin'])
 ) {
   writeFileSync(
     process.stdout.fd,
@@ -182,21 +111,11 @@ if (
 }
 if (
   values['skills-config-stdin'] &&
-  (values.desktop || values.pair || values['github-config-stdin'] || values['preview-config-stdin'])
-) {
-  writeFileSync(
-    process.stdout.fd,
-    JSON.stringify({ error: 'Skills 本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
-  );
-  process.exit(1);
-}
-if (
-  values['preview-config-stdin'] &&
   (values.desktop || values.pair || values['github-config-stdin'])
 ) {
   writeFileSync(
     process.stdout.fd,
-    JSON.stringify({ error: '预览本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
+    JSON.stringify({ error: 'Skills 本机配置命令不能同时启动桌面、配对或其他配置命令' }) + '\n',
   );
   process.exit(1);
 }
@@ -251,7 +170,7 @@ if (values.pair) {
   assert(!config.actor || config.actor.kind === 'relay', 400, '远程配对身份无效');
   saveConfig(config);
   console.log('设备已配对');
-} else if (!secureMode) {
+} else {
   try {
     config = configSchema.parse(JSON.parse(readFileSync(configPath, 'utf8')));
   } catch (e) {
@@ -273,25 +192,6 @@ try {
 }
 process.once('exit', releaseRuntime);
 const runtime = new RuntimeStore(runtimeFile);
-secureProjectRoots = () => [
-  ...(values.project ?? []).map((path) => resolve(path)),
-  ...runtime.machine
-    .scan({ prefix: ['localProject'] })
-    .map((row) => (row.value as { rootPath: string }).rootPath),
-  // Reserve the entire managed tree before a future session creates its cwd.
-  join(dirname(runtimeFile), 'worktrees'),
-  // Persisted execution roots can survive a runtime-directory move. Exclude
-  // both planned roots and current cwd, including operations awaiting recovery.
-  ...runtime.journal.db
-    .prepare(
-      "SELECT json_extract(record,'$.plan.targetPath') AS root,json_extract(record,'$.managed.cwd') AS cwd FROM session_execution",
-    )
-    .all()
-    .flatMap((row) =>
-      [row.root, row.cwd].filter((path): path is string => typeof path === 'string'),
-    ),
-];
-requireRuntimeBoundary();
 const agentSettings = new AgentSettings(
   runtime,
   acpDriver,
@@ -312,12 +212,6 @@ const agentSettings = new AgentSettings(
         hello();
       },
 );
-const mcpSettings = new McpSettings(runtime, () => {
-  if (!configurationOnly) {
-    for (const host of workspaces.values()) host.invalidateMcp();
-    broadcast({ type: 'mcp-changed', workspaceId: runtime.workspace.id });
-  }
-});
 const githubConfig = new GitHubConfig(
   join(resolve(values['github-config-dir'] ?? dirname(runtimeFile)), 'github-v1.json'),
   {
@@ -336,61 +230,6 @@ const githubConfig = new GitHubConfig(
     },
   },
 );
-const previewBlockedOrigins = new Set<string>();
-if (config) previewBlockedOrigins.add(config.server);
-if (secureEndpoint) previewBlockedOrigins.add(secureEndpoint.connection.origin);
-const previewConfig = new PreviewConfig(join(dirname(runtimeFile), 'preview-v1.json'), {
-  identity: () => ({
-    workspaceId: runtime.workspace.id,
-    machineId: runtime.workspace.machineId,
-    userId: runtime.workspace.userId,
-  }),
-  targets: () => {
-    const projects = runtime.machine
-      .scan({ prefix: ['localProject'] })
-      .map((row) => row.value as { id: string; name: string; rootPath: string });
-    const targets: PreviewLocalTarget[] = projects.map((p) => ({
-      localProjectId: p.id,
-      executionId: 'shared',
-      label: p.name + ' · 原目录',
-      rootPath: p.rootPath,
-      projectRoot: p.rootPath,
-    }));
-    for (const row of runtime.journal.db
-      .prepare(
-        'SELECT session_id,project_id FROM session_execution WHERE workspace_id=? AND user_id=? AND machine_id=?',
-      )
-      .all(runtime.workspace.id, runtime.workspace.userId, runtime.workspace.machineId)) {
-      const project = projects.find((p) => p.id === row.project_id);
-      if (!project) continue;
-      try {
-        const lease = runtime.executions.lease({
-          workspaceId: runtime.workspace.id,
-          userId: runtime.workspace.userId,
-          machineId: runtime.workspace.machineId,
-          localProjectId: project.id,
-          sessionId: String(row.session_id),
-          rootPath: project.rootPath,
-        });
-        targets.push({
-          localProjectId: project.id,
-          executionId: lease.executionId,
-          label: project.name + ' · ' + lease.executionId,
-          rootPath: lease.rootPath,
-          projectRoot: lease.projectRoot,
-        });
-      } catch {
-        /* Removed, changing or invalid worktrees cannot be registered. */
-      }
-    }
-    return targets;
-  },
-  blockedOrigins: () => [...previewBlockedOrigins],
-  changed: () => {
-    if (!configurationOnly)
-      for (const host of workspaces.values()) host.previewManager.invalidate();
-  },
-});
 const skillsConfig = new SkillsConfig(join(dirname(runtimeFile), 'skills-v1.json'), {
   identity: () => ({
     workspaceId: runtime.workspace.id,
@@ -430,9 +269,6 @@ const skillsConfig = new SkillsConfig(join(dirname(runtimeFile), 'skills-v1.json
     dirname(runtimeFile),
     dirname(configPath),
     resolve(values['github-config-dir'] ?? dirname(runtimeFile)),
-    ...(secureMode
-      ? [dirname(values['secure-endpoint']!), dirname(values['secure-connection']!)]
-      : []),
   ],
   changed: () => {
     if (!configurationOnly)
@@ -448,22 +284,18 @@ if (configurationOnly) {
       const chunk = Buffer.from(value);
       bytes += chunk.length;
       assert(
-        bytes <= (values['agent-config-stdin'] || values['mcp-config-stdin'] ? 64 : 16) * 1024,
+        bytes <= (values['agent-config-stdin'] ? 64 : 16) * 1024,
         413,
         configurationLabel + ' 本机配置请求过大',
       );
       chunks.push(chunk);
     }
     const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    const result = values['mcp-config-stdin']
-      ? await mcpSettings.handle(input)
-      : values['agent-config-stdin']
-        ? await agentSettings.handle(input)
-        : values['skills-config-stdin']
-          ? skillsConfig.handle(input)
-          : values['preview-config-stdin']
-            ? previewConfig.handle(input)
-            : await githubConfig.handle(input);
+    const result = values['agent-config-stdin']
+      ? await agentSettings.handle(input)
+      : values['skills-config-stdin']
+        ? skillsConfig.handle(input)
+        : await githubConfig.handle(input);
     writeFileSync(process.stdout.fd, JSON.stringify(result) + '\n');
   } catch (error) {
     exitCode = 1;
@@ -481,7 +313,6 @@ if (configurationOnly) {
 }
 const workspaces = new Map<string, HostWorkspace>(),
   journal = runtime.journal;
-const previewRenderer = createPreviewRenderer();
 const notifications = new NotificationDispatcher({ hosts: () => workspaces.values() });
 const nativeGeneration = {},
   nativeChannel = 'native:' + runtime.workspace.machineId;
@@ -539,47 +370,20 @@ function reportHealth() {
     type: 'health',
     deviceMetadata: deviceMetadataState(),
     local: ready && workspaces.size > 0 ? 'ready' : 'unavailable',
-    relay: secureMode
-      ? secureTransport?.ready
-        ? 'connected'
-        : 'unavailable'
-      : !remote
-        ? 'unpaired'
-        : remote.revoked
-          ? 'revoked'
-          : remote.socket?.readyState === WebSocket.OPEN
-            ? 'connected'
-            : 'reconnecting',
+    relay: !remote
+      ? 'unpaired'
+      : remote.revoked
+        ? 'revoked'
+        : remote.socket?.readyState === WebSocket.OPEN
+          ? 'connected'
+          : 'reconnecting',
     workspaces: [...workspaces.values()].filter((w) => !w.closed).length,
   });
 }
 function broadcast(v: unknown) {
   for (const t of targets) send(t.socket, v);
 }
-// Remote credentials do not own a shared desktop runtime. Private endpoint
-// files must still stay outside every project, including after revocation.
-function requireRuntimeBoundary() {
-  if (!secureMode) return;
-  assertPrivatePathsOutsideProjects(
-    [values['secure-endpoint']!, values['secure-connection']!],
-    secureProjectRoots(),
-  );
-  try {
-    secureEndpoint?.current();
-  } catch (error) {
-    if (!values.desktop) throw error;
-    secureTransport?.close();
-  }
-}
 function hello() {
-  if (secureMode) {
-    try {
-      requireRuntimeBoundary();
-    } catch {
-      void stop();
-      return;
-    }
-  }
   if (ready)
     for (const target of targets)
       send(target.socket, {
@@ -614,7 +418,6 @@ async function refresh() {
   if (stopped || refreshing) return;
   refreshing = true;
   try {
-    requireRuntimeBoundary();
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
       host = new HostWorkspace(
@@ -630,7 +433,6 @@ async function refresh() {
         undefined,
         { config: githubConfig },
         undefined,
-        { config: previewConfig, driver: previewRenderer },
         { config: skillsConfig },
       );
       host.setAttentionListener(attentionChanged);
@@ -663,7 +465,6 @@ async function refresh() {
       runtime.saveMachine();
       projectsRegistered = true;
     }
-    requireRuntimeBoundary();
     host.updateCatalogue();
     ready = true;
     hello();
@@ -671,13 +472,6 @@ async function refresh() {
   } catch {
     ready = false;
     broadcast({ type: 'unavailable' });
-    if (secureMode) {
-      try {
-        requireRuntimeBoundary();
-      } catch {
-        void stop();
-      }
-    }
   } finally {
     refreshing = false;
     reportHealth();
@@ -794,7 +588,6 @@ async function connect(target: Target) {
       if (m.type === 'ready' && ready && target.attentionReady && target.config.actor) {
         for (const workspace of workspaces.values()) {
           await workspace.collaboration.resume(target.config.actor, target.config.id, () => {
-            requireRuntimeBoundary();
             assert(
               !stopped &&
                 !target.revoked &&
@@ -833,7 +626,6 @@ async function connect(target: Target) {
         };
         let receiptContext: AttentionContext | undefined;
         const current = () => {
-          requireRuntimeBoundary();
           assert(
             !stopped && !target.revoked && target.socket === ws && ws.readyState === WebSocket.OPEN,
             409,
@@ -882,7 +674,7 @@ async function connect(target: Target) {
               workspace.checkProject(context.sessionId, context.localProjectId);
             receiptContext = context;
             const attentionAuthority = {
-              ...taskAuthoritySchema.parse({
+              ...connectionAuthoritySchema.parse({
                 serverOrigin: target.config.server,
                 ownerId: context.actor.accountId,
                 deviceId: target.config.id,
@@ -964,7 +756,7 @@ async function connect(target: Target) {
             const authority =
               m.method !== 'mutate' || m.authorityOwner === undefined
                 ? undefined
-                : taskAuthoritySchema.parse({
+                : connectionAuthoritySchema.parse({
                     serverOrigin: target.config.server,
                     ownerId: m.authorityOwner,
                     deviceId: target.config.id,
@@ -1041,11 +833,6 @@ async function connect(target: Target) {
       );
     if (target.socket !== ws) return;
     target.attentionReady = false;
-    for (const host of workspaces.values()) {
-      host.previewManager.invalidate();
-      host.taskManager.invalidateUnavailable();
-      host.invalidateMcp();
-    }
     const watches = [...target.watches.values()];
     target.watches.clear();
     for (const w of watches) void syncWatch(w.workspaceId, w.sessionId).catch(() => {});
@@ -1135,7 +922,6 @@ if (values.desktop || values.local) {
     assert(address && typeof address === 'object', 500, '无法启动本机界面');
     writeFileSync(configPath + '.local-port', String(address.port), { mode: 0o600 });
     const origin = 'http://127.0.0.1:' + address.port;
-    previewBlockedOrigins.add(origin);
     localApp.setOrigin(origin);
     targets.push({
       config: {
@@ -1198,11 +984,7 @@ if (values.desktop || values.local) {
     } catch {}
     notifications.close();
     for (const workspace of workspaces.values()) workspace.close();
-    await Promise.allSettled([
-      agentSettings.close(),
-      previewRenderer.closeAll(),
-      localApp?.close(),
-    ]);
+    await Promise.allSettled([agentSettings.close(), localApp?.close()]);
     try {
       localStore?.close();
     } catch {}
@@ -1237,14 +1019,10 @@ if (values.desktop) {
       )
         return;
       try {
-        requireRuntimeBoundary();
         const state = registerDesktopProject(runtime, request.action, [
           dirname(runtimeFile),
           dirname(configPath),
           resolve(values['github-config-dir'] ?? dirname(runtimeFile)),
-          ...(secureMode
-            ? [dirname(values['secure-endpoint']!), dirname(values['secure-connection']!)]
-            : []),
         ]);
         for (const host of workspaces.values()) host.updateCatalogue();
         hello();
@@ -1294,41 +1072,6 @@ if (values.desktop) {
       } catch {
         process.send?.({ type: 'device-metadata-result', requestId: request.requestId, ok: false });
       }
-      return;
-    }
-    if (
-      message &&
-      typeof message === 'object' &&
-      'type' in message &&
-      message.type === 'mcp-config'
-    ) {
-      const request = message as { requestId?: unknown; action?: unknown };
-      if (
-        typeof request.requestId !== 'string' ||
-        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId) ||
-        stopped ||
-        !process.connected
-      )
-        return;
-      const requestId = request.requestId;
-      void Promise.resolve()
-        .then(() => mcpSettings.handle(request.action))
-        .then(
-          (state) => {
-            if (!stopped && process.connected)
-              process.send?.({ type: 'mcp-config-result', requestId, ok: true, state });
-          },
-          (error) => {
-            if (!stopped && process.connected)
-              process.send?.({
-                type: 'mcp-config-result',
-                requestId,
-                ok: false,
-                error:
-                  error instanceof AppError ? error.message : 'MCP 本机设置未能确认，请重新读取',
-              });
-          },
-        );
       return;
     }
     if (
@@ -1400,33 +1143,6 @@ if (values.desktop) {
       message &&
       typeof message === 'object' &&
       'type' in message &&
-      message.type === 'preview-config'
-    ) {
-      const request = message as { requestId?: unknown; action?: unknown };
-      if (
-        typeof request.requestId !== 'string' ||
-        !/^[A-Za-z0-9_-]{1,100}$/.test(request.requestId)
-      )
-        return;
-      const requestId = request.requestId;
-      if (stopped || !process.connected) return;
-      try {
-        const state = previewConfig.handle(request.action);
-        process.send?.({ type: 'preview-config-result', requestId, ok: true, state });
-      } catch (error) {
-        process.send?.({
-          type: 'preview-config-result',
-          requestId,
-          ok: false,
-          error: error instanceof AppError ? error.message : '预览本机设置操作未完成，请重新读取',
-        });
-      }
-      return;
-    }
-    if (
-      message &&
-      typeof message === 'object' &&
-      'type' in message &&
       message.type === 'github-config'
     ) {
       const request = message as { requestId?: unknown; action?: unknown };
@@ -1460,12 +1176,10 @@ if (values.desktop) {
   process.on('disconnect', () => {
     void agentSettings.close();
     notifications.disconnect(nativeChannel, nativeGeneration);
-    for (const host of workspaces.values()) host.previewManager.invalidate();
   });
 }
 if (
   config &&
-  !secureMode &&
   !values.local &&
   (values.server === undefined ||
     (values.server && config.server === new URL(values.server).origin))
@@ -1475,77 +1189,6 @@ reportHealth();
 const refreshTimer = setInterval(() => void refresh(), 10000);
 const notificationTimer = setInterval(() => notifications.drain(), 2000);
 for (const target of targets) void connect(target);
-async function startSecureTransport() {
-  const endpoint = secureEndpoint;
-  if (!endpoint) return;
-  await refresh();
-  if (ready) {
-    const runtimeCatalog = () => {
-      assert(ready && !stopped, 503, '加密主机暂不可用');
-      endpoint.current();
-      return encryptedHostCatalogSchema.parse({
-        catalogVersion: 1,
-        machineId,
-        deviceMetadata: deviceMetadata.read(),
-        workspaces: [...workspaces.values()]
-          .filter((host) => !host.closed)
-          .map((host) => ({
-            ...host.workspace,
-            // Workbench Actor proof and its seven methods still need explicit
-            // encrypted protocol support before advertising these capabilities.
-            features: host.workspace.features?.filter(
-              (feature) => ![ATTENTION_FEATURE, ACTOR_FEATURE, FOLLOWUP_FEATURE].includes(feature),
-            ),
-          })),
-      });
-    };
-    const products = new HostProductCatalog({
-      db: journal.db,
-      authority: {
-        serverOrigin: endpoint.connection.origin,
-        accountId: endpoint.connection.owner,
-        rootKeyId: endpoint.current().checkpoint.rootKeyId,
-        hostDeviceId: endpoint.deviceId,
-      },
-      runtime: runtimeCatalog,
-    });
-    products.synchronize();
-    const invalidateAuthorizations = () => {
-      for (const host of workspaces.values()) {
-        host.previewManager.invalidateUnavailable();
-        host.taskManager.invalidateUnavailable();
-        host.invalidateMcp();
-      }
-    };
-    secureTransport = new EncryptedHostTransport({
-      endpoint,
-      dispatcher: commands,
-      products,
-      invalidated: invalidateAuthorizations,
-      catalog: () => {
-        return {
-          ...runtimeCatalog(),
-          catalogVersion: 2,
-          products: products.read(),
-        };
-      },
-      closed: () => {
-        invalidateAuthorizations();
-        try {
-          requireRuntimeBoundary();
-        } catch {
-          void stop();
-        }
-        reportHealth();
-      },
-    });
-  }
-}
-await startSecureTransport().catch((error) => {
-  if (!values.desktop) throw error;
-  requireRuntimeBoundary();
-  reportHealth();
-});
 async function stop() {
   if (stopped) return;
   stopped = true;
@@ -1554,8 +1197,6 @@ async function stop() {
   clearInterval(refreshTimer);
   clearInterval(notificationTimer);
   notifications.close();
-  secureTransport?.close();
-  secureEndpoint?.close();
   for (const target of targets) {
     clearTimeout(target.retry);
     target.socket?.terminate();
@@ -1566,7 +1207,6 @@ async function stop() {
     } catch (error) {
       console.error(error);
     }
-  await previewRenderer.closeAll();
   await localApp?.close();
   localStore?.close();
   await checksClosed;

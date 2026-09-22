@@ -38,6 +38,9 @@ test('new packages use their declared source exports without a second package-na
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const directory = join(root, 'packages', 'synthetic');
   mkdirSync(directory, { recursive: true });
+  // A removed package can leave ignored program outputs or operator-owned files.
+  // Source discovery ignores it rather than requiring destructive directory cleanup.
+  mkdirSync(join(root, 'packages', 'retired', 'dist'), { recursive: true });
   writeFileSync(
     join(directory, 'package.json'),
     JSON.stringify({

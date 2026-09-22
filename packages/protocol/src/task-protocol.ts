@@ -4,7 +4,7 @@ import { contentScopeSchema } from './content-protocol';
 import { gitBranchSchema, sessionExecutionSchema } from './git-protocol';
 
 export const SESSION_TASKS_FEATURE = 'session-tasks-v1';
-export const SECURE_TURN_AUTHORITY_FEATURE = 'secure-turn-authority-v1';
+
 export const TASK_LIMITS = {
   tasks: 8,
   parallel: 4,
@@ -85,8 +85,7 @@ export const taskAuthoritySchema = z
     secureChannel: taskSecureChannelSchema.optional(),
   })
   .strict();
-export type TaskAuthority = z.infer<typeof taskAuthoritySchema>;
-export type TaskAuthorityLease = TaskAuthority & { current(): void };
+
 export const taskReadSchema = taskScopeSchema.extend({ grantId: id.optional() }).strict();
 const taskActionBaseSchema = taskScopeSchema
   .extend({
@@ -122,7 +121,7 @@ export const taskOperationViewSchema = z
     message: z.string().max(500).optional(),
   })
   .strict();
-export type TaskOperationView = z.infer<typeof taskOperationViewSchema>;
+
 export const taskSlotViewSchema = z
   .object({
     taskId: id,
@@ -249,87 +248,3 @@ export function validateTaskActionResult(raw: unknown, request: TaskAction) {
   );
   return result;
 }
-
-const toolScopeSchema = z.object({ grantId: id, taskId: id });
-export const taskToolInputSchemas = {
-  moor_task_create: toolScopeSchema.extend({ operationId: id }).strict(),
-  moor_task_read: toolScopeSchema
-    .extend({
-      offset: z.number().int().min(0).optional(),
-      limit: z.number().int().min(1).max(20).optional(),
-    })
-    .strict(),
-  moor_task_send: toolScopeSchema
-    .extend({
-      operationId: id,
-      expectedUserTurnId: id.nullable(),
-      prompt: z.string().trim().min(1).max(TASK_LIMITS.instructionCharacters).optional(),
-    })
-    .strict(),
-  moor_task_wait: toolScopeSchema
-    .extend({ expectedUserTurnId: id, timeoutMs: z.number().int().min(1).max(TASK_LIMITS.waitMs) })
-    .strict(),
-  moor_task_cancel: toolScopeSchema
-    .extend({ operationId: id, expectedAssistantTurnId: id })
-    .strict(),
-} as const;
-export type TaskToolName = keyof typeof taskToolInputSchemas;
-const stringId = { type: 'string', minLength: 1, maxLength: 160, pattern: '^[A-Za-z0-9_:-]+$' };
-const properties = { grantId: stringId, taskId: stringId };
-const definition = (
-  name: TaskToolName,
-  description: string,
-  extra: Record<string, unknown>,
-  required: string[],
-) => ({
-  name,
-  description,
-  inputSchema: {
-    type: 'object',
-    properties: { ...properties, ...extra },
-    required: ['grantId', 'taskId', ...required],
-    additionalProperties: false,
-  },
-});
-export const taskToolDefinitions = [
-  definition(
-    'moor_task_create',
-    'Create only a user-authorized child task in its fixed isolated Git worktree. Does not send its instruction. Unknown operations require manual user recovery; never change IDs to retry.',
-    { operationId: stringId },
-    ['operationId'],
-  ),
-  definition(
-    'moor_task_read',
-    'Read bounded history of an authorized child. Terminal output is not proof the user completion condition has been met.',
-    {
-      offset: { type: 'integer', minimum: 0 },
-      limit: { type: 'integer', minimum: 1, maximum: 20 },
-    },
-    [],
-  ),
-  definition(
-    'moor_task_send',
-    'Send to the authorized child with an exact history head. The first turn uses the user-approved instruction; followups require prompt and consume the finite turn budget. Unknown sends require manual user recovery.',
-    {
-      operationId: stringId,
-      expectedUserTurnId: { anyOf: [stringId, { type: 'null' }] },
-      prompt: { type: 'string', minLength: 1, maxLength: TASK_LIMITS.instructionCharacters },
-    },
-    ['operationId', 'expectedUserTurnId'],
-  ),
-  definition(
-    'moor_task_wait',
-    'Wait for the specified child user turn, up to 20 seconds. Timeout does not stop the child or establish goal completion.',
-    {
-      expectedUserTurnId: stringId,
-      timeoutMs: { type: 'integer', minimum: 1, maximum: TASK_LIMITS.waitMs },
-    },
-    ['expectedUserTurnId', 'timeoutMs'],
-  ),
-  definition(
-    'moor_task_cancel',
-    'Stop only the exact active assistant turn in the authorized child. Does not cancel future turns or answer permissions.',
-    { operationId: stringId, expectedAssistantTurnId: stringId },
-    ['operationId', 'expectedAssistantTurnId'],
-  ),
-] as const;

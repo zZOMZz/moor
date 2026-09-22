@@ -1,6 +1,5 @@
 import test from 'node:test';
-import { encryptedCommandHost } from '../fixtures/encrypted-command-host';
-import { mappedHost } from '../fixtures/mapped-host';
+import { guardedCommandHost } from '../fixtures/guarded-command-host';
 import type { HostCommand } from '@moor/host/commands/host-command';
 import { readClientSession, buildSessionTurn } from '@moor/client/session-client';
 import assert from 'node:assert/strict';
@@ -1035,53 +1034,15 @@ test('Fork operations inspect and abandon never load an already dispatched nativ
   assert.equal(f.forks.length, 1);
 });
 
-test('never-arrived Fork operations can seal the Host-proven old mapping after cold restart without launching an Agent', async (t) => {
-  const f = fixture(t);
-  await f.prompt();
-  const request = await f.request();
-  const mapped = mappedHost(() => f.host),
-    original = mapped.target(),
-    before = f.opens.length;
-  const command: HostCommand = {
-    method: 'fork-action',
-    workspaceId: 'workspace',
-    localProjectId: 'project',
-    params: request,
-  };
-  const recovery = (action: 'inspect' | 'abandon'): HostCommand => ({
-    ...command,
-    method: 'fork-operations',
-    params: { action, request },
-  });
-  mapped.move();
-  f.restart();
-  mapped.reopen();
-  assert.equal(((await mapped.execute(original, recovery('inspect'))) as any).found, false);
-  assert.equal(f.store.journal.has(request.operationId), false);
-  const sealed = (await mapped.execute(original, recovery('abandon'))) as any;
-  assert.equal(sealed.receipt.phase, 'abandoned');
-  f.restart();
-  mapped.reopen();
-  assert.equal(
-    ((await mapped.execute(original, recovery('inspect'))) as any).receipt.phase,
-    'abandoned',
-  );
-  for (const target of [original, mapped.target()])
-    await assert.rejects(mapped.execute(target, command));
-  assert.equal((await f.host.forkSession(request)).phase, 'abandoned');
-  assert.equal(f.opens.length, before);
-  assert.equal(f.forks.length, 0);
-});
-
-test('encrypted Fork revocation retains a dispatched native ID but prevents acceptance and any recovery load on another channel inspect', async (t) => {
+test('connection Fork revocation retains a dispatched native ID but prevents acceptance and any recovery load on another channel inspect', async (t) => {
   const f = fixture(t);
   await f.prompt();
   const request = await f.request(),
     entered = signal(),
     release = signal();
-  const encrypted = await encryptedCommandHost(t, () => f.host),
-    first = await encrypted.connect(),
-    second = await encrypted.connect();
+  const guarded = await guardedCommandHost(t, () => f.host),
+    first = await guarded.connect(),
+    second = await guarded.connect();
   f.afterNative = async () => {
     entered.resolve();
     await release.promise;
@@ -1156,57 +1117,6 @@ test('Fork inspection can confirm its prepared worktree without launching native
   assert.equal(existsSync(cwd), false);
 });
 
-test('Fork old-mapping recovery refuses missing Host history, directory generation changes and conflicting original claims', async (t) => {
-  for (const scenario of ['missing-history', 'generation', 'new-target-claim', 'changed-body']) {
-    const f = fixture(t);
-    await f.prompt();
-    const request = await f.request(),
-      mapped = mappedHost(() => f.host),
-      target = mapped.target(),
-      before = f.opens.length;
-    const action: HostCommand = {
-      method: 'fork-action',
-      workspaceId: 'workspace',
-      localProjectId: 'project',
-      params: request,
-    };
-    mapped.move();
-    if (scenario === 'missing-history')
-      f.store.journal.db.exec('DELETE FROM encrypted_product_mapping');
-    if (scenario === 'generation') {
-      const project = f.store.machine.get(['localProject', 'project']) as object;
-      f.store.machine.set(['localProject', 'project'], {
-        ...project,
-        rootPath: join(f.root, 'other'),
-      });
-      f.host.updateCatalogue();
-      mapped.products.synchronize();
-      f.store.machine.set(['localProject', 'project'], { ...project, rootPath: f.root });
-      f.host.updateCatalogue();
-      mapped.products.synchronize();
-    }
-    if (scenario === 'new-target-claim') mapped.products.bindOperation(mapped.target(), action);
-    if (scenario === 'changed-body') {
-      await mapped.execute(target, {
-        ...action,
-        method: 'fork-operations',
-        params: { action: 'abandon', request },
-      });
-      request.childSessionId += '-changed';
-    }
-    for (const kind of ['inspect', 'abandon'] as const)
-      await assert.rejects(
-        mapped.execute(target, {
-          ...action,
-          method: 'fork-operations',
-          params: { action: kind, request },
-        }),
-      );
-    assert.equal(f.forks.length, 0);
-    assert.equal(f.opens.length, before);
-  }
-});
-
 test('sealing the exact nested worktree request prevents a later Fork retry from creating native context in a shared directory', async (t) => {
   const f = fixture(t);
   await f.prompt();
@@ -1269,8 +1179,8 @@ test('a persisted Fork child is readable by the real session client and explicit
     );
     assert.ok(native);
     f.restart();
-    const encrypted = await encryptedCommandHost(t, () => f.host),
-      client = await encrypted.connect();
+    const guarded = await guardedCommandHost(t, () => f.host),
+      client = await guarded.connect();
     const scope = { ...f.scope('child'), userId: 'local:synthetic', machineId: 'machine' };
     const read = async () => {
       const response = await client.execute(
