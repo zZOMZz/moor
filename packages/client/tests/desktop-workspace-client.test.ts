@@ -12,6 +12,8 @@ function gate() {
   });
   return { promise, release };
 }
+const isBusinessRequest = (call: { path: string }) =>
+  call.path.includes('/replicas/') && !call.path.endsWith('/context');
 function fixture(source: 'local' | 'remote' = 'local') {
   const identity = {
     owner: 'account',
@@ -59,7 +61,12 @@ function fixture(source: 'local' | 'remote' = 'local') {
   const calls: { path: string; method: string; body: string | undefined }[] = [];
   const state = {
     owner: 'account',
-    actor: undefined as AttentionActor | undefined,
+    actor: {
+      kind: source === 'local' ? 'local' : 'relay',
+      authorityId: 'authority',
+      accountId: 'account',
+    } as AttentionActor,
+    mappingVersion: 'a'.repeat(64),
     current: true,
     response: [] as unknown,
     responseGate: undefined as ReturnType<typeof gate> | undefined,
@@ -84,16 +91,37 @@ function fixture(source: 'local' | 'remote' = 'local') {
       );
       const path = new URL(url).pathname;
       calls.push({ path, method: options.method!, body: options.body as string | undefined });
-      if (path === '/api/me')
+      if (path === '/api/workspace-catalog')
         return Response.json({
-          owner: state.owner,
-          ...(state.actor ? { actor: state.actor } : {}),
+          version: 1,
+          identity: { owner: state.owner, actor: state.actor },
+          workspaces: catalog,
+          devices: [{ id: 'device', name: 'Computer', online: true, workspaces: [runtime] }],
         });
-      if (path === '/api/workspaces') return Response.json(catalog);
-      if (path === '/api/devices')
-        return Response.json([
-          { id: 'device', name: 'Computer', online: true, workspaces: [runtime] },
-        ]);
+      if (path === '/api/workspaces/workspace/replicas/replica/context') {
+        const replica = catalog[0]!.replicas[0]!;
+        if (!replica.available) return Response.json({ error: '副本已离线' }, { status: 409 });
+        return Response.json({
+          version: 1,
+          identity: { owner: state.owner, actor: state.actor },
+          target: {
+            ...identity,
+            owner: state.owner,
+            machineId: runtime.machineId,
+            userId: runtime.userId,
+            localProjectId: replica.localProjectId,
+            catalogWorkspaceId: 'workspace',
+            catalogProjectId: replica.projectId,
+            replicaId: replica.id,
+          },
+          mappingVersion: state.mappingVersion,
+          runtime: {
+            ...runtime,
+            projects: runtime.projects.filter((project) => project.id === replica.localProjectId),
+          },
+        });
+      }
+      assert(isBusinessRequest({ path }), 'no separate identity or full-directory request');
       state.entered.release();
       await state.responseGate?.promise;
       if (state.fail) throw Error('SYNTHETIC_PRIVATE_NETWORK_FAILURE');
@@ -123,8 +151,20 @@ test('desktop workspace catalog and commands bind the exact local identity and r
     request = await f.request();
   assert.equal(request.target.serverKey, 'local:machine');
   assert.equal(request.target.catalogProjectId, 'project');
+  assert.deepEqual(
+    f.calls.map((call) => call.path),
+    ['/api/workspace-catalog'],
+  );
   assert.deepEqual(await f.client.request(request), { ok: true, value: [] });
-  const actions = f.calls.filter((call) => call.path.includes('/replicas/'));
+  assert.deepEqual(
+    f.calls.slice(1).map((call) => call.path),
+    [
+      '/api/workspaces/workspace/replicas/replica/context',
+      '/api/workspaces/workspace/replicas/replica/sessions',
+      '/api/workspaces/workspace/replicas/replica/context',
+    ],
+  );
+  const actions = f.calls.filter(isBusinessRequest);
   assert.deepEqual(actions, [
     { path: '/api/workspaces/workspace/replicas/replica/sessions', method: 'GET', body: undefined },
   ]);
@@ -167,7 +207,7 @@ test('desktop rejects arbitrary endpoints, cross-scope commands and changed mapp
   f.catalog[0]!.replicas[0]!.projectId = 'another-project';
   f.catalog[0]!.projects.push({ id: 'another-project', name: 'Another' });
   assert.equal(((await f.client.request(original)) as any).ok, false);
-  assert.equal(f.calls.filter((call) => call.path.includes('/replicas/')).length, 0);
+  assert.equal(f.calls.filter(isBusinessRequest).length, 0);
 });
 
 test('workspace delivery retains the original body and treats lost or mismatched receipts as unknown without replay', async () => {
@@ -201,20 +241,39 @@ test('workspace delivery retains the original body and treats lost or mismatched
   assert.equal(((await f.client.request(original)) as any).ok, false);
 });
 
-test('account, document and catalog changes invalidate late workspace responses', async () => {
-  for (const change of ['account', 'document', 'catalog'] as const) {
+test('account, actor, document and selected mapping changes invalidate late workspace responses', async () => {
+  for (const change of ['account', 'actor', 'document', 'catalog', 'mapping'] as const) {
     const f = fixture('remote'),
       request = await f.request();
     f.state.responseGate = gate();
     const pending = f.client.request(request);
     await f.state.entered.promise;
     if (change === 'account') f.state.owner = 'other';
+    if (change === 'actor') f.state.actor = { ...f.state.actor, authorityId: 'other-authority' };
     if (change === 'document') f.state.current = false;
     if (change === 'catalog') f.catalog[0]!.replicas[0]!.available = false;
+    if (change === 'mapping') f.state.mappingVersion = 'b'.repeat(64);
     f.state.responseGate.release();
     assert.equal(((await pending) as any).ok, false);
-    assert.equal(f.calls.filter((call) => call.path.includes('/replicas/')).length, 1);
+    assert.equal(f.calls.filter(isBusinessRequest).length, 1);
   }
+});
+
+test('unrelated catalog changes do not invalidate a selected replica response', async () => {
+  const f = fixture('remote');
+  const request = await f.request();
+  f.state.responseGate = gate();
+  const pending = f.client.request(request);
+  await f.state.entered.promise;
+  f.catalog[0]!.projects.push({ id: 'unrelated-project', name: 'Another project' });
+  f.runtime.projects.push({
+    id: 'unrelated-local-project',
+    name: 'Another',
+    rootPath: '/synthetic/other',
+  });
+  f.state.responseGate.release();
+  assert.deepEqual(await pending, { ok: true, value: [] });
+  assert.equal(f.calls.filter((call) => call.path === '/api/workspace-catalog').length, 1);
 });
 
 test('workspace response validation rejects fabricated session identity and revoked local host identity', async () => {
@@ -236,7 +295,7 @@ test('workspace response validation rejects fabricated session identity and revo
   const before = f.calls.length;
   const invalid: any = await f.client.request(request);
   assert.equal(invalid.ok, false);
-  assert.equal(f.calls.slice(before).filter((call) => call.path.includes('/replicas/')).length, 0);
+  assert.equal(f.calls.slice(before).filter(isBusinessRequest).length, 0);
 });
 
 async function attentionRequest(
@@ -315,7 +374,7 @@ test('desktop attention lists, details and originals use fixed routes with authe
     item: attentionItem,
   };
   assert.equal(((await f.client.request(seen)) as any).ok, true);
-  const routes = f.calls.filter((call) => call.path.includes('/replicas/'));
+  const routes = f.calls.filter(isBusinessRequest);
   assert.deepEqual(
     routes.map((call) => call.method),
     ['GET', 'GET', 'GET', 'POST'],
@@ -358,7 +417,7 @@ test('desktop attention refuses forged actor, missing capability and cross-sessi
     assert.equal(((await f.client.request({ ...request, ...patch })) as any).ok, false);
   f.runtime.features.length = 0;
   assert.equal(((await f.client.request(request)) as any).ok, false);
-  assert.equal(f.calls.filter((call) => call.path.includes('/replicas/')).length, 0);
+  assert.equal(f.calls.filter(isBusinessRequest).length, 0);
   f.client.close();
 });
 

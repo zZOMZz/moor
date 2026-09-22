@@ -67,6 +67,10 @@ import {
   replicaAssignmentSchema,
 } from '@moor/protocol/catalog';
 import {
+  workspaceCatalogSnapshotSchema,
+  workspaceReplicaContextSchema,
+} from '@moor/protocol/workspace-catalog';
+import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
   FOLLOWUP_FEATURE,
@@ -257,6 +261,59 @@ export function createApp(
   const failures = new Map<string, { count: number; until: number }>();
   const online = (id: string) =>
     bridges.get(id)?.ready === true && bridges.get(id)?.socket.readyState === WebSocket.OPEN;
+  const connectionVersions = new WeakMap<WebSocket, string>();
+  function replicaContext(owner: string, workspaceId: string, replicaId: string) {
+    // All database and live-connection reads complete synchronously in one snapshot.
+    // The version describes this mapping, not a lease or permission to execute it.
+    store.db.exec('SAVEPOINT workspace_replica_context');
+    try {
+      const replica = store.catalog.replica(owner, workspaceId, replicaId);
+      const host = replica.host;
+      const device = store.device(owner, host.device_id);
+      const connection = bridges.get(host.device_id);
+      const runtime = connection?.workspaces.find((value) => value.id === host.runtime_id);
+      const project = runtime?.projects.find((value) => value.id === replica.local_id);
+      assert(
+        online(host.device_id) &&
+          connection &&
+          runtime &&
+          project &&
+          device.machine_id === runtime.machineId,
+        409,
+        '项目副本离线或执行身份已变化',
+      );
+      let connectionVersion = connectionVersions.get(connection.socket);
+      if (!connectionVersion) {
+        connectionVersion = crypto.randomUUID();
+        connectionVersions.set(connection.socket, connectionVersion);
+      }
+      const target = {
+        owner,
+        deviceId: host.device_id,
+        userId: runtime.userId,
+        machineId: runtime.machineId,
+        workspaceId: runtime.id,
+        localProjectId: replica.local_id,
+        catalogWorkspaceId: workspaceId,
+        catalogProjectId: replica.project_id,
+        replicaId: replica.id,
+      };
+      const result = workspaceReplicaContextSchema.parse({
+        version: 1,
+        identity: { owner, actor: actor(owner) },
+        target,
+        mappingVersion: createHash('sha256')
+          .update(JSON.stringify([target, host.id, project.rootPath, connectionVersion]))
+          .digest('hex'),
+        runtime: { ...runtime, projects: [project] },
+      });
+      store.db.exec('RELEASE workspace_replica_context');
+      return result;
+    } catch (error) {
+      store.db.exec('ROLLBACK TO workspace_replica_context; RELEASE workspace_replica_context');
+      throw error;
+    }
+  }
   let closing = false;
   const encryptedBridge = new EncryptedBridgeRelay({
     store,
@@ -798,6 +855,32 @@ export function createApp(
         const input = z.object({ workspaceId: z.string().optional() }).parse(await body(req));
         return json(res, 200, { code: store.pair(owner!, input.workspaceId), expiresIn: 300 });
       }
+      if (path === '/api/workspace-catalog' && req.method === 'GET') {
+        store.db.exec('SAVEPOINT workspace_catalog_snapshot');
+        let snapshot;
+        try {
+          const live = (deviceId: string) =>
+            online(deviceId) ? bridges.get(deviceId)!.workspaces : [];
+          snapshot = workspaceCatalogSnapshotSchema.parse({
+            version: 1,
+            identity: { owner: owner!, actor: actor(owner!) },
+            workspaces: store.catalog.list(owner!, live),
+            devices: store.devices(owner!).map((device) => ({
+              id: device.id,
+              name: device.name,
+              online: online(String(device.id)),
+              workspaces: live(String(device.id)),
+            })),
+          });
+          store.db.exec('RELEASE workspace_catalog_snapshot');
+        } catch (error) {
+          store.db.exec(
+            'ROLLBACK TO workspace_catalog_snapshot; RELEASE workspace_catalog_snapshot',
+          );
+          throw error;
+        }
+        return json(res, 200, snapshot);
+      }
       if (path === '/api/devices' && req.method === 'GET')
         return json(
           res,
@@ -843,7 +926,9 @@ export function createApp(
                     ]),
                 ),
             );
-        const originalMappings = mappings();
+        // Replica routes already pin their exact mapping. Only the legacy
+        // device/host-wide route needs to enumerate all of its assignments.
+        const originalMappings = catalogueCurrent && localProjectId ? undefined : mappings();
         const current = (feature?: string) => {
           assert(!closing, 409, '执行服务正在关闭');
           assert(store.owner(cookie(req)) === owner, 401, '请先登录');
@@ -864,11 +949,12 @@ export function createApp(
             '会话请求的执行范围已变化，请重新读取',
           );
           catalogueCurrent?.();
-          assert(
-            isDeepStrictEqual(mappings(), originalMappings),
-            409,
-            '会话请求的项目归属已变化，请重新读取',
-          );
+          if (originalMappings)
+            assert(
+              isDeepStrictEqual(mappings(), originalMappings),
+              409,
+              '会话请求的项目归属已变化，请重新读取',
+            );
         };
         current();
         return { deviceId, runtime: snapshot, current };
@@ -974,6 +1060,17 @@ export function createApp(
         }
       }
       const parts = path.split('/').filter(Boolean);
+      if (
+        parts[0] === 'api' &&
+        parts[1] === 'workspaces' &&
+        parts[2] &&
+        parts[3] === 'replicas' &&
+        parts[4] &&
+        parts[5] === 'context' &&
+        parts.length === 6 &&
+        req.method === 'GET'
+      )
+        return json(res, 200, replicaContext(owner!, id.parse(parts[2]), id.parse(parts[4])));
       if (path === '/api/workspaces') {
         if (req.method === 'GET')
           return json(
