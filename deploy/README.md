@@ -2,6 +2,14 @@
 
 中转服务使用 Node 24、WebSocket 和 SQLite。以下命令在仓库根目录运行，先执行 `corepack pnpm package:relay` 生成服务包。服务保存账号、设备绑定与撤销，以及工作区、逻辑项目和副本映射；代码、Agent 配置和完整会话仍在执行电脑。
 
+### 可重复的构建输入
+
+Relay 打包只构建服务与 Web/PWA，不再要求 Electron 或 Host 产物。`Dockerfile` 的 Node 基础镜像与 Compose 的 Caddy 镜像均固定到 Docker Hub 官方镜像的多架构 manifest SHA-256；标签用于说明系列，实际内容以 digest 为准。当前 digest 通过 Registry v2 读取，并对 manifest 原字节计算 SHA-256 与响应头交叉核对，覆盖 Linux amd64/arm64。
+
+升级镜像时，由维护者读取目标标签的新 manifest，核对其架构、版本和变更后显式修改 digest，再执行仓库门禁与隔离容器验收。普通构建不重新解析浮动标签，也不自动更新镜像。digest 固定只保证输入可追溯，不代表已完成漏洞评估或真实部署验证。
+
+产品版本来自根 `package.json` 的 `version`，Relay/macOS 包清单、归档文件名和 macOS 展示版本均读取它；workspace 版本检查也与此比较。macOS 的独立构建编号来自同一文件的正整数 `buildNumber`，同一产品版本重新发布不同安装包时应递增。程序包和镜像更新不改变 operator 的数据卷、凭据或备份保留策略。
+
 默认桌面、PWA 和普通 CLI 使用 Moor 桥接协议 **v3**；显式启用的加密 CLI 使用 **v4**。工作台和通知界面仍使用 v3，不能视为已启用端到端加密，具体边界见[端到端加密](../docs/end-to-end-encryption.md)。中转服务与 Mac 客户端需一起更新，已有中转沿用原数据卷。从旧运行时升级时需重新配对电脑并登记项目，旧历史和草稿不自动导入。账号与组织目录的数据迁移不会使旧协议设备兼容新主机。数据边界见[核心架构](../docs/core.md)，版本与恢复语义见[运行与恢复](../docs/runtime.md)。
 
 ## 通过本地 SSH 更新已有 VPS
