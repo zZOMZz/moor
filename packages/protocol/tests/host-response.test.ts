@@ -41,6 +41,7 @@ const workspace: RuntimeWorkspace = {
   features: [
     RETIRED_RECORDS_FEATURE,
     'session-page-v1',
+    'session-intents-v1',
     'agent-controls-v1',
     'agent-run-defaults-v1',
     'roles-v1',
@@ -421,6 +422,36 @@ const fixtures = {
       abandoned: true,
     },
   },
+  'send-turn': {
+    params: {
+      ...scope,
+      intentVersion: 1,
+      operationId,
+      userId: workspace.userId,
+      machineId: workspace.machineId,
+      expectedTurnId: null,
+      agentId: 'agent',
+      turnId: 'new-turn',
+      prompt: 'Synthetic instruction',
+      selection: {},
+      attachments: [],
+    },
+    result: { operationId, accepted: true, delivered: true },
+  },
+  'respond-permission': {
+    params: {
+      ...scope,
+      intentVersion: 1,
+      operationId,
+      userId: workspace.userId,
+      machineId: workspace.machineId,
+      expectedTurnId: 'user-turn',
+      requestId: 'request',
+      permissionReview: { version: 1, assistantTurnId: 'assistant', itemJson: '{}' },
+      outcome: { outcome: 'cancelled' },
+    },
+    result: { operationId, accepted: true, delivered: true },
+  },
   mutate: {
     params: {
       workspaceId: scope.workspaceId,
@@ -766,6 +797,78 @@ test('session pages retain runtime metadata identity and require advertised pagi
     failure,
   );
 });
+
+for (const method of ['send-turn', 'respond-permission'] as const) {
+  test(
+    'typed original recovery ' +
+      method +
+      ' requires its own capability in addition to session control',
+    async () => {
+      const request = {
+        ...scope,
+        userId: workspace.userId,
+        machineId: workspace.machineId,
+        controlVersion: 1,
+        action: 'inspect',
+        request: { kind: method, value: fixtures[method].params },
+      };
+      const response = {
+        ...scope,
+        userId: workspace.userId,
+        machineId: workspace.machineId,
+        controlVersion: 1,
+        action: 'inspect',
+        operationId,
+        confirmed: true,
+        found: false,
+      };
+      const recovery = command('session-operations', request);
+      assert.deepEqual(
+        await validateHostResponse(response, { command: recovery, workspace }),
+        response,
+      );
+      await assert.rejects(
+        validateHostResponse(response, {
+          command: recovery,
+          workspace: {
+            ...workspace,
+            features: workspace.features!.filter((value) => value !== 'session-intents-v1'),
+          },
+        }),
+        failure,
+      );
+    },
+  );
+  test(
+    'typed session receipt ' +
+      method +
+      ' preserves abandonment and requires original identity and capability',
+    async () => {
+      const abandoned = { operationId, accepted: false, delivered: false, abandoned: true };
+      assert.deepEqual(await valid(method, abandoned), abandoned);
+      await assert.rejects(valid(method, { ...abandoned, operationId: 'different' }), failure);
+      await assert.rejects(
+        valid(method, { ...fixtures[method].result, operationId: 'different' }),
+        failure,
+      );
+      await assert.rejects(
+        validateHostResponse(abandoned, {
+          command: command(method, fixtures[method].params),
+          workspace: {
+            ...workspace,
+            features: workspace.features!.filter((value) => value !== 'session-intents-v1'),
+          },
+        }),
+        failure,
+      );
+      for (const field of ['userId', 'machineId', 'localProjectId'])
+        await assert.rejects(
+          valid(method, abandoned, { ...fixtures[method].params, [field]: 'foreign' }),
+          failure,
+        );
+    },
+  );
+}
 
 for (const method of HOST_COMMAND_METHODS) {
   test('host response accepts the original ' + method + ' response', async () => {

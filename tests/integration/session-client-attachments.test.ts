@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Flock, LoroDoc, delta, mirror, putMeta } from '@moor/session/model';
 import { buildSessionTurn } from '@moor/client/session-client';
+import { buildSendTurn } from '@moor/client/session-intent';
+import { prepareSessionIntent } from '@moor/host/commands/prepare-session-intent';
 import { validateMutation } from '@moor/host/commands/validate-mutation';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 
@@ -76,6 +78,57 @@ function fixture() {
   };
   return { doc, flock, input, close: () => doc.free() };
 }
+
+test('narrow turn builder freezes reviewed business input without a client document edit', (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const attachments = [reference('first'), reference('second')],
+    before = delta(f.doc),
+    request = buildSendTurn({ ...f.input, attachments });
+  assert.deepEqual(request, {
+    ...scope,
+    intentVersion: 1,
+    operationId: 'operation',
+    agentId: agent.id,
+    expectedTurnId: null,
+    turnId: 'turn',
+    prompt: f.input.prompt,
+    selection: {},
+    attachments,
+  });
+  attachments[0]!.name = 'changed after review';
+  assert.equal(request.attachments[0]!.name, 'first.txt');
+  assert.equal(delta(f.doc), before);
+  assert.equal('update' in request, false);
+  assert.equal('metaBundle' in request, false);
+  const candidate = prepareSessionIntent(
+    f.doc,
+    f.flock,
+    f.input.read.meta,
+    workspace,
+    { kind: 'send-turn', value: request },
+    f.input.now,
+  );
+  const view = mirror(candidate.doc, scope.sessionId);
+  assert.equal(view.getState().history[0]!.id, request.turnId);
+  assert.equal(view.getState().history[0]!.status, 'pending');
+  assert.equal((view.getState().history[0]!.inputConfig as any).prompt, request.prompt);
+  view.dispose();
+  candidate.doc.free();
+  assert.equal(delta(f.doc), before);
+  assert.throws(() => buildSendTurn({ ...f.input, agent: { ...agent, id: 'other' } }));
+  assert.throws(() => buildSendTurn({ ...f.input, read: { ...f.input.read, persisted: false } }));
+  assert.throws(() =>
+    prepareSessionIntent(
+      f.doc,
+      f.flock,
+      f.input.read.meta,
+      workspace,
+      { kind: 'send-turn', value: { ...request, userId: 'other' } },
+      f.input.now,
+    ),
+  );
+});
 
 for (const prompt of ['Synthetic attachments', ''])
   test(`turn builder preserves confirmed attachment order in input and history for ${prompt ? 'text plus files' : 'files only'}`, (t) => {

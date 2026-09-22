@@ -19,6 +19,7 @@ import { SessionGithubStore } from '../sessions/github';
 import { SessionAgentStore, agentConfigSnapshot } from '../sessions/agent';
 import type { AgentConfig } from '../agents/driver';
 import { RetiredTaskRecords } from './retired-tasks';
+import { SessionMetadataIndex } from './session-metadata';
 
 export type AttachmentScope = ContentScope & { userId: string; machineId: string };
 export type StoredAttachment = {
@@ -45,6 +46,7 @@ export class RuntimeStore {
   github: SessionGithubStore;
   agents: SessionAgentStore;
   tasks: RetiredTaskRecords;
+  sessionPages: SessionMetadataIndex;
   meta: Flock;
   machine: Flock;
   workspace: RuntimeWorkspace;
@@ -165,6 +167,12 @@ export class RuntimeStore {
           agents: [],
         };
     this.meta = this.loadFlock('meta');
+    try {
+      this.sessionPages = new SessionMetadataIndex(this.journal.db, () => this.loadFlock('meta'));
+    } catch (error) {
+      this.journal.close();
+      throw error;
+    }
     this.machine = this.loadFlock('machine');
     const migrateAgentBindings = !this.load('agent-bindings-v1');
     // Freeze the configuration actually present before startup registration can
@@ -314,6 +322,15 @@ export class RuntimeStore {
   save(key: string, bytes: Uint8Array) {
     this.journal.db.prepare('INSERT OR REPLACE INTO runtime_state VALUES(?,?)').run(key, bytes);
   }
+  saveMetadata(flock: Flock, sessionIds: readonly string[]) {
+    const write = () => {
+      this.sessionPages.ensureCurrent();
+      this.save('meta', flock.exportFile());
+      this.sessionPages.update(flock, sessionIds);
+    };
+    if (this.journal.db.isTransaction) write();
+    else this.transaction(write);
+  }
   loadFlock(key: string) {
     const bytes = this.load(key);
     return bytes ? Flock.fromFile(bytes) : new Flock();
@@ -436,7 +453,7 @@ export class RuntimeStore {
     }
     const write = () => {
       this.checkpoint(id, doc, expected);
-      this.save('meta', this.meta.exportFile());
+      this.saveMetadata(this.meta, [id]);
       // The trigger conservatively tracks every snapshot. Only the writer that
       // has inspected that exact document may omit a settled session at startup.
       if (!needsRecovery)

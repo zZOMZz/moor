@@ -5,7 +5,12 @@ import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-confi
 import { sessionReadResponseSchema, validateSessionBundle } from '@moor/protocol/session-responses';
 import { taskPlanSchema, type TaskPlan } from '@moor/protocol/task-protocol';
 import { mcpServerIdsSchema } from '@moor/protocol/mcp-protocol';
-import { permissionItemJson, PERMISSION_REVIEW_MAX_BYTES } from '@moor/protocol/permission-review';
+import {
+  permissionItemJson,
+  PERMISSION_REVIEW_MAX_BYTES,
+  permissionOptionIdSchema,
+  permissionOutcomeSchema,
+} from '@moor/protocol/permission-review';
 import { promptAttachmentsSchema } from '@moor/protocol/attachment-protocol';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 export type SessionClientScope = {
@@ -54,26 +59,19 @@ export function readClientSession(
     doc.free();
   }
 }
-export function buildSessionTurn(input: {
+export type SessionTurnInput = {
   scope: SessionClientScope;
   read: unknown;
   agent: z.infer<typeof agentSchema>;
   prompt: string;
   selection?: RunSelection;
-  operationId: string;
-  turnId: string;
-  peerId: string;
-  now: string;
-  taskPlan?: TaskPlan;
-  mcpServerIds?: string[];
   /** The caller obtains these from confirmed uploads for this exact execution target. */
   attachments?: AttachmentReference[];
-}) {
+};
+export function prepareSessionTurn(input: SessionTurnInput) {
   const read = readClientSession(input.read, input.scope),
     agent = agentSchema.parse(input.agent),
-    taskPlan = input.taskPlan === undefined ? undefined : taskPlanSchema.parse(input.taskPlan),
     attachments = promptAttachmentsSchema.parse(input.attachments ?? []);
-  if (taskPlan && read.meta.taskOrigin) throw new Error('子任务不能创建下一层协作任务');
   if (read.persisted === false || read.persistenceError)
     throw new Error('主机结果尚未持久保存，不能据此发送新指令');
   if (read.meta.isArchived) throw new Error('请先恢复会话');
@@ -103,6 +101,27 @@ export function buildSessionTurn(input: {
     )
       throw Error('当前 Agent 不支持所选附件类型，请移除附件或选择支持的 Agent。');
   }
+  return {
+    read,
+    agent,
+    attachments,
+    run: resolveRunSelection(input.selection ?? {}, agent.runConfig),
+  };
+}
+
+export function buildSessionTurn(
+  input: SessionTurnInput & {
+    operationId: string;
+    turnId: string;
+    peerId: string;
+    now: string;
+    taskPlan?: TaskPlan;
+    mcpServerIds?: string[];
+  },
+) {
+  const { read, agent, attachments, run } = prepareSessionTurn(input),
+    taskPlan = input.taskPlan === undefined ? undefined : taskPlanSchema.parse(input.taskPlan);
+  if (taskPlan && read.meta.taskOrigin) throw new Error('子任务不能创建下一层协作任务');
   const time = z.string().datetime().parse(input.now),
     doc = new LoroDoc();
   doc.import(decode(read.update));
@@ -114,7 +133,6 @@ export function buildSessionTurn(input: {
     version = flock.version(),
     view = mirror(doc, input.scope.sessionId);
   try {
-    const run = resolveRunSelection(input.selection ?? {}, agent.runConfig);
     view.setState((s) => {
       s.history.push({
         id: input.turnId,
@@ -172,11 +190,7 @@ const permissionScopeSchema = z
   })
   .strict();
 const permissionOptionSchema = z.object({
-  optionId: z
-    .string()
-    .min(1)
-    .max(200)
-    .refine((value) => !/[\x00-\x1f\x7f]/u.test(value)),
+  optionId: permissionOptionIdSchema,
   name: z.string().min(1).max(1000),
   kind: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always']),
 });
@@ -197,12 +211,7 @@ const permissionReviewSchema = z
   })
   .strict();
 export type SessionPermissionReview = z.infer<typeof permissionReviewSchema>;
-export const sessionPermissionOutcomeSchema = z.discriminatedUnion('outcome', [
-  z
-    .object({ outcome: z.literal('selected'), optionId: permissionOptionSchema.shape.optionId })
-    .strict(),
-  z.object({ outcome: z.literal('cancelled') }).strict(),
-]);
+export const sessionPermissionOutcomeSchema = permissionOutcomeSchema;
 export type SessionPermissionOutcome = z.infer<typeof sessionPermissionOutcomeSchema>;
 
 function permissionOwn(value: object, key: string): unknown {
@@ -292,13 +301,14 @@ export function sessionPermissionReviews(
   }
 }
 
-export function buildSessionPermission(input: {
+type SessionPermissionInput = {
   scope: SessionClientScope;
   read: unknown;
   review: SessionPermissionReview;
   outcome: SessionPermissionOutcome;
   operationId: string;
-}) {
+};
+export function prepareSessionPermission(input: SessionPermissionInput) {
   const review = permissionReviewSchema.parse(input.review),
     outcome = sessionPermissionOutcomeSchema.parse(input.outcome);
   const read = readClientSession(input.read, input.scope);
@@ -313,6 +323,11 @@ export function buildSessionPermission(input: {
     !current.options.some((option) => option.optionId === outcome.optionId)
   )
     throw Error('审批选项不属于已审阅的请求。');
+  return { read, review, outcome };
+}
+
+export function buildSessionPermission(input: SessionPermissionInput) {
+  const { read, review, outcome } = prepareSessionPermission(input);
   const doc = new LoroDoc();
   try {
     doc.import(decode(read.update));

@@ -1,8 +1,7 @@
-import { RETIRED_SESSION_FEATURE } from '@moor/protocol/connection-authority';
+import { assertHostCommandActive } from '@moor/protocol/host-command-contract';
 import { AppError, assert } from '@moor/protocol/protocol';
 import type { ConnectionAuthorityLease } from '@moor/protocol/connection-authority';
 import type { HostWorkspace } from '../sessions/workspace';
-import { readSessionPage } from '../sessions/page';
 import {
   HOST_COMMAND_METHODS,
   hostCommandSchemas,
@@ -20,6 +19,7 @@ export type HostCommandWorkspace = Pick<
   | 'closed'
   | 'workspace'
   | 'list'
+  | 'readSessionPage'
   | 'refreshAgentOptions'
   | 'readAgentUsage'
   | 'runPreferences'
@@ -38,6 +38,8 @@ export type HostCommandWorkspace = Pick<
   | 'readGithub'
   | 'abandonGithub'
   | 'githubAction'
+  | 'sendTurn'
+  | 'respondPermission'
   | 'mutate'
   | 'sessionAction'
   | 'readProjectFile'
@@ -72,6 +74,8 @@ export interface HostCommandContext {
 }
 export type HostCommandError = { status: number; message: string; rejected: boolean };
 const rejectionMethods: readonly string[] = [
+  'send-turn',
+  'respond-permission',
   'mutate',
   'session-action',
   'attachment-action',
@@ -96,19 +100,14 @@ export class HostCommandDispatcher {
     if (typeof method === 'string' && !HOST_COMMAND_METHODS.includes(method as HostCommandMethod))
       throw new AppError(400, '不支持的操作');
     const command = hostCommandSchema.parse(raw);
-    if (
-      ['preview-read', 'preview-action', 'preview-close'].includes(command.method) ||
-      ((command.method === 'roles-action' || command.method === 'tasks-action') &&
-        command.params.action !== 'inspect')
-    )
-      throw new AppError(410, RETIRED_SESSION_FEATURE);
+    assertHostCommandActive(command);
     context.current?.();
     const workspace = this.dependencies.workspace(command.workspaceId);
     assert(this.dependencies.ready() && workspace && !workspace.closed, 409, '本机执行服务不可达');
     let result: unknown;
     if (command.method === 'sessions') result = workspace.list(command.localProjectId);
     else if (command.method === 'sessions-page')
-      result = readSessionPage(workspace, command.params, command.localProjectId);
+      result = workspace.readSessionPage(command.params, command.localProjectId);
     else if (command.method === 'agent-options')
       result = await workspace.refreshAgentOptions(
         command.params.agentId,
@@ -177,6 +176,16 @@ export class HostCommandDispatcher {
       result = await (command.method === 'github-abandon'
         ? workspace.abandonGithub(input, command.localProjectId, context.current)
         : workspace.githubAction(input, command.localProjectId, context.current));
+    } else if (command.method === 'send-turn' || command.method === 'respond-permission') {
+      assert(command.params.workspaceId === command.workspaceId, 400, '工作区不匹配');
+      result =
+        command.method === 'send-turn'
+          ? await workspace.sendTurn(command.params, command.localProjectId, context.authority)
+          : await workspace.respondPermission(
+              command.params,
+              command.localProjectId,
+              context.authority,
+            );
     } else if (command.method === 'mutate') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
@@ -251,7 +260,11 @@ export class HostCommandDispatcher {
         command.params.turnId,
         command.localProjectId,
       );
-    else throw new AppError(400, '不支持的操作');
+    else {
+      const exhaustive: never = command;
+      void exhaustive;
+      throw new AppError(400, '不支持的操作');
+    }
     return result;
   }
   error(raw: unknown, error: unknown): HostCommandError {

@@ -8,6 +8,7 @@ import {
   attentionSeenSchema,
   attentionDispositionSchema,
   attentionContinueSchema,
+  attentionContinueInput,
   type AttentionContext,
   type AttentionActor,
   type AttentionCause,
@@ -745,11 +746,19 @@ export class AttentionStore {
 
   prepareContinue(context: AttentionContext, itemId: string, input: AttentionContinue) {
     const request = attentionContinueSchema.parse(input);
+    if ('turn' in request)
+      assert(
+        request.turn.userId === this.store.workspace.userId &&
+          request.turn.machineId === context.machineId &&
+          request.turn.localProjectId === context.localProjectId,
+        400,
+        '后续指令与待办执行身份不匹配',
+      );
     const item = this.checkDecision(context, itemId, request);
     assert(item.disposition === 'needs_followup', 409, '请先将该事项标记为需要继续');
     assert(
-      request.mutation.sessionId === context.sessionId &&
-        request.mutation.workspaceId === context.runtimeWorkspaceId,
+      attentionContinueInput(request).sessionId === context.sessionId &&
+        attentionContinueInput(request).workspaceId === context.runtimeWorkspaceId,
       400,
       '后续指令与待办执行目标不匹配',
     );
@@ -769,11 +778,17 @@ export class AttentionStore {
       itemId,
       'continue',
       request,
-      request.mutation.operationId,
+      attentionContinueInput(request).operationId,
     );
     if (previous) return previous;
     const item = this.prepareContinue(context, itemId, request);
     this.writeDisposition(context, item, 'continued', followupUserTurnId);
-    return this.acceptReceipt(context, itemId, 'continue', request, request.mutation.operationId);
+    return this.acceptReceipt(
+      context,
+      itemId,
+      'continue',
+      request,
+      attentionContinueInput(request).operationId,
+    );
   }
 }

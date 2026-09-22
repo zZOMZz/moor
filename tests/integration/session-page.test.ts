@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { AppError, type RuntimeWorkspace } from '@moor/protocol/protocol';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
@@ -9,8 +9,13 @@ import {
   validateSessionPageResult,
   type SessionPageRequest,
 } from '@moor/protocol/session-page';
-import { readSessionPage } from '../src/sessions/page';
-import { HostCommandDispatcher } from '../src/commands/host-command';
+import { readSessionPage } from '@moor/host/sessions/page';
+import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import { syntheticSessionPageIndex } from '../fixtures/session-page-index';
+const opened: { close(): void }[] = [];
+afterEach(() => {
+  for (const item of opened.splice(0)) item.close();
+});
 
 function fixture(count = 85) {
   const workspace: RuntimeWorkspace = {
@@ -41,12 +46,18 @@ function fixture(count = 85) {
     isArchived: false,
   }));
   const calls: string[] = [];
-  const source = {
-    workspace,
-    list(project: string) {
+  const projection = syntheticSessionPageIndex(rows);
+  opened.push(projection);
+  const source = { workspace, index: projection.index };
+  const readPage = (input: SessionPageRequest, project?: string) => {
+    projection.sync();
+    if (
+      input.workspaceId === workspace.id &&
+      project === input.localProjectId &&
+      workspace.projects.some((p) => p.id === project)
+    )
       calls.push(project);
-      return rows.filter((row) => row.project.localProjectId === project);
-    },
+    return readSessionPage(source, input, project);
   };
   const request = (extra: Partial<SessionPageRequest> = {}) =>
     sessionPageRequestSchema.parse({
@@ -57,9 +68,9 @@ function fixture(count = 85) {
     });
   const page = (extra: Partial<SessionPageRequest> = {}) => {
     const input = request(extra);
-    return readSessionPage(source, input, input.localProjectId);
+    return readPage(input, input.localProjectId);
   };
-  return { rows, workspace, source, calls, request, page };
+  return { rows, workspace, source, calls, request, page, readPage };
 }
 const status = (code: number) => (error: unknown) =>
   error instanceof AppError && error.status === code;
@@ -185,6 +196,29 @@ test('malformed requests and opaque cursors cannot widen a project read', () => 
   assert.equal(f.calls.length, 0);
   assert.throws(() => f.page({ cursor: 'bm90LWpzb24' }), status(409));
   const cursor = JSON.parse(Buffer.from(f.page().nextCursor!, 'base64url').toString());
+  assert.throws(
+    () =>
+      f.page({
+        cursor: Buffer.from(
+          JSON.stringify({
+            version: 1,
+            binding: cursor.binding,
+            revision: cursor.revision,
+            offset: 30,
+          }),
+        ).toString('base64url'),
+      }),
+    status(409),
+  );
+  assert.throws(
+    () =>
+      f.page({
+        cursor: Buffer.from(
+          JSON.stringify({ ...cursor, position: { ...cursor.position, id: 'absent-session' } }),
+        ).toString('base64url'),
+      }),
+    status(409),
+  );
   for (const offset of [0, -1, 999999]) {
     assert.throws(
       () =>
@@ -224,7 +258,7 @@ test('dispatcher binds the page body to its project route and calls no execution
   const f = fixture();
   const dispatcher = new HostCommandDispatcher({
     ready: () => true,
-    workspace: () => ({ ...f.source, closed: false }) as never,
+    workspace: () => ({ ...f.source, readSessionPage: f.readPage, closed: false }) as never,
     hasOperation() {
       throw Error('Read must not consult or write an operation');
     },

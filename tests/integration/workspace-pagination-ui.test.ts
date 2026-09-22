@@ -5,8 +5,6 @@ import { paginationFixture, signal } from '../fixtures/workspace-pagination';
 
 test('React navigation consumes bounded summaries, cursors, server search and archive pages without unrelated reloads', async (t) => {
   const f = await paginationFixture(t);
-  // Session ids are not sufficient navigation identities across project replicas.
-  for (const row of f.rows.filter((row) => row.lastMessageAt === 94)) row.id = 'same-session-id';
   const originalRows = structuredClone(f.rows);
   const dom = new JSDOM('<!doctype html><div id="app"></div>', {
     url: 'https://synthetic.invalid',
@@ -152,6 +150,52 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
       .listCalls()
       .filter((request) => request.action === 'execute' && request.target.localProjectId === id);
   try {
+    const targets = navigationProjects(f.controller.state);
+    const duplicateEntries = targets.map((project, index) => ({
+      project: {
+        ...project,
+        source: 'remote' as const,
+        hostName: `Mac ${index}`,
+        target: {
+          ...project.target,
+          serverKey: 'https://synthetic.invalid',
+          deviceId: `device-${index}`,
+          machineId: `machine-${index}`,
+        },
+      },
+      session: {
+        ...f.rows[index]!,
+        id: 'shared-session-id',
+        machineId: `machine-${index}`,
+        project: { kind: 'local' as const, localProjectId: project.target.localProjectId },
+      },
+    }));
+    const exactTargets: unknown[] = [];
+    await React.act(async () =>
+      root.render(
+        React.createElement(NavigationSessions, {
+          kind: 'recent',
+          entries: duplicateEntries,
+          disabled: false,
+          onOpen: (project, session) =>
+            exactTargets.push({ target: project.target, sessionId: session.id }),
+          onAction() {},
+        }),
+      ),
+    );
+    const duplicateButtons = [
+      ...dom.window.document.querySelectorAll<HTMLButtonElement>('.workspace-session-open'),
+    ];
+    assert.equal(duplicateButtons.length, 2);
+    for (const entry of duplicateButtons) await React.act(async () => entry.click());
+    assert.deepEqual(
+      exactTargets,
+      duplicateEntries.map((entry) => ({
+        target: entry.project.target,
+        sessionId: 'shared-session-id',
+      })),
+      'same session ids on two computers retain each complete execution target',
+    );
     await React.act(async () => root.render(React.createElement(View)));
     assert.equal(f.listCalls().length, 4, 'two bounded summaries per project');
     for (const call of f.listCalls()) {
@@ -189,10 +233,18 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
     assert.deepEqual(
       openings,
       [
-        { replicaId: 'replica-project-a', projectId: 'project-a', sessionId: 'same-session-id' },
-        { replicaId: 'replica-project-b', projectId: 'project-b', sessionId: 'same-session-id' },
+        {
+          replicaId: 'replica-project-a',
+          projectId: 'project-a',
+          sessionId: 'project-a-session-094',
+        },
+        {
+          replicaId: 'replica-project-b',
+          projectId: 'project-b',
+          sessionId: 'project-b-session-094',
+        },
       ],
-      'clicking identical session ids preserves the exact selected project and replica',
+      'clicking a project row preserves the exact selected project and replica',
     );
     assert.equal(
       f.controller.state.scope,
@@ -233,6 +285,28 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
     );
 
     assert.doesNotMatch(a.textContent!, /Needle far session/);
+    await React.act(async () => root.render(React.createElement(View, { query: 'project-a' })));
+    assert.equal(
+      group('project-a').querySelectorAll('ul > li').length,
+      30,
+      'project name search retains its bounded summary page',
+    );
+    await React.act(async () => root.render(React.createElement(View, { query: 'Host' })));
+    assert.equal(
+      group('project-a').querySelectorAll('ul > li').length,
+      30,
+      'computer name search does not require matching session titles',
+    );
+    assert(
+      f
+        .listCalls()
+        .every(
+          (request) =>
+            request.action === 'execute' &&
+            request.command.method === 'sessions-page' &&
+            request.command.params.limit === 30,
+        ),
+    );
     await React.act(async () => root.render(React.createElement(View, { query: 'Needle' })));
     assert.equal(group('project-a').querySelectorAll('ul > li').length, 1);
     assert.match(group('project-a').textContent!, /Needle far session/);

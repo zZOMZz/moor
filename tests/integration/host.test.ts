@@ -1,5 +1,6 @@
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 import test from 'node:test';
+import { buildSendTurn } from '@moor/client/session-intent';
 import strict from 'node:assert/strict';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -897,6 +898,78 @@ test('attention continuation commits the new turn and original disposition atomi
   strict.equal(f.dispatches(), 2);
   strict.deepEqual(await f.host.attentionContinue(context, item.itemId, continuation), receipt);
   strict.equal(f.dispatches(), 2);
+});
+
+test('typed attention continuation shares the acceptance transaction and preserves its original receipt across retry', async (t) => {
+  const f = fixture();
+  t.after(f.close);
+  await f.host.mutate(request(f));
+  await f.started;
+  await f.finish();
+  const item = f.host.attentionList(attentionContext(f), attentionQuery).sessions[0].items[0];
+  const context = attentionContext(f, item.sessionId);
+  await f.host.attentionDisposition(context, item.itemId, {
+    operationId: crypto.randomUUID(),
+    eventRevision: item.eventRevision,
+    observationRevision: 0,
+    disposition: 'needs_followup',
+  });
+  const read = await f.host.read(item.sessionId);
+  const turn = buildSendTurn({
+    scope: {
+      workspaceId: context.runtimeWorkspaceId,
+      localProjectId: context.localProjectId,
+      sessionId: item.sessionId,
+      userId: ws.userId,
+      machineId: ws.machineId,
+    },
+    read,
+    agent: read.agent!,
+    prompt: 'Typed attention followup',
+    selection: {},
+    operationId: crypto.randomUUID(),
+    turnId: crypto.randomUUID(),
+  });
+  const continuation = { turn, eventRevision: item.eventRevision, observationRevision: 1 };
+  const original = JSON.stringify(continuation);
+  const before = Buffer.from(f.store.load('meta')!);
+  f.journal.db.exec(
+    "CREATE TRIGGER fail_typed_attention BEFORE INSERT ON attention_receipt BEGIN SELECT RAISE(ABORT,'synthetic attention receipt failure'); END",
+  );
+  await strict.rejects(
+    f.host.attentionContinue(context, item.itemId, continuation, attentionAuthority(context)),
+  );
+  strict.deepEqual(Buffer.from(f.store.load('meta')!), before);
+  strict.equal(f.journal.has(turn.operationId), false);
+  strict.equal(f.dispatches(), 1);
+  strict.equal(f.host.attentionDetail(context, item.itemId).item.disposition, 'needs_followup');
+  f.journal.db.exec('DROP TRIGGER fail_typed_attention');
+  const receipt = await f.host.attentionContinue(
+    context,
+    item.itemId,
+    continuation,
+    attentionAuthority(context),
+  );
+  strict.equal(receipt.operationId, turn.operationId);
+  strict.equal(receipt.item?.followupUserTurnId, turn.turnId);
+  strict.deepEqual(
+    await f.host.attentionContinue(context, item.itemId, JSON.parse(original)),
+    receipt,
+  );
+  await strict.rejects(f.host.sendTurn(turn, context.localProjectId), /重复编号/);
+  await strict.rejects(
+    f.host.attentionContinue(context, item.itemId, {
+      ...continuation,
+      turn: { ...turn, userId: 'foreign' },
+    }),
+  );
+  await f.finish();
+  strict.equal(f.dispatches(), 2);
+  strict.deepEqual(
+    await f.host.attentionContinue(context, item.itemId, JSON.parse(original)),
+    receipt,
+  );
+  strict.equal(JSON.stringify(continuation), original);
 });
 
 test('attention permission persistence failure leaves no actionable memory request or partial tool card', async (t) => {

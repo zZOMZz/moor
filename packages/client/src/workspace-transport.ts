@@ -1,3 +1,5 @@
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import { hostCommandHttpRequest } from '@moor/protocol/host-command-contract';
 import {
   actorSchema,
   workspaceAttentionRoute,
@@ -16,7 +18,7 @@ import {
   workspaceCatalogSnapshotSchema,
   workspaceReplicaContextSchema,
 } from '@moor/protocol/workspace-catalog';
-import { type HostCommand, type HostCommandMethod } from '@moor/protocol/host-command';
+import { type HostCommand } from '@moor/protocol/host-command';
 import { AppError } from '@moor/protocol/protocol';
 import { validateHostResponse } from '@moor/protocol/host-response';
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
@@ -30,52 +32,6 @@ import {
 } from './workspace-protocol';
 
 const unavailable = () => new AppError(409, '连接或执行目标已变化，请核查原操作后手动继续');
-// Every method resolves to a fixed application route. Recovery keeps the exact
-// original request and target; missing routes never select another connection.
-const routes = {
-  'sessions-page': 'sessions-page',
-  'agent-options': 'agent-options',
-  'agent-usage': 'agent-usage',
-  'run-preferences': 'run-preferences',
-  'roles-read': 'roles/read',
-  'roles-action': 'roles/action',
-  'mcp-read': 'mcp/read',
-  'skills-read': 'skills/read',
-  'session-control': 'session-control',
-  'session-operations': 'session-operations',
-  'tasks-read': 'tasks-read',
-  'tasks-action': 'tasks-action',
-  'preview-read': 'preview/read',
-  'preview-action': 'preview/action',
-  'preview-inspect': 'preview/inspect',
-  'preview-close': 'preview/close',
-  'github-write-read': 'github-write/read',
-  'github-write-action': 'github-write/action',
-  'github-write-inspect': 'github-write/inspect',
-  'github-write-abandon': 'github-write/abandon',
-  'github-read': 'github/read',
-  'github-action': 'github/action',
-  'github-abandon': 'github/abandon',
-  mutate: 'mutations',
-  'session-action': 'session-actions',
-  'file-content': 'file-content',
-  'attachment-action': 'attachment-actions',
-  'read-attachment': 'attachments/read',
-  'read-project-tree': 'project-tree',
-  'read-turn-diff': 'turn-diff',
-  'read-diff-file': 'diff-file',
-  'answer-question': 'question-answers',
-  steer: 'steer',
-  'search-sessions': 'session-search',
-  'git-state': 'git/state',
-  'git-action': 'git/action',
-  'git-operations': 'git/operations',
-  'fork-options': 'fork/options',
-  'fork-action': 'fork/action',
-  'fork-operations': 'fork/operations',
-  cancel: 'cancel',
-} satisfies Partial<Record<HostCommandMethod, string>>;
-
 export function workspaceCommandRoute(target: DesktopWorkspaceTarget, command: HostCommand) {
   if (
     command.workspaceId !== target.workspaceId ||
@@ -101,20 +57,8 @@ export function workspaceCommandRoute(target: DesktopWorkspaceTarget, command: H
     '/replicas/' +
     encodeURIComponent(target.replicaId) +
     '/';
-  if (command.method === 'sessions') return { path: base + 'sessions', body: undefined };
-  if (command.method === 'session')
-    return {
-      path:
-        base +
-        'sessions/' +
-        encodeURIComponent(command.params.sessionId) +
-        (command.params.version === undefined
-          ? ''
-          : '?version=' + encodeURIComponent(command.params.version)),
-      body: undefined,
-    };
-  if (!(command.method in routes)) throw new AppError(409, '此连接不支持该操作，请使用原连接核查');
-  return { path: base + routes[command.method as keyof typeof routes], body: command.params };
+  const route = hostCommandHttpRequest(command);
+  return { ...route, path: base + route.path };
 }
 
 export type LocalWorkspaceIdentity = Pick<
@@ -300,7 +244,9 @@ export class WorkspaceTransportClient {
           selected.runtime.features?.includes(feature),
         ) ||
           (request.command.kind === 'continue' &&
-            !selected.runtime.features?.includes(FOLLOWUP_FEATURE)))
+            (!selected.runtime.features?.includes(FOLLOWUP_FEATURE) ||
+              ('turn' in request.command.input &&
+                !selected.runtime.features?.includes(SESSION_INTENTS_FEATURE)))))
       )
         throw new AppError(409, '此执行电脑尚未支持待办操作。');
       let value: unknown, failure: unknown;

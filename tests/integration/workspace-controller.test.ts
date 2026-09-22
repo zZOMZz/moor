@@ -31,7 +31,13 @@ import {
   type DesktopWorkspaceRequest,
 } from '@moor/client/workspace-protocol';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import { buildSessionTurn } from '@moor/client/session-client';
+import { buildSessionTurn, sessionPermissionReviews } from '@moor/client/session-client';
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import {
+  attentionPendingKey,
+  attentionRouteSchema,
+  pendingAttentionSchema,
+} from '../../apps/web/src/features/attention/attention';
 import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
 import type { AgentCallbacks, AgentOpenOptions } from '@moor/host/agents/driver';
 import { workspaceInteractionSnapshot } from '../../apps/web/src/features/interactions/workspace-interactions';
@@ -101,6 +107,7 @@ async function fixture(
     github?: (projectId: string) => SessionGithubOptions;
     githubWrite?: (projectId: string) => SessionGithubWriteOptions;
     schedule?: (ms: number, work: () => void) => () => void;
+    runCapabilities?: typeof syntheticCapabilities;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-workspace-controller-'))),
@@ -148,14 +155,14 @@ async function fixture(
                 },
               }
             : {}),
-          capabilities: syntheticCapabilities,
+          capabilities: config.runCapabilities ?? syntheticCapabilities,
           inputCapabilities: { image: true, audio: true, embeddedContext: true },
           interactionCapabilities: { questions: true, steer: true },
           steer: async () => {
             steerCalls++;
             return { outcome: 'injected' as const };
           },
-          configureModel: async () => syntheticCapabilities,
+          configureModel: async () => config.runCapabilities ?? syntheticCapabilities,
           prompt: async (input, binding) => {
             inputs.push(structuredClone(input));
             active = true;
@@ -317,7 +324,10 @@ async function fixture(
       };
     }
     await fault.after?.(input);
-    if (input.command.method === 'mutate' && fault.loseMutation)
+    if (
+      ['mutate', 'send-turn', 'respond-permission'].includes(input.command.method) &&
+      fault.loseMutation
+    )
       return {
         ok: false,
         error: {
@@ -327,7 +337,10 @@ async function fixture(
           message: 'Synthetic receipt lost',
         },
       };
-    if (input.command.method === 'mutate' && fault.wrongReceipt)
+    if (
+      ['mutate', 'send-turn', 'respond-permission'].includes(input.command.method) &&
+      fault.wrongReceipt
+    )
       value = { accepted: true, delivered: true, operationId: 'another-operation' };
     return { ok: true, value };
   };
@@ -621,7 +634,7 @@ test('removed composer tools have no callable entry points and plain turns carry
   await f.controller.send();
   await f.started.promise;
   const operation = f.controller.state.ledger!.operations.find(
-    (entry) => entry.original.kind === 'mutation',
+    (entry) => entry.original.kind === 'send-turn',
   )!;
   assert.equal(operation.mcpReview, undefined);
   assert.equal(operation.taskReview, undefined);
@@ -1447,7 +1460,7 @@ test('attachment write failures, cross-page changes and a later attachment durin
   const entered = signal(),
     release = signal();
   f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'mutate') {
+    if (request.action === 'execute' && request.command.method === 'send-turn') {
       entered.resolve();
       await release.promise;
     }
@@ -1521,7 +1534,7 @@ test('lost delivery retains the original operation and draft; reconnect and rest
   )!;
   assert.equal(f.controller.state.draft?.text, 'Do exactly once');
   const sent = f.calls.filter(
-    (call) => call.action === 'execute' && call.command.method === 'mutate',
+    (call) => call.action === 'execute' && call.command.method === 'send-turn',
   );
   assert.equal(sent.length, 1);
   f.fault.loseMutation = false;
@@ -1537,12 +1550,13 @@ test('lost delivery retains the original operation and draft; reconnect and rest
   await restored.openSession(id);
   assert.equal(restored.state.draft?.text, 'Do exactly once');
   assert.equal(
-    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'mutate').length,
+    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'send-turn')
+      .length,
     1,
   );
   await restored.retry(original.original.value.operationId);
   const retried = f.calls.filter(
-    (call) => call.action === 'execute' && call.command.method === 'mutate',
+    (call) => call.action === 'execute' && call.command.method === 'send-turn',
   );
   assert.deepEqual(retried[1], retried[0]);
   assert.equal(f.prompts(), 1);
@@ -1561,7 +1575,8 @@ test('host inspection recovers a lost receipt without sending a second mutation'
   await f.controller.inspect(original.original.value.operationId);
   assert.equal(f.controller.state.draft?.text, '');
   assert.equal(
-    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'mutate').length,
+    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'send-turn')
+      .length,
     1,
   );
 });
@@ -1575,7 +1590,8 @@ test('durable draft conflicts and failed operation staging prevent dispatch', as
   await assert.rejects(f.controller.saveDraft('Conflicting edit', {}), /另一页面/);
   await assert.rejects(f.controller.send(), /另一页面/);
   assert.equal(
-    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'mutate').length,
+    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'send-turn')
+      .length,
     0,
   );
   await f.controller.reloadDraft();
@@ -1609,7 +1625,7 @@ test('a confirmed receipt never clears a draft edited while delivery was in flig
   const entered = signal(),
     release = signal();
   f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'mutate') {
+    if (request.action === 'execute' && request.command.method === 'send-turn') {
       entered.resolve();
       await release.promise;
     }
@@ -1774,7 +1790,7 @@ test('two pages cannot replay the same pending operation concurrently', async (t
   const entered = signal(),
     release = signal();
   f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'mutate') {
+    if (request.action === 'execute' && request.command.method === 'send-turn') {
       entered.resolve();
       await release.promise;
     }
@@ -1787,7 +1803,8 @@ test('two pages cannot replay the same pending operation concurrently', async (t
   await second;
   await f.started.promise;
   assert.equal(
-    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'mutate').length,
+    f.calls.filter((call) => call.action === 'execute' && call.command.method === 'send-turn')
+      .length,
     2,
   );
   assert.equal(f.prompts(), 1);
@@ -1798,7 +1815,7 @@ test('failed receipt persistence keeps the durable original recoverable', async 
     id = await f.create();
   await f.controller.saveDraft('Recover after storage failure', {});
   f.fault.after = async (request) => {
-    if (request.action === 'execute' && request.command.method === 'mutate')
+    if (request.action === 'execute' && request.command.method === 'send-turn')
       f.memory.failWrite = true;
   };
   await assert.rejects(f.controller.send(), /storage failure/);
@@ -2286,6 +2303,11 @@ test('attention continuation retains its exact original after receipt loss and n
   await assert.rejects(c.sendContinue(), /receipt lost/);
   const original = structuredClone(c.state.pending!);
   assert.equal(original.operation.kind, 'continue');
+  assert(original.operation.kind === 'continue' && 'turn' in original.operation.body);
+  assert.equal(original.operation.body.turn.prompt, 'Reviewed attention followup');
+  assert.equal('mutation' in original.operation.body, false);
+  assert.equal('update' in original.operation.body.turn, false);
+  assert.equal('metaBundle' in original.operation.body.turn, false);
   c.editDraft('Later attention draft');
   await c.saveDraft();
   await assert.rejects(f.controller.send(), /原待办/);
@@ -2314,6 +2336,101 @@ test('attention continuation retains its exact original after receipt loss and n
   assert.equal(f.controller.state.draft!.text, 'Keep separate composer text');
   restored.close();
   competing.close();
+});
+
+test('a legacy attention original survives reopening and retries the exact saved CRDT without requiring the new intent capability', async (t) => {
+  const f = await attentionWorkspace(t),
+    c = f.panel.controller;
+  await f.controller.saveDraft('Keep current composer text', {});
+  await c.createDraft();
+  c.editDraft('Frozen legacy followup');
+  await c.saveDraft();
+  const target = c.target()!;
+  const route = attentionRouteSchema.parse(
+    Object.fromEntries(
+      Object.keys(attentionRouteSchema.shape).map((key) => [
+        key,
+        target[key as keyof typeof target],
+      ]),
+    ),
+  );
+  const read = await f.host.read(f.selected.sessionId);
+  const mutation = buildSessionTurn({
+    scope: { ...f.controller.state.scope!.target, sessionId: f.selected.sessionId },
+    read,
+    agent: read.agent!,
+    prompt: 'Frozen legacy followup',
+    selection: {},
+    operationId: 'legacy-attention-original',
+    turnId: 'legacy-attention-user',
+    peerId: '1',
+    now: '2026-01-01T00:00:00.000Z',
+  });
+  const pending = pendingAttentionSchema.parse({
+    route,
+    sessionId: f.selected.sessionId,
+    itemId: f.selected.itemId,
+    operation: {
+      kind: 'continue',
+      body: {
+        mutation,
+        eventRevision: c.state.detail!.item.eventRevision,
+        observationRevision: c.state.detail!.item.observationRevision,
+      },
+    },
+    draft: c.state.draft,
+  });
+  const saved = JSON.stringify(pending.operation.body);
+  await f.store.saveAttention(
+    f.controller.state.scope!,
+    route,
+    attentionPendingKey(pending),
+    pending,
+    () => {},
+    { expected: undefined },
+  );
+  f.panel.close();
+  f.catalog.targets[0]!.runtime.features = f.catalog.targets[0]!.runtime.features!.filter(
+    (value) => value !== SESSION_INTENTS_FEATURE,
+  );
+  await f.controller.refreshCatalog('local');
+  const reopened = await f.controller.openAttention();
+  await reopened.controller.open(f.selected);
+  assert.equal(JSON.stringify(reopened.controller.state.pending!.operation.body), saved);
+  await reopened.controller.retry();
+  const sent = f.calls.filter(
+    (input) => input.action === 'attention' && input.command.kind === 'continue',
+  );
+  assert.equal(sent.length, 1);
+  const last = sent[0]!;
+  assert(last.action === 'attention' && last.command.kind === 'continue');
+  assert.equal(JSON.stringify(last.command.input), saved);
+  assert.equal(reopened.controller.state.pending, undefined);
+  assert.equal(f.controller.state.draft!.text, 'Keep current composer text');
+  reopened.close();
+});
+
+test('new attention followups on an older Host never stage or fall back to a Mutation', async (t) => {
+  const f = await attentionWorkspace(t),
+    c = f.panel.controller;
+  await c.createDraft();
+  c.editDraft('Keep this followup');
+  await c.saveDraft();
+  f.panel.close();
+  f.catalog.targets[0]!.runtime.features = f.catalog.targets[0]!.runtime.features!.filter(
+    (value) => value !== SESSION_INTENTS_FEATURE,
+  );
+  await f.controller.refreshCatalog('local');
+  const reopened = await f.controller.openAttention();
+  await reopened.controller.open(f.selected);
+  await assert.rejects(reopened.controller.sendContinue(), /升级/);
+  assert.equal(reopened.controller.state.pending, undefined);
+  assert.equal(reopened.controller.state.draft!.text, 'Keep this followup');
+  assert.equal(
+    f.calls.some((input) => input.action === 'attention' && input.command.kind === 'continue'),
+    false,
+  );
+  reopened.close();
 });
 
 test('attention continuation persistence failure prevents a new Agent turn and an unscoped old draft is not imported', async (t) => {
@@ -2764,4 +2881,182 @@ test('sync notices reject stale connections and foreign scopes, and coalesce bur
   f.controller.scheduleSync(notice);
   f.controller.close();
   assert.equal([...timers.values()].filter((ms) => ms === 150).length, 0);
+});
+
+test('ordinary sends require semantic Host support and never fall back to client-generated document edits', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create();
+  await f.controller.saveDraft('Keep this offline draft', {});
+  f.catalog.targets[0]!.runtime.features = f.catalog.targets[0]!.runtime.features!.filter(
+    (feature) => feature !== SESSION_INTENTS_FEATURE,
+  );
+  await f.controller.refreshCatalog('local');
+  await f.controller.selectProject('local', f.catalog.targets[0]!.target);
+  await f.controller.openSession(sessionId);
+  const before = f.calls.length;
+  await assert.rejects(f.controller.send(), /升级主机/);
+  assert.equal(f.calls.length, before);
+  assert.equal(f.controller.state.draft?.text, 'Keep this offline draft');
+  assert(
+    !f.controller.state.ledger!.operations.some((entry) =>
+      ['send-turn', 'mutation'].includes(entry.original.kind),
+    ),
+  );
+  assert.equal(f.prompts(), 0);
+});
+
+test('ordinary semantic permission freezes the entire reviewed tool and a lost receipt is recovered with the original body', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create();
+  await f.controller.saveDraft('Start reviewed work', {});
+  await f.controller.send();
+  await f.started.promise;
+  const answer = f.callbacks().permission({
+    toolCall: {
+      toolCallId: 'ordinary-tool',
+      title: 'Synthetic edit',
+      rawInput: { path: 'reviewed.txt', text: 'frozen' },
+    },
+    options: [
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+    ],
+  });
+  await f.controller.refreshSession();
+  const [review] = sessionPermissionReviews(f.controller.state.session!, {
+    ...f.controller.state.scope!.target,
+    sessionId,
+  });
+  assert(review);
+  await assert.rejects(
+    f.controller.respondPermission(
+      { ...review, itemJson: review.itemJson.replace('frozen', 'changed') },
+      { outcome: 'selected', optionId: 'allow' },
+    ),
+    /操作内容已改变/,
+  );
+  await assert.rejects(
+    f.controller.respondPermission(review, { outcome: 'selected', optionId: 'invented' }),
+    /选项/,
+  );
+  assert(
+    !f.calls.some(
+      (call) => call.action === 'execute' && call.command.method === 'respond-permission',
+    ),
+  );
+  await f.controller.saveDraft('Next message stays editable', {});
+  f.fault.loseMutation = true;
+  await assert.rejects(
+    f.controller.respondPermission(review, { outcome: 'selected', optionId: 'allow' }),
+  );
+  assert.deepEqual(await answer, { outcome: { outcome: 'selected', optionId: 'allow' } });
+  const pending = f.controller.state.ledger!.operations.find(
+    (entry) => entry.original.kind === 'respond-permission',
+  )!;
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.draft, undefined);
+  const original = structuredClone(pending.original);
+  assert.equal('update' in original.value, false);
+  assert.equal('meta' in original.value, false);
+  f.fault.loseMutation = false;
+  const restored = new WorkspaceController({
+    request: f.request,
+    store: new WorkspaceStore(f.memory),
+  });
+  t.after(() => restored.close());
+  await restored.refreshCatalog('local');
+  await restored.selectProject('local', f.catalog.targets[0]!.target);
+  await restored.openSession(sessionId);
+  assert.equal(
+    f.calls.filter(
+      (call) => call.action === 'execute' && call.command.method === 'respond-permission',
+    ).length,
+    1,
+  );
+  await restored.retry(original.value.operationId);
+  const requests = f.calls.filter(
+    (call) => call.action === 'execute' && call.command.method === 'respond-permission',
+  );
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(restored.state.draft?.text, 'Next message stays editable');
+  assert.equal(
+    (await f.store.operation(restored.state.scope!, original.value.operationId, () => {}))!.status,
+    'confirmed',
+  );
+});
+
+test('a legacy Mutation already stored in the workspace remains byte-for-byte original and needs an explicit retry', async (t) => {
+  const f = await fixture(t),
+    sessionId = await f.create(),
+    scope = f.controller.state.scope!;
+  const value = buildSessionTurn({
+    scope: { ...scope.target, sessionId },
+    read: f.controller.state.session,
+    agent: f.controller.state.session!.agent!,
+    prompt: 'Original legacy request',
+    selection: {},
+    operationId: 'legacy-original',
+    turnId: 'legacy-user-turn',
+    peerId: 'legacy-peer',
+    now: '2026-09-22T00:00:00.000Z',
+  });
+  await f.store.stage(scope, { kind: 'mutation', value }, undefined, () => {});
+  const frozen = JSON.stringify(
+    (await f.store.operation(scope, value.operationId, () => {}))!.original,
+  );
+  const restored = new WorkspaceController({
+    request: f.request,
+    store: new WorkspaceStore(f.memory),
+  });
+  t.after(() => restored.close());
+  await restored.refreshCatalog('local');
+  await restored.selectProject('local', f.catalog.targets[0]!.target);
+  await restored.openSession(sessionId);
+  assert.equal(f.prompts(), 0);
+  assert.equal(
+    JSON.stringify((await f.store.operation(scope, value.operationId, () => {}))!.original),
+    frozen,
+  );
+  await restored.retry(value.operationId);
+  await f.started.promise;
+  const calls = f.calls.filter(
+    (call) => call.action === 'execute' && ['mutate', 'send-turn'].includes(call.command.method),
+  );
+  assert.equal(calls.length, 1);
+  assert(calls[0]!.action === 'execute');
+  assert.equal(calls[0].command.method, 'mutate');
+  assert.deepEqual(calls[0].command.params, value);
+  assert.equal(
+    JSON.stringify((await f.store.operation(scope, value.operationId, () => {}))!.original),
+    frozen,
+  );
+});
+
+test('a legacy draft mode alias freezes its verified Moor preset without rewriting the editable draft', async (t) => {
+  const runCapabilities = {
+    ...syntheticCapabilities,
+    modes: [
+      { id: 'moor-agent', name: 'Agent' },
+      { id: 'moor-auto-review', name: 'Auto review' },
+      { id: 'moor-full-access', name: 'Full access' },
+    ],
+  };
+  const f = await fixture(t, { runCapabilities }),
+    sessionId = await f.create();
+  await f.controller.saveDraft('Keep reviewed access level', { modeId: 'agent' });
+  const before = structuredClone(f.controller.state.draft!);
+  f.fault.loseMutation = true;
+  await assert.rejects(f.controller.send(), /原草稿/);
+  const operation = f.controller.state.ledger!.operations.find(
+    (entry) => entry.original.kind === 'send-turn',
+  )!;
+  assert(operation.original.kind === 'send-turn');
+  assert.equal(operation.original.value.selection.modeId, 'moor-auto-review');
+  await f.started.promise;
+  assert.equal(operation.draft!.revision, before.revision);
+  assert.deepEqual(await f.store.readDraft(f.controller.state.scope!, sessionId, () => {}), before);
+  f.fault.loseMutation = false;
+  await f.controller.retry(operation.original.value.operationId);
+  assert.equal(f.prompts(), 1);
+  assert.equal((await f.store.readDraft(f.controller.state.scope!, sessionId, () => {})).text, '');
 });

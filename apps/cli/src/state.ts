@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
+import { sessionIntentCommandSchema } from '@moor/protocol/session-intent-protocol';
 import { CliError } from './args';
 import { workspaceTargetSchema as cliTargetSchema } from '@moor/protocol/workspace-target';
 export { workspaceTargetSchema as cliTargetSchema } from '@moor/protocol/workspace-target';
@@ -21,7 +22,7 @@ export type CliTarget = z.infer<typeof cliTargetSchema>;
 const operationSchema = z
   .object({
     operationId: id,
-    kind: z.enum(['turn', 'create', 'stop', 'session-action']),
+    kind: z.enum(['turn', 'send-turn', 'respond-permission', 'create', 'stop', 'session-action']),
     target: cliTargetSchema.extend({ sessionId: id }),
     path: z
       .string()
@@ -350,6 +351,16 @@ export class CliState {
       createdAt: now,
     });
     const parsed = JSON.parse(value.body);
+    if (value.kind === 'send-turn' || value.kind === 'respond-permission') {
+      const original = sessionIntentCommandSchema.parse({ kind: value.kind, value: parsed }).value;
+      if (
+        original.userId !== value.target.userId ||
+        original.machineId !== value.target.machineId ||
+        value.path !==
+          `/api/workspaces/${encodeURIComponent(value.target.catalogWorkspaceId)}/replicas/${encodeURIComponent(value.target.replicaId)}/${value.kind}`
+      )
+        throw new CliError('scope', '语义请求与原执行身份或接口不匹配。', 5);
+    }
     if (
       parsed.operationId !== value.operationId ||
       parsed.workspaceId !== value.target.workspaceId ||

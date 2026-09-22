@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
+import { productCanonicalJson } from '@moor/protocol/canonical-json';
 import { assert, type Mutation, type SessionAction } from '@moor/protocol/protocol';
 import type { AttachmentAction, AttachmentReceipt } from '@moor/protocol/attachment-protocol';
 import type { GitAction, GitActionReceipt } from '@moor/protocol/git-protocol';
@@ -8,6 +9,7 @@ import type { GithubAction, GithubReceipt } from '@moor/protocol/github-protocol
 import type { GithubWriteAction } from '@moor/protocol/github-write-protocol';
 import type { PreviewAction } from '@moor/protocol/preview-protocol';
 import type { SessionControlAction } from '@moor/protocol/session-control-protocol';
+import type { SendTurn, RespondPermission } from '@moor/protocol/session-intent-protocol';
 import type {
   QuestionAnswer,
   QuestionReceipt,
@@ -17,6 +19,8 @@ import type {
 export type JournalOperation =
   | SessionControlAction
   | Mutation
+  | SendTurn
+  | RespondPermission
   | SessionAction
   | AttachmentAction
   | QuestionAnswer
@@ -45,6 +49,12 @@ export class Journal {
     return Boolean(this.db.prepare('SELECT 1 FROM operation WHERE id=?').get(id));
   }
   fingerprint(workspace: string, m: JournalOperation, binding?: unknown) {
+    // New business intents have stable semantic fingerprints independent of
+    // parser/object key order. Legacy operations retain their original bytes.
+    if ('intentVersion' in m)
+      return createHash('sha256')
+        .update(productCanonicalJson(['session-intent-v1', workspace, m, binding ?? null]))
+        .digest('hex');
     return createHash('sha256')
       .update(JSON.stringify(binding === undefined ? [workspace, m] : [workspace, m, binding]))
       .digest('hex');
@@ -59,7 +69,13 @@ export class Journal {
       );
     return r;
   }
-  stage(workspace: string, m: Mutation, turnId: string, approval?: unknown, binding?: unknown) {
+  stage(
+    workspace: string,
+    m: Mutation | SendTurn | RespondPermission,
+    turnId: string,
+    approval?: unknown,
+    binding?: unknown,
+  ) {
     this.db
       .prepare(
         'INSERT OR IGNORE INTO operation(id,fingerprint,phase,turn_id,result,approval) VALUES(?,?,?,?,NULL,?)',
@@ -72,7 +88,7 @@ export class Journal {
         approval ? JSON.stringify(approval) : null,
       );
   }
-  accept(m: Mutation) {
+  accept(m: Mutation | SendTurn | RespondPermission) {
     const result = {
       accepted: true as const,
       delivered: true as const,

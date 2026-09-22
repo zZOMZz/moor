@@ -9,6 +9,8 @@ import {
   navigationProjects,
   projectKey,
   workspaceKey,
+  logicalProjectGroups,
+  navigationSessionQuery,
   type NavigationProject,
 } from '../features/sessions/workspace-navigation';
 import {
@@ -31,7 +33,7 @@ import {
 import { WorkspaceAttentionUI } from '../features/attention/workspace-attention-ui';
 import { WorkspaceSessionTools } from '../features/workspace/workspace-session-tools';
 import { WorkspaceGithubUI } from '../features/github/workspace-github-ui';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Folder,
@@ -877,6 +879,7 @@ export function WorkspaceApp({
   const [agentId, setAgentId] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false),
     [workspace, setWorkspace] = useState(''),
+    [logicalProject, setLogicalProject] = useState(''),
     [searchOpen, setSearchOpen] = useState(false),
     [account, setAccount] = useState<Account | null>(null);
   const allProjects = navigationProjects(state);
@@ -884,9 +887,18 @@ export function WorkspaceApp({
     ...new Map(allProjects.map((entry) => [workspaceKey(entry), entry.workspaceName])).entries(),
   ];
   const activeWorkspace = workspaces.some(([key]) => key === workspace) ? workspace : '';
-  const projects = allProjects.filter(
+  const workspaceProjects = allProjects.filter(
     (entry) => !activeWorkspace || workspaceKey(entry) === activeWorkspace,
   );
+  const projectGroups = logicalProjectGroups(workspaceProjects);
+  const selectedGroup = projectGroups.find((group) => group.key === logicalProject);
+  const projects = selectedGroup?.projects ?? workspaceProjects;
+  const shownGroups = selectedGroup ? [selectedGroup] : projectGroups;
+  const pairingProject = activeWorkspace
+    ? workspaceProjects.find((project) => project.source === 'remote')
+    : state.scope?.source === 'remote'
+      ? { source: state.scope.source, target: state.scope.target }
+      : undefined;
   const layout = useWorkspaceLayout();
   const navigationOpen = layout.open,
     setNavigationOpen = layout.setOpen;
@@ -904,7 +916,7 @@ export function WorkspaceApp({
   useEffect(() => {
     setPinnedShown(30);
     setRecentShown(30);
-  }, [activeWorkspace, sessionQuery]);
+  }, [activeWorkspace, selectedGroup?.key, sessionQuery]);
   const rootElement = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!layout.narrow || !navigationOpen) return;
@@ -1098,8 +1110,10 @@ export function WorkspaceApp({
             !session.isArchived &&
             ((session.title || '未命名会话')
               .toLowerCase()
-              .includes(sessionQuery.trim().toLowerCase()) ||
-              session.id.toLowerCase().includes(sessionQuery.trim().toLowerCase())),
+              .includes(navigationSessionQuery(project, sessionQuery).toLowerCase()) ||
+              session.id
+                .toLowerCase()
+                .includes(navigationSessionQuery(project, sessionQuery).toLowerCase())),
         )
         .map((session) => ({
           project: {
@@ -1210,7 +1224,10 @@ export function WorkspaceApp({
                 <select
                   aria-label="切换工作区"
                   value={activeWorkspace}
-                  onChange={(event) => setWorkspace(event.target.value)}
+                  onChange={(event) => {
+                    setWorkspace(event.target.value);
+                    setLogicalProject('');
+                  }}
                 >
                   <option value="">全部工作区</option>
                   {workspaces.map(([key, name]) => (
@@ -1290,7 +1307,7 @@ export function WorkspaceApp({
           <input
             hidden={!searchOpen}
             aria-label="筛选当前工作区会话"
-            placeholder="筛选会话"
+            placeholder="项目、电脑或会话"
             maxLength={200}
             value={sessionQuery}
             onChange={(event) => setSessionQuery(event.target.value)}
@@ -1337,45 +1354,74 @@ export function WorkspaceApp({
             onAction={manageNavigationSession}
           />
           <section className="workspace-navigation-section" aria-label="项目">
-            <h2>项目</h2>
-            {projects.map((project) => (
-              <NavigationProjectGroup
-                key={projectKey(project)}
-                project={project}
-                sessions={navigation.sessions[projectKey(project)]}
-                selected={
-                  view === 'plain' &&
-                  state.scope?.source === project.source &&
-                  canonical(state.scope.target) === canonical(project.target)
-                }
-                selectedSession={state.sessionId}
-                disabled={blocked}
-                query={sessionQuery}
-                controller={controller}
-                revision={
-                  controller.projectRevision?.(project.source, project.target) ??
-                  controller.navigationRevision ??
-                  0
-                }
-                unavailable={navigation.unavailable.includes(projectKey(project))}
-                onOpen={openNavigationSession}
-                onAction={manageNavigationSession}
-                onCreate={createProjectSession}
-                onRefresh={(project) =>
-                  run(() =>
-                    typeof controller.refreshProjectSessions === 'function'
-                      ? controller.refreshProjectSessions(project.source, project.target)
-                      : controller.synchronize({
-                          source: project.source,
-                          connectionId: state.catalogs[project.source]!.connectionId,
-                          owner: project.target.owner,
-                          kind: 'connected',
-                          deviceId: project.target.deviceId,
-                          workspaceId: project.target.workspaceId,
-                        }),
-                  )
-                }
-              />
+            <div className="workspace-project-filter">
+              <h2>项目</h2>
+              {projectGroups.length > 1 && (
+                <select
+                  aria-label="筛选项目分组"
+                  value={selectedGroup?.key ?? ''}
+                  onChange={(event) => setLogicalProject(event.target.value)}
+                >
+                  <option value="">全部项目</option>
+                  {projectGroups.map((group) => (
+                    <option key={group.key} value={group.key}>
+                      {group.name} ·{' '}
+                      {[...new Set(group.projects.map((project) => project.hostName))].join('、')}
+                      {!activeWorkspace && workspaces.length > 1 ? ` · ${group.workspaceName}` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {shownGroups.map((group) => (
+              <Fragment key={group.key}>
+                {group.projects.length > 1 && (
+                  <h3 className="workspace-logical-project" title={group.name}>
+                    <span>{group.name}</span>
+                    <small>{group.projects.length} 个执行副本</small>
+                  </h3>
+                )}
+                {group.projects.map((project) => (
+                  <NavigationProjectGroup
+                    key={projectKey(project)}
+                    project={project}
+                    grouped={group.projects.length > 1}
+                    sessions={navigation.sessions[projectKey(project)]}
+                    selected={
+                      view === 'plain' &&
+                      state.scope?.source === project.source &&
+                      canonical(state.scope.target) === canonical(project.target)
+                    }
+                    selectedSession={state.sessionId}
+                    disabled={blocked}
+                    query={sessionQuery}
+                    controller={controller}
+                    revision={
+                      controller.projectRevision?.(project.source, project.target) ??
+                      controller.navigationRevision ??
+                      0
+                    }
+                    unavailable={navigation.unavailable.includes(projectKey(project))}
+                    onOpen={openNavigationSession}
+                    onAction={manageNavigationSession}
+                    onCreate={createProjectSession}
+                    onRefresh={(project) =>
+                      run(() =>
+                        typeof controller.refreshProjectSessions === 'function'
+                          ? controller.refreshProjectSessions(project.source, project.target)
+                          : controller.synchronize({
+                              source: project.source,
+                              connectionId: state.catalogs[project.source]!.connectionId,
+                              owner: project.target.owner,
+                              kind: 'connected',
+                              deviceId: project.target.deviceId,
+                              workspaceId: project.target.workspaceId,
+                            }),
+                      )
+                    }
+                  />
+                ))}
+              </Fragment>
             ))}
           </section>
           <NavigationSessions
@@ -1548,6 +1594,9 @@ export function WorkspaceApp({
             onAccountVerified={verified}
             onBeforeLogout={() => controller.disconnectSource('remote')}
             activeTarget={state.scope?.source === 'remote' ? state.scope.target : undefined}
+            pairingScope={
+              pairingProject && { source: pairingProject.source, target: pairingProject.target }
+            }
             beforeMove={() => controller.flushDraft()}
             endView={async () => {
               await controller.disconnectSource('remote');

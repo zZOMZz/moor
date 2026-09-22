@@ -2,6 +2,8 @@
 
 配套[系统学习指南](learning-guide.md)。本手册用仓库已有合成测试帮助你亲自检查关键行为，无需真实 Agent、Google 或 GitHub 账号。实验仅使用测试管理的临时数据，不要求接入自己的 Moor 数据库。
 
+新版普通指令与审批已改用[窄业务意图](session-intents.md)。涉及 Mutation 的实验验证保留的兼容与旧原请求恢复路径，不代表新版界面仍生成 CRDT 上行；两条准备路径共用 Host 接受事务。
+
 ## 一、准备与实验方式
 
 从仓库根目录执行命令，环境要求 Node.js 24+、Corepack 与锁定的 pnpm 10.20.0。依赖未安装时使用：
@@ -25,7 +27,7 @@ corepack pnpm install --frozen-lockfile
 阅读 [host.test.ts](../tests/integration/host.test.ts) 的 `fixture`、`request` 和测试 `delivery commits document, metadata and receipt atomically before Agent prompt`，再运行：
 
 ```sh
-corepack pnpm exec tsx --test --test-name-pattern='delivery commits document' tests/host.test.ts
+corepack pnpm exec tsx --test --test-name-pattern='delivery commits document' tests/integration/host.test.ts
 ```
 
 **观察点：** 回执 `delivered=true`；已保存历史包含用户与助手两个条目；Journal 中 phase 为 `accepted`；确定性 `started` 信号之后派发计数为 1；再提交相同请求，返回原结果且计数仍为 1。
@@ -41,7 +43,7 @@ corepack pnpm exec tsx --test --test-name-pattern='delivery commits document' te
 **先预测：** 如果写会话快照失败，操作凭据会不会留下？模型调用是否可以先开始再补保存？
 
 ```sh
-corepack pnpm exec tsx --test --test-name-pattern='failed persistence rolls back' tests/host.test.ts
+corepack pnpm exec tsx --test --test-name-pattern='failed persistence rolls back' tests/integration/host.test.ts
 ```
 
 测试在自己的合成 SQLite 上创建 `fail_snapshot` 触发器，让保存操作确定性失败。不要把触发器复制到真实主机数据库。
@@ -59,7 +61,7 @@ corepack pnpm exec tsx --test --test-name-pattern='failed persistence rolls back
 **先预测：** 两份基于同一历史的 CRDT 操作是否都应该运行？把相同 operationId 换一个项目重试是否允许？
 
 ```sh
-corepack pnpm exec tsx --test --test-name-pattern='concurrent and offline turns|project and workspace scope' tests/host.test.ts
+corepack pnpm exec tsx --test --test-name-pattern='concurrent and offline turns|project and workspace scope' tests/integration/host.test.ts
 ```
 
 **观察点：** 两个新请求并发提交，只有一个被接受；断开后的新会话不派发；错误工作区或项目的操作被拒绝，已接受的操作也不能借重试跨范围访问。
@@ -69,7 +71,7 @@ corepack pnpm exec tsx --test --test-name-pattern='concurrent and offline turns|
 继续看[目录测试](../tests/integration/catalog.test.ts)，找出同名项目与副本归组的行为；需要实际运行时使用：
 
 ```sh
-corepack pnpm exec tsx --test tests/catalog.test.ts
+corepack pnpm exec tsx --test tests/integration/catalog.test.ts
 ```
 
 **完成产出：** 画出账号、产品工作区、副本、执行工作区、会话，并在每个拒绝场景上圈出不匹配的范围。
@@ -81,7 +83,7 @@ corepack pnpm exec tsx --test tests/catalog.test.ts
 **先预测：** 手机选择允许，电脑选择拒绝，哪个结果会传给 Agent？主机重启后历史卡片还在，是否仍可批准？旧停止编号能否取消后来开始的回合？
 
 ```sh
-corepack pnpm exec tsx --test --test-name-pattern='approval reaches only|cancel binds exact' tests/host.test.ts
+corepack pnpm exec tsx --test --test-name-pattern='approval reaches only|cancel binds exact' tests/integration/host.test.ts
 ```
 
 **观察点：** 测试让合成 Agent 明确发出权限请求，再构造不同决定；第一份有效决定完成等待回调，后续新决定拒绝，原决定重试返回原凭据。错误助手回合的停止被拒绝，正确停止使等待审批取消。
@@ -97,7 +99,7 @@ corepack pnpm exec tsx --test --test-name-pattern='approval reaches only|cancel 
 **先预测：** 主机已经保存送达凭据，但没有完成执行便退出。重开后重试原请求，派发计数应该是多少？手动发新回合又是多少？
 
 ```sh
-corepack pnpm exec tsx --test --test-name-pattern='restart retains receipt' tests/host.test.ts
+corepack pnpm exec tsx --test --test-name-pattern='restart retains receipt' tests/integration/host.test.ts
 ```
 
 **观察点：** 测试只在自己的临时数据库中准备中断快照。新主机实例派发计数为 0；原请求重试返回旧回执，仍为 0；历史中的未完成回合已收束。手动发送新的合法回合后才出现一次派发。
@@ -113,7 +115,7 @@ corepack pnpm exec tsx --test --test-name-pattern='restart retains receipt' test
 **先预测：** 不登录真实模型账号，仍能验证哪些 Agent 接入行为？加载原生上下文回放的历史会不会重复进入本轮输出？
 
 ```sh
-corepack pnpm exec tsx --test tests/acp.test.ts tests/runtime.test.ts
+corepack pnpm exec tsx --test tests/integration/acp.test.ts tests/integration/runtime.test.ts
 ```
 
 阅读 [synthetic-agent.mjs](../scripts/validation/synthetic-agent.mjs)、[acp.test.ts](../tests/integration/acp.test.ts) 和 [runtime.test.ts](../tests/integration/runtime.test.ts)。后者使用真实 ACP driver，与合成 stdio Agent 跑两轮会话，中间关闭并重开主机存储。
@@ -129,7 +131,7 @@ corepack pnpm exec tsx --test tests/acp.test.ts tests/runtime.test.ts
 逐个理解后，可以一次跑覆盖这些实验的测试文件：
 
 ```sh
-corepack pnpm exec tsx --test tests/host.test.ts tests/catalog.test.ts tests/acp.test.ts tests/runtime.test.ts
+corepack pnpm exec tsx --test tests/integration/host.test.ts tests/integration/catalog.test.ts tests/integration/acp.test.ts tests/integration/runtime.test.ts
 ```
 
 进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/integration/cli-host.test.ts)；已退场加密入口的拒绝与旧数据离线保留见 [retired-e2ee.test.ts](../tests/integration/retired-e2ee.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。

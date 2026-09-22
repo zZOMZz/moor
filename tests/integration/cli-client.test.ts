@@ -10,6 +10,9 @@ import { metas } from '@moor/session/model';
 import { CliState } from '../../apps/cli/src/state';
 import { CliClient } from '../../apps/cli/src/client';
 import { CliHttp } from '@moor/client/node/http';
+import { buildSessionTurn } from '@moor/client/session-client';
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import { replicaBase } from '@moor/client/node/targets';
 import {
   localCliProof,
   type LocalCliConnectionLease,
@@ -80,6 +83,7 @@ async function fixture(t: TestContext) {
     hung?: boolean;
     mutationHung?: boolean;
     proofHold?: () => Promise<void>;
+    legacyHost?: boolean;
   } = {};
   const mutationEntered = signal();
   const requests: { path: string; body?: string }[] = [];
@@ -89,7 +93,12 @@ async function fixture(t: TestContext) {
       body = typeof init?.body === 'string' ? init.body : undefined;
     requests.push({ path, body });
     const data = body ? JSON.parse(body) : undefined;
-    const runtime = host.workspace;
+    const runtime = {
+      ...host.workspace,
+      features: host.workspace.features?.filter(
+        (feature) => !fault.legacyHost || feature !== SESSION_INTENTS_FEATURE,
+      ),
+    };
     if (path === '/api/local-instance') {
       const challenge = new URL(String(url)).searchParams.get('challenge')!;
       await fault.proofHold?.();
@@ -139,10 +148,16 @@ async function fixture(t: TestContext) {
         },
       ]);
     const suffix = path.split('/').slice(6).join('/');
-    if (suffix === 'mutations') mutationEntered.resolve();
-    if (fault.hung || (fault.mutationHung && suffix === 'mutations'))
+    if (suffix === 'send-turn') mutationEntered.resolve();
+    if (fault.hung || (fault.mutationHung && suffix === 'send-turn'))
       return new Promise<Response>(() => {});
-    const writing = ['session-control', 'mutations', 'session-actions'].includes(suffix);
+    const writing = [
+      'session-control',
+      'mutations',
+      'send-turn',
+      'respond-permission',
+      'session-actions',
+    ].includes(suffix);
     if (writing && fault.retired)
       return Response.json(
         { rejected: true, error: '此功能已退场；仅可读取原记录，不会执行或改写原状态。' },
@@ -159,6 +174,26 @@ async function fixture(t: TestContext) {
       if (suffix === 'session-control') result = await host.controlManager.control(data, projectId);
       else if (suffix === 'session-operations')
         result = await host.controlManager.recover(data, projectId);
+      else if (suffix === 'send-turn')
+        result = await host.sendTurn(data, projectId, {
+          serverOrigin: origin,
+          ownerId: 'owner',
+          deviceId: 'device',
+          current() {
+            assert.equal(fault.owner ?? 'owner', 'owner');
+            assert.equal(fault.device ?? 'device', 'device');
+          },
+        });
+      else if (suffix === 'respond-permission')
+        result = await host.respondPermission(data, projectId, {
+          serverOrigin: origin,
+          ownerId: 'owner',
+          deviceId: 'device',
+          current() {
+            assert.equal(fault.owner ?? 'owner', 'owner');
+            assert.equal(fault.device ?? 'device', 'device');
+          },
+        });
       else if (suffix === 'mutations')
         result = await host.mutate(data, projectId, {
           serverOrigin: origin,
@@ -347,7 +382,7 @@ test('CLI retains explicit retirement errors and does not convert an older unkno
     (error: any) => error.code === 'retired' && error.exitCode === 5,
   );
   assert.equal(
-    f.state.operations().find((operation) => operation.kind === 'turn')!.state,
+    f.state.operations().find((operation) => operation.kind === 'send-turn')!.state,
     'rejected',
   );
   f.fault.retired = false;
@@ -355,7 +390,7 @@ test('CLI retains explicit retirement errors and does not convert an older unkno
   await assert.rejects(f.run(['session', 'send', '--stdin'], 'Older unknown input'));
   const original = f.state
     .operations()
-    .find((operation) => operation.kind === 'turn' && operation.state === 'pending')!;
+    .find((operation) => operation.kind === 'send-turn' && operation.state === 'pending')!;
   f.fault.retired = true;
   await assert.rejects(
     f.run(['operation', 'retry', original.operationId]),
@@ -373,21 +408,21 @@ test('lost confirmation survives restart; inspect never dispatches, retry uses e
     (error) => error instanceof CliError && error.exitCode === 6,
   );
   await f.started.promise;
-  const op = f.state.operations().find((op) => op.kind === 'turn')!;
+  const op = f.state.operations().find((op) => op.kind === 'send-turn')!;
   const originalBytes = op.body;
   f.restart();
   await f.run(['operation', 'list']);
   await f.run(['session', 'read']);
-  assert.equal(f.requests.filter((r) => r.path.endsWith('/mutations')).length, 1);
+  assert.equal(f.requests.filter((r) => r.path.endsWith('/send-turn')).length, 1);
   f.fault.catalog = 'moved-catalog';
   await f.run(['operation', 'retry', op.operationId]);
-  const mutations = f.requests.filter((r) => r.path.endsWith('/mutations'));
+  const mutations = f.requests.filter((r) => r.path.endsWith('/send-turn'));
   assert.equal(mutations.length, 2);
   assert.equal(mutations[1]!.body, originalBytes);
   assert.ok(mutations[1]!.path.includes('moved-catalog'));
   assert.equal(f.counts().prompts, 1);
   await f.run(['operation', 'inspect', op.operationId]);
-  assert.equal(f.requests.filter((r) => r.path.endsWith('/mutations')).length, 2);
+  assert.equal(f.requests.filter((r) => r.path.endsWith('/send-turn')).length, 2);
   await f.finish();
 });
 test('undelivered unknown can be explicitly sealed; rejected retry and wrong receipt keep original pending', async (t) => {
@@ -395,7 +430,7 @@ test('undelivered unknown can be explicitly sealed; rejected retry and wrong rec
   await f.run(['session', 'create', '--agent', 'agent']);
   f.fault.lost = 'before';
   await assert.rejects(f.run(['session', 'send', '--stdin'], 'unreceived'), /原请求/);
-  let op = f.state.operations().find((op) => op.kind === 'turn')!;
+  let op = f.state.operations().find((op) => op.kind === 'send-turn')!;
   f.fault.reject = true;
   await assert.rejects(f.run(['operation', 'retry', op.operationId]));
   f.restart();
@@ -408,11 +443,11 @@ test('undelivered unknown can be explicitly sealed; rejected retry and wrong rec
   assert.equal(ended.state, 'abandoned');
   assert.equal(f.counts().prompts, 0);
   const request = JSON.parse(op.body);
-  assert.equal((await f.host.mutate(request, f.state.target()!.localProjectId)).abandoned, true);
+  assert.equal((await f.host.sendTurn(request, f.state.target()!.localProjectId)).abandoned, true);
   f.fault.wrongReceipt = true;
   await assert.rejects(f.run(['session', 'send', '--stdin'], 'second'));
   await f.started.promise;
-  op = f.state.operations().find((op) => op.kind === 'turn' && op.state === 'pending')!;
+  op = f.state.operations().find((op) => op.kind === 'send-turn' && op.state === 'pending')!;
   assert.ok(op);
   await f.run(['operation', 'inspect', op.operationId]);
   assert.equal(f.state.operation(op.operationId)?.state, 'accepted');
@@ -557,10 +592,90 @@ test('a timed out mutation retains its exact outbox bytes and does not cancel th
   await f.mutationEntered.promise;
   f.deadlineControllers.at(-1)!.controller.abort();
   await assert.rejects(waiting, (error) => error instanceof CliError && error.exitCode === 6);
-  const op = f.state.operations().find((op) => op.kind === 'turn')!;
+  const op = f.state.operations().find((op) => op.kind === 'send-turn')!;
   assert.equal(op.state, 'pending');
   assert.ok(op.body.includes(op.operationId));
-  assert.equal(f.requests.filter((r) => r.path.endsWith('/mutations')).length, 1);
+  assert.equal(f.requests.filter((r) => r.path.endsWith('/send-turn')).length, 1);
   assert.ok(f.deadlineControllers.length > before);
   assert.equal(f.counts().cancels, 0);
+});
+
+test('new CLI sends persist semantic bodies and reject a Host without the new feature before staging', async (t) => {
+  const f = await fixture(t);
+  await f.run(['session', 'create', '--agent', 'agent']);
+  f.fault.legacyHost = true;
+  const before = f.state.operations().length;
+  await assert.rejects(
+    f.run(['session', 'send', '--stdin'], 'Must stay local'),
+    (error: any) => error.code === 'unsupported',
+  );
+  assert.equal(f.state.operations().length, before);
+  assert(
+    !f.requests.some(
+      (request) => request.path.endsWith('/mutations') || request.path.endsWith('/send-turn'),
+    ),
+  );
+  f.fault.legacyHost = false;
+  f.fault.lost = 'before';
+  await assert.rejects(f.run(['session', 'send', '--stdin'], 'Frozen typed input'));
+  const original = f.state.operations().find((operation) => operation.kind === 'send-turn')!;
+  const body = JSON.parse(original.body);
+  assert.equal(body.intentVersion, 1);
+  assert.equal(body.prompt, 'Frozen typed input');
+  assert.equal(body.localProjectId, original.target.localProjectId);
+  assert.equal(body.userId, original.target.userId);
+  assert.equal(body.machineId, original.target.machineId);
+  assert(!('update' in body) && !('meta' in body));
+  f.restart();
+  assert.deepEqual(f.state.operation(original.operationId), original);
+  await f.run(['operation', 'retry', original.operationId]);
+  await f.started.promise;
+  assert.equal(
+    f.requests.filter((request) => request.path.endsWith('/send-turn')).at(-1)!.body,
+    original.body,
+  );
+  const confirmed = f.state.operation(original.operationId)!;
+  assert.equal(confirmed.path, original.path);
+  assert.equal(confirmed.requestVersion, original.requestVersion);
+});
+
+test('cold CLI recovery preserves an old Mutation body, fingerprint and saved path without converting it to an intent', async (t) => {
+  const f = await fixture(t);
+  await f.run(['session', 'create', '--agent', 'agent']);
+  const target = { ...f.state.target()!, sessionId: f.state.target()!.sessionId! };
+  const read = await f.host.read(target.sessionId, undefined, target.localProjectId);
+  const value = buildSessionTurn({
+    scope: target,
+    read,
+    agent: read.agent!,
+    prompt: 'Old explicitly submitted work',
+    selection: {},
+    operationId: 'old-client-operation',
+    turnId: 'old-user-turn',
+    peerId: 'old-client-peer',
+    now: '2026-09-22T00:00:00.000Z',
+  });
+  const op = f.state.stage({
+    operationId: value.operationId,
+    kind: 'turn',
+    target,
+    path: replicaBase(target) + '/mutations',
+    body: JSON.stringify(value, null, 2),
+  });
+  f.restart();
+  await f.run(['operation', 'list']);
+  await f.run(['session', 'read']);
+  assert.deepEqual(f.state.operation(op.operationId), op);
+  assert.equal(f.counts().prompts, 0);
+  await f.run(['operation', 'retry', op.operationId]);
+  await f.started.promise;
+  const sent = f.requests.filter((request) => request.path.endsWith('/mutations'));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]!.body, op.body);
+  assert(!f.requests.some((request) => request.path.endsWith('/send-turn')));
+  const done = f.state.operation(op.operationId)!;
+  assert.equal(done.kind, 'turn');
+  assert.equal(done.body, op.body);
+  assert.equal(done.path, op.path);
+  assert.equal(done.requestVersion, op.requestVersion);
 });

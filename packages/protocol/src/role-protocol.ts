@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { id } from './protocol';
 import { contentScopeSchema } from './content-protocol';
 
-export const ROLE_FEATURE = 'roles-v1';
 export const ROLE_LIMITS = {
   items: 50,
   instructionBytes: 16 * 1024,

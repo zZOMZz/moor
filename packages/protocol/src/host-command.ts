@@ -1,3 +1,4 @@
+import { sendTurnSchema, respondPermissionSchema } from './session-intent-protocol';
 import { z } from 'zod';
 import { agentUsageRequestSchema, runPreferencesRequestSchema } from './agent-controls';
 import { AppError, assert, id, mutationSchema, sessionActionSchema } from './protocol';
@@ -37,52 +38,6 @@ import {
 // This is the existing execution surface, not a list of safe-to-retry reads.
 // agent-options opens ACP and persists capabilities. Metadata and recovery operations
 // can have unknown delivery outcomes and retain their original operation identity.
-export const HOST_COMMAND_METHODS = [
-  'sessions',
-  'sessions-page',
-  'agent-options',
-  'agent-usage',
-  'run-preferences',
-  'session',
-  'roles-read',
-  'mcp-read',
-  'session-control',
-  'session-operations',
-  'tasks-read',
-  'tasks-action',
-  'roles-action',
-  'skills-read',
-  'preview-read',
-  'preview-action',
-  'preview-inspect',
-  'preview-close',
-  'github-write-read',
-  'github-write-action',
-  'github-write-inspect',
-  'github-write-abandon',
-  'github-read',
-  'github-action',
-  'github-abandon',
-  'mutate',
-  'session-action',
-  'file-content',
-  'attachment-action',
-  'read-attachment',
-  'read-project-tree',
-  'read-turn-diff',
-  'read-diff-file',
-  'answer-question',
-  'steer',
-  'search-sessions',
-  'git-state',
-  'git-action',
-  'git-operations',
-  'fork-options',
-  'fork-action',
-  'fork-operations',
-  'cancel',
-] as const;
-export type HostCommandMethod = (typeof HOST_COMMAND_METHODS)[number];
 export const hostCommandSchemas = {
   sessions: z.object({}).strict(),
   'sessions-page': sessionPageRequestSchema,
@@ -114,6 +69,8 @@ export const hostCommandSchemas = {
   'github-read': githubReadSchema,
   'github-action': githubActionSchema,
   'github-abandon': githubActionSchema,
+  'send-turn': sendTurnSchema,
+  'respond-permission': respondPermissionSchema,
   mutate: mutationSchema,
   'session-action': sessionActionSchema,
   'file-content': projectFileReadSchema,
@@ -132,7 +89,12 @@ export const hostCommandSchemas = {
   'fork-action': sessionForkSchema,
   'fork-operations': forkOperationSchema,
   cancel: sessionCancelSchema,
-} satisfies Record<HostCommandMethod, z.ZodTypeAny>;
+};
+export type HostCommandMethod = keyof typeof hostCommandSchemas;
+export const HOST_COMMAND_METHODS = Object.freeze(Object.keys(hostCommandSchemas)) as readonly [
+  HostCommandMethod,
+  ...HostCommandMethod[],
+];
 
 type CommandScope = { workspaceId: string; localProjectId?: string };
 export type HostCommand = {

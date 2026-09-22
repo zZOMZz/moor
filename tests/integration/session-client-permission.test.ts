@@ -7,6 +7,8 @@ import {
   sessionPermissionReviews,
 } from '@moor/client/session-client';
 import { validateMutation } from '@moor/host/commands/validate-mutation';
+import { buildRespondPermission } from '@moor/client/session-intent';
+import { prepareSessionIntent } from '@moor/host/commands/prepare-session-intent';
 
 const scope = {
   userId: 'owner',
@@ -101,6 +103,52 @@ function fixture(change?: (state: any) => void) {
     reviews = sessionPermissionReviews(read, scope);
   return { doc, flock, raw, read, reviews, close: () => doc.free() };
 }
+
+test('narrow permission builder freezes the reviewed tool and choice without creating a document edit', (t) => {
+  const f = fixture();
+  t.after(f.close);
+  const before = delta(f.doc),
+    review = f.reviews[0]!,
+    input = {
+      scope,
+      read: f.raw,
+      review,
+      outcome: { outcome: 'selected' as const, optionId: 'allow' },
+      operationId: 'original',
+    },
+    request = buildRespondPermission(input);
+  assert.equal(request.requestId, review.requestId);
+  assert.equal(request.permissionReview.assistantTurnId, review.assistantTurnId);
+  assert.equal(request.permissionReview.itemJson, review.itemJson);
+  assert.deepEqual(request.outcome, input.outcome);
+  assert.equal('update' in request, false);
+  assert.equal(delta(f.doc), before);
+  const prepared = prepareSessionIntent(
+    f.doc,
+    f.flock,
+    f.raw.meta,
+    workspace,
+    { kind: 'respond-permission', value: request },
+    '2026-01-01T00:00:00.000Z',
+  );
+  const expected = structuredClone(f.read.history);
+  (expected[1]!.items![0] as any).permissionRequest.outcome = request.outcome;
+  const view = mirror(prepared.doc, scope.sessionId);
+  assert.deepEqual(view.getState().history, expected);
+  assert.equal(prepared.flock, f.flock);
+  view.dispose();
+  prepared.doc.free();
+  assert.equal(delta(f.doc), before);
+  const changed = fixture((state) => {
+    state.history[1].items[0].rawInput.content = 'changed after review';
+  });
+  t.after(changed.close);
+  assert.throws(() => buildRespondPermission({ ...input, read: changed.raw }), /已改变/);
+  assert.throws(
+    () => buildRespondPermission({ ...input, outcome: { outcome: 'selected', optionId: 'other' } }),
+    /选项/,
+  );
+});
 
 for (const outcome of [
   { outcome: 'selected', optionId: 'allow' },

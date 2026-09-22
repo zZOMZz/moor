@@ -1,14 +1,16 @@
+import { hostCommandContracts, matchHostCommandRoute } from '@moor/protocol/host-command-contract';
+import { forwardReplicaCommand } from './replica-command';
 import { hostCommandSchema } from '@moor/protocol/host-command';
 import { validateHostResponse } from '@moor/protocol/host-response';
-import { SESSION_PAGE_FEATURE, sessionPageRequestSchema } from '@moor/protocol/session-page';
-import { GIT_OPERATIONS_FEATURE, gitOperationSchema } from '@moor/protocol/git-protocol';
-import { FORK_OPERATIONS_FEATURE, forkOperationSchema } from '@moor/protocol/fork-protocol';
+import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+
 import {
   RETIRED_RECORDS_FEATURE,
   RETIRED_SESSION_FEATURE,
   HOST_UPGRADE_REQUIRED,
 } from '@moor/protocol/connection-authority';
-import { AGENT_CONTROLS_FEATURE, AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
+
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { serveStatic } from './static';
@@ -32,31 +34,13 @@ import {
 import {
   AppError,
   assert,
-  agentSchema,
-  AGENT_MODEL_OPTIONS_FEATURE,
   helloSchema,
   id,
   mutationSchema,
   sessionActionSchema,
 } from '@moor/protocol/protocol';
 import type { RuntimeWorkspace } from '@moor/protocol/protocol';
-import { publicAgentFailure } from '@moor/protocol/agent-errors';
-import {
-  SESSION_TASKS_FEATURE,
-  TASK_LIMITS,
-  taskReadSchema,
-  taskActionSchema,
-  validateTaskReadResult,
-  validateTaskActionResult,
-} from '@moor/protocol/task-protocol';
-import {
-  SESSION_CONTROL_FEATURE,
-  SESSION_CONTROL_LIMITS,
-  sessionControlActionSchema,
-  sessionOperationSchema,
-  validateSessionControlReceipt,
-  validateSessionOperationResult,
-} from '@moor/protocol/session-control-protocol';
+
 import { sessionBase64Schema, sessionCancelSchema } from '@moor/protocol/session-responses';
 import {
   workspaceInputSchema,
@@ -75,6 +59,7 @@ import {
   actorSchema,
   attentionContextSchema,
   attentionContinueSchema,
+  attentionContinueInput,
   attentionDispositionSchema,
   attentionListQuerySchema,
   attentionPermissionSchema,
@@ -93,100 +78,12 @@ import {
   collaborationSyncRequestSchema,
   validateCollaborationSyncResponse,
 } from '@moor/protocol/collaboration-protocol';
-import {
-  FILE_CONTENT_FEATURE,
-  projectFileReadSchema,
-  projectFileResultSchema,
-} from '@moor/protocol/content-protocol';
-import {
-  ATTACHMENTS_FEATURE,
-  attachmentActionSchema,
-  attachmentReadSchema,
-  attachmentReceiptSchema,
-  attachmentContentSchema,
-} from '@moor/protocol/attachment-protocol';
-import {
-  PROJECT_TREE_FEATURE,
-  PROJECT_DIFF_FEATURE,
-  projectTreeReadSchema,
-  projectTreeResultSchema,
-  projectTurnDiffReadSchema,
-  projectTurnDiffResultSchema,
-  projectDiffFileReadSchema,
-  projectDiffFileResultSchema,
-} from '@moor/protocol/project-content-protocol';
-import {
-  QUESTIONS_FEATURE,
-  STEER_FEATURE,
-  questionAnswerSchema,
-  questionReceiptSchema,
-  steerRequestSchema,
-  steerReceiptSchema,
-} from '@moor/protocol/interaction-protocol';
-import {
-  SESSION_SEARCH_FEATURE,
-  sessionSearchRequestSchema,
-  sessionSearchResultSchema,
-} from '@moor/protocol/search-protocol';
-import {
-  GIT_WORKTREE_FEATURE,
-  gitStateReadSchema,
-  gitStateResultSchema,
-  gitActionSchema,
-  gitActionReceiptSchema,
-} from '@moor/protocol/git-protocol';
-import {
-  SESSION_FORK_FEATURE,
-  forkOptionsReadSchema,
-  forkOptionsResultSchema,
-  sessionForkSchema,
-  forkReceiptSchema,
-} from '@moor/protocol/fork-protocol';
-import {
-  GITHUB_FEATURE,
-  githubReadSchema,
-  githubReadResultSchema,
-  githubActionSchema,
-  githubReceiptSchema,
-} from '@moor/protocol/github-protocol';
-import {
-  GITHUB_WRITE_FEATURE,
-  githubWriteReadSchema,
-  githubWriteReadResultSchema,
-  githubWriteActionSchema,
-  githubWriteInspectSchema,
-  githubWriteAbandonSchema,
-  githubWriteReceiptSchema,
-} from '@moor/protocol/github-write-protocol';
-import {
-  PREVIEW_FEATURE,
-  previewReadSchema,
-  previewReadResultSchema,
-  previewActionSchema,
-  previewInspectSchema,
-  previewCloseSchema,
-  previewReceiptSchema,
-} from '@moor/protocol/preview-protocol';
-import {
-  SKILLS_FEATURE,
-  skillsReadSchema,
-  validateSkillsRead,
-} from '@moor/protocol/skills-protocol';
-import {
-  ROLE_FEATURE,
-  ROLE_LIMITS,
-  rolesReadSchema,
-  rolesActionRequestSchema,
-  validateRolesRead,
-  validateRoleReceipt,
-  validateRolesInspect,
-} from '@moor/protocol/role-protocol';
-import {
-  MCP_FEATURE,
-  MCP_LIMITS,
-  mcpReadSchema,
-  validateMcpRead,
-} from '@moor/protocol/mcp-protocol';
+
+import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
+
+import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
+
+import { MCP_FEATURE } from '@moor/protocol/mcp-protocol';
 import { GoogleAuth } from './google-auth';
 import type { GoogleOidcProvider } from './google-auth';
 export function createApp(
@@ -446,38 +343,7 @@ export function createApp(
     for (const [id, pending] of commands)
       if (
         pending.device === device &&
-        ([
-          'file-content',
-          'read-attachment',
-          'read-project-tree',
-          'read-turn-diff',
-          'read-diff-file',
-          'search-sessions',
-          'git-state',
-          'git-operations',
-          'fork-options',
-          'fork-operations',
-          'github-read',
-          'github-write-read',
-          'preview-read',
-          'skills-read',
-          'roles-read',
-          'mcp-read',
-          'roles-action',
-          'agent-options',
-          'agent-usage',
-          'run-preferences',
-          'sessions',
-          'sessions-page',
-          'session',
-          'mutate',
-          'session-action',
-          'cancel',
-          'session-control',
-          'session-operations',
-          'tasks-read',
-          'tasks-action',
-        ].includes(pending.method) ||
+        (Object.hasOwn(hostCommandContracts, pending.method) ||
           pending.method.startsWith('attention-')) &&
         (!socket || pending.socket === socket)
       ) {
@@ -576,16 +442,19 @@ export function createApp(
     try {
       const url = new URL(req.url ?? '/', origin),
         path = url.pathname;
+      const pathParts = path.split('/').filter(Boolean);
+      const replicaCommand =
+        pathParts[0] === 'api' &&
+        pathParts[1] === 'workspaces' &&
+        pathParts[2] &&
+        pathParts[3] === 'replicas' &&
+        pathParts[4]
+          ? matchHostCommandRoute(req.method, pathParts.slice(5))
+          : undefined;
       scopedActionRequest =
-        req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:(git|fork|github|github-write|preview)\/action|github\/abandon)$/.test(
-          path,
-        );
+        !!replicaCommand && hostCommandContracts[replicaCommand].delivery === 'action';
       scopedRecoveryRequest =
-        req.method === 'POST' &&
-        /^\/api\/workspaces\/[^/]+\/replicas\/[^/]+\/(?:github-write\/(inspect|abandon)|preview\/(inspect|close))$/.test(
-          path,
-        );
+        !!replicaCommand && hostCommandContracts[replicaCommand].delivery === 'recovery';
       if (path.startsWith('/api/security/trust/')) {
         if (!req.readableEnded && !req.destroyed) req.resume();
         return json(res, 410, { error: '端到端加密与信任分发入口已退场；原数据保持不变。' });
@@ -867,6 +736,11 @@ export function createApp(
         const current = (feature?: string) => {
           assert(!closing, 409, '执行服务正在关闭');
           assert(store.owner(cookie(req)) === owner, 401, '请先登录');
+          assert(
+            online(deviceId) && bridges.get(deviceId)?.socket === socket,
+            409,
+            '执行主机连接已变化，请核查原操作',
+          );
           const device = store.device(owner!, deviceId);
           const active = bridges.get(deviceId)?.workspaces.find((w) => w.id === snapshot.id);
           const projects = (w: RuntimeWorkspace) =>
@@ -890,6 +764,7 @@ export function createApp(
               409,
               '会话请求的项目归属已变化，请重新读取',
             );
+          return active;
         };
         current();
         return { deviceId, runtime: snapshot, current };
@@ -1271,6 +1146,7 @@ export function createApp(
             const attentionSecret = cookie(req),
               attentionGeneration = attentionOriginGeneration,
               attentionSocket = bridges.get(host.device_id)?.socket;
+            let continueFeature = RETIRED_RECORDS_FEATURE;
             const currentAttention = (method: string) => {
               assert(
                 !closing && server.listening && attentionOriginGeneration === attentionGeneration,
@@ -1290,7 +1166,7 @@ export function createApp(
                   runtime.features?.includes(ACTOR_FEATURE) &&
                   (method !== 'attention-continue' ||
                     (runtime.features?.includes(FOLLOWUP_FEATURE) &&
-                      runtime.features.includes(RETIRED_RECORDS_FEATURE))),
+                      runtime.features.includes(continueFeature))),
                 409,
                 '待办请求所属执行连接已变化，请重新读取',
               );
@@ -1386,9 +1262,20 @@ export function createApp(
                   );
                   method = 'attention-continue';
                   const followup = attentionContinueSchema.parse(await body(req));
+                  const turn = attentionContinueInput(followup);
+                  if ('turn' in followup) {
+                    continueFeature = SESSION_INTENTS_FEATURE;
+                    assert(
+                      followup.turn.userId === runtime.userId &&
+                        followup.turn.machineId === runtime.machineId &&
+                        followup.turn.localProjectId === context.localProjectId,
+                      400,
+                      '后续指令与原事项执行身份不匹配',
+                    );
+                  }
                   assert(
-                    followup.mutation.workspaceId === context.runtimeWorkspaceId &&
-                      followup.mutation.sessionId === context.sessionId,
+                    turn.workspaceId === context.runtimeWorkspaceId &&
+                      turn.sessionId === context.sessionId,
                     400,
                     '后续指令与原事项执行目标不匹配',
                   );
@@ -1401,1460 +1288,45 @@ export function createApp(
             }
             return await respondAttention(method, { itemId, input });
           }
-          const retainedMethod =
-            parts.length === 6 && ['tasks-read', 'tasks-action'].includes(parts[5] ?? '')
-              ? (parts[5] as 'tasks-read' | 'tasks-action')
-              : parts.length === 7 &&
-                  parts[5] === 'roles' &&
-                  ['read', 'action'].includes(parts[6] ?? '')
-                ? parts[6] === 'read'
-                  ? 'roles-read'
-                  : 'roles-action'
-                : parts.length === 7 && parts[5] === 'preview' && parts[6] === 'inspect'
-                  ? 'preview-inspect'
-                  : parts.length === 7 && parts[5] === 'mcp' && parts[6] === 'read'
-                    ? 'mcp-read'
-                    : undefined;
-          if (
-            parts.length === 7 &&
-            parts[5] === 'preview' &&
-            ['read', 'action', 'close'].includes(parts[6] ?? '') &&
-            req.method === 'POST'
-          )
-            throw new AppError(410, RETIRED_SESSION_FEATURE);
-          if (retainedMethod && req.method === 'POST') {
-            const limit = retainedMethod.startsWith('tasks-')
-              ? TASK_LIMITS.requestBytes
-              : retainedMethod.startsWith('roles-')
-                ? ROLE_LIMITS.requestBytes
-                : retainedMethod === 'mcp-read'
-                  ? MCP_LIMITS.requestBytes
-                  : 32 * 1024;
-            const command = hostCommandSchema.parse({
-              method: retainedMethod,
-              workspaceId: host.runtime_id,
-              localProjectId: replica.local_id,
-              params: await body(req, limit),
-            });
-            if (
-              (command.method === 'roles-action' || command.method === 'tasks-action') &&
-              command.params.action !== 'inspect'
-            )
-              throw new AppError(410, RETIRED_SESSION_FEATURE);
-            scopedRecoveryRequest = true;
-            const original = 'request' in command.params ? command.params.request : command.params;
-            const scoped = z
-              .object({ workspaceId: id, localProjectId: id, sessionId: id })
-              .parse(original);
-            assert(
-              scoped.workspaceId === host.runtime_id && scoped.localProjectId === replica.local_id,
-              400,
-              '历史核查与项目副本不匹配',
-            );
-            const boundary = sessionBoundary(host.device_id, runtime!, replica.local_id, () => {
-              assert(
-                isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
-                409,
-                '历史核查的副本已变化',
-              );
-            });
-            const current = () => boundary.current(RETIRED_RECORDS_FEATURE);
-            current();
-            let raw: unknown;
-            try {
-              raw = await request(
-                host.device_id,
-                command.method,
-                host.runtime_id,
-                command.params,
-                replica.local_id,
-                owner!,
-              );
-            } catch (error) {
-              current();
-              throw new AppError(
-                error instanceof AppError &&
-                  [400, 401, 403, 404, 409, 410, 413, 429, 504].includes(error.status)
-                  ? error.status
-                  : 502,
-                '历史记录读取未能确认，请保留原记录后核查',
-                false,
-              );
-            }
-            current();
-            const result = await validateHostResponse(raw, {
-              command,
-              workspace: boundary.runtime,
-              current,
-            });
-            current();
-            return json(res, 200, result);
-          }
-
-          if (
-            parts[5] === 'skills' &&
-            parts[6] === 'read' &&
-            parts.length === 7 &&
-            req.method === 'POST'
-          ) {
-            const input = skillsReadSchema.parse(await body(req, 16 * 1024));
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              'Skills 请求与项目副本不匹配',
-            );
-            assert(runtime, 409, '执行电脑暂时不可用');
-            assert(runtime.features?.includes(SKILLS_FEATURE), 409, '请先升级执行电脑上的 Moor');
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const current = () => {
-              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-              store.device(owner!, host.device_id);
-              const r = store.catalog.replica(owner!, workspaceId, replica.id);
-              const w = bridges
-                .get(host.device_id)
-                ?.workspaces.find((w) => w.id === input.workspaceId);
-              assert(
-                r.host.device_id === host.device_id &&
-                  r.host.runtime_id === input.workspaceId &&
-                  r.local_id === input.localProjectId &&
-                  r.project_id === replica.project_id &&
-                  online(host.device_id) &&
-                  bridges.get(host.device_id)?.socket === requestSocket &&
-                  w?.userId === runtime.userId &&
-                  w?.machineId === runtime.machineId &&
-                  w.features?.includes(SKILLS_FEATURE) &&
-                  w.projects.some((p) => p.id === input.localProjectId),
-                409,
-                'Skills 请求的执行范围已变化，请重新读取',
-              );
-            };
-            current();
-            let raw: unknown, failed: { error: unknown } | undefined;
-            try {
-              raw = await request(
-                host.device_id,
-                'skills-read',
-                host.runtime_id,
-                input,
-                replica.local_id,
-              );
-            } catch (error) {
-              failed = { error };
-            }
-            current();
-            if (failed) throw failed.error;
-            assert(
-              Buffer.byteLength(JSON.stringify(raw) ?? '') <= 4 * 1024 * 1024,
-              502,
-              'Skills 响应超过限制',
-            );
-            let result;
-            try {
-              result = validateSkillsRead(raw, input);
-            } catch {
-              throw new AppError(502, '执行电脑返回的 Skills 响应不可验证');
-            }
-            if (result.view === 'detail')
-              assert(
-                result.skill.version ===
-                  'sha256:' + createHash('sha256').update(result.text, 'utf8').digest('hex'),
-                502,
-                'Skill 正文摘要不匹配',
-              );
-            return json(res, 200, result);
-          }
-
-          if (
-            parts[5] === 'github-write' &&
-            ['read', 'action', 'inspect', 'abandon'].includes(parts[6] ?? '') &&
-            parts.length === 7 &&
-            req.method === 'POST'
-          ) {
-            const kind = parts[6]!,
-              value = await body(req, kind === 'read' ? 3 * 1024 * 1024 : 256 * 1024);
-            const readInput = kind === 'read' ? githubWriteReadSchema.parse(value) : undefined;
-            const inspected =
-              kind === 'inspect' ? githubWriteInspectSchema.parse(value) : undefined;
-            const abandoned =
-              kind === 'abandon' ? githubWriteAbandonSchema.parse(value) : undefined;
-            const actionInput =
-              kind === 'action'
-                ? githubWriteActionSchema.parse(value)
-                : (inspected?.request ?? abandoned?.request);
-            const input = readInput ?? actionInput!;
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              'GitHub 写入请求与项目副本不匹配',
-            );
-            assert(runtime, 409, '执行电脑暂时不可用');
-            assert(
-              runtime.features?.includes(GITHUB_WRITE_FEATURE),
-              409,
-              '请先升级执行电脑上的 Moor',
-            );
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const current = () => {
-              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-              store.device(owner!, host.device_id);
-              const r = store.catalog.replica(owner!, workspaceId, replica.id);
-              const w = bridges
-                .get(host.device_id)
-                ?.workspaces.find((w) => w.id === input.workspaceId);
-              assert(
-                r.host.device_id === host.device_id &&
-                  r.host.runtime_id === input.workspaceId &&
-                  r.local_id === input.localProjectId &&
-                  r.project_id === replica.project_id &&
-                  online(host.device_id) &&
-                  bridges.get(host.device_id)?.socket === requestSocket &&
-                  w?.userId === runtime.userId &&
-                  w?.machineId === runtime.machineId &&
-                  w.features?.includes(GITHUB_WRITE_FEATURE) &&
-                  w.projects.some((p) => p.id === input.localProjectId),
-                409,
-                'GitHub 写入请求的执行范围已变化，请重新读取',
-              );
-            };
-            current();
-            scopedActionDispatched = kind === 'action';
-            let raw: unknown, failed: { error: unknown } | undefined;
-            try {
-              raw = await request(
-                host.device_id,
-                'github-write-' + kind,
-                host.runtime_id,
-                readInput ?? inspected ?? abandoned ?? actionInput,
-                replica.local_id,
-              );
-            } catch (error) {
-              failed = { error };
-            }
-            current();
-            if (failed) throw failed.error;
-            if (readInput) {
-              const parsed = githubWriteReadResultSchema.safeParse(raw);
-              assert(parsed.success, 502, '执行电脑返回的 GitHub 写入预览不可验证');
-              const result = parsed.data;
-              assert(
-                Buffer.byteLength(JSON.stringify(result)) <= 3 * 1024 * 1024,
-                502,
-                'GitHub 写入预览超过限制',
-              );
-              assert(
-                result.workspaceId === input.workspaceId &&
-                  result.localProjectId === input.localProjectId &&
-                  result.sessionId === input.sessionId &&
-                  result.view === readInput.view,
-                502,
-                'GitHub 写入预览范围不匹配',
-              );
-              if ('repositoryId' in readInput)
-                assert(
-                  'repository' in result &&
-                    result.repository?.id === readInput.repositoryId &&
-                    result.configVersion === readInput.configVersion,
-                  502,
-                  'GitHub 仓库或授权版本不匹配',
-                );
-              if ('page' in readInput)
-                assert(
-                  'result' in result && result.result.page === readInput.page,
-                  502,
-                  'GitHub 写入分页不匹配',
-                );
-              if (readInput.view === 'files' || readInput.view === 'review-comments')
-                assert(
-                  'number' in result &&
-                    result.number === readInput.number &&
-                    result.headSha === readInput.headSha &&
-                    result.baseSha === readInput.baseSha,
-                  502,
-                  'GitHub 审阅预览不属于当前 PR 提交',
-                );
-              if (readInput.view === 'push-preview')
-                assert(
-                  result.view === 'push-preview' &&
-                    result.branch === readInput.branch &&
-                    result.headOid === readInput.headOid,
-                  502,
-                  'GitHub 推送预览不属于所选本地分支',
-                );
-              if (readInput.view === 'commit-preview')
-                assert(
-                  result.view === 'commit-preview' &&
-                    result.files.length === readInput.paths.length &&
-                    new Set(result.files.map((file) => file.path)).size === result.files.length &&
-                    result.files.every((file) => readInput.paths.includes(file.path)),
-                  502,
-                  'Git 提交预览包含未选择的文件',
-                );
-              return json(res, 200, result);
-            }
-            const parsed = githubWriteReceiptSchema.safeParse(raw);
-            assert(parsed.success, 502, '执行电脑返回的 GitHub 写入回执不可验证');
-            const result = parsed.data;
-            assert(
-              Buffer.byteLength(JSON.stringify(result)) <= 16 * 1024,
-              502,
-              'GitHub 写入回执超过限制',
-            );
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId &&
-                result.operationId === actionInput!.operationId &&
-                result.action === actionInput!.action &&
-                result.requestVersion ===
-                  'sha256:' +
-                    createHash('sha256').update(JSON.stringify(actionInput!)).digest('hex'),
-              502,
-              'GitHub 写入回执不属于原操作',
-            );
-            if ('number' in actionInput! && result.result?.number !== undefined)
-              assert(result.result.number === actionInput.number, 502, 'GitHub 写入回执编号不匹配');
-            if (actionInput!.action === 'push' && result.result?.sha !== undefined)
-              assert(result.result.sha === actionInput!.headOid, 502, 'GitHub 推送回执提交不匹配');
-            return json(res, 200, result);
-          }
-          if (
-            parts[5] === 'github' &&
-            ['read', 'action', 'abandon'].includes(parts[6] ?? '') &&
-            parts.length === 7 &&
-            req.method === 'POST'
-          ) {
-            const action = parts[6] !== 'read',
-              value = await body(req, 16 * 1024);
-            const actionInput = action ? githubActionSchema.parse(value) : undefined;
-            const readInput = action ? undefined : githubReadSchema.parse(value);
-            const input = actionInput ?? readInput!;
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              'GitHub 请求与项目副本不匹配',
-            );
-            assert(runtime, 409, '执行电脑暂时不可用');
-            assert(runtime.features?.includes(GITHUB_FEATURE), 409, '请先升级执行电脑上的 Moor');
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const current = () => {
-              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-              store.device(owner!, host.device_id);
-              const r = store.catalog.replica(owner!, workspaceId, replica.id);
-              const w = bridges
-                .get(host.device_id)
-                ?.workspaces.find((w) => w.id === input.workspaceId);
-              assert(
-                r.host.device_id === host.device_id &&
-                  r.host.runtime_id === input.workspaceId &&
-                  r.local_id === input.localProjectId &&
-                  online(host.device_id) &&
-                  bridges.get(host.device_id)?.socket === requestSocket &&
-                  w?.userId === runtime.userId &&
-                  w?.machineId === runtime.machineId &&
-                  w.features?.includes(GITHUB_FEATURE) &&
-                  w.projects.some((p) => p.id === input.localProjectId),
-                409,
-                'GitHub 请求的执行范围已变化，请重新读取',
-              );
-            };
-            current();
-            scopedActionDispatched = action;
-            let raw: unknown, failed: { error: unknown } | undefined;
-            try {
-              raw = await request(
-                host.device_id,
-                'github-' + parts[6],
-                host.runtime_id,
-                input,
-                replica.local_id,
-              );
-            } catch (error) {
-              failed = { error };
-            }
-            current();
-            if (failed) throw failed.error;
-            const parsed = action
-              ? githubReceiptSchema.safeParse(raw)
-              : githubReadResultSchema.safeParse(raw);
-            assert(parsed.success, 502, '执行电脑返回的 GitHub 内容不可验证');
-            const result = parsed.data;
-            assert(
-              Buffer.byteLength(JSON.stringify(result)) <= 2 * 1024 * 1024,
-              502,
-              'GitHub 内容超过限制',
-            );
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId,
-              502,
-              'GitHub 响应范围不匹配',
-            );
-            if (actionInput) {
-              assert(
-                'operationId' in result &&
-                  result.operationId === actionInput.operationId &&
-                  result.binding.revision ===
-                    actionInput.expectedRevision +
-                      ('abandoned' in result && result.abandoned ? 0 : 1),
-                502,
-                'GitHub 绑定确认不属于原操作',
-              );
-              if ('abandoned' in result && result.abandoned) {
-                assert(!result.binding.context, 502, '未执行确认不能包含 GitHub 上下文');
-              } else if (actionInput.action === 'unbind')
-                assert(
-                  !result.binding.context && !('redacted' in result && result.redacted),
-                  502,
-                  'GitHub 解绑尚未确认',
-                );
-              else if (!('redacted' in result && result.redacted))
-                assert(
-                  result.binding.context?.repository.id === actionInput.repositoryId &&
-                    result.binding.context.branch === actionInput.branch &&
-                    JSON.stringify(result.binding.context.subject) ===
-                      JSON.stringify(actionInput.subject),
-                  502,
-                  'GitHub 绑定确认与所选上下文不匹配',
-                );
-            } else {
-              assert(
-                'view' in result && result.view === readInput!.view,
-                502,
-                'GitHub 响应类型不匹配',
-              );
-              if (readInput!.view !== 'overview')
-                assert(
-                  'repository' in result &&
-                    result.repository?.id === readInput!.repositoryId &&
-                    result.configVersion === readInput!.configVersion,
-                  502,
-                  'GitHub 仓库或授权版本不匹配',
-                );
-              if ('page' in readInput!) {
-                assert(
-                  ('result' in result && result.result.page === readInput!.page) ||
-                    ('checks' in result &&
-                      result.checks.page === readInput!.page &&
-                      result.statuses.page === readInput!.page),
-                  502,
-                  'GitHub 分页响应不匹配',
-                );
-              }
-              if (readInput!.view === 'issues' || readInput!.view === 'pulls')
-                assert(
-                  'state' in result &&
-                    result.state === readInput!.state &&
-                    'result' in result &&
-                    result.result.items.every(
-                      (item) =>
-                        'kind' in item &&
-                        item.kind === (readInput!.view === 'issues' ? 'issue' : 'pull'),
-                    ),
-                  502,
-                  'GitHub 列表类型或筛选状态不匹配',
-                );
-              if (readInput!.view === 'issue' || readInput!.view === 'pull') {
-                assert(
-                  'item' in result && result.item.number === readInput!.number,
-                  502,
-                  'GitHub 上下文编号不匹配',
-                );
-                if ('item' in result && result.item.kind === 'pull')
-                  assert(
-                    result.item.base.repository.id === result.repository.id,
-                    502,
-                    'PR 不属于已登记仓库',
-                  );
-              }
-              if (readInput!.view === 'comments')
-                assert(
-                  'subject' in result &&
-                    result.subject === readInput!.subject &&
-                    result.number === readInput!.number,
-                  502,
-                  'GitHub 评论范围不匹配',
-                );
-              if (readInput!.view === 'checks')
-                assert(
-                  'checks' in result &&
-                    result.number === readInput!.number &&
-                    result.headSha === readInput!.headSha,
-                  502,
-                  'CI 不属于当前 PR 提交',
-                );
-            }
-            return json(res, 200, result);
-          }
-          if (
-            ['git', 'fork'].includes(parts[5] ?? '') &&
-            parts[6] === 'operations' &&
-            parts.length === 7 &&
-            req.method === 'POST'
-          ) {
-            scopedRecoveryRequest = true;
-            const feature = parts[5] === 'git' ? GIT_OPERATIONS_FEATURE : FORK_OPERATIONS_FEATURE;
+          if (replicaCommand) {
             const boundary = sessionBoundary(host.device_id, runtime, replica.local_id, () => {
               assert(
                 isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
                 409,
-                '原操作的项目副本已变化',
+                '请求的项目副本已变化，请核查原操作',
               );
             });
-            boundary.current(feature);
-            const value = await body(req, 16 * 1024);
-            const input =
-              parts[5] === 'git'
-                ? gitOperationSchema.parse(value)
-                : forkOperationSchema.parse(value);
-            assert(
-              input.request.workspaceId === runtime.id &&
-                input.request.localProjectId === replica.local_id,
-              400,
-              '原操作与项目副本不匹配',
-            );
-            const command = hostCommandSchema.parse({
-              method: parts[5] === 'git' ? 'git-operations' : 'fork-operations',
-              workspaceId: runtime.id,
-              localProjectId: replica.local_id,
-              params: input,
-            });
-            boundary.current(feature);
-            let raw: unknown;
-            try {
-              raw = await request(
-                host.device_id,
-                command.method,
-                runtime.id,
-                input,
-                replica.local_id,
-                owner!,
-              );
-            } catch {
-              boundary.current(feature);
-              throw new AppError(502, '原操作核查结果未确认，请保留原请求后手动继续', false);
-            }
-            boundary.current(feature);
-            const result = await validateHostResponse(raw, {
-              command,
-              workspace: boundary.runtime,
-              current: () => boundary.current(feature),
-            });
-            boundary.current(feature);
-            return json(res, 200, result);
-          }
-          if (
-            parts[5] === 'fork' &&
-            ['options', 'action'].includes(parts[6] ?? '') &&
-            parts.length === 7 &&
-            req.method === 'POST'
-          ) {
-            assert(runtime, 409, '执行主机不可用');
-            const action = parts[6] === 'action';
-            const value = await body(req, 16 * 1024);
-            const actionInput = action ? sessionForkSchema.parse(value) : undefined;
-            const input = actionInput ?? forkOptionsReadSchema.parse(value);
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              'Fork 请求与项目副本不匹配',
-            );
-            assert(
-              runtime.features?.includes(SESSION_FORK_FEATURE),
-              409,
-              '请先升级执行电脑上的 Moor',
-            );
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            // Authentication can expire while the request body is being read.
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            store.device(owner!, host.device_id);
-            const dispatchReplica = store.catalog.replica(owner!, workspaceId, replica.id);
-            const dispatchRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === input.workspaceId);
-            assert(
-              dispatchReplica.host.device_id === host.device_id &&
-                dispatchReplica.host.runtime_id === input.workspaceId &&
-                dispatchReplica.local_id === input.localProjectId &&
-                dispatchRuntime?.userId === runtime.userId &&
-                dispatchRuntime?.machineId === runtime.machineId &&
-                dispatchRuntime.features?.includes(SESSION_FORK_FEATURE) &&
-                dispatchRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              'Fork 请求的执行范围已变化',
-            );
-            scopedActionDispatched = action;
-            let raw: unknown, rpcError: { cause: unknown } | undefined;
-            try {
-              raw = await request(
-                host.device_id,
-                action ? 'fork-action' : 'fork-options',
-                host.runtime_id,
-                input,
-                replica.local_id,
-              );
-            } catch (cause) {
-              rpcError = { cause };
-            }
-            // A lost receipt after native Fork started is never proof of rejection.
-            // Host errors may also contain private data: reauthorize both outcomes.
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            store.device(owner!, host.device_id);
-            const currentReplica = store.catalog.replica(owner!, workspaceId, replica.id);
-            const currentRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === input.workspaceId);
-            assert(
-              currentReplica.host.device_id === host.device_id &&
-                currentReplica.host.runtime_id === input.workspaceId &&
-                currentReplica.local_id === input.localProjectId &&
-                online(host.device_id) &&
-                bridges.get(host.device_id)?.socket === requestSocket &&
-                currentRuntime?.userId === runtime.userId &&
-                currentRuntime?.machineId === runtime.machineId &&
-                currentRuntime.features?.includes(SESSION_FORK_FEATURE) &&
-                currentRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              'Fork 请求的执行目标已变化，请手动确认原操作',
-            );
-            if (rpcError) throw rpcError.cause;
-            const parsed = action
-              ? forkReceiptSchema.safeParse(raw)
-              : forkOptionsResultSchema.safeParse(raw);
-            assert(parsed.success, 502, '执行主机返回的 Fork 结果格式无效');
-            const result = parsed.data;
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId &&
-                Buffer.byteLength(JSON.stringify(result)) <= 2 * 1024 * 1024,
-              502,
-              '执行主机返回的 Fork 结果与请求不匹配',
-            );
-            if (actionInput) {
-              assert(
-                'operationId' in result &&
-                  result.operationId === actionInput.operationId &&
-                  result.childSessionId === actionInput.childSessionId,
-                502,
-                'Fork 操作或子会话确认不匹配',
-              );
-              if (result.origin) {
-                assert(
-                  result.origin.sourceSessionId === actionInput.sessionId &&
-                    result.origin.sourceVersion === actionInput.expectedSourceVersion &&
-                    JSON.stringify(result.origin.cutoff) === JSON.stringify(actionInput.cutoff) &&
-                    result.origin.directory === actionInput.directory.kind,
-                  502,
-                  'Fork 来源或历史截止点不匹配',
-                );
-              }
-              if (result.phase === 'accepted') {
-                const execution = result.execution!;
-                assert(
-                  actionInput.directory.kind === 'worktree'
-                    ? execution.mode === 'worktree' &&
-                        execution.revision === 1 &&
-                        execution.branch === actionInput.directory.newBranch &&
-                        execution.baseOid === actionInput.directory.expectedOid &&
-                        result.origin?.branch === actionInput.directory.newBranch &&
-                        result.origin?.baseOid === actionInput.directory.expectedOid
-                    : execution.revision === actionInput.expectedExecutionRevision &&
-                        execution.mode ===
-                          (actionInput.expectedExecutionRevision === 0 ? 'shared' : 'worktree'),
-                  502,
-                  'Fork 确认的工作目录与原请求不匹配',
-                );
-              }
-            } else if ('turnId' in input && input.turnId) {
-              assert(
-                'turns' in result &&
-                  result.turns.length === 1 &&
-                  result.turns[0]?.turnId === input.turnId,
-                502,
-                'Fork 选项不属于所选回合',
-              );
-            }
-            return json(res, 200, result);
-          }
-          if (
-            parts[5] === 'git' &&
-            ['state', 'action'].includes(parts[6] ?? '') &&
-            parts.length === 7 &&
-            req.method === 'POST'
-          ) {
-            const action = parts[6] === 'action';
-            try {
-              assert(runtime, 409, '执行主机不可用');
-              const value = await body(req, 16 * 1024);
-              const actionInput = action ? gitActionSchema.parse(value) : undefined;
-              const input = actionInput ?? gitStateReadSchema.parse(value);
-              assert(
-                input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-                400,
-                'Git 请求与项目副本不匹配',
-              );
-              assert(
-                runtime.features?.includes(GIT_WORKTREE_FEATURE),
-                409,
-                '请先升级执行电脑上的 Moor',
-              );
-              const requestSocket = bridges.get(host.device_id)?.socket;
-              // Reading even a small request body yields. Recheck authorization
-              // before starting a filesystem operation, as well as on its reply.
-              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-              store.device(owner!, host.device_id);
-              const dispatchReplica = store.catalog.replica(owner!, workspaceId, replica.id);
-              const dispatchRuntime = bridges
-                .get(host.device_id)
-                ?.workspaces.find((w) => w.id === input.workspaceId);
-              assert(
-                dispatchReplica.host.device_id === host.device_id &&
-                  dispatchReplica.host.runtime_id === input.workspaceId &&
-                  dispatchReplica.local_id === input.localProjectId &&
-                  dispatchRuntime?.userId === runtime.userId &&
-                  dispatchRuntime?.machineId === runtime.machineId &&
-                  dispatchRuntime?.features?.includes(GIT_WORKTREE_FEATURE) &&
-                  dispatchRuntime.projects.some((p) => p.id === input.localProjectId),
-                409,
-                'Git 请求的执行范围已变化',
-              );
-              scopedActionDispatched = action;
-              let raw: unknown, rpcError: { cause: unknown } | undefined;
-              try {
-                raw = await request(
-                  host.device_id,
-                  action ? 'git-action' : 'git-state',
-                  host.runtime_id,
-                  input,
-                  replica.local_id,
-                );
-              } catch (cause) {
-                rpcError = { cause };
-              }
-              // A Git operation can finish after logout or regrouping. Returning
-              // no receipt here must never be interpreted as "Git did not run".
-              // Apply the same scope checks before exposing an RPC error message.
-              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-              store.device(owner!, host.device_id);
-              const current = store.catalog.replica(owner!, workspaceId, replica.id);
-              const currentRuntime = bridges
-                .get(host.device_id)
-                ?.workspaces.find((w) => w.id === host.runtime_id);
-              assert(
-                current.host.device_id === host.device_id &&
-                  current.host.runtime_id === input.workspaceId &&
-                  current.local_id === input.localProjectId &&
-                  online(host.device_id) &&
-                  bridges.get(host.device_id)?.socket === requestSocket &&
-                  currentRuntime?.userId === runtime.userId &&
-                  currentRuntime?.machineId === runtime.machineId &&
-                  currentRuntime?.features?.includes(GIT_WORKTREE_FEATURE) &&
-                  currentRuntime.projects.some((p) => p.id === input.localProjectId),
-                409,
-                'Git 请求的执行目标已变化，请手动确认原操作',
-              );
-              if (rpcError) throw rpcError.cause;
-              const parsed = action
-                ? gitActionReceiptSchema.safeParse(raw)
-                : gitStateResultSchema.safeParse(raw);
-              assert(parsed.success, 502, '执行主机返回的 Git 结果格式无效');
-              const result = parsed.data;
-              assert(
-                result.workspaceId === input.workspaceId &&
-                  result.localProjectId === input.localProjectId &&
-                  result.sessionId === input.sessionId &&
-                  Buffer.byteLength(JSON.stringify(result)) <= 2 * 1024 * 1024,
-                502,
-                '执行主机返回的 Git 结果与请求不匹配',
-              );
-              if (actionInput) {
-                assert(
-                  'operationId' in result && result.operationId === actionInput.operationId,
-                  502,
-                  'Git 操作确认编号不匹配',
-                );
-                if (result.phase === 'accepted') {
-                  assert(
-                    result.execution.revision === actionInput.expectedRevision + 1 &&
-                      result.execution.mode === 'worktree',
-                    502,
-                    'Git 操作确认版本不匹配',
-                  );
-                  assert(
-                    actionInput.action === 'prepare'
-                      ? result.execution.status === 'ready' &&
-                          result.execution.branch === actionInput.newBranch &&
-                          result.execution.baseOid === actionInput.expectedOid
-                      : result.execution.status === 'removed' &&
-                          result.execution.executionId === actionInput.executionId &&
-                          (actionInput.action === 'detach'
-                            ? result.execution.disposition === 'detached'
-                            : result.execution.disposition !== 'detached'),
-                    502,
-                    'Git 操作确认目标不匹配',
-                  );
-                }
-              }
-              return json(res, 200, result);
-            } catch (error) {
-              if (action && !scopedActionDispatched) {
-                if (error instanceof AppError)
-                  throw new AppError(error.status, error.message, true);
-                if (error instanceof z.ZodError) throw new AppError(400, 'Git 操作参数无效', true);
-              }
-              throw error;
-            }
-          }
-          if (
-            ['agent-options', 'agent-usage', 'run-preferences'].includes(parts[5]!) &&
-            parts.length === 6 &&
-            req.method === 'POST'
-          ) {
-            const command = hostCommandSchema.parse({
-              method: parts[5],
-              workspaceId: host.runtime_id,
-              localProjectId: replica.local_id,
-              params: await body(req, 4096),
-            });
-            assert(
-              command.method === 'agent-options' ||
-                command.method === 'agent-usage' ||
-                command.method === 'run-preferences',
-              400,
-              'Agent 设置请求无效',
-            );
-            const input = command.params;
-            assert(runtime, 409, '执行电脑暂时不可用');
-            assert(
-              command.method !== 'agent-options' ||
-                !command.params.modelId ||
-                runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE),
-              409,
-              '执行主机尚不支持模型配置探测，请升级主机',
-            );
-            assert(
-              command.method === 'agent-options' ||
-                runtime.features?.includes(AGENT_CONTROLS_FEATURE),
-              409,
-              '执行主机尚不支持此设置，请升级主机',
-            );
-            assert(
-              command.method !== 'run-preferences' ||
-                (command.params.action !== 'read-defaults' &&
-                  command.params.action !== 'save-defaults') ||
-                runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE),
-              409,
-              '执行主机尚不支持模型默认值，请升级主机',
-            );
-            const selectedAgent = runtime.agents.find((agent) => agent.id === input.agentId);
-            if (!input.sessionId) assert(selectedAgent, 404, 'Agent 配置不可用');
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const current = () => {
-              assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-              store.device(owner!, host.device_id);
-              const currentReplica = store.catalog.replica(owner!, workspaceId, replica.id);
-              const currentRuntime = bridges
-                .get(host.device_id)
-                ?.workspaces.find((workspace) => workspace.id === host.runtime_id);
-              assert(
-                currentReplica.host.device_id === host.device_id &&
-                  currentReplica.host.runtime_id === host.runtime_id &&
-                  currentReplica.local_id === replica.local_id &&
-                  currentReplica.project_id === replica.project_id &&
-                  online(host.device_id) &&
-                  bridges.get(host.device_id)?.socket === requestSocket &&
-                  currentRuntime?.userId === runtime.userId &&
-                  currentRuntime?.machineId === runtime.machineId &&
-                  currentRuntime.projects.some((project) => project.id === replica.local_id),
-                409,
-                'Agent 能力请求的执行范围已变化，请重新读取',
-              );
-              const currentAgent = currentRuntime.agents.find(
-                (agent) => agent.id === input.agentId,
-              );
-              if (!input.sessionId) assert(currentAgent, 409, 'Agent 配置已变化，请重新读取');
-              return currentAgent;
-            };
-            current();
-            let raw: unknown, failed: { error: unknown } | undefined;
-            try {
-              raw = await request(
-                host.device_id,
-                command.method,
-                host.runtime_id,
-                input,
-                replica.local_id,
-              );
-            } catch (error) {
-              failed = { error };
-            }
-            const currentAgent = current();
-            if (failed) {
-              const status =
-                failed.error instanceof AppError &&
-                [400, 403, 404, 409, 413, 429, 504].includes(failed.error.status)
-                  ? failed.error.status
-                  : 502;
-              throw new AppError(
-                status,
-                publicAgentFailure(
-                  failed.error,
-                  'Agent 能力暂时不可读取，请重新读取会话或检查执行电脑',
-                ),
-              );
-            }
-            assert(
-              Buffer.byteLength(JSON.stringify(raw) ?? '') <= 16 * 1024 * 1024,
-              502,
-              '执行电脑返回的 Agent 能力超过限制',
-            );
-            if (command.method !== 'agent-options')
-              return json(
-                res,
-                200,
-                await validateHostResponse(raw, { command, workspace: runtime, current }),
-              );
-            // The public schema strips host-only launch options, including nested
-            // unknown capability fields. Errors never forward raw ACP diagnostics.
-            const parsed = agentSchema.safeParse(raw);
-            assert(parsed.success, 502, '执行电脑返回的 Agent 能力不可验证');
-            const result = parsed.data;
-            assert(
-              !runtime.features?.includes(AGENT_MODEL_OPTIONS_FEATURE) ||
-                (result.capabilityContext && result.runConfig),
-              502,
-              'Agent 能力响应缺少执行范围',
-            );
-            if (result.capabilityContext) {
-              const observed = result.capabilityContext;
-              assert(
-                observed.workspaceId === runtime.id &&
-                  observed.userId === runtime.userId &&
-                  observed.machineId === runtime.machineId &&
-                  observed.localProjectId === replica.local_id &&
-                  observed.sessionId === input.sessionId,
-                502,
-                'Agent 能力响应的执行范围不匹配',
-              );
-            }
-            assert(
-              result.id === input.agentId &&
-                [selectedAgent, currentAgent].every(
-                  (agent) =>
-                    !agent ||
-                    (agent.cliType === result.cliType && agent.agentType === result.agentType),
-                ),
-              502,
-              'Agent 能力响应与请求版本不匹配',
-            );
-            return json(res, 200, result);
-          }
-          if (
-            ['session-control', 'session-operations'].includes(parts[5] ?? '') &&
-            parts.length === 6 &&
-            req.method === 'POST'
-          ) {
-            const recovering = parts[5] === 'session-operations';
-            if (recovering) scopedRecoveryRequest = true;
-            const boundary = sessionBoundary(host.device_id, runtime!, replica.local_id, () => {
-              assert(
-                isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
-                409,
-                '会话请求的项目副本已变化',
-              );
-            });
-            const value = await body(req, SESSION_CONTROL_LIMITS.requestBytes);
-            const action = recovering ? undefined : sessionControlActionSchema.parse(value);
-            const recovery = recovering ? sessionOperationSchema.parse(value) : undefined;
-            const input = action ?? recovery!;
-            assert(
-              input.workspaceId === host.runtime_id &&
-                input.localProjectId === replica.local_id &&
-                input.userId === runtime!.userId &&
-                input.machineId === runtime!.machineId,
-              400,
-              '会话操作与执行范围不匹配',
-            );
-            boundary.current(SESSION_CONTROL_FEATURE);
-            let raw: unknown, failed: { error: unknown } | undefined;
-            try {
-              raw = await request(
-                host.device_id,
-                parts[5]!,
-                host.runtime_id,
-                input,
-                replica.local_id,
-              );
-            } catch (error) {
-              failed = { error };
-            }
-            boundary.current(SESSION_CONTROL_FEATURE);
-            if (failed) {
-              const error = failed.error;
-              throw new AppError(
-                error instanceof AppError &&
-                  [400, 401, 403, 404, 409, 413, 429, 504].includes(error.status)
-                  ? error.status
-                  : 502,
-                '会话操作未能确认，请手动查询原操作',
-                !recovering && error instanceof AppError && error.rejected,
-              );
-            }
-            assert(
-              Buffer.byteLength(JSON.stringify(raw) ?? '') <= SESSION_CONTROL_LIMITS.responseBytes,
-              502,
-              '会话操作响应超过限制',
-            );
-            let result;
-            try {
-              result = recovery
-                ? validateSessionOperationResult(raw, recovery)
-                : validateSessionControlReceipt(raw, input, { kind: 'control', value: action! });
-            } catch {
-              throw new AppError(502, '会话操作响应与原请求不匹配');
-            }
-            return json(res, 200, result);
-          }
-
-          const sessionRoute = [
-            'sessions',
-            'sessions-page',
-            'mutations',
-            'session-actions',
-            'cancel',
-          ].includes(parts[5] ?? '');
-          if (sessionRoute) {
-            const boundary = sessionBoundary(host.device_id, runtime!, replica.local_id, () => {
-              assert(
-                isDeepStrictEqual(store.catalog.replica(owner!, workspaceId, replica.id), replica),
-                409,
-                '会话请求的项目副本已变化',
-              );
-            });
-            if (parts[5] === 'sessions-page' && parts.length === 6 && req.method === 'POST') {
-              const input = sessionPageRequestSchema.parse(await body(req));
-              assert(
-                input.workspaceId === runtime.id && input.localProjectId === replica.local_id,
-                400,
-                '会话分页范围不匹配',
-              );
-              return json(
-                res,
-                200,
-                await sessionResponse(boundary, 'sessions-page', input, replica.local_id),
-              );
-            }
-            if (parts[5] === 'sessions' && [6, 7].includes(parts.length) && req.method === 'GET') {
-              const input = parts.length === 7 ? readSessionInput(parts[6]!) : {};
-              return json(
-                res,
-                200,
-                await sessionResponse(
-                  boundary,
-                  parts.length === 7 ? 'session' : 'sessions',
-                  input,
-                  replica.local_id,
-                ),
-              );
-            }
-            if (parts[5] === 'mutations' && parts.length === 6 && req.method === 'POST') {
-              const mutation = mutationSchema.strict().parse(await body(req));
-              assert(mutation.workspaceId === host.runtime_id, 400, '本地工作区不匹配');
-              return json(
-                res,
-                200,
-                await sessionResponse(boundary, 'mutate', mutation, replica.local_id),
-              );
-            }
-            if (parts[5] === 'session-actions' && parts.length === 6 && req.method === 'POST') {
-              const action = sessionActionSchema.parse(await body(req, 4096));
-              assert(
-                action.workspaceId === host.runtime_id &&
-                  action.localProjectId === replica.local_id,
-                400,
-                '会话操作与项目副本不匹配',
-              );
-              return json(
-                res,
-                200,
-                await sessionResponse(boundary, 'session-action', action, replica.local_id),
-              );
-            }
-            if (parts[5] === 'cancel' && parts.length === 6 && req.method === 'POST') {
-              const input = sessionCancelSchema.parse(await body(req, 4096));
-              return json(
-                res,
-                200,
-                await sessionResponse(boundary, 'cancel', input, replica.local_id),
-              );
-            }
-          }
-          if (parts[5] === 'file-content' && parts.length === 6 && req.method === 'POST') {
-            const input = projectFileReadSchema.parse(await body(req, 16 * 1024));
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              '文件请求与项目副本不匹配',
-            );
-            assert(
-              runtime?.features?.includes(FILE_CONTENT_FEATURE),
-              409,
-              '请先升级执行电脑上的 Moor',
-            );
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const response = projectFileResultSchema.safeParse(
-              await request(
-                host.device_id,
-                'file-content',
-                host.runtime_id,
-                input,
-                replica.local_id,
+            return json(
+              res,
+              200,
+              await forwardReplicaCommand(
+                {
+                  method: replicaCommand,
+                  segments: parts.slice(5),
+                  query: url.searchParams,
+                  body: (limit) => body(req, limit),
+                },
+                {
+                  catalogWorkspaceId: workspaceId,
+                  runtimeWorkspaceId: host.runtime_id,
+                  localProjectId: replica.local_id,
+                  workspace: boundary.runtime,
+                  current: boundary.current,
+                  dispatch: (command) =>
+                    request(
+                      host.device_id,
+                      command.method,
+                      command.workspaceId,
+                      command.params,
+                      command.localProjectId,
+                      owner!,
+                    ),
+                  dispatched: () => {
+                    scopedActionDispatched = true;
+                  },
+                },
               ),
             );
-            // Reads can remain in flight while the user moves a host or signs
-            // out. Recheck the original delivery scope before returning bytes.
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            const current = store.catalog.replica(owner!, workspaceId, replica.id);
-            assert(
-              current.host.device_id === host.device_id &&
-                current.host.runtime_id === input.workspaceId &&
-                current.local_id === input.localProjectId,
-              409,
-              '文件请求的执行目标已变更',
-            );
-            const currentRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === host.runtime_id);
-            assert(
-              online(host.device_id) &&
-                bridges.get(host.device_id)?.socket === requestSocket &&
-                currentRuntime?.features?.includes(FILE_CONTENT_FEATURE) &&
-                currentRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              '项目副本离线或已从主机移除',
-            );
-            assert(response.success, 502, '执行主机返回的文件内容格式无效');
-            const result = response.data;
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId &&
-                result.path === input.path &&
-                (result.status !== 'not-modified' || input.knownVersion === result.content.version),
-              502,
-              '执行主机返回的文件内容与请求不匹配',
-            );
-            return json(res, 200, result);
-          }
-          if (
-            req.method === 'POST' &&
-            ((parts[5] === 'attachment-actions' && parts.length === 6) ||
-              (parts[5] === 'attachments' && parts[6] === 'read' && parts.length === 7))
-          ) {
-            const action = parts[5] === 'attachment-actions';
-            const input = action
-              ? attachmentActionSchema.parse(await body(req, 12 * 1024 * 1024))
-              : attachmentReadSchema.parse(await body(req, 16 * 1024));
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              '附件请求与项目副本不匹配',
-            );
-            assert(
-              runtime?.features?.includes(ATTACHMENTS_FEATURE),
-              409,
-              '请先升级执行电脑上的 Moor',
-            );
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const raw = await request(
-              host.device_id,
-              action ? 'attachment-action' : 'read-attachment',
-              host.runtime_id,
-              input,
-              replica.local_id,
-            );
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            const current = store.catalog.replica(owner!, workspaceId, replica.id);
-            assert(
-              current.host.device_id === host.device_id &&
-                current.host.runtime_id === input.workspaceId &&
-                current.local_id === input.localProjectId,
-              409,
-              '附件请求的执行目标已变更',
-            );
-            const currentRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === input.workspaceId);
-            assert(
-              online(host.device_id) &&
-                bridges.get(host.device_id)?.socket === requestSocket &&
-                currentRuntime?.features?.includes(ATTACHMENTS_FEATURE) &&
-                currentRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              '执行主机已不可达，请手动确认附件',
-            );
-            const parsed = action
-              ? attachmentReceiptSchema.safeParse(raw)
-              : attachmentContentSchema.safeParse(raw);
-            assert(parsed.success, 502, '执行主机返回的附件确认无效');
-            const result = parsed.data;
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId,
-              502,
-              '附件响应与请求范围不匹配',
-            );
-            if ('action' in input) {
-              assert(
-                'operationId' in result && result.operationId === input.operationId,
-                502,
-                '附件响应的操作编号不匹配',
-              );
-              if (input.action === 'upload')
-                assert(
-                  isDeepStrictEqual(result.attachment, input.attachment),
-                  502,
-                  '附件确认与上传内容不匹配',
-                );
-              else assert('removed' in result && result.removed === true, 502, '附件移除尚未确认');
-            } else
-              assert(
-                result.attachment?.attachmentId === input.attachmentId,
-                502,
-                '附件响应与请求不匹配',
-              );
-            return json(res, 200, result);
-          }
-          if (
-            req.method === 'POST' &&
-            parts.length === 6 &&
-            ['project-tree', 'turn-diff', 'diff-file'].includes(parts[5]!)
-          ) {
-            const route = parts[5]!;
-            const feature = route === 'project-tree' ? PROJECT_TREE_FEATURE : PROJECT_DIFF_FEATURE;
-            const payload = await body(req, 16 * 1024);
-            const input =
-              route === 'project-tree'
-                ? projectTreeReadSchema.parse(payload)
-                : route === 'turn-diff'
-                  ? projectTurnDiffReadSchema.parse(payload)
-                  : projectDiffFileReadSchema.parse(payload);
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              '文件请求与项目副本不匹配',
-            );
-            assert(runtime?.features?.includes(feature), 409, '请先升级执行电脑上的 Moor');
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const method =
-              route === 'project-tree'
-                ? 'read-project-tree'
-                : route === 'turn-diff'
-                  ? 'read-turn-diff'
-                  : 'read-diff-file';
-            const raw = await request(
-              host.device_id,
-              method,
-              host.runtime_id,
-              input,
-              replica.local_id,
-            );
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            const current = store.catalog.replica(owner!, workspaceId, replica.id);
-            assert(
-              current.host.device_id === host.device_id &&
-                current.host.runtime_id === input.workspaceId &&
-                current.local_id === input.localProjectId,
-              409,
-              '文件请求的执行目标已变更',
-            );
-            const currentRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === input.workspaceId);
-            assert(
-              online(host.device_id) &&
-                bridges.get(host.device_id)?.socket === requestSocket &&
-                currentRuntime?.features?.includes(feature) &&
-                currentRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              '执行主机已不可达，请重新读取文件',
-            );
-            const parsed =
-              route === 'project-tree'
-                ? projectTreeResultSchema.safeParse(raw)
-                : route === 'turn-diff'
-                  ? projectTurnDiffResultSchema.safeParse(raw)
-                  : projectDiffFileResultSchema.safeParse(raw);
-            assert(parsed.success, 502, '执行主机返回的文件内容格式无效');
-            const result = parsed.data;
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId,
-              502,
-              '文件响应与请求范围不匹配',
-            );
-            if ('turnId' in input) {
-              assert(
-                'turnId' in result && result.turnId === input.turnId,
-                502,
-                '变更响应不属于请求的回合',
-              );
-              if (result.reference)
-                assert(result.reference.turnId === input.turnId, 502, '变更引用不属于请求的回合');
-              if ('path' in input) {
-                const fileInput = projectDiffFileReadSchema.parse(input);
-                assert(
-                  'path' in result && result.path === input.path,
-                  502,
-                  '变更响应不属于请求的文件',
-                );
-                assert(
-                  !fileInput.knownVersion || result.reference.version === fileInput.knownVersion,
-                  502,
-                  '变更响应不属于请求的历史版本',
-                );
-              }
-            } else {
-              assert(
-                'entries' in result &&
-                  result.offset === (input.offset ?? 0) &&
-                  result.entries.length <= (input.limit ?? 200),
-                502,
-                '文件树分页与请求不匹配',
-              );
-              assert(
-                !input.knownVersion || result.version === input.knownVersion,
-                502,
-                '文件树版本与请求不匹配',
-              );
-            }
-            return json(res, 200, result);
-          }
-          if (
-            req.method === 'POST' &&
-            parts.length === 6 &&
-            ['question-answers', 'steer'].includes(parts[5]!)
-          ) {
-            const question = parts[5] === 'question-answers';
-            const feature = question ? QUESTIONS_FEATURE : STEER_FEATURE;
-            const input = question
-              ? questionAnswerSchema.parse(await body(req, 2 * 1024 * 1024))
-              : steerRequestSchema.parse(await body(req, 128 * 1024));
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              '交互请求与项目副本不匹配',
-            );
-            assert(
-              runtime?.features?.includes(feature),
-              409,
-              '执行电脑尚未支持此交互，请更新 Moor',
-            );
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const raw = await request(
-              host.device_id,
-              question ? 'answer-question' : 'steer',
-              host.runtime_id,
-              input,
-              replica.local_id,
-            );
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            const current = store.catalog.replica(owner!, workspaceId, replica.id);
-            const currentRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === input.workspaceId);
-            assert(
-              current.host.device_id === host.device_id &&
-                current.host.runtime_id === input.workspaceId &&
-                current.local_id === input.localProjectId &&
-                online(host.device_id) &&
-                bridges.get(host.device_id)?.socket === requestSocket &&
-                currentRuntime?.features?.includes(feature) &&
-                currentRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              '交互执行目标已变化，结果待主机确认',
-            );
-            const parsed = question
-              ? questionReceiptSchema.safeParse(raw)
-              : steerReceiptSchema.safeParse(raw);
-            assert(parsed.success, 502, '主机尚未返回有效的交互确认');
-            const result = parsed.data;
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId &&
-                result.expectedTurnId === input.expectedTurnId &&
-                result.operationId === input.operationId,
-              502,
-              '交互确认与原请求不匹配',
-            );
-            if ('requestId' in input)
-              assert(
-                'requestId' in result && result.requestId === input.requestId,
-                502,
-                '问答确认不属于原请求',
-              );
-            return json(res, 200, result);
-          }
-          if (req.method === 'POST' && parts.length === 6 && parts[5] === 'session-search') {
-            const input = sessionSearchRequestSchema.parse(await body(req, 8 * 1024));
-            assert(
-              input.workspaceId === host.runtime_id && input.localProjectId === replica.local_id,
-              400,
-              '搜索请求与项目副本不匹配',
-            );
-            assert(
-              runtime?.features?.includes(SESSION_SEARCH_FEATURE),
-              409,
-              '执行电脑尚未支持正文搜索，请更新 Moor',
-            );
-            const requestSocket = bridges.get(host.device_id)?.socket;
-            const raw = await request(
-              host.device_id,
-              'search-sessions',
-              host.runtime_id,
-              input,
-              replica.local_id,
-            );
-            assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-            const current = store.catalog.replica(owner!, workspaceId, replica.id);
-            const currentRuntime = bridges
-              .get(host.device_id)
-              ?.workspaces.find((w) => w.id === input.workspaceId);
-            assert(
-              current.host.device_id === host.device_id &&
-                current.host.runtime_id === input.workspaceId &&
-                current.local_id === input.localProjectId &&
-                online(host.device_id) &&
-                bridges.get(host.device_id)?.socket === requestSocket &&
-                currentRuntime?.features?.includes(SESSION_SEARCH_FEATURE) &&
-                currentRuntime.projects.some((p) => p.id === input.localProjectId),
-              409,
-              '搜索执行目标已变化，请重新搜索',
-            );
-            const parsed = sessionSearchResultSchema.safeParse(raw);
-            assert(parsed.success, 502, '主机返回的搜索结果格式无效');
-            const result = parsed.data;
-            assert(
-              result.workspaceId === input.workspaceId &&
-                result.localProjectId === input.localProjectId &&
-                result.sessionId === input.sessionId &&
-                result.scope === input.scope &&
-                result.query === input.query &&
-                result.hits.length <= input.limit,
-              502,
-              '搜索响应与请求不匹配',
-            );
-            if (input.scope === 'session')
-              assert(
-                result.hits.every((hit) => hit.sessionId === input.sessionId),
-                502,
-                '搜索结果超出当前会话',
-              );
-            return json(res, 200, result);
           }
         }
       }
