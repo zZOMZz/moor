@@ -19,7 +19,6 @@
     "test": "pnpm --filter @moor/app-relay... run build && node ../../scripts/validation/test.mjs apps/relay"
   },
   "dependencies": {
-    "@moor/e2ee": "workspace:*",
     "@moor/gateway": "workspace:*",
     "@moor/protocol": "workspace:*",
     "jose": "6.2.12",

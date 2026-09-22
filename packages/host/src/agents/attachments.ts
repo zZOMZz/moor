@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   isPrivateEndpointEnvelope,
   isPrivateEndpointEnvelopeValue,
-} from '@moor/e2ee/private-content';
+} from '@moor/protocol/private-content';
 import {
   CONTENT_LIMITS,
   attachmentReferenceSchema,

@@ -1,10 +1,10 @@
 import * as fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { acquireRuntimeLock } from './exclusive-lock';
-import { PRIVATE_ENDPOINT_FILE_FORMAT } from '../private-content';
+import { acquireRuntimeLock } from '@moor/protocol/node/exclusive-lock';
+import { PRIVATE_ENDPOINT_FILE_FORMAT } from '@moor/protocol/private-content';
 
-export { PRIVATE_ENDPOINT_FILE_FORMAT } from '../private-content';
+export { PRIVATE_ENDPOINT_FILE_FORMAT } from '@moor/protocol/private-content';
 
 export const PRIVATE_ENDPOINT_FILE_MAX_BYTES = 1024 * 1024;
 export const PRIVATE_ENDPOINT_FILE_FAILED = '本机私有配置操作失败';

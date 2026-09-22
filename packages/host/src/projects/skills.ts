@@ -4,7 +4,7 @@ import { lstat, open, opendir } from 'node:fs/promises';
 import { basename, isAbsolute, join, parse, resolve } from 'node:path';
 import { projectFilePathSchema } from '@moor/protocol/content-protocol';
 import { AppError, assert } from '@moor/protocol/protocol';
-import { isPrivateEndpointEnvelope } from '@moor/e2ee/private-content';
+import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
 import {
   SKILLS_LIMITS,
   skillSourceSchema,

@@ -1,7 +1,7 @@
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-// A separate database holds an OS-backed exclusive lock for this host's lifetime.
+// A separate database holds an OS-backed exclusive lock for its owner's lifetime.
 // SQLite releases it on process death; recovery never deletes another owner's lock.
 export function acquireRuntimeLock(file: string) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });

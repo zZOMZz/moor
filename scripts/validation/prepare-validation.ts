@@ -1,6 +1,6 @@
 // Explicitly prepare isolated synthetic data while the host is stopped.
 import { resolve } from 'node:path';
-import { acquireRuntimeLock } from '@moor/e2ee/node/exclusive-lock';
+import { acquireRuntimeLock } from '@moor/protocol/node/exclusive-lock';
 import { RuntimeStore } from '@moor/host/persistence/store';
 const [database, project] = process.argv.slice(2);
 if (!database || !project)

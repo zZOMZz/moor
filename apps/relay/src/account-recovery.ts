@@ -2,7 +2,7 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { Store } from '@moor/gateway/accounts';
-import { acquireRuntimeLock } from '@moor/e2ee/node/exclusive-lock';
+import { acquireRuntimeLock } from '@moor/protocol/node/exclusive-lock';
 
 export const ACCOUNT_RECOVERY_SUCCESS = '账号密码已恢复；旧登录和配对码已失效。';
 export const ACCOUNT_RECOVERY_FAILED =

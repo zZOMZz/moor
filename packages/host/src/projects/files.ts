@@ -4,7 +4,7 @@ import { lstat, open } from 'node:fs/promises';
 import { isAbsolute, join, parse, resolve } from 'node:path';
 import { CONTENT_LIMITS, projectFilePathSchema } from '@moor/protocol/content-protocol';
 import { AppError, assert } from '@moor/protocol/protocol';
-import { isPrivateEndpointEnvelope } from '@moor/e2ee/private-content';
+import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
 
 type Checkpoint = 'directories-checked' | 'opened' | 'before-read' | 'after-read';
 export type ProjectFileReadOptions = {
