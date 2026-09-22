@@ -16,8 +16,11 @@ export type SecureStorageBackend = {
   read(key: string): Promise<unknown>;
   exclusive<T>(key: string, current: () => void, task: () => Promise<T>): Promise<T>;
   compareAndSet(key: string, expected: unknown, value: unknown, current: () => void): Promise<void>;
+  /** All comparisons and writes commit together, or none of them do. */
+  compareAndSetMany?(changes: StorageChange[], current: () => void): Promise<void>;
   close?(): void;
 };
+export type StorageChange = { key: string; expected: unknown; value: unknown };
 const authoritySchema = secureTargetSchema
   .pick({
     origin: true,
@@ -141,8 +144,16 @@ export class IndexedSecureStorage implements SecureStorageBackend {
     });
   }
   async compareAndSet(key: string, expected: unknown, value: unknown, current: () => void) {
-    const snapshot = structuredClone(value),
-      original = canonical(expected);
+    return this.compareAndSetMany([{ key, expected, value }], current);
+  }
+  async compareAndSetMany(changes: StorageChange[], current: () => void) {
+    if (new Set(changes.map(({ key }) => key)).size !== changes.length)
+      throw Error('本机事务包含重复记录。');
+    const snapshots = changes.map(({ key, expected, value }) => ({
+      key,
+      original: canonical(expected),
+      value: structuredClone(value),
+    }));
     const db = await this.#open();
     current();
     if (this.#closed) throw Error('加密本机存储已关闭。');
@@ -154,23 +165,36 @@ export class IndexedSecureStorage implements SecureStorageBackend {
         failure = error;
         transaction.abort();
       };
-      const request = store.get(key);
-      request.onsuccess = () => {
+      let remaining = snapshots.length;
+      const writeAll = () => {
         try {
           current();
-          if (canonical(request.result) !== original) throw Error(CONFLICT);
-          const write = store.put(snapshot, key);
-          write.onsuccess = () => {
-            try {
-              current();
-            } catch (error) {
-              abort(error);
-            }
-          };
+          for (const snapshot of snapshots) {
+            const write = store.put(snapshot.value, snapshot.key);
+            write.onsuccess = () => {
+              try {
+                current();
+              } catch (error) {
+                abort(error);
+              }
+            };
+          }
         } catch (error) {
           abort(error);
         }
       };
+      for (const snapshot of snapshots) {
+        const request = store.get(snapshot.key);
+        request.onsuccess = () => {
+          try {
+            current();
+            if (canonical(request.result) !== snapshot.original) throw Error(CONFLICT);
+            if (--remaining === 0) writeAll();
+          } catch (error) {
+            abort(error);
+          }
+        };
+      }
       transaction.oncomplete = () => {
         try {
           current();

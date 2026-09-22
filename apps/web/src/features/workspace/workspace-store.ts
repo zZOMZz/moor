@@ -1,4 +1,5 @@
 import { actorSchema, type AttentionActor } from '@moor/protocol/attention';
+import { WorkspaceRecords, workspaceRecordHeadSchema } from './workspace-records';
 import {
   attentionScopeKey,
   pendingAttentionSchema,
@@ -131,7 +132,7 @@ const ledgerSchema = z
     version: z.literal(1),
     scope: scopeSchema,
     revision: z.number().int().nonnegative().safe(),
-    operations: z.array(operationSchema).max(512),
+    operations: z.array(operationSchema),
     attachments: z.record(workspaceAttachmentDraftSchema).optional(),
     interactions: z.record(interactionDocumentSchema).optional(),
     mcp: z.record(mcpStoredSchema).optional(),
@@ -148,8 +149,16 @@ const ledgerSchema = z
   })
   .strict();
 export type WorkspaceLedger = z.infer<typeof ledgerSchema>;
+export function sessionPendingOperations(ledger: WorkspaceLedger | undefined, sessionId: string) {
+  return (
+    ledger?.operations.filter(
+      (entry) => entry.status === 'pending' && entry.original.value.sessionId === sessionId,
+    ) ?? []
+  );
+}
 const storedLedgerSchema = ledgerSchema
   .extend({
+    operations: z.array(operationSchema).max(512),
     // Version 1 originally mixed recoverable composer drafts into the reliable
     // operation ledger. Keep this field readable only long enough to migrate it.
     drafts: z.record(draftSchema).optional(),
@@ -174,11 +183,28 @@ export class WorkspaceStore {
       databaseName: 'moor-desktop-workspace-v1',
     }),
   ) {}
-  async read(scope: WorkspaceScope, current: () => void): Promise<WorkspaceLedger> {
+  get records() {
+    return new WorkspaceRecords(this.backend);
+  }
+  async read(
+    scope: WorkspaceScope,
+    current: () => void,
+    sessionIds?: string | readonly string[],
+  ): Promise<WorkspaceLedger> {
     const normalized = scopeSchema.parse(scope);
     current();
     const raw = await this.backend.read(keyFor(normalized));
     current();
+    if (raw && typeof raw === 'object' && 'version' in raw && raw.version === 2) {
+      const loaded = await this.records.load(
+        normalized,
+        raw,
+        current,
+        typeof sessionIds === 'string' ? [sessionIds] : sessionIds,
+      );
+      const value = ledgerSchema.parse(loaded.ledger);
+      return this.#validateLedger(value, normalized, current);
+    }
     const retired = ['legacy', 'legacyDrafts', 'legacyDraftSlots', 'legacyRevisions'];
     const hasRetired =
       raw !== null && typeof raw === 'object' && retired.some((key) => Object.hasOwn(raw, key));
@@ -205,6 +231,22 @@ export class WorkspaceStore {
       current();
     }
     return value;
+  }
+  async operation(scope: WorkspaceScope, operationId: string, current: () => void) {
+    const normalized = scopeSchema.parse(scope);
+    const raw = await this.backend.read(keyFor(normalized));
+    current();
+    const value =
+      raw && typeof raw === 'object' && 'version' in raw && raw.version === 2
+        ? await this.records.operation(normalized, operationId, current)
+        : (await this.read(normalized, current)).operations.find(
+            (entry) => entry.original.value.operationId === operationId,
+          );
+    if (value === undefined) return undefined;
+    const operation = operationSchema.parse(value);
+    this.#validateOriginal(normalized, operation.original);
+    if (operation.original.value.operationId !== operationId) throw conflict();
+    return operation;
   }
   async #migrateDraft(
     scope: WorkspaceScope,
@@ -262,7 +304,10 @@ export class WorkspaceStore {
           entry.draft?.sessionId === sessionId &&
           entry.draft.revision === draft.revision,
       );
-      if (!confirmed) return draft;
+      const confirmedRevision = confirmed
+        ? draft.revision
+        : await this.records.confirmedDraft(normalized, sessionId, current);
+      if (confirmedRevision !== draft.revision) return draft;
       try {
         draft = await this.clearDraft(normalized, sessionId, draft.revision, current);
       } catch {
@@ -406,19 +451,30 @@ export class WorkspaceStore {
   async #change<T>(
     scope: WorkspaceScope,
     current: () => void,
+    sessionIds: readonly string[],
     task: (value: WorkspaceLedger) => T | Promise<T>,
+    operationIds: readonly string[] = [],
   ): Promise<T> {
     const key = keyFor(scope);
     return this.backend.exclusive(key, current, async () => {
-      const before = await this.read(scope, current);
+      let raw = await this.backend.read(key);
+      current();
+      const loaded = workspaceRecordHeadSchema.safeParse(raw).success
+        ? await this.records.load(scope, raw, current, sessionIds, operationIds)
+        : undefined;
+      const before = loaded ? ledgerSchema.parse(loaded.ledger) : await this.read(scope, current);
+      if (loaded) await this.#validateLedger(before, scope, current);
+      else {
+        // read may have moved embedded drafts to their independent records.
+        raw = await this.backend.read(key);
+        current();
+      }
       const value = structuredClone(before);
       const result = await task(value);
       value.revision++;
       ledgerSchema.parse(value);
-      if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 256 * 1024 * 1024)
-        throw Error('本机可靠操作存储已满，请先处理待确认操作。');
       current();
-      await this.backend.compareAndSet(key, before.revision === 0 ? null : before, value, current);
+      await this.records.commit(scope, raw, before, value, current, loaded);
       current();
       return result;
     });
@@ -536,145 +592,153 @@ export class WorkspaceStore {
       throw Error('MCP 授权只能用于已审阅的新指令。');
     const requestVersion =
       original.kind === 'mutation' && draft ? await mutationVersion(original.value) : undefined;
-    return this.#change(scope, current, (state) => {
-      const found = state.operations.find(
-        (operation) => operation.original.value.operationId === original.value.operationId,
-      );
-      if (found) {
-        if (
-          !same(found.original, original) ||
-          !same(found.draft ?? null, draft ?? null) ||
-          !same(found.mcpReview ?? null, mcpReview ?? null) ||
-          !same(found.annotations ?? null, annotations ?? null) ||
-          !same(found.taskReview ?? null, taskReview ?? null)
-        )
-          throw conflict();
-        return structuredClone(found);
-      }
-      if (
-        draft &&
-        state.operations.some(
-          (item) =>
-            item.status === 'pending' && item.original.value.sessionId === original.value.sessionId,
-        )
-      )
-        throw Error('请先核查此会话尚未确认的原操作。');
-      if (draft && draft.sessionId !== original.value.sessionId) throw conflict();
-      if (
-        original.kind === 'metadata' &&
-        state.operations.some(
-          (entry) =>
-            entry.status === 'pending' &&
-            entry.original.kind === 'metadata' &&
-            entry.original.value.sessionId === original.value.sessionId,
-        )
-      )
-        throw Error('请先核查原会话整理操作。');
-      if (draft) {
-        const tasks = state.tasks?.[draft.sessionId];
-        if (
-          (tasks?.cacheRevision ?? 0) !== (draft.taskRevision ?? 0) ||
-          tasks?.delivery ||
-          tasks?.pending ||
-          (!plainTurn && !same(tasks?.enabled ?? null, taskReview ?? null))
-        )
-          throw Error('任务计划已改变或原任务操作尚未确认，请重新读取。');
-        if (taskReview) {
-          if (!tasks || !requestVersion) throw conflict();
-          tasks.delivery = {
-            operationId: original.value.operationId,
-            review: structuredClone(taskReview),
-            requestVersion,
-          };
-          tasks.cacheRevision++;
-        }
-        const savedAnnotations = state.annotations?.[draft.sessionId];
-        const selection = (savedAnnotations?.annotations ?? [])
-          .filter((item) => item.selectionId)
-          .map((item) => ({ id: item.id, version: item.version, selectionId: item.selectionId }));
-        if (
-          (savedAnnotations?.cacheRevision ?? 0) !== (draft.annotationRevision ?? 0) ||
-          (!plainTurn && !same(selection, annotations?.selection ?? []))
-        )
-          throw Error('标注草稿已改变，请重新读取后发送。');
-        if (this.forkBlocked(state, draft.sessionId))
-          throw Error('请先核查原 Fork，源会话和预留副本不能发送新指令。');
-        if (this.attentionBlocked(state, draft.sessionId))
-          throw Error('请先核查原待办指令或审批。');
-        if (this.githubBlocked(state, draft.sessionId))
-          throw Error('请先核查 GitHub 原绑定、提交或推送，再发送新指令。');
-        if (state.git?.[draft.sessionId]?.pending)
-          throw Error('请先确认原 Git 操作，再发送新指令。');
-        if (state.interactions?.[draft.sessionId]?.value.pending)
-          throw Error('请先核查原会话交互，不能发送新的指令。');
-        const mcp = state.mcp?.[draft.sessionId];
-        if (
-          (mcp?.cacheRevision ?? 0) !== (draft.mcpRevision ?? 0) ||
-          mcp?.delivery ||
-          (!plainTurn && !same(mcpReview ?? null, mcp?.review?.servers.length ? mcp.review : null))
-        )
-          throw Error('MCP 草稿已改变或原授权尚未确认，请重新读取。');
-        if (mcpReview) {
-          if (!mcp || !requestVersion) throw conflict();
-          mcp.delivery = {
-            operationId: original.value.operationId,
-            review: structuredClone(mcpReview),
-            requestVersion,
-          };
-          mcp.cacheRevision++;
-        }
-        const attachments = state.attachments?.[draft.sessionId] ?? emptyWorkspaceAttachments();
-        if (
-          (draft.attachmentRevision ?? 0) !== attachments.revision ||
-          attachments.items.some((item) => !item.uploaded || item.pending)
-        )
-          throw Error('附件草稿已改变或尚未上传，请重新读取后继续。');
-      }
-      if (
-        draft &&
-        state.operations.some(
-          (item) =>
-            item.status === 'pending' &&
-            item.draft?.sessionId === draft.sessionId &&
-            item.draft.revision === draft.revision,
-        )
-      )
-        throw conflict();
-      const operation = operationSchema.parse({
-        original,
-        ...(mcpReview ? { mcpReview } : {}),
-        ...(taskReview ? { taskReview } : {}),
-        ...(annotations ? { annotations } : {}),
-        ...(draft ? { draft } : {}),
-        status: 'pending',
-      });
-      state.operations.push(operation);
-      if (original.kind === 'attachment') {
-        const request = original.value,
-          attachments = state.attachments?.[request.sessionId];
-        const attachmentId =
-          request.action === 'upload' ? request.attachment.attachmentId : request.attachmentId;
-        const item = attachments?.items.find(
-          (item) => item.reference.attachmentId === attachmentId,
+    return this.#change(
+      scope,
+      current,
+      [original.value.sessionId],
+      (state) => {
+        const found = state.operations.find(
+          (operation) => operation.original.value.operationId === original.value.operationId,
         );
+        if (found) {
+          if (
+            !same(found.original, original) ||
+            !same(found.draft ?? null, draft ?? null) ||
+            !same(found.mcpReview ?? null, mcpReview ?? null) ||
+            !same(found.annotations ?? null, annotations ?? null) ||
+            !same(found.taskReview ?? null, taskReview ?? null)
+          )
+            throw conflict();
+          return structuredClone(found);
+        }
         if (
-          !item ||
-          item.pending ||
-          (request.action === 'upload' &&
-            (!same(item.reference, request.attachment) || item.data !== request.data))
+          draft &&
+          state.operations.some(
+            (item) =>
+              item.status === 'pending' &&
+              item.original.value.sessionId === original.value.sessionId,
+          )
+        )
+          throw Error('请先核查此会话尚未确认的原操作。');
+        if (draft && draft.sessionId !== original.value.sessionId) throw conflict();
+        if (
+          original.kind === 'metadata' &&
+          state.operations.some(
+            (entry) =>
+              entry.status === 'pending' &&
+              entry.original.kind === 'metadata' &&
+              entry.original.value.sessionId === original.value.sessionId,
+          )
+        )
+          throw Error('请先核查原会话整理操作。');
+        if (draft) {
+          const tasks = state.tasks?.[draft.sessionId];
+          if (
+            (tasks?.cacheRevision ?? 0) !== (draft.taskRevision ?? 0) ||
+            tasks?.delivery ||
+            tasks?.pending ||
+            (!plainTurn && !same(tasks?.enabled ?? null, taskReview ?? null))
+          )
+            throw Error('任务计划已改变或原任务操作尚未确认，请重新读取。');
+          if (taskReview) {
+            if (!tasks || !requestVersion) throw conflict();
+            tasks.delivery = {
+              operationId: original.value.operationId,
+              review: structuredClone(taskReview),
+              requestVersion,
+            };
+            tasks.cacheRevision++;
+          }
+          const savedAnnotations = state.annotations?.[draft.sessionId];
+          const selection = (savedAnnotations?.annotations ?? [])
+            .filter((item) => item.selectionId)
+            .map((item) => ({ id: item.id, version: item.version, selectionId: item.selectionId }));
+          if (
+            (savedAnnotations?.cacheRevision ?? 0) !== (draft.annotationRevision ?? 0) ||
+            (!plainTurn && !same(selection, annotations?.selection ?? []))
+          )
+            throw Error('标注草稿已改变，请重新读取后发送。');
+          if (this.forkBlocked(state, draft.sessionId))
+            throw Error('请先核查原 Fork，源会话和预留副本不能发送新指令。');
+          if (this.attentionBlocked(state, draft.sessionId))
+            throw Error('请先核查原待办指令或审批。');
+          if (this.githubBlocked(state, draft.sessionId))
+            throw Error('请先核查 GitHub 原绑定、提交或推送，再发送新指令。');
+          if (state.git?.[draft.sessionId]?.pending)
+            throw Error('请先确认原 Git 操作，再发送新指令。');
+          if (state.interactions?.[draft.sessionId]?.value.pending)
+            throw Error('请先核查原会话交互，不能发送新的指令。');
+          const mcp = state.mcp?.[draft.sessionId];
+          if (
+            (mcp?.cacheRevision ?? 0) !== (draft.mcpRevision ?? 0) ||
+            mcp?.delivery ||
+            (!plainTurn &&
+              !same(mcpReview ?? null, mcp?.review?.servers.length ? mcp.review : null))
+          )
+            throw Error('MCP 草稿已改变或原授权尚未确认，请重新读取。');
+          if (mcpReview) {
+            if (!mcp || !requestVersion) throw conflict();
+            mcp.delivery = {
+              operationId: original.value.operationId,
+              review: structuredClone(mcpReview),
+              requestVersion,
+            };
+            mcp.cacheRevision++;
+          }
+          const attachments = state.attachments?.[draft.sessionId] ?? emptyWorkspaceAttachments();
+          if (
+            (draft.attachmentRevision ?? 0) !== attachments.revision ||
+            attachments.items.some((item) => !item.uploaded || item.pending)
+          )
+            throw Error('附件草稿已改变或尚未上传，请重新读取后继续。');
+        }
+        if (
+          draft &&
+          state.operations.some(
+            (item) =>
+              item.status === 'pending' &&
+              item.draft?.sessionId === draft.sessionId &&
+              item.draft.revision === draft.revision,
+          )
         )
           throw conflict();
-        item.pending = {
-          owner: scope.target.owner,
-          deviceId: scope.target.deviceId,
-          catalogWorkspaceId: scope.target.catalogWorkspaceId,
-          replicaId: scope.target.replicaId,
-          request,
-        };
-        attachments!.revision++;
-      }
-      return structuredClone(operation);
-    });
+        const operation = operationSchema.parse({
+          original,
+          ...(mcpReview ? { mcpReview } : {}),
+          ...(taskReview ? { taskReview } : {}),
+          ...(annotations ? { annotations } : {}),
+          ...(draft ? { draft } : {}),
+          status: 'pending',
+        });
+        state.operations.push(operation);
+        if (original.kind === 'attachment') {
+          const request = original.value,
+            attachments = state.attachments?.[request.sessionId];
+          const attachmentId =
+            request.action === 'upload' ? request.attachment.attachmentId : request.attachmentId;
+          const item = attachments?.items.find(
+            (item) => item.reference.attachmentId === attachmentId,
+          );
+          if (
+            !item ||
+            item.pending ||
+            (request.action === 'upload' &&
+              (!same(item.reference, request.attachment) || item.data !== request.data))
+          )
+            throw conflict();
+          item.pending = {
+            owner: scope.target.owner,
+            deviceId: scope.target.deviceId,
+            catalogWorkspaceId: scope.target.catalogWorkspaceId,
+            replicaId: scope.target.replicaId,
+            request,
+          };
+          attachments!.revision++;
+        }
+        return structuredClone(operation);
+      },
+      [original.value.operationId],
+    );
   }
   attentionBlocked(ledger: WorkspaceLedger, sessionId: string) {
     return workspaceAttentionPending(ledger.attention, sessionId).some((entry) =>
@@ -717,7 +781,7 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = this.#validateInteraction(scope, sessionId, input);
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       if ((state.interactions?.[sessionId]?.revision ?? 0) !== expectedRevision) throw conflict();
       if (
         value.pending &&
@@ -749,40 +813,50 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = validateWorkspaceFork(input, { ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
-      const previous = state.forks?.[sessionId],
-        pending = workspaceForkPending(value),
-        old = workspaceForkPending(previous);
-      if (
-        (previous?.cacheRevision ?? 0) !== expectedRevision ||
-        value.cacheRevision !== expectedRevision + 1
-      )
-        throw conflict();
-      if (old && !same(old, value.operation ?? null)) throw conflict();
-      if (
-        pending &&
-        !old &&
-        (this.forkBlocked(state, sessionId) ||
-          this.githubBlocked(state, sessionId) ||
-          this.attentionBlocked(state, sessionId) ||
-          this.forkBlocked(state, pending.request.childSessionId) ||
-          state.git?.[sessionId]?.pending ||
-          state.operations.some(
-            (item) =>
-              item.status === 'pending' &&
-              [sessionId, pending.request.childSessionId].includes(item.original.value.sessionId),
-          ) ||
-          state.interactions?.[sessionId]?.value.pending ||
-          state.mcp?.[sessionId]?.delivery)
-      )
-        throw Error('请先核查原会话操作，再创建副本。');
-      Object.defineProperty((state.forks ??= {}), sessionId, {
-        value,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    });
+    return this.#change(
+      scope,
+      current,
+      [
+        sessionId,
+        ...(workspaceForkPending(value)
+          ? [workspaceForkPending(value)!.request.childSessionId]
+          : []),
+      ],
+      (state) => {
+        const previous = state.forks?.[sessionId],
+          pending = workspaceForkPending(value),
+          old = workspaceForkPending(previous);
+        if (
+          (previous?.cacheRevision ?? 0) !== expectedRevision ||
+          value.cacheRevision !== expectedRevision + 1
+        )
+          throw conflict();
+        if (old && !same(old, value.operation ?? null)) throw conflict();
+        if (
+          pending &&
+          !old &&
+          (this.forkBlocked(state, sessionId) ||
+            this.githubBlocked(state, sessionId) ||
+            this.attentionBlocked(state, sessionId) ||
+            this.forkBlocked(state, pending.request.childSessionId) ||
+            state.git?.[sessionId]?.pending ||
+            state.operations.some(
+              (item) =>
+                item.status === 'pending' &&
+                [sessionId, pending.request.childSessionId].includes(item.original.value.sessionId),
+            ) ||
+            state.interactions?.[sessionId]?.value.pending ||
+            state.mcp?.[sessionId]?.delivery)
+        )
+          throw Error('请先核查原会话操作，再创建副本。');
+        Object.defineProperty((state.forks ??= {}), sessionId, {
+          value,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      },
+    );
   }
   async saveAttention(
     scope: WorkspaceScope,
@@ -796,7 +870,7 @@ export class WorkspaceStore {
     const bucketKey = attentionScopeKey(route),
       kind = workspaceAttentionKey(route, key);
     validateWorkspaceAttentionBucket({ route, entries: {} }, scope.target);
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, kind.kind === 'page' ? [] : [kind.sessionId], (state) => {
       const bucket = state.attention?.[bucketKey] ?? { route, entries: {} };
       if (!same(bucket.route, route)) throw conflict();
       const previous = bucket.entries[key];
@@ -857,7 +931,7 @@ export class WorkspaceStore {
       kind === 'github'
         ? validateWorkspaceGithub(input, target)
         : validateWorkspaceGithubWrite(input, target);
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       const previous = state[kind]?.[sessionId];
       if (
         (previous?.cacheRevision ?? 0) !== expectedRevision ||
@@ -901,7 +975,7 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = validateWorkspaceGit(input, { ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       const previous = state.git?.[sessionId];
       if (
         value.pending &&
@@ -944,7 +1018,7 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = validateWorkspaceTasks(input, { ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       const previous = state.tasks?.[sessionId];
       if (
         value.enabled &&
@@ -990,7 +1064,7 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = validateWorkspaceRoles(input, { ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       const previous = state.roles?.[sessionId];
       if (
         (previous?.cacheRevision ?? 0) !== expectedRevision ||
@@ -1015,7 +1089,7 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = validateWorkspacePreview(input, { ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       if (
         (state.previews?.[sessionId]?.cacheRevision ?? 0) !== expectedRevision ||
         value.cacheRevision !== expectedRevision + 1
@@ -1038,7 +1112,7 @@ export class WorkspaceStore {
   ) {
     const value = await validateWorkspaceAnnotations(input, { ...scope.target, sessionId });
     current();
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       if (
         (state.annotations?.[sessionId]?.cacheRevision ?? 0) !== expectedRevision ||
         value.cacheRevision !== expectedRevision + 1
@@ -1060,7 +1134,7 @@ export class WorkspaceStore {
     current: () => void,
   ) {
     const value = validateWorkspaceMcp(input, { ...scope.target, sessionId });
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       const before = state.mcp?.[sessionId];
       if (
         (before?.cacheRevision ?? 0) !== expectedRevision ||
@@ -1089,7 +1163,7 @@ export class WorkspaceStore {
       { ...scope.target, sessionId },
       current,
     );
-    return this.#change(scope, current, (state) => {
+    return this.#change(scope, current, [sessionId], (state) => {
       const before = state.attachments?.[sessionId] ?? emptyWorkspaceAttachments();
       if (before.revision !== expectedRevision) throw conflict();
       for (const item of before.items)
@@ -1135,71 +1209,77 @@ export class WorkspaceStore {
     status: 'confirmed' | 'abandoned',
     current: () => void,
   ) {
-    return this.#change(scope, current, (state) => {
-      const operation = state.operations.find(
-        (item) => item.original.value.operationId === original.value.operationId,
-      );
-      if (
-        !operation ||
-        !same(operation.original, original) ||
-        (operation.status !== 'pending' && operation.status !== status)
-      )
-        throw conflict();
-      if (operation.status === status) return;
-      operation.status = status;
-      const tasks = state.tasks?.[original.value.sessionId];
-      if (tasks?.delivery?.operationId === original.value.operationId) {
-        if (status === 'confirmed' && tasks.enabled?.reviewId === tasks.delivery.review.reviewId)
-          delete tasks.enabled;
-        delete tasks.delivery;
-        tasks.cacheRevision++;
-      }
-      const annotations = state.annotations?.[original.value.sessionId];
-      if (status === 'confirmed' && annotations && operation.annotations) {
-        for (const item of annotations.annotations)
-          if (
-            operation.annotations.selection.some(
-              (sent) =>
-                sent.id === item.id &&
-                sent.version === item.version &&
-                sent.selectionId === item.selectionId,
-            )
-          )
-            delete item.selectionId;
-        annotations.cacheRevision++;
-      }
-      const mcp = state.mcp?.[original.value.sessionId];
-      if (mcp?.delivery?.operationId === original.value.operationId) {
-        if (status === 'confirmed' && mcp.review?.reviewId === mcp.delivery.review.reviewId)
-          delete mcp.review;
-        delete mcp.delivery;
-        mcp.cacheRevision++;
-      }
-      const draft = operation.draft;
-      const attachments = state.attachments?.[original.value.sessionId];
-      if (attachments && original.kind === 'attachment') {
-        const request = original.value;
-        const item = attachments.items.find(
-          (item) => item.pending && same(item.pending.request, request),
+    return this.#change(
+      scope,
+      current,
+      [original.value.sessionId],
+      (state) => {
+        const operation = state.operations.find(
+          (item) => item.original.value.operationId === original.value.operationId,
         );
-        if (!item) throw conflict();
-        if (status === 'confirmed' && request.action === 'remove')
-          attachments.items = attachments.items.filter((entry) => entry !== item);
-        else {
-          if (status === 'confirmed') item.uploaded = true;
-          delete item.pending;
+        if (
+          !operation ||
+          !same(operation.original, original) ||
+          (operation.status !== 'pending' && operation.status !== status)
+        )
+          throw conflict();
+        if (operation.status === status) return;
+        operation.status = status;
+        const tasks = state.tasks?.[original.value.sessionId];
+        if (tasks?.delivery?.operationId === original.value.operationId) {
+          if (status === 'confirmed' && tasks.enabled?.reviewId === tasks.delivery.review.reviewId)
+            delete tasks.enabled;
+          delete tasks.delivery;
+          tasks.cacheRevision++;
         }
-        attachments.revision++;
-      }
-      if (
-        status === 'confirmed' &&
-        draft?.attachmentRevision !== undefined &&
-        attachments?.revision === draft.attachmentRevision
-      ) {
-        attachments.items = [];
-        attachments.revision++;
-      }
-    });
+        const annotations = state.annotations?.[original.value.sessionId];
+        if (status === 'confirmed' && annotations && operation.annotations) {
+          for (const item of annotations.annotations)
+            if (
+              operation.annotations.selection.some(
+                (sent) =>
+                  sent.id === item.id &&
+                  sent.version === item.version &&
+                  sent.selectionId === item.selectionId,
+              )
+            )
+              delete item.selectionId;
+          annotations.cacheRevision++;
+        }
+        const mcp = state.mcp?.[original.value.sessionId];
+        if (mcp?.delivery?.operationId === original.value.operationId) {
+          if (status === 'confirmed' && mcp.review?.reviewId === mcp.delivery.review.reviewId)
+            delete mcp.review;
+          delete mcp.delivery;
+          mcp.cacheRevision++;
+        }
+        const draft = operation.draft;
+        const attachments = state.attachments?.[original.value.sessionId];
+        if (attachments && original.kind === 'attachment') {
+          const request = original.value;
+          const item = attachments.items.find(
+            (item) => item.pending && same(item.pending.request, request),
+          );
+          if (!item) throw conflict();
+          if (status === 'confirmed' && request.action === 'remove')
+            attachments.items = attachments.items.filter((entry) => entry !== item);
+          else {
+            if (status === 'confirmed') item.uploaded = true;
+            delete item.pending;
+          }
+          attachments.revision++;
+        }
+        if (
+          status === 'confirmed' &&
+          draft?.attachmentRevision !== undefined &&
+          attachments?.revision === draft.attachmentRevision
+        ) {
+          attachments.items = [];
+          attachments.revision++;
+        }
+      },
+      [original.value.operationId],
+    );
   }
   async cacheSession(scope: WorkspaceScope, sessionId: string, raw: unknown, current: () => void) {
     readClientSession(raw, { ...scope.target, sessionId });
