@@ -74,7 +74,9 @@ import {
 } from '@moor/protocol/run-config';
 import {
   AGENT_CONTROLS_FEATURE,
+  AGENT_RUN_DEFAULTS_FEATURE,
   agentUsageResponseSchema,
+  runDefaultsResponseSchema,
   runPreferencesResponseSchema,
 } from '@moor/protocol/agent-controls';
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
@@ -948,6 +950,8 @@ export class WorkspaceController {
       {
         fresh: !session.history.length,
         initialModeId: session.meta.initialModeId,
+        initialModelId: session.meta.initialModelId,
+        initialReasoningEffort: session.meta.initialReasoningEffort,
         legacyCodex: session.meta.agentType === 'codex',
       },
     );
@@ -998,6 +1002,45 @@ export class WorkspaceController {
     );
     context.current();
     return saved.preferences;
+  }
+  async saveRunDefaults(selection: RunSelection) {
+    const selected = z
+      .object({
+        modelId: z.string().min(1).max(300),
+        reasoningEffort: z.string().min(1).max(300).optional(),
+      })
+      .strict()
+      .parse({
+        modelId: selection.modelId,
+        ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
+      });
+    const context = this.#context(),
+      session = this.#state.session;
+    if (!session || !context.project.runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE))
+      throw Error('执行主机尚不支持保存模型默认值，请升级主机。');
+    const params = {
+      agentId: session.meta.agentConfigId,
+      ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    };
+    const response = runDefaultsResponseSchema.parse(
+      await this.#execute(
+        context,
+        this.#command(context.scope, 'run-preferences', { ...params, action: 'read-defaults' }),
+      ),
+    );
+    const saved = runDefaultsResponseSchema.parse(
+      await this.#execute(
+        context,
+        this.#command(context.scope, 'run-preferences', {
+          ...params,
+          action: 'save-defaults',
+          selection: selected,
+          expectedRevision: response.defaults.revision,
+        }),
+      ),
+    );
+    context.current();
+    return saved.defaults;
   }
   async readUsage(force = false) {
     const context = this.#context(),

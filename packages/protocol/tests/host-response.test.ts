@@ -39,6 +39,7 @@ const workspace: RuntimeWorkspace = {
   agents: [agent],
   features: [
     'agent-controls-v1',
+    'agent-run-defaults-v1',
     'roles-v1',
     'session-mcp-v1',
     'session-control-v1',
@@ -683,6 +684,41 @@ function valid(
 ) {
   return validateHostResponse(result, { command: command(method, params), workspace, current });
 }
+
+test('run defaults responses bind the selected Agent and exact CAS revision', async () => {
+  const params = { agentId: agent.id, action: 'read-defaults' as const };
+  const result = {
+    scope: {
+      workspaceId: scope.workspaceId,
+      userId: workspace.userId,
+      machineId: workspace.machineId,
+      localProjectId: scope.localProjectId,
+      agentId: agent.id,
+    },
+    defaults: { version: 1 as const, revision: 0 },
+  };
+  assert.deepEqual(await valid('run-preferences', result, params), result);
+  await assert.rejects(
+    valid(
+      'run-preferences',
+      {
+        ...result,
+        defaults: {
+          version: 1,
+          revision: 2,
+          selection: { modelId: 'model-b', reasoningEffort: 'medium' },
+        },
+      },
+      {
+        agentId: agent.id,
+        action: 'save-defaults',
+        expectedRevision: 0,
+        selection: { modelId: 'model-b', reasoningEffort: 'medium' },
+      },
+    ),
+    failure,
+  );
+});
 const failure = (error: unknown) =>
   error instanceof AppError &&
   error.status === 502 &&

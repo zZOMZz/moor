@@ -21,6 +21,7 @@ export function ModelMenu({
   disabled,
   loading,
   onChange,
+  onSaveDefault,
   id,
 }: {
   capabilities?: RunCapabilities;
@@ -29,10 +30,13 @@ export function ModelMenu({
   disabled: boolean;
   loading: boolean;
   onChange(key: keyof RunSelection, value: string): void;
+  onSaveDefault?(selection: RunSelection): Promise<unknown>;
   id: string;
 }) {
   const [open, setOpen] = useState(false),
-    [page, setPage] = useState<'modelId' | 'reasoningEffort' | null>(null);
+    [page, setPage] = useState<'modelId' | 'reasoningEffort' | null>(null),
+    [defaultState, setDefaultState] = useState<'idle' | 'saving' | 'saved'>('idle'),
+    [defaultError, setDefaultError] = useState('');
   const list = useRef<HTMLDivElement>(null),
     parent = useRef<HTMLButtonElement>(null),
     effortParent = useRef<HTMLButtonElement>(null),
@@ -81,6 +85,25 @@ export function ModelMenu({
     if (page) onChange(page, value);
     setOpen(false);
     setPage(null);
+  };
+  useEffect(() => {
+    setDefaultState('idle');
+    setDefaultError('');
+  }, [modelId, effort]);
+  const saveDefault = () => {
+    if (!onSaveDefault || !modelId || defaultState === 'saving') return;
+    setDefaultState('saving');
+    setDefaultError('');
+    void onSaveDefault({
+      ...selection,
+      modelId,
+      ...(effort ? { reasoningEffort: effort } : {}),
+    })
+      .then(() => setDefaultState('saved'))
+      .catch((error: unknown) => {
+        setDefaultState('idle');
+        setDefaultError(error instanceof Error ? error.message : '模型默认值保存失败');
+      });
   };
   return (
     <Popover.Root
@@ -143,6 +166,25 @@ export function ModelMenu({
                 <span>{effortLabel}</span>
                 <ChevronRight size={14} />
               </button>
+              {onSaveDefault && (
+                <button
+                  type="button"
+                  className="model-menu-save"
+                  disabled={!model || defaultState === 'saving'}
+                  onClick={saveDefault}
+                >
+                  {defaultState === 'saving'
+                    ? '正在保存…'
+                    : defaultState === 'saved'
+                      ? '已设为新会话默认'
+                      : '设为新会话默认'}
+                </button>
+              )}
+              {defaultError && (
+                <p className="model-menu-error" role="alert">
+                  {defaultError}
+                </p>
+              )}
             </div>
             {page && (
               <div

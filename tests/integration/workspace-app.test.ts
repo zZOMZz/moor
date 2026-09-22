@@ -929,6 +929,15 @@ test('packaged workspace opens local projects without an account and preserves d
     await act(async () => visibleButton('关闭会话信息').click());
     assert.equal(information.open, false);
     let textarea = dom.window.document.querySelector('textarea')!;
+    const composerSurface = dom.window.document.querySelector('.workspace-input-box')!;
+    assert(
+      composerSurface.querySelector('.workspace-compose-actions > .run-controls'),
+      'permission and model controls stay inside the input toolbar',
+    );
+    assert(
+      composerSurface.querySelector('.workspace-compose-actions > .usage-trigger'),
+      'context usage stays inside the input toolbar',
+    );
     let release!: () => void;
     hold = new Promise<void>((resolve) => {
       release = resolve;

@@ -1,7 +1,9 @@
 import type { HostCommand, HostCommandMethod } from './host-command';
 import {
   AGENT_CONTROLS_FEATURE,
+  AGENT_RUN_DEFAULTS_FEATURE,
   agentUsageResponseSchema,
+  runDefaultsResponseSchema,
   runPreferencesResponseSchema,
 } from './agent-controls';
 import {
@@ -319,7 +321,10 @@ export async function validateHostResponse(
           const result =
             command.method === 'agent-usage'
               ? agentUsageResponseSchema.parse(raw)
-              : runPreferencesResponseSchema.parse(raw);
+              : command.params.action === 'read-defaults' ||
+                  command.params.action === 'save-defaults'
+                ? runDefaultsResponseSchema.parse(raw)
+                : runPreferencesResponseSchema.parse(raw);
           const scope = result.scope;
           requireValue(
             scope.workspaceId === workspace.id &&
@@ -332,11 +337,24 @@ export async function validateHostResponse(
           requireValue(
             !!command.params.sessionId || workspace.agents.some((a) => a.id === scope.agentId),
           );
+          if (
+            command.method === 'run-preferences' &&
+            (command.params.action === 'read-defaults' || command.params.action === 'save-defaults')
+          )
+            requireValue(workspace.features?.includes(AGENT_RUN_DEFAULTS_FEATURE));
           if (command.method === 'run-preferences' && command.params.action === 'save') {
             const value = runPreferencesResponseSchema.parse(result).preferences;
             requireValue(
               value.modeId === command.params.modeId &&
                 value.revision === command.params.expectedRevision + 1,
+            );
+          }
+          if (command.method === 'run-preferences' && command.params.action === 'save-defaults') {
+            const value = runDefaultsResponseSchema.parse(result).defaults;
+            requireValue(
+              value.revision === command.params.expectedRevision + 1 &&
+                value.selection?.modelId === command.params.selection.modelId &&
+                value.selection.reasoningEffort === command.params.selection.reasoningEffort,
             );
           }
           return result;

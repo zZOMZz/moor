@@ -107,12 +107,18 @@ export function selectionFromInput(
 export function initializeRunSelection(
   selection: RunSelection,
   capabilities: RunCapabilities | undefined,
-  options: { fresh: boolean; initialModeId?: string; legacyCodex?: boolean },
+  options: {
+    fresh: boolean;
+    initialModeId?: string;
+    initialModelId?: string;
+    initialReasoningEffort?: string;
+    legacyCodex?: boolean;
+  },
 ): RunSelection {
   const modelId =
     selection.modelId ||
     (options.fresh
-      ? capabilities?.defaultModelId
+      ? options.initialModelId || capabilities?.defaultModelId
       : capabilities?.sessionKind === 'loaded'
         ? capabilities.currentModelId
         : undefined);
@@ -125,6 +131,9 @@ export function initializeRunSelection(
   );
   const reasoningEffort =
     selection.reasoningEffort ||
+    (options.fresh && modelId === options.initialModelId
+      ? options.initialReasoningEffort
+      : undefined) ||
     (modelId && modelId === capabilities?.currentModelId
       ? capabilities?.currentReasoningEffort
       : undefined) ||

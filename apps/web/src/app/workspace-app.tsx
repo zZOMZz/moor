@@ -1,4 +1,5 @@
 import { changeRunSelection } from '@moor/protocol/run-config';
+import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import { UsagePanel, latestContextUsage } from '../components/usage-panel';
 import { AppearanceSettings } from '../components/appearance';
 import {
@@ -793,6 +794,34 @@ function WorkspaceConversation({
                 controlRef={skillsPanel}
               />
             </WorkspaceToolMenu>
+            <RunControls
+              idPrefix="workspace"
+              capabilities={session.agent?.runConfig}
+              selection={selection}
+              agentType={session.meta.agentType}
+              disabled={busy}
+              loading={state.modelLoading === true}
+              canRefresh={sessionWritable && !busy}
+              validation={validation}
+              status={state.modelError}
+              existing
+              onChange={(key, value) => {
+                const next = changeRunSelection(selection, key, value, session.agent?.runConfig);
+                if (key === 'modeId')
+                  run(async () => {
+                    await controller.saveApprovalDefault(value);
+                    const latest = latestComposer.current;
+                    save(latest.text, { ...latest.selection, modeId: value });
+                  });
+                else save(text, next);
+              }}
+              onRefresh={() => run(() => controller.refreshAgentOptions())}
+              onSaveDefaults={
+                state.project?.runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)
+                  ? (defaults) => controller.saveRunDefaults(defaults)
+                  : undefined
+              }
+            />
             <UsagePanel
               context={latestContextUsage(session.history)}
               usage={session.accountUsage}
@@ -816,29 +845,6 @@ function WorkspaceConversation({
             )}
           </div>
         </div>
-        <RunControls
-          idPrefix="workspace"
-          capabilities={session.agent?.runConfig}
-          selection={selection}
-          agentType={session.meta.agentType}
-          disabled={busy}
-          loading={state.modelLoading === true}
-          canRefresh={sessionWritable && !busy}
-          validation={validation}
-          status={state.modelError}
-          existing
-          onChange={(key, value) => {
-            const next = changeRunSelection(selection, key, value, session.agent?.runConfig);
-            if (key === 'modeId')
-              run(async () => {
-                await controller.saveApprovalDefault(value);
-                const latest = latestComposer.current;
-                save(latest.text, { ...latest.selection, modeId: value });
-              });
-            else save(text, next);
-          }}
-          onRefresh={() => run(() => controller.refreshAgentOptions())}
-        />
       </form>
     </>
   );
@@ -1512,6 +1518,9 @@ export function WorkspaceApp({
             ? {
                 name: state.session.agent.name,
                 disabled: blocked,
+                observedAt: state.session.agent.capabilityContext?.observedAt,
+                scopeLabel: state.project?.projectName,
+                error: state.modelError,
                 refresh: async () => {
                   await controller.refreshAgentOptions(true);
                   await controller.readUsage(true);

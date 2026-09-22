@@ -83,7 +83,14 @@ export function AppearanceSettings({
   open: boolean;
   onOpenChange(value: boolean): void;
   openDesktopSettings?: () => void;
-  agentControls?: { name: string; disabled?: boolean; refresh(): Promise<unknown> };
+  agentControls?: {
+    name: string;
+    disabled?: boolean;
+    observedAt?: number;
+    scopeLabel?: string;
+    error?: string;
+    refresh(): Promise<unknown>;
+  };
 }) {
   const { appearance, change } = useAppearance();
   const [busy, setBusy] = useState(false),
@@ -146,6 +153,20 @@ export function AppearanceSettings({
               <p className="appearance-description">
                 模型与推理选项在工作区就绪时读取并缓存。配置更新后，可在这里刷新模型与账号额度。
               </p>
+              {agentControls.observedAt !== undefined && (
+                <p className="agent-capability-status">
+                  能力目录更新于{' '}
+                  <time dateTime={new Date(agentControls.observedAt).toISOString()}>
+                    {new Date(agentControls.observedAt).toLocaleString()}
+                  </time>
+                  {agentControls.scopeLabel ? ` · ${agentControls.scopeLabel}` : ''}
+                </p>
+              )}
+              {agentControls.error && (
+                <p className="agent-capability-error" role="alert">
+                  {agentControls.error}
+                </p>
+              )}
               <button
                 type="button"
                 disabled={busy || agentControls.disabled}

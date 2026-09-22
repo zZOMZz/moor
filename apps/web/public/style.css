@@ -1446,6 +1446,32 @@ summary:focus-visible {
   gap: 6px;
   flex: none;
 }
+.composer-actions #run-options {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.composer-actions #run-options .run-controls {
+  flex-wrap: nowrap;
+  margin: 0;
+}
+.composer-actions #run-options .run-model-options {
+  margin-left: auto;
+}
+.composer-actions #run-options .run-description {
+  margin: 2px 8px 0;
+}
+.composer-actions > .usage-trigger {
+  flex: none;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 7px;
+  border-radius: 50%;
+}
+.composer-actions > .usage-trigger span {
+  display: none;
+}
 .send-button {
   background: var(--accent);
   color: var(--accent-ink);
@@ -4042,9 +4068,9 @@ dialog pre {
 .workspace-composer-context {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 28px;
-  margin: 0 4px 6px;
+  gap: 8px;
+  min-height: 32px;
+  margin: 0 2px 8px;
   overflow: auto;
   scrollbar-width: none;
 }
@@ -4056,14 +4082,28 @@ dialog pre {
   flex-shrink: 0;
   color: var(--muted);
   font-size: 11px;
-  padding: 0;
-  border: 0;
-  background: transparent;
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+.workspace-composer-context label:hover,
+.workspace-composer-context > button:hover:not(:disabled),
+.workspace-composer-context label:focus-within,
+.workspace-composer-context > button:focus-visible {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 24%, var(--border));
+  background: var(--hover);
 }
 .workspace-composer-context select {
   appearance: none;
   cursor: pointer;
-  padding: 4px 0;
+  padding: 0;
   min-width: 0;
   max-width: 170px;
   text-overflow: ellipsis;
@@ -4080,18 +4120,22 @@ dialog pre {
 }
 .workspace-input-box {
   border: 1px solid var(--border);
-  border-radius: 18px;
-  padding: 14px 14px 10px;
+  border-radius: 22px;
+  padding: 16px 14px 10px;
   background: var(--surface-raised);
   box-shadow: 0 3px 12px #00000006;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
 .workspace-input-box:focus-within {
-  border-color: var(--muted);
+  border-color: color-mix(in srgb, var(--ink) 28%, var(--border));
+  box-shadow: 0 5px 18px var(--shadow);
 }
 .workspace-composer textarea {
   display: block;
   width: 100%;
-  min-height: 54px;
+  min-height: 72px;
   max-height: 220px;
   field-sizing: content;
   resize: vertical;
@@ -4109,8 +4153,54 @@ dialog pre {
 .workspace-compose-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 6px;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.workspace-compose-actions > .run-controls {
+  flex: 1;
+  flex-wrap: nowrap;
+  min-width: 0;
+  margin: 0;
+  gap: 6px;
+}
+.workspace-compose-actions > .run-controls .run-approval {
+  flex: none;
+}
+.workspace-compose-actions > .run-controls .run-model-options {
+  margin-left: auto;
+}
+.workspace-compose-actions > .run-controls .picker-trigger {
+  max-width: min(28vw, 250px);
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted);
+}
+.workspace-compose-actions > .run-controls .picker-trigger:hover:not(:disabled),
+.workspace-compose-actions > .run-controls .picker-trigger[data-popup-open] {
+  color: var(--ink);
+  border-color: var(--border);
+  background: var(--hover);
+}
+.workspace-compose-actions > .run-description {
+  order: -1;
+  flex: 0 0 100%;
+  margin: 0 4px 2px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.workspace-compose-actions > .usage-trigger {
+  flex: none;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border-radius: 50%;
+}
+.workspace-compose-actions > .usage-trigger span {
+  display: none;
 }
 .workspace-compose-actions > button {
   margin-left: auto;
@@ -4265,6 +4355,19 @@ dialog pre {
   }
   .workspace-composer-context select {
     max-width: 120px;
+  }
+  .workspace-compose-actions > .run-controls {
+    order: -1;
+    flex-basis: 100%;
+  }
+  .workspace-compose-actions > .run-controls .picker-trigger {
+    max-width: min(52vw, 210px);
+  }
+  .workspace-compose-actions > .workspace-menu-composer + .run-controls {
+    margin-left: 0;
+  }
+  .workspace-compose-actions > .usage-trigger {
+    margin-left: auto;
   }
   .workspace-welcome h2 {
     font-size: 25px;
@@ -4721,6 +4824,20 @@ dialog pre {
   font-size: 12px;
   margin: 16px 0 24px;
 }
+.agent-controls-settings .appearance-description {
+  margin: 8px 0 12px;
+}
+.agent-capability-status,
+.agent-capability-error {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.agent-capability-status {
+  color: var(--muted);
+}
+.agent-capability-error {
+  color: var(--danger);
+}
 .appearance-device-settings {
   width: 100%;
   padding: 12px;
@@ -4789,7 +4906,7 @@ dialog pre {
 }
 
 .composer-actions > .workspace-menu-composer {
-  margin-right: auto;
+  margin-right: 0;
 }
 /* Shared composer controls: one model/effort popover and a session usage meter. */
 .model-menu {
@@ -4820,6 +4937,27 @@ dialog pre {
 .model-menu-choice:hover,
 .model-menu-choice:focus-visible {
   background: var(--hover);
+}
+.model-menu-save {
+  width: calc(100% - 20px);
+  margin: 8px 10px 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+}
+.model-menu-save:hover:not(:disabled),
+.model-menu-save:focus-visible {
+  background: var(--hover);
+}
+.model-menu-error {
+  max-width: 220px;
+  margin: 6px 10px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
 }
 .model-menu-list {
   width: 290px;

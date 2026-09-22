@@ -27,6 +27,7 @@ import { GoogleStart } from '../features/auth/google-login';
 import { RunControls } from '../components/ui';
 import { resolveRunSelection } from '@moor/protocol/run-config';
 import { AGENT_MODEL_OPTIONS_FEATURE } from '@moor/protocol/protocol';
+import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import {
   SecureWorkspaceController,
   type SecureWorkspaceState,
@@ -111,7 +112,7 @@ export type SecureUiController = Pick<
   | 'close'
   | 'invalidate'
 > &
-  Partial<Pick<SecureWorkspaceController, 'saveRunSelection'>>;
+  Partial<Pick<SecureWorkspaceController, 'saveRunSelection' | 'saveRunDefaults'>>;
 const failure = (value: unknown) =>
   value instanceof Error ? value.message : '操作尚未确认，请核对后手动继续。';
 const phaseLabels = {
@@ -1022,6 +1023,9 @@ function Composer({
             执行主机尚不支持可恢复的附件操作，请升级主机后重新核对目录。附件草稿保留在本机。
           </p>
         )}
+        <span className="secure-muted secure-draft-state" role="status" hidden={!dirty}>
+          {dirty ? '草稿尚未保存；保存后可切换会话。' : '草稿保存在本机，重连后需手动发送。'}
+        </span>
         <div className="secure-composer-bottom workspace-compose-actions">
           <WorkspaceToolMenu kind="composer">
             <label className="workspace-attach-trigger">
@@ -1066,9 +1070,53 @@ function Composer({
               Skills
             </button>
           </WorkspaceToolMenu>
-          <span className="secure-muted" role="status" hidden={!dirty}>
-            {dirty ? '草稿尚未保存；保存后可切换会话。' : '草稿保存在本机，重连后需手动发送。'}
-          </span>
+          <RunControls
+            idPrefix="secure-"
+            capabilities={session.agent?.runConfig}
+            selection={runSelection}
+            agentType={session.agent?.agentType}
+            disabled={
+              !shownTarget ||
+              !state.runOptions ||
+              !controller.saveRunSelection ||
+              state.busy ||
+              running ||
+              blocked
+            }
+            loading={false}
+            canRefresh={
+              !!shownTarget &&
+              !!controller.refreshAgentOptions &&
+              !!state.status?.connection &&
+              !state.busy &&
+              !running &&
+              !blocked
+            }
+            validation={modelValidation}
+            status={state.modelOptionsError}
+            existing={true}
+            onChange={(property, value) => {
+              if (!shownTarget || !controller.saveRunSelection) return;
+              const target = structuredClone(shownTarget);
+              const selection = changeRunSelection(
+                runSelection,
+                property,
+                value,
+                session.agent?.runConfig,
+              );
+              run(() => controller.saveRunSelection!(target, selection, property === 'modeId'));
+            }}
+            onRefresh={() =>
+              shownTarget && run(() => controller.refreshAgentOptions(structuredClone(shownTarget)))
+            }
+            onSaveDefaults={
+              shownTarget &&
+              controller.saveRunDefaults &&
+              workspace?.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)
+                ? (defaults) => controller.saveRunDefaults!(structuredClone(shownTarget), defaults)
+                : undefined
+            }
+          />
           <div className="secure-actions">
             <button
               type="button"
@@ -1108,46 +1156,6 @@ function Composer({
           </div>
         </div>
       </div>
-      <RunControls
-        idPrefix="secure-"
-        capabilities={session.agent?.runConfig}
-        selection={runSelection}
-        agentType={session.agent?.agentType}
-        disabled={
-          !shownTarget ||
-          !state.runOptions ||
-          !controller.saveRunSelection ||
-          state.busy ||
-          running ||
-          blocked
-        }
-        loading={false}
-        canRefresh={
-          !!shownTarget &&
-          !!controller.refreshAgentOptions &&
-          !!state.status?.connection &&
-          !state.busy &&
-          !running &&
-          !blocked
-        }
-        validation={modelValidation}
-        status={state.modelOptionsError}
-        existing={true}
-        onChange={(property, value) => {
-          if (!shownTarget || !controller.saveRunSelection) return;
-          const target = structuredClone(shownTarget);
-          const selection = changeRunSelection(
-            runSelection,
-            property,
-            value,
-            session.agent?.runConfig,
-          );
-          run(() => controller.saveRunSelection!(target, selection, property === 'modeId'));
-        }}
-        onRefresh={() =>
-          shownTarget && run(() => controller.refreshAgentOptions(structuredClone(shownTarget)))
-        }
-      />
       {blocked && (
         <p className="secure-warning">原操作的结果仍待确认。请在“原操作记录”中手动核查后再发送。</p>
       )}
@@ -1660,6 +1668,11 @@ export function SecureApp({
                       ? {
                           name: session.agent.name,
                           disabled: busy || !connection || session.meta.status?.type === 'working',
+                          observedAt: session.agent.capabilityContext?.observedAt,
+                          scopeLabel: state.catalog?.products.projects.find(
+                            (project) => project.id === replica?.projectId,
+                          )?.name,
+                          error: state.modelOptionsError,
                           refresh: async () => {
                             const target = structuredClone(controller.contentContext.target!);
                             await controller.refreshAgentOptions(target);

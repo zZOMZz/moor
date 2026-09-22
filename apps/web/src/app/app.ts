@@ -5,7 +5,9 @@ import {
 } from '@moor/protocol/run-config';
 import {
   AGENT_CONTROLS_FEATURE,
+  AGENT_RUN_DEFAULTS_FEATURE,
   agentUsageResponseSchema,
+  runDefaultsResponseSchema,
   runPreferencesResponseSchema,
 } from '@moor/protocol/agent-controls';
 import { accountUsageSchema, type AccountUsage } from '@moor/protocol/agent-usage';
@@ -4082,10 +4084,27 @@ async function restoreRunOptions() {
     if (generation !== runOptionsGeneration || session !== sessionGeneration) return;
     assertControlsScope(response.scope);
     runSelection.modeId = response.preferences.modeId;
+    if (workspace.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)) {
+      const defaults = runDefaultsResponseSchema.parse(
+        await api(prefix() + '/run-preferences', {
+          agentId: currentAgent()!.id,
+          action: 'read-defaults',
+        }),
+      );
+      if (generation !== runOptionsGeneration || session !== sessionGeneration) return;
+      assertControlsScope(defaults.scope);
+      runSelection = initializeRunSelection(runSelection, currentAgent()?.runConfig, {
+        fresh: true,
+        initialModelId: defaults.defaults.selection?.modelId,
+        initialReasoningEffort: defaults.defaults.selection?.reasoningEffort,
+      });
+    }
   }
   runSelection = initializeRunSelection(runSelection, currentAgent()?.runConfig, {
     fresh: !current.base,
     initialModeId: meta?.initialModeId,
+    initialModelId: meta?.initialModelId,
+    initialReasoningEffort: meta?.initialReasoningEffort,
     legacyCodex: currentAgent()?.agentType === 'codex',
   });
   runOptionsReady = true;
@@ -4163,6 +4182,8 @@ async function refreshRunOptions(force = false) {
     runSelection = initializeRunSelection(runSelection, updated.runConfig, {
       fresh: !currentRunInput().base,
       initialModeId: meta?.initialModeId,
+      initialModelId: meta?.initialModelId,
+      initialReasoningEffort: meta?.initialReasoningEffort,
       legacyCodex: updated.agentType === 'codex',
     });
   } catch (cause) {
@@ -4234,6 +4255,34 @@ function renderRunOptions() {
       });
     },
     onRefresh: () => run(() => refreshRunOptions(true)),
+    onSaveDefaults: workspace?.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)
+      ? async (defaults) => {
+          if (!defaults.modelId) throw Error('请先选择模型');
+          const generation = sessionGeneration,
+            params = { agentId: currentAgent()!.id, ...(sessionId ? { sessionId } : {}) },
+            previous = runDefaultsResponseSchema.parse(
+              await api(prefix() + '/run-preferences', {
+                ...params,
+                action: 'read-defaults',
+              }),
+            );
+          if (generation !== sessionGeneration) throw Error('模型默认值目标已变化');
+          assertControlsScope(previous.scope);
+          const saved = runDefaultsResponseSchema.parse(
+            await api(prefix() + '/run-preferences', {
+              ...params,
+              action: 'save-defaults',
+              selection: {
+                modelId: defaults.modelId,
+                ...(defaults.reasoningEffort ? { reasoningEffort: defaults.reasoningEffort } : {}),
+              },
+              expectedRevision: previous.defaults.revision,
+            }),
+          );
+          if (generation !== sessionGeneration) throw Error('模型默认值目标已变化');
+          assertControlsScope(saved.scope);
+        }
+      : undefined,
   });
   return !!validation || !!runOptionsError;
 }

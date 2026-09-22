@@ -1,6 +1,8 @@
 import {
   AGENT_CONTROLS_FEATURE,
+  AGENT_RUN_DEFAULTS_FEATURE,
   agentUsageResponseSchema,
+  runDefaultsResponseSchema,
   runPreferencesResponseSchema,
 } from '@moor/protocol/agent-controls';
 import { z } from 'zod';
@@ -961,6 +963,8 @@ export class SecureWorkspaceController {
           {
             fresh: !read.history.length,
             initialModeId: read.meta.initialModeId,
+            initialModelId: read.meta.initialModelId,
+            initialReasoningEffort: read.meta.initialReasoningEffort,
             legacyCodex: read.meta.agentType === 'codex',
           },
         ),
@@ -1230,6 +1234,56 @@ export class SecureWorkspaceController {
       current();
     });
   }
+  async saveRunDefaults(inputTarget: SecureCliTarget, selection: RunSelection) {
+    const shown = secureTargetSchema.parse(structuredClone(inputTarget)),
+      selected = z
+        .object({
+          modelId: z.string().min(1).max(300),
+          reasoningEffort: z.string().min(1).max(300).optional(),
+        })
+        .strict()
+        .parse({
+          modelId: selection.modelId,
+          ...(selection.reasoningEffort ? { reasoningEffort: selection.reasoningEffort } : {}),
+        });
+    return this.#run(async (current) => {
+      if (!same(shown, this.#attachmentTarget()))
+        throw Error('模型默认值目标已改变，请重新读取会话。');
+      const workspace = this.#state.catalog!.workspaces.find((w) => w.id === shown.workspaceId)!;
+      if (!workspace.features?.includes(AGENT_RUN_DEFAULTS_FEATURE))
+        throw Error('执行主机尚不支持保存模型默认值，请升级主机。');
+      const params = {
+        agentId: this.#state.session!.meta.agentConfigId,
+        sessionId: shown.sessionId,
+      };
+      const readCommand = this.#command(shown, 'run-preferences', {
+        ...params,
+        action: 'read-defaults',
+      });
+      const read = runDefaultsResponseSchema.parse(
+        await validateHostResponse(await this.#execute(this.#lease(), shown, readCommand), {
+          command: readCommand,
+          workspace,
+          current,
+        }),
+      );
+      const saveCommand = this.#command(shown, 'run-preferences', {
+        ...params,
+        action: 'save-defaults',
+        selection: selected,
+        expectedRevision: read.defaults.revision,
+      });
+      const saved = runDefaultsResponseSchema.parse(
+        await validateHostResponse(await this.#execute(this.#lease(), shown, saveCommand), {
+          command: saveCommand,
+          workspace,
+          current,
+        }),
+      );
+      void saved;
+      current();
+    });
+  }
   async #refreshAgentOptions(shown: SecureCliTarget, current: () => void, announce = true) {
     const target = this.#attachmentTarget(),
       lease = this.#lease(),
@@ -1282,6 +1336,8 @@ export class SecureWorkspaceController {
               {
                 fresh: !read.history.length,
                 initialModeId: read.meta.initialModeId,
+                initialModelId: read.meta.initialModelId,
+                initialReasoningEffort: read.meta.initialReasoningEffort,
                 legacyCodex: read.meta.agentType === 'codex',
               },
             ),

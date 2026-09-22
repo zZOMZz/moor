@@ -301,6 +301,7 @@ function fake(initial = seed()) {
     'refreshSession',
     'refreshAgentOptions',
     'saveRunSelection',
+    'saveRunDefaults',
     'createSession',
     'send',
     'respondPermission',
@@ -1764,25 +1765,43 @@ test('checking attachment input capability binds the shown session and never upl
 test('encrypted model controls probe the displayed target, save selections, and keep obsolete choices visible', async () => {
   const state = attachmentState();
   state.attachmentDraft = [];
-  state.catalog!.workspaces[0].features!.push('agent-model-options-v1');
+  state.catalog!.workspaces[0].features!.push('agent-model-options-v1', 'agent-run-defaults-v1');
   state.session!.agent!.runConfig = {
     ...syntheticCapabilities,
     sessionKind: 'new',
     defaultModelId: 'model-a',
   };
-  state.runOptions = { cacheRevision: 0, baseTurnId: '', selection: {}, inherited: true };
+  state.runOptions = {
+    cacheRevision: 0,
+    baseTurnId: '',
+    selection: { modelId: 'model-a', reasoningEffort: 'low' },
+    inherited: true,
+  };
   state.draft = 'Preserve encrypted model draft';
   const view = await mount(state);
   try {
     const target = structuredClone(view.controller.contentContext.target!);
+    assert(
+      view.document.querySelector(
+        '.secure-composer .workspace-input-box .workspace-compose-actions > .run-controls',
+      ),
+      'encrypted composer keeps permission and model controls in the input toolbar',
+    );
     const picker = view.document.querySelector<HTMLButtonElement>('#secure-model')!;
     assert.equal(picker.disabled, false);
-    assert.match(picker.textContent!, /选择模型/);
+    assert.match(picker.textContent!, /Synthetic Model A/);
     await view.act(async () => picker.click());
     assert.equal(
       view.calls.some((call) => call.name === 'refreshAgentOptions'),
       false,
     );
+    await view.act(async () =>
+      [...view.document.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === '设为新会话默认')!
+        .click(),
+    );
+    const savedDefault = view.calls.find((call) => call.name === 'saveRunDefaults')!;
+    assert.deepEqual(savedDefault.args, [target, { modelId: 'model-a', reasoningEffort: 'low' }]);
     await view.act(async () =>
       view.document.querySelector<HTMLButtonElement>('.model-menu-row')!.click(),
     );

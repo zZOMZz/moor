@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { readRunPreferences } from '@moor/host/agents/run-preferences';
+import { readRunDefaults, readRunPreferences } from '@moor/host/agents/run-preferences';
 import {
   changeRunSelection,
   initializeRunSelection,
@@ -92,6 +92,7 @@ test('approval defaults persist through restart, are frozen per new session, and
     { action: 'save', agentId, expectedRevision: 0, modeId: 'moor-auto-review' },
     project,
   );
+  assert(saved.preferences);
   assert.equal(saved.preferences.revision, 1);
   assert.throws(
     () =>
@@ -101,11 +102,57 @@ test('approval defaults persist through restart, are frozen per new session, and
       ),
     /默认值已更新/,
   );
+  await host.refreshAgentOptions(agentId, project);
+  const initialDefaults = host.runPreferences({ action: 'read-defaults', agentId }, project);
+  assert(initialDefaults.defaults);
+  assert.equal(initialDefaults.defaults.revision, 0);
+  const savedDefaults = host.runPreferences(
+    {
+      action: 'save-defaults',
+      agentId,
+      expectedRevision: 0,
+      selection: { modelId: 'b', reasoningEffort: 'medium' },
+    },
+    project,
+  );
+  assert(savedDefaults.defaults);
+  assert.equal(savedDefaults.defaults.revision, 1);
+  assert.throws(
+    () =>
+      host.runPreferences(
+        {
+          action: 'save-defaults',
+          agentId,
+          expectedRevision: 0,
+          selection: { modelId: 'a', reasoningEffort: 'high' },
+        },
+        project,
+      ),
+    /默认值已更新/,
+  );
+  assert.throws(
+    () =>
+      host.runPreferences(
+        {
+          action: 'save-defaults',
+          agentId,
+          expectedRevision: 1,
+          selection: { modelId: 'removed-model', reasoningEffort: 'high' },
+        },
+        project,
+      ),
+    /模型已不可用/,
+  );
   await create('second');
   assert.equal((await host.read('first', undefined, project)).meta.initialModeId, 'moor-agent');
   assert.equal(
     (await host.read('second', undefined, project)).meta.initialModeId,
     'moor-auto-review',
+  );
+  assert.equal((await host.read('second', undefined, project)).meta.initialModelId, 'b');
+  assert.equal(
+    (await host.read('second', undefined, project)).meta.initialReasoningEffort,
+    'medium',
   );
   host.close();
   store.close();
@@ -117,20 +164,29 @@ test('approval defaults persist through restart, are frozen per new session, and
     () => {},
   );
   assert.equal(readRunPreferences(store).modeId, 'moor-auto-review');
+  assert.deepEqual(readRunDefaults(store, agentId).selection, {
+    modelId: 'b',
+    reasoningEffort: 'medium',
+  });
   await create('third');
   assert.equal(
     (await host.read('third', undefined, project)).meta.initialModeId,
     'moor-auto-review',
   );
+  const beforeSessionRefresh = opens;
   await host.refreshAgentOptions(agentId, project, 'first');
   assert.equal(readRunPreferences(store).modeId, 'moor-auto-review');
   await host.refreshAgentOptions(agentId, project, 'second');
-  assert.equal(opens, 1, 'sessions in the same execution directory share the catalog');
+  assert.equal(
+    opens,
+    beforeSessionRefresh + 1,
+    'sessions in the same execution directory share the catalog',
+  );
   await Promise.all([
     host.refreshAgentOptions(agentId, project, undefined, undefined, true),
     host.refreshAgentOptions(agentId, project, undefined, undefined, true),
   ]);
-  assert.equal(opens, 2, 'concurrent manual refreshes are coalesced');
+  assert.equal(opens, beforeSessionRefresh + 2, 'concurrent manual refreshes are coalesced');
   rmSync(directory, { recursive: true });
   assert.equal(
     (await host.read('first', undefined, project)).meta.id,
@@ -152,6 +208,24 @@ test('model changes use advertised defaults and old permission ids retain their 
     modeId: 'moor-agent',
     reasoningEffort: 'high',
   });
+  assert.deepEqual(
+    initializeRunSelection({}, caps, {
+      fresh: true,
+      initialModeId: 'moor-agent',
+      initialModelId: 'b',
+      initialReasoningEffort: 'medium',
+    }),
+    { modelId: 'b', modeId: 'moor-agent', reasoningEffort: 'medium' },
+  );
+  assert.deepEqual(
+    initializeRunSelection(
+      { modelId: 'no-effort' },
+      { ...caps, models: [...caps.models, { id: 'no-effort', name: 'No effort', efforts: [] }] },
+      { fresh: true, initialModelId: 'b', initialReasoningEffort: 'medium' },
+    ),
+    { modelId: 'no-effort' },
+    'a restored model choice never inherits another model’s default effort',
+  );
   assert.equal(
     initializeRunSelection({}, caps, { fresh: false, legacyCodex: true }).modelId,
     undefined,

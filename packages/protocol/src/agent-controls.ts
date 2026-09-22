@@ -3,6 +3,7 @@ import { approvalModeSchema } from './run-config';
 import { accountUsageSchema } from './agent-usage';
 
 export const AGENT_CONTROLS_FEATURE = 'agent-controls-v1';
+export const AGENT_RUN_DEFAULTS_FEATURE = 'agent-run-defaults-v1';
 const id = z
   .string()
   .min(1)
@@ -24,6 +25,19 @@ export const runPreferencesRequestSchema = z.discriminatedUnion('action', [
       expectedRevision: z.number().int().nonnegative().safe(),
     })
     .strict(),
+  agentControlsScopeSchema.extend({ action: z.literal('read-defaults') }).strict(),
+  agentControlsScopeSchema
+    .extend({
+      action: z.literal('save-defaults'),
+      selection: z
+        .object({
+          modelId: z.string().min(1).max(300),
+          reasoningEffort: z.string().min(1).max(300).optional(),
+        })
+        .strict(),
+      expectedRevision: z.number().int().nonnegative().safe(),
+    })
+    .strict(),
 ]);
 export type RunPreferencesRequest = z.infer<typeof runPreferencesRequestSchema>;
 export const runPreferencesSchema = z
@@ -34,6 +48,20 @@ export const runPreferencesSchema = z
   })
   .strict();
 export type RunPreferences = z.infer<typeof runPreferencesSchema>;
+export const runDefaultsSchema = z
+  .object({
+    version: z.literal(1),
+    revision: z.number().int().nonnegative().safe(),
+    selection: z
+      .object({
+        modelId: z.string().min(1).max(300),
+        reasoningEffort: z.string().min(1).max(300).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type RunDefaults = z.infer<typeof runDefaultsSchema>;
 export const agentControlsResponseScopeSchema = z
   .object({
     workspaceId: id,
@@ -46,6 +74,9 @@ export const agentControlsResponseScopeSchema = z
   .strict();
 export const runPreferencesResponseSchema = z
   .object({ scope: agentControlsResponseScopeSchema, preferences: runPreferencesSchema })
+  .strict();
+export const runDefaultsResponseSchema = z
+  .object({ scope: agentControlsResponseScopeSchema, defaults: runDefaultsSchema })
   .strict();
 export const agentUsageResponseSchema = z
   .object({ scope: agentControlsResponseScopeSchema, usage: accountUsageSchema })

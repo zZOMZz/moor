@@ -24,15 +24,21 @@ import {
   type AgentRunBinding,
   type PermissionOutcome,
 } from '../agents/driver';
-import { runCapabilitiesSchema } from '@moor/protocol/run-config';
+import { resolveRunSelection, runCapabilitiesSchema } from '@moor/protocol/run-config';
 import {
   AGENT_CONTROLS_FEATURE,
+  AGENT_RUN_DEFAULTS_FEATURE,
   type AgentUsageRequest,
   type RunPreferencesRequest,
 } from '@moor/protocol/agent-controls';
 import { AGENT_USAGE_FEATURE } from '@moor/protocol/agent-usage';
 import { AgentUsageCache } from '../agents/usage-cache';
-import { readRunPreferences, saveRunPreferences } from '../agents/run-preferences';
+import {
+  readRunDefaults,
+  readRunPreferences,
+  saveRunDefaults,
+  saveRunPreferences,
+} from '../agents/run-preferences';
 import { agentProgramFingerprint } from '../agents/program';
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
 import {
@@ -416,6 +422,28 @@ export class HostWorkspace {
         '此 Agent 未提供该审批模式',
       );
     }
+    if (input.action === 'save-defaults') {
+      assert(
+        this.workspace.agents.some((agent) => agent.id === context.agent.id),
+        409,
+        '此 Agent 配置已退出新会话列表',
+      );
+      const choices = this.agentDescriptor(
+        context.agent,
+        context.scope.localProjectId,
+        input.sessionId,
+      ).runConfig;
+      assert(choices, 409, '请先刷新当前 Agent 的模型目录');
+      resolveRunSelection(input.selection, choices);
+    }
+    if (input.action === 'read-defaults' || input.action === 'save-defaults')
+      return {
+        scope: context.scope,
+        defaults:
+          input.action === 'save-defaults'
+            ? saveRunDefaults(this.store, context.agent.id, input.expectedRevision, input.selection)
+            : readRunDefaults(this.store, context.agent.id),
+      };
     return {
       scope: context.scope,
       preferences:
@@ -473,6 +501,7 @@ export class HostWorkspace {
       AGENT_MODEL_OPTIONS_FEATURE,
       AGENT_CATALOG_CACHE_FEATURE,
       AGENT_CONTROLS_FEATURE,
+      AGENT_RUN_DEFAULTS_FEATURE,
       AGENT_USAGE_FEATURE,
       SESSION_CONTROL_FEATURE,
       ATTACHMENT_OPERATIONS_FEATURE,
@@ -1928,6 +1957,19 @@ export class HostWorkspace {
       meta.initialModeId = readRunPreferences(this.store).modeId;
       putMeta(validated.flock, 'session-' + m.sessionId, { initialModeId: meta.initialModeId });
     }
+    if (!metas(this.meta)['session-' + m.sessionId]) {
+      const defaults = readRunDefaults(this.store, agent.id).selection;
+      if (defaults) {
+        meta.initialModelId = defaults.modelId;
+        if (defaults.reasoningEffort) meta.initialReasoningEffort = defaults.reasoningEffort;
+        putMeta(validated.flock, 'session-' + m.sessionId, {
+          initialModelId: meta.initialModelId,
+          ...(meta.initialReasoningEffort
+            ? { initialReasoningEffort: meta.initialReasoningEffort }
+            : {}),
+        });
+      }
+    }
     if (m.kind === 'turn') this.githubWriteManager.assertExecutionAvailable(execution);
     // Reject a mismatched restored context before confirming a new turn.
     this.store.nativeSession(m.sessionId, execution, agent.id);
@@ -2411,6 +2453,20 @@ export class HostWorkspace {
       this.assertAttachmentCapabilities(input.attachments ?? [], session.inputCapabilities);
       const initialModeId = metas(this.meta)['session-' + id]?.initialModeId;
       if (!input.modeId && initialModeId) input.modeId = initialModeId;
+      const initialModelId = metas(this.meta)['session-' + id]?.initialModelId;
+      if (!input.modelId && initialModelId) input.modelId = initialModelId;
+      const initialReasoningEffort = metas(this.meta)['session-' + id]?.initialReasoningEffort;
+      if (input.modelId === initialModelId && initialReasoningEffort) {
+        const effortConfigId = session.capabilities.effortConfigId;
+        const values =
+          input.configOptionValues &&
+          typeof input.configOptionValues === 'object' &&
+          !Array.isArray(input.configOptionValues)
+            ? (input.configOptionValues as Record<string, unknown>)
+            : {};
+        if (effortConfigId && typeof values[effortConfigId] !== 'string')
+          input.configOptionValues = { ...values, [effortConfigId]: initialReasoningEffort };
+      }
       const effectiveInput = taskTools
         ? { ...input, prompt: String(input.prompt ?? '') + '\n\n' + taskTools.promptContext }
         : input;

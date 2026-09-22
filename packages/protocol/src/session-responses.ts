@@ -34,6 +34,8 @@ export const sessionMetadataSchema = z.object({
   cliType: z.string().max(200),
   agentType: z.string().max(200),
   initialModeId: approvalModeSchema.optional(),
+  initialModelId: z.string().min(1).max(300).optional(),
+  initialReasoningEffort: z.string().min(1).max(300).optional(),
   // Older host-generated Fork titles appended a suffix to a 200-character title.
   title: z.string().max(220).optional(),
   titleSource: z.string().max(100).optional(),

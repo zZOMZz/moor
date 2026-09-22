@@ -123,6 +123,10 @@ test('navigation and composer pickers preserve focus, controlled selections and 
       });
       showNavigation(props);
     });
+    assert(
+      document.querySelector('.prompt-surface > .composer-actions > #run-options'),
+      'run controls mount inside the legacy composer toolbar',
+    );
     await click(button('选择工作区和会话'));
     const popup = document.querySelector('#navigation')!;
     assert.equal(popup.getAttribute('data-open'), '');
@@ -277,7 +281,8 @@ test('navigation and composer pickers preserve focus, controlled selections and 
       'existing sessions hide target controls',
     );
 
-    const changes: unknown[] = [];
+    const changes: unknown[] = [],
+      defaults: unknown[] = [];
     let refreshed = 0;
     const controls = {
       capabilities: {
@@ -299,6 +304,9 @@ test('navigation and composer pickers preserve focus, controlled selections and 
       validation: '',
       existing: true,
       onChange: (key: string, value: string) => changes.push([key, value]),
+      async onSaveDefaults(selection: unknown) {
+        defaults.push(selection);
+      },
       onRefresh() {
         refreshed++;
       },
@@ -346,6 +354,19 @@ test('navigation and composer pickers preserve focus, controlled selections and 
     });
     assert.match(button('模型与推理强度').textContent ?? '', /Model B/);
     assert.match(button('模型与推理强度').textContent ?? '', /Medium/);
+    await click(button('模型与推理强度'));
+    const saveDefault = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (element) => element.textContent === '设为新会话默认',
+    )!;
+    assert.ok(saveDefault);
+    await click(saveDefault);
+    assert.deepEqual(defaults, [updatedSelection]);
+    assert.match(document.querySelector('.model-menu-root')!.textContent!, /已设为新会话默认/);
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
     await click(button('权限'));
     const approvalOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
       (e) => e.textContent === 'Full access',

@@ -21,10 +21,29 @@ const agent = {
   cliType: 'custom',
   agentType: 'synthetic',
   runConfig: {
-    models: [{ id: 'fixture-model', name: '本机模型', efforts: [] }],
+    models: [
+      {
+        id: 'fixture-model',
+        name: '本机模型',
+        efforts: ['low', 'high'],
+        defaultEffort: 'high',
+      },
+    ],
     modes: [],
     currentModelId: 'fixture-model',
-    sessionKind: 'loaded',
+    currentReasoningEffort: 'high',
+    defaultModelId: 'fixture-model',
+    effortConfigId: 'reasoning_effort',
+    sessionKind: 'new',
+  },
+  capabilityContext: {
+    workspaceId: 'runtime',
+    userId: 'user',
+    machineId: 'machine',
+    localProjectId: 'project',
+    programFingerprint: 'a'.repeat(64),
+    directoryFingerprint: 'b'.repeat(64),
+    observedAt: Date.parse('2026-09-18T02:00:00.000Z'),
   },
   inputCapabilities: { image: true, audio: false, embeddedContext: true },
 };
@@ -35,7 +54,7 @@ const runtime = {
   name: '我的电脑',
   projects: [{ id: 'project', name: 'Moor', rootPath: '/synthetic/project' }],
   agents: [agent],
-  features: ['session-fork-v1', 'project-diff-v1', 'project-tree-v1'],
+  features: ['session-fork-v1', 'project-diff-v1', 'project-tree-v1', 'agent-run-defaults-v1'],
 };
 const project = {
   target,
@@ -180,6 +199,9 @@ const controller: any = {
     emit();
   },
   async refreshAgentOptions() {},
+  async saveRunDefaults(selection: { modelId?: string; reasoningEffort?: string }) {
+    calls.push(`defaults:${selection.modelId ?? ''}:${selection.reasoningEffort ?? ''}`);
+  },
   async readGitContext() {
     return { execution: { branch: 'codex/ui' }, repository: { branch: 'main' } };
   },
@@ -285,7 +307,16 @@ const fixture = {
     emit();
   },
   newConversation() {
-    state = { ...state, session: { ...state.session, history: [] } };
+    state = {
+      ...state,
+      modelError: '模型目录刷新失败，当前缓存仍可用于选择。',
+      draft: {
+        ...state.draft,
+        revision: state.draft.revision + 1,
+        selection: { modelId: 'fixture-model', reasoningEffort: 'high' },
+      },
+      session: { ...state.session, history: [] },
+    };
     emit();
   },
   conversation() {

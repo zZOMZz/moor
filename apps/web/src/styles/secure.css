@@ -413,7 +413,19 @@
   gap: 8px;
 }
 .secure-composer-bottom > .secure-actions {
-  margin-left: auto;
+  flex: none;
+  gap: 6px;
+  margin-left: 0;
+}
+.secure-composer-bottom .usage-trigger {
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border-radius: 50%;
+}
+.secure-composer-bottom .usage-trigger span {
+  display: none;
 }
 .secure-composer-bottom .secure-actions > button:last-child {
   display: grid;
@@ -427,6 +439,11 @@
   color: var(--surface);
 }
 .secure-composer-bottom .secure-muted {
+  font-size: 10px;
+}
+.secure-draft-state:not([hidden]) {
+  display: block;
+  margin-top: 6px;
   font-size: 10px;
 }
 .secure-composer .secure-attachment-controls:has(.secure-attachment-select[hidden]):not(:has(ul)) {

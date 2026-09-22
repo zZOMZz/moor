@@ -553,6 +553,19 @@ test('encrypted model selection persists with its scope, refreshes capabilities,
   assert.equal(f.prompts(), 0);
   const selection = { modelId: 'model-b', reasoningEffort: 'medium', modeId: 'agent' };
   await f.controller.saveRunSelection(target, selection);
+  await f.controller.saveRunDefaults(target, selection);
+  assert.deepEqual(
+    f.requests
+      .filter(
+        (request) => request.action === 'execute' && request.command.method === 'run-preferences',
+      )
+      .map((request) =>
+        request.action === 'execute' && request.command.method === 'run-preferences'
+          ? request.command.params.action
+          : '',
+      ),
+    ['read-defaults', 'save-defaults'],
+  );
   await f.controller.refreshAgentOptions(target);
   const check = f.requests.findLast(
     (request) => request.action === 'execute' && request.command.method === 'agent-options',

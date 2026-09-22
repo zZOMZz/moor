@@ -1,6 +1,6 @@
 import { hostCommandSchema } from '@moor/protocol/host-command';
 import { validateHostResponse } from '@moor/protocol/host-response';
-import { AGENT_CONTROLS_FEATURE } from '@moor/protocol/agent-controls';
+import { AGENT_CONTROLS_FEATURE, AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 import { serveStatic } from './static';
@@ -2383,6 +2383,14 @@ export function createApp(
                 runtime.features?.includes(AGENT_CONTROLS_FEATURE),
               409,
               '执行主机尚不支持此设置，请升级主机',
+            );
+            assert(
+              command.method !== 'run-preferences' ||
+                (command.params.action !== 'read-defaults' &&
+                  command.params.action !== 'save-defaults') ||
+                runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE),
+              409,
+              '执行主机尚不支持模型默认值，请升级主机',
             );
             const selectedAgent = runtime.agents.find((agent) => agent.id === input.agentId);
             if (!input.sessionId) assert(selectedAgent, 404, 'Agent 配置不可用');

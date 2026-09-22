@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { readRunPreferences } from '../agents/run-preferences';
+import { readRunDefaults, readRunPreferences } from '../agents/run-preferences';
 import { assert } from '@moor/protocol/protocol';
 import {
   attachmentReceiptSchema,
@@ -187,6 +187,7 @@ export class SessionControlManager {
         const next = Flock.fromFile(this.host.meta.exportFile()),
           now = new Date().toISOString();
         const taskOrigin = this.host.store.tasks.origin(context.lease);
+        const runDefaults = readRunDefaults(this.host.store, agent.id).selection;
         putMeta(next, 'session-' + action.sessionId, {
           id: action.sessionId,
           machineId: action.machineId,
@@ -200,6 +201,10 @@ export class SessionControlManager {
           agentConfigId: agent.id,
           ...(agent.agentType === 'codex' && !agent.customAcp
             ? { initialModeId: readRunPreferences(this.host.store).modeId }
+            : {}),
+          ...(runDefaults?.modelId ? { initialModelId: runDefaults.modelId } : {}),
+          ...(runDefaults?.reasoningEffort
+            ? { initialReasoningEffort: runDefaults.reasoningEffort }
             : {}),
           status: { type: 'idle' },
           isArchived: false,

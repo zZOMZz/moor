@@ -284,6 +284,9 @@ export function Shell({
                     />
                   </label>
                 </WorkspaceToolMenu>
+                <div id="run-options">
+                  <Content name="#run-options" />
+                </div>
                 <button
                   type="button"
                   id="cancel"
@@ -299,9 +302,6 @@ export function Shell({
                   <Content name="#send" />
                 </button>
               </div>
-            </div>
-            <div id="run-options">
-              <Content name="#run-options" />
             </div>
             <div id="draft-state" role="status" />
           </form>
@@ -1048,6 +1048,7 @@ export type RunControlsProps = {
   onChange: (key: keyof RunSelection, value: string) => void;
   onRefresh: () => void;
   onOpenModels?: () => void;
+  onSaveDefaults?: (selection: RunSelection) => Promise<unknown>;
 };
 export function RunControls(p: RunControlsProps) {
   const modes = p.capabilities?.modes ?? [];
@@ -1094,6 +1095,7 @@ export function RunControls(p: RunControlsProps) {
             disabled={p.disabled}
             loading={p.loading}
             onChange={p.onChange}
+            onSaveDefault={p.onSaveDefaults}
           />
         </div>
       </div>

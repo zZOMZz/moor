@@ -223,6 +223,29 @@ app
       true,
     );
     await shot('new-conversation');
+    const composerLayout = await win.webContents.executeJavaScript(`(()=>{
+      const toolbar=document.querySelector('.workspace-compose-actions');
+      const items=[...toolbar.children].filter(node=>{const style=getComputedStyle(node),rect=node.getBoundingClientRect();return style.display!=='none'&&rect.width>0&&rect.height>0;}).map(node=>{const rect=node.getBoundingClientRect();return {name:node.className||node.tagName,left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};});
+      const overlaps=[];
+      for(let i=0;i<items.length;i++) for(let j=i+1;j<items.length;j++) if(Math.min(items[i].right,items[j].right)-Math.max(items[i].left,items[j].left)>.5&&Math.min(items[i].bottom,items[j].bottom)-Math.max(items[i].top,items[j].top)>.5) overlaps.push([items[i].name,items[j].name]);
+      return {items,overlaps};
+    })()`);
+    assert.deepEqual(composerLayout.overlaps, [], JSON.stringify(composerLayout));
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="模型与推理强度"]').click()`,
+    );
+    await wait('.model-menu-save');
+    await shot('model-menu-default');
+    await win.webContents.executeJavaScript(`document.querySelector('.model-menu-save').click()`);
+    await win.webContents.executeJavaScript(
+      `new Promise(resolve=>{const ready=()=>{if(document.querySelector('.model-menu-save')?.textContent.includes('已设为新会话默认')){observer.disconnect();resolve();}};const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true});ready();})`,
+    );
+    assert(
+      await win.webContents.executeJavaScript(
+        `window.__moorFixture.calls.includes('defaults:fixture-model:high')`,
+      ),
+      'saving the current model and effort reaches the scoped default action',
+    );
     win.setContentSize(390, 760);
     await win.loadURL(url);
     await wait('.workspace-history');
@@ -275,7 +298,11 @@ app
     );
     fs.writeFileSync(
       path.join(output, 'metrics.json'),
-      JSON.stringify({ baseline: baseline ?? null, ...metrics, narrowOverflow, errors }, null, 2),
+      JSON.stringify(
+        { baseline: baseline ?? null, ...metrics, narrowOverflow, composerLayout, errors },
+        null,
+        2,
+      ),
     );
     console.log(JSON.stringify({ output, metrics, errors }));
     win.destroy();
