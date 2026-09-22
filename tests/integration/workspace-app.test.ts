@@ -957,6 +957,52 @@ test('packaged workspace opens local projects without an account and preserves d
     );
     assert.equal(project.disabled, false);
     assert.equal(visibleButton('发送').disabled, false);
+    const priorLedger = state.ledger;
+    await act(async () => {
+      state.ledger = {
+        version: 1,
+        scope: state.scope!,
+        revision: 1,
+        operations: [
+          {
+            status: 'pending',
+            original: {
+              kind: 'control',
+              value: {
+                controlVersion: 1,
+                action: 'create',
+                operationId: 'unconfirmed-other-session',
+                workspaceId: 'runtime',
+                localProjectId: 'project',
+                machineId: 'machine',
+                userId: 'user',
+                sessionId: 'other-session',
+                agentId: 'agent',
+              },
+            },
+          },
+        ],
+      };
+      emit();
+    });
+    assert.equal(
+      visibleButton('发送').disabled,
+      false,
+      'another session does not block this composer',
+    );
+    await act(async () => {
+      state.ledger!.operations[0]!.original.value.sessionId = state.sessionId!;
+      emit();
+    });
+    assert.equal(
+      visibleButton('发送').disabled,
+      true,
+      'the current session still requires original-operation recovery',
+    );
+    await act(async () => {
+      state.ledger = priorLedger;
+      emit();
+    });
     assert.equal(visibleButton('连接其他电脑').disabled, false);
     await act(async () => {
       release();
