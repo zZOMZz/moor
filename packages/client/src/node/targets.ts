@@ -1,51 +1,16 @@
 import { z } from 'zod';
-import { agentSchema, id, runtimeWorkspaceSchema } from '@moor/protocol/protocol';
+import { agentSchema } from '@moor/protocol/protocol';
+import {
+  workspaceCatalogSchema as catalogSchema,
+  workspaceDevicesSchema as devicesSchema,
+} from '@moor/protocol/workspace-catalog';
 import { CliError } from '../error';
 import { CliHttp } from './http';
 import {
   workspaceTargetSchema as cliTargetSchema,
   type WorkspaceTarget as CliTarget,
 } from '@moor/protocol/workspace-target';
-export const catalogSchema = z
-  .array(
-    z.object({
-      id,
-      name: z.string(),
-      hosts: z.array(
-        z.object({
-          id,
-          deviceId: id,
-          machineId: id,
-          runtimeWorkspaceId: id,
-          name: z.string(),
-          online: z.boolean(),
-          agents: z.array(agentSchema),
-        }),
-      ),
-      projects: z.array(z.object({ id, name: z.string() })),
-      replicas: z.array(
-        z.object({
-          id,
-          projectId: id,
-          hostId: id,
-          localProjectId: id,
-          available: z.boolean(),
-          rootPath: z.string().optional(),
-        }),
-      ),
-    }),
-  )
-  .max(1000);
-export const devicesSchema = z
-  .array(
-    z.object({
-      id,
-      name: z.string(),
-      online: z.boolean(),
-      workspaces: z.array(runtimeWorkspaceSchema),
-    }),
-  )
-  .max(1000);
+export { catalogSchema, devicesSchema };
 export type CliResolvedTarget = {
   target: CliTarget;
   workspaceName: string;

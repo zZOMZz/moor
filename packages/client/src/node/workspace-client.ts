@@ -12,7 +12,10 @@ import {
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { CliHttp, CliHttpError } from './http';
-import { catalogSchema, devicesSchema } from './targets';
+import {
+  workspaceCatalogSnapshotSchema,
+  workspaceReplicaContextSchema,
+} from '@moor/protocol/workspace-catalog';
 import { type HostCommand, type HostCommandMethod } from '@moor/protocol/host-command';
 import { AppError } from '@moor/protocol/protocol';
 import { validateHostResponse } from '@moor/protocol/host-response';
@@ -153,17 +156,13 @@ export class DesktopWorkspaceClient {
   }
   private async catalog(): Promise<DesktopWorkspaceCatalog> {
     this.current();
-    const identity = await this.#http.identityContext(),
+    const snapshot = workspaceCatalogSnapshotSchema.parse(
+      await this.#http.json('/api/workspace-catalog', undefined, 16 * 1024 * 1024),
+    );
+    const { identity, workspaces: catalog, devices } = snapshot,
       owner = identity.owner;
     if (this.#owner && owner !== this.#owner) throw unavailable();
     this.#owner = owner;
-    const catalog = catalogSchema.parse(
-      await this.#http.json('/api/workspaces', undefined, 8 * 1024 * 1024),
-    );
-    const devices = devicesSchema.parse(
-      await this.#http.json('/api/devices', undefined, 8 * 1024 * 1024),
-    );
-    if (!isDeepStrictEqual(await this.#http.identityContext(), identity)) throw unavailable();
     this.current();
     const unique = (rows: { id: string }[]) => {
       if (new Set(rows.map((row) => row.id)).size !== rows.length) throw unavailable();
@@ -226,12 +225,52 @@ export class DesktopWorkspaceClient {
     });
   }
   private async resolve(target: DesktopWorkspaceTarget, actor?: AttentionActor) {
-    const catalog = await this.catalog();
-    if (actor && !isDeepStrictEqual(catalog.actor, actorSchema.parse(actor))) throw unavailable();
+    this.current();
+    const context = workspaceReplicaContextSchema.parse(
+      await this.#http.json(
+        '/api/workspaces/' +
+          encodeURIComponent(target.catalogWorkspaceId) +
+          '/replicas/' +
+          encodeURIComponent(target.replicaId) +
+          '/context',
+        undefined,
+        8 * 1024 * 1024,
+      ),
+    );
+    this.current();
+    if (
+      context.identity.owner !== this.#owner ||
+      (actor && !isDeepStrictEqual(context.identity.actor, actorSchema.parse(actor)))
+    )
+      throw unavailable();
     const { sessionId: _sessionId, ...project } = target;
-    const found = catalog.targets.filter((entry) => isDeepStrictEqual(entry.target, project));
-    if (found.length !== 1 || !found[0]!.online) throw unavailable();
-    return found[0]!;
+    const selected = {
+      ...context.target,
+      serverKey: this.options.localIdentity
+        ? 'local:' + context.runtime.machineId
+        : this.#http.origin,
+    };
+    if (!isDeepStrictEqual(selected, project)) throw unavailable();
+    if (
+      this.options.localIdentity &&
+      !isDeepStrictEqual(
+        {
+          owner: context.identity.owner,
+          deviceId: context.target.deviceId,
+          workspaceId: context.runtime.id,
+          machineId: context.runtime.machineId,
+          userId: context.runtime.userId,
+        },
+        this.options.localIdentity,
+      )
+    )
+      throw unavailable();
+    return {
+      target: selected,
+      runtime: context.runtime,
+      actor: context.identity.actor,
+      mappingVersion: context.mappingVersion,
+    };
   }
   async request(raw: unknown): Promise<unknown> {
     try {
@@ -271,7 +310,12 @@ export class DesktopWorkspaceClient {
       }
       this.current();
       const after = await this.resolve(request.target, attention ? request.actor : undefined);
-      if (!isDeepStrictEqual(selected.target, after.target)) throw unavailable();
+      if (
+        !isDeepStrictEqual(selected.target, after.target) ||
+        !isDeepStrictEqual(selected.actor, after.actor) ||
+        selected.mappingVersion !== after.mappingVersion
+      )
+        throw unavailable();
       if (failure) throw failure;
       return {
         ok: true,
