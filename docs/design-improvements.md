@@ -15,7 +15,7 @@
 | D01 加密退场         | 仓库验证通过 | 专属UI、v4、secure CLI、构建资源与E2EE包已退场；旧数据只读保留及导出                                              | [退场说明](end-to-end-encryption.md)、[退场回归](../tests/integration/retired-e2ee.test.ts)              |
 | D02 客户端统一       | 仓库验证通过 | Web/Desktop共用界面、控制器、传输和账本；原Web记录按完整身份迁移，离线不执行                                      | [统一浏览器](browser-client.md)、[客户端回归](../tests/integration/browser-workspace.test.ts)            |
 | D03 旧功能运行退场   | 仓库验证通过 | 停止预览、角色、旧父子任务和逐回合MCP新增运行；历史读取/原请求检查保留，410不改写旧unknown                        | [退场回归](../tests/integration/retired-session-features.test.ts)、[当前范围](capabilities.md)           |
-| D04 范围扩张         | 范围已明确   | 冻结平台扩张，保留当前持久任务语义；后续交付继续受核心设备门槛约束                                                | [路线图](roadmap.md)                                                                                     |
+| D04 范围扩张         | 清单已明确   | 冻结平台扩张，逐项列出本轮用户场景和负责角色；保留当前持久任务语义，后续交付继续受核心设备门槛约束                | [发布清单](capabilities.md#本轮发布清单与负责人)、[路线图](roadmap.md)                                   |
 | D05 身份与入口       | 仓库验证通过 | 单工作区简化；按完整身份归组/筛选项目，搜索项目和电脑；配对核实远端workspace；新内部上下文区分catalog/runtime名称 | [概念与身份](concepts.md)、[归组回归](../tests/integration/workspace-project-navigation.test.ts)         |
 | D06 512次寿命限制    | 仓库验证通过 | 原操作按ID独立保存；完成记录退出热索引但保留归档，pending不淘汰                                                   | [同步与存储](sync.md)、[记录存储回归](../tests/integration/workspace-records.test.ts)                    |
 | D07 跨会话误阻塞     | 仓库验证通过 | 界面和执行层共用当前会话pending判断，真正共享资源的约束保留                                                       | [界面回归](../tests/integration/workspace-app.test.ts)                                                   |
@@ -76,10 +76,10 @@
 
 最终构建的Host/CLI合成往返通过，隔离生成的macOS arm64 ad-hoc包也完成包内Electron/Host/CLI往返，包含新窄命令发送、停止、元数据和重启恢复。它仍不是双Mac/iPhone、真实Agent账号或正式签名验收，未部署或公开分发。
 
-## 当前批次与暂停边界
+## 当前批次与统一验收边界
 
-本批已收尾 D05、D09、D10、D14、D16，并同步 D23 文档。当前交付进入验收阶段，后续改造暂停，验收完成后再继续剩余事项。
+本批已收尾 D05、D09、D10、D14、D16，并同步 D23 文档。继续核对设计审查的完成标准并收尾仍有缺口的改造；代码与文档定稿后，对同一最终版本统一执行设备和发布验收。每次代码修改仍单独运行对应仓库检查，不把仓库检查等同于最终验收。
 
-当前仍需操作者完成 D24 的真实双 Mac、iPhone/PWA、真实 Agent 兼容和正式签名/公证验收。仓库中的合成结果、屏幕尺寸模拟与 ad-hoc 包都不能替代这些结论。暂停不代表整个目标已经完成；验收步骤见[设备验收](validation.md)，当前提供的功能见[能力表](capabilities.md)。
+当前仍需操作者完成 D24 的真实双 Mac、iPhone/PWA、真实 Agent 兼容和正式签名/公证验收。仓库中的合成结果、屏幕尺寸模拟与 ad-hoc 包都不能替代这些结论。完成改造不代表整个目标已经完成；验收步骤见[设备验收](validation.md)，当前提供的功能见[能力表](capabilities.md)。
 
 以下是明确保留的兼容与性能边界，并非偷偷删除或替代：旧 Mutation 的原正文、编号和摘要不迁写，Host无法区分仅保存在旧客户端的pending与新构造的同形Mutation，所以严格兼容入口仍保留。新用户请求不再生成CRDT，Host内部已持久队列命令仍可使用原适配，恢复政策不变。TaskDoc继续使用已约定的Loro格式，不在本批整体替换存储；标题子串筛选仍可能扫描本项目的索引候选，不能将其描述为常数时间搜索。
