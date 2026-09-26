@@ -12,15 +12,23 @@ const nodeBuffer = (globalThis as typeof globalThis & { Buffer?: Base64Buffer })
 
 export const encode = (bytes: Uint8Array): string => {
   if (nodeBuffer) return nodeBuffer.from(bytes).toString('base64');
+  const native = (bytes as Uint8Array & { toBase64?: () => string }).toBase64;
+  if (typeof native === 'function') return native.call(bytes);
   let s = '';
   for (let i = 0; i < bytes.length; i += 8192)
     s += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(s);
 };
-export const decode = (s: string): Uint8Array =>
-  nodeBuffer
-    ? new Uint8Array(nodeBuffer.from(s, 'base64'))
-    : Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+export const decode = (s: string): Uint8Array => {
+  if (nodeBuffer) return new Uint8Array(nodeBuffer.from(s, 'base64'));
+  const native = (Uint8Array as typeof Uint8Array & { fromBase64?: (s: string) => Uint8Array })
+    .fromBase64;
+  if (typeof native === 'function') return native.call(Uint8Array, s);
+  const binary = atob(s);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+};
 export const vv = (d: LoroDoc) => encode(d.version().encode());
 export function delta(d: LoroDoc, version?: string) {
   return encode(
