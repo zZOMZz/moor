@@ -134,6 +134,7 @@ async function fixture(
     github?: (projectId: string) => SessionGithubOptions;
     githubWrite?: (projectId: string) => SessionGithubWriteOptions;
     schedule?: (ms: number, work: () => void) => () => void;
+    yieldCache?: () => Promise<void>;
     runCapabilities?: typeof syntheticCapabilities;
   } = {},
 ) {
@@ -375,7 +376,7 @@ async function fixture(
     request,
     store,
     schedule: config.schedule ?? (() => () => {}),
-    yieldCache: () => Promise.resolve(),
+    yieldCache: config.yieldCache ?? (() => Promise.resolve()),
   });
   t.after(() => {
     completion.resolve();
@@ -587,6 +588,63 @@ test('a failed cache commit retains the imported delta for the next sync and che
   const cached = await f.store.cachedSession(current.scope!, id, () => {});
   assert.deepEqual(cached!.history, current.session!.history);
   assert.equal(cached!.version, current.session!.version);
+});
+
+test('catalog reconnection resumes offline caching without reopening the selected session', async (t) => {
+  for (const blockedWriter of [false, true]) {
+    await t.test(
+      blockedWriter ? 'previous cache writer is pending' : 'previous cache writer is idle',
+      async (t) => {
+        const release = signal();
+        let yields = 0,
+          watchCache = false;
+        const f = await fixture(t, {
+            yieldCache: () => {
+              if (!watchCache) return Promise.resolve();
+              yields++;
+              // Bound a broken writer without sleeps or a runaway microtask loop.
+              if ((blockedWriter && yields === 1) || yields > 4) return release.promise;
+              return Promise.resolve();
+            },
+          }),
+          id = await f.create();
+        await f.controller.saveDraft('Start reconnect stream', {});
+        await f.controller.send();
+        await f.started.promise;
+        await f.controller.synchronize();
+        await cacheSettled(f.controller);
+        watchCache = true;
+        try {
+          if (blockedWriter) await f.controller.refreshSession();
+          f.fault.unavailable = true;
+          await assert.rejects(f.controller.refreshCatalog('local'));
+          f.fault.unavailable = false;
+          await f.controller.refreshCatalog('local');
+          f.callbacks().update({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Confirmed after reconnect' },
+          });
+          await f.controller.refreshSession();
+          // This synthetic transport and storage drain through microtasks; the
+          // old cache barrier stays closed while the recovered writer commits.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(f.controller.state.sessionId, id);
+          assert.equal(f.controller.state.sessionCache?.status, 'saved');
+          const cached = await f.store.cachedSession(f.controller.state.scope!, id, () => {});
+          assert.equal(cached?.version, f.controller.state.session!.version);
+          assert.match(JSON.stringify(cached?.history), /Confirmed after reconnect/);
+          const saved = f.controller.state.sessionCache;
+          release.resolve();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.equal(yields, blockedWriter ? 2 : 1, 'an invalidated writer never restarts');
+          assert.equal(f.controller.state.sessionCache, saved);
+        } finally {
+          f.controller.close();
+          release.resolve();
+        }
+      },
+    );
+  }
 });
 
 test('active text and permission notifications publish while the sidebar list and cache commits are blocked', async (t) => {
