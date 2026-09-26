@@ -530,6 +530,15 @@ app
     await until(
       `Math.abs(document.querySelector('.project-content-docked').getBoundingClientRect().width - ${reviewWidth}) < 2`,
     );
+    await read(`(() => {
+      window.__moorWidthWrites = 0;
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === 'moor-content-dock-width-v1') window.__moorWidthWrites++;
+        return original.call(this, key, value);
+      };
+      window.__moorRestoreWidthStorage = () => { Storage.prototype.setItem = original; };
+    })()`);
     const resizeStart = await read(
       `(() => {const node = document.querySelector('[aria-label="调整审查面板宽度"]'), r = node.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), width: Number(node.getAttribute('aria-valuenow'))};})()`,
     );
@@ -546,6 +555,10 @@ app
       y: resizeStart.y,
       modifiers: ['leftButtonDown'],
     });
+    await until(
+      `Number(document.querySelector('[aria-label="调整审查面板宽度"]').getAttribute('aria-valuenow')) > ${resizeStart.width}`,
+    );
+    assert.equal(await read('window.__moorWidthWrites'), 0, 'drag frames never persist width');
     win.webContents.sendInputEvent({
       type: 'mouseUp',
       x: resizeStart.x - 40,
@@ -560,6 +573,12 @@ app
       `Number(localStorage.getItem('moor-content-dock-width-v1'))`,
     );
     assert(savedReviewWidth > resizeStart.width, 'dragging saves the review width');
+    assert.equal(
+      await read('window.__moorWidthWrites'),
+      1,
+      'pointerup persists only the final width',
+    );
+    await read('window.__moorRestoreWidthStorage()');
     await read(`document.querySelector('[aria-label="关闭文件与变更"]').click()`);
     await until(`!document.querySelector('.project-content-docked')`);
     assert.equal(

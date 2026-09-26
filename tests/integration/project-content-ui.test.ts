@@ -141,7 +141,6 @@ test('mobile project panel distinguishes current files, cached history and incom
         source: 'cache',
         stale: true,
         cacheSaved: true,
-        bytes: new TextEncoder().encode(text),
         text,
         result: {
           ...scope,
@@ -179,7 +178,6 @@ test('mobile project panel distinguishes current files, cached history and incom
       currentFile: {
         ...props.currentFile!,
         text: largeText,
-        bytes: new TextEncoder().encode(largeText),
         result: {
           ...props.currentFile!.result,
           path: 'quote-boundary.ts',

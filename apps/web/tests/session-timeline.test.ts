@@ -45,8 +45,8 @@ test('shared timeline retains actionable records and share plain text, collapsed
   const html = renderToStaticMarkup(
     createElement(SessionInformation, { history: [turn], disabled: false, onCommand: () => {} }),
   );
-  assert.match(html, /10/);
-  assert.match(html, /未提供/);
+  assert.match(html, /会话信息/);
+  assert.doesNotMatch(html, /session-information-panel|最近上报/);
   assert.doesNotMatch(html, /<details[^>]* open/);
 });
 test('tool disclosures preserve transcript order and keep active work outside collapsed groups', () => {

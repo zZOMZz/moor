@@ -120,6 +120,35 @@ function readable(value: unknown) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
 
+const WorkspaceItemDetails = memo(function WorkspaceItemDetails({
+  entry,
+}: {
+  entry: Record<string, unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        {readable(
+          entry.title ??
+            (entry.type === 'thought'
+              ? '思考过程'
+              : entry.type === 'tool_call'
+                ? '工具调用'
+                : '回合详情'),
+        )}
+      </summary>
+      {open && <pre>{readable(entry)}</pre>}
+    </details>
+  );
+});
+
+// Authorization is still derived from the current scoped snapshot. Only the
+// unchanged, already-reviewed display string can skip JSON parsing/formatting.
+const PermissionContents = memo(function PermissionContents({ itemJson }: { itemJson: string }) {
+  return <pre>{readable(JSON.parse(itemJson))}</pre>;
+});
+
 const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory({
   history,
   scope,
@@ -150,7 +179,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
   forkPanel: RefObject<WorkspaceForkHandle | null>;
 }) {
   const renderItem = useCallback(
-    (item: unknown, _turn: TimelineTurn, index: number) => {
+    (item: unknown, index: number) => {
       if (!item || typeof item !== 'object') return null;
       const entry = item as Record<string, unknown>;
       if (entry.type === 'attachment') {
@@ -183,21 +212,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
             {readable(entry.text ?? entry.message ?? entry.meta ?? entry.name)}
           </p>
         );
-      return (
-        <details key={index}>
-          <summary>
-            {readable(
-              entry.title ??
-                (entry.type === 'thought'
-                  ? '思考过程'
-                  : entry.type === 'tool_call'
-                    ? '工具调用'
-                    : '回合详情'),
-            )}
-          </summary>
-          <pre>{readable(entry)}</pre>
-        </details>
-      );
+      return <WorkspaceItemDetails key={index} entry={entry} />;
     },
     [controller, scope, sessionId, busy, run],
   );
@@ -208,7 +223,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
         .map((review) => (
           <section className="workspace-permission" key={review.requestId} aria-label="待审批操作">
             <strong>需要你的确认</strong>
-            <pre>{readable(JSON.parse(review.itemJson))}</pre>
+            <PermissionContents itemJson={review.itemJson} />
             {review.options.map((option) => (
               <button
                 key={option.optionId}
@@ -398,6 +413,15 @@ function WorkspaceConversation({
     () => (session ? latestContextUsage(session.history) : undefined),
     [session?.history],
   );
+  const changeCount = useMemo(
+    () =>
+      session?.history.reduce(
+        (count, turn) =>
+          count + (hasTurnFileChanges(turn) ? turnFileChanges(turn)!.changeCount : 0),
+        0,
+      ) ?? 0,
+    [session?.history],
+  );
   if (!session || !state.sessionId || !state.scope) {
     const loading = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
     if (loading)
@@ -481,10 +505,6 @@ function WorkspaceConversation({
     !retiredTask &&
     !activeTurns.length &&
     !state.ledger?.interactions?.[state.sessionId]?.value.pending;
-  const changeCount = session.history.reduce(
-    (count, turn) => count + (hasTurnFileChanges(turn) ? turnFileChanges(turn)!.changeCount : 0),
-    0,
-  );
   const activityLabel = state.offline
     ? '离线'
     : sessionRefreshing
@@ -733,6 +753,11 @@ function WorkspaceConversation({
               : state.offline
                 ? '执行电脑暂不可达，显示本机缓存；草稿仍可编辑。'
                 : '连接已恢复，当前会话尚未重新同步，正在显示本机缓存。'}
+          </p>
+        )}
+        {sessionWritable && state.sessionCache?.status === 'failed' && (
+          <p className="workspace-status" role="status">
+            会话已由主机确认，本机离线缓存未保存。
           </p>
         )}
         <WorkspaceConversationHistory

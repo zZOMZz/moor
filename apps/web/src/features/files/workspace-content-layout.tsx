@@ -1,4 +1,11 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 
 const widthKey = 'moor-content-dock-width-v1';
 const minimumWidth = 320;
@@ -22,9 +29,6 @@ export function useContentDockLayout(open: boolean) {
   const [preferred, setPreferred] = useState(initialWidth);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
-    if (!open) setExpanded(false);
-  }, [open]);
-  useEffect(() => {
     if (!container) return;
     const measure = () => {
       const width = container.getBoundingClientRect().width;
@@ -43,10 +47,57 @@ export function useContentDockLayout(open: boolean) {
   const width = Math.round(
     Math.min(max, Math.max(minimumWidth, expanded ? available * 0.62 : preferred)),
   );
-  const resize = (next: number) => {
-    const value = Math.round(Math.min(max, Math.max(minimumWidth, next)));
+  const latest = useRef({ container, max, preferred, expanded });
+  useLayoutEffect(() => {
+    latest.current = { container, max, preferred, expanded };
+  });
+  const frame = useRef<number | undefined>(undefined);
+  const drag = useRef<{
+    pointerId: number;
+    preferred: number;
+    expanded: boolean;
+    clientX?: number;
+  } | null>(null);
+  const cancelFrame = useCallback(() => {
+    if (frame.current !== undefined) cancelAnimationFrame(frame.current);
+    frame.current = undefined;
+  }, []);
+  const applyWidth = useCallback((next: number) => {
+    const value = Math.round(Math.min(latest.current.max, Math.max(minimumWidth, next)));
     setExpanded(false);
     setPreferred(value);
+    return value;
+  }, []);
+  const applyPointer = useCallback(() => {
+    frame.current = undefined;
+    const current = drag.current;
+    const element = latest.current.container;
+    if (current?.clientX === undefined || !element) return;
+    return applyWidth(element.getBoundingClientRect().right - current.clientX);
+  }, [applyWidth]);
+  const cancelDrag = useCallback(() => {
+    cancelFrame();
+    const current = drag.current;
+    drag.current = null;
+    if (current) {
+      setPreferred(current.preferred);
+      setExpanded(current.expanded);
+    }
+  }, [cancelFrame]);
+  useEffect(() => {
+    if (!open) {
+      cancelDrag();
+      setExpanded(false);
+    }
+  }, [open, cancelDrag]);
+  useEffect(
+    () => () => {
+      cancelFrame();
+      drag.current = null;
+    },
+    [container, cancelFrame],
+  );
+  const persist = (value: number) => {
     try {
       localStorage.setItem(widthKey, String(value));
     } catch {
@@ -56,7 +107,7 @@ export function useContentDockLayout(open: boolean) {
   return {
     ref: setContainer,
     expanded,
-    toggleExpanded: () => setExpanded((value) => !value),
+    toggleExpanded: useCallback(() => setExpanded((value) => !value), []),
     style: { '--workspace-content-width': width + 'px' } as CSSProperties,
     sizer: (
       <div
@@ -71,15 +122,36 @@ export function useContentDockLayout(open: boolean) {
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
+          if (drag.current) return;
+          drag.current = {
+            pointerId: event.pointerId,
+            preferred: latest.current.preferred,
+            expanded: latest.current.expanded,
+          };
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId) && container)
-            resize(container.getBoundingClientRect().right - event.clientX);
+          if (drag.current?.pointerId !== event.pointerId) return;
+          drag.current.clientX = event.clientX;
+          if (frame.current === undefined) frame.current = requestAnimationFrame(applyPointer);
         }}
         onPointerUp={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          cancelFrame();
+          if (drag.current.clientX !== undefined) {
+            drag.current.clientX = event.clientX;
+            const value = applyPointer();
+            if (value !== undefined) persist(value);
+          }
+          drag.current = null;
           if (event.currentTarget.hasPointerCapture(event.pointerId))
             event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          if (drag.current?.pointerId === event.pointerId) cancelDrag();
+        }}
+        onLostPointerCapture={(event) => {
+          if (drag.current?.pointerId === event.pointerId) cancelDrag();
         }}
         onKeyDown={(event) => {
           const next = {
@@ -90,7 +162,8 @@ export function useContentDockLayout(open: boolean) {
           }[event.key];
           if (next !== undefined) {
             event.preventDefault();
-            resize(next);
+            cancelDrag();
+            persist(applyWidth(next));
           }
         }}
       />

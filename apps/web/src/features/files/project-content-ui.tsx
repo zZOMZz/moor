@@ -23,6 +23,8 @@ import {
   X,
 } from 'lucide-react';
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -49,7 +51,7 @@ export type ProjectContentPanelProps = {
   busy?: boolean;
   error?: string;
   tree?: ProjectContentView<ProjectTreeResult>;
-  currentFile?: FileContentView;
+  currentFile?: Omit<FileContentView, 'bytes'>;
   currentUnavailable?: { path: string; message: string };
   turns: ProjectTurnChoice[];
   turnId?: string;
@@ -311,7 +313,7 @@ function CurrentFilePreview({
   value,
   onQuote,
 }: {
-  value: FileContentView;
+  value: Omit<FileContentView, 'bytes'>;
   onQuote?: (text: string) => void;
 }) {
   const controls = useLineSelection();
@@ -320,6 +322,10 @@ function CurrentFilePreview({
   const { result, text } = value;
   const isMarkdown = /\.(md|markdown)$/i.test(result.path);
   const visible = full ? text : text?.slice(0, 120_000);
+  const html = useMemo(
+    () => (isMarkdown && !raw ? markdown(visible ?? '') : ''),
+    [isMarkdown, raw, visible],
+  );
   return (
     <>
       <div className="project-preview-heading">
@@ -367,10 +373,7 @@ function CurrentFilePreview({
         <p className="subtle">二进制文件，不提供文本预览。可引用文件标识。</p>
       ) : isMarkdown && !raw ? (
         <>
-          <div
-            className="project-markdown"
-            dangerouslySetInnerHTML={{ __html: markdown(visible ?? '') }}
-          />
+          <div className="project-markdown" dangerouslySetInnerHTML={{ __html: html }} />
           {visible?.length !== text.length && (
             <button type="button" onClick={() => setFull(true)}>
               预览已截断，显示完整文本
@@ -699,15 +702,19 @@ function SourceDetails({ props }: { props: ProjectContentPanelProps }) {
     </details>
   );
 }
-export function ProjectContentPanel(props: ProjectContentPanelProps) {
+export const ProjectContentPanel = memo(function ProjectContentPanel(
+  props: ProjectContentPanelProps,
+) {
   const quoteClosing = useRef(false);
-  const onQuote = props.onQuote
-    ? (text: string) => {
-        // Modal quotes deliberately move focus into the draft, not back to the opener.
-        quoteClosing.current = !props.docked;
-        props.onQuote!(text);
-      }
-    : undefined;
+  const quote = useCallback(
+    (text: string) => {
+      // Modal quotes deliberately move focus into the draft, not back to the opener.
+      quoteClosing.current = !props.docked;
+      props.onQuote?.(text);
+    },
+    [props.docked, props.onQuote],
+  );
+  const onQuote = props.onQuote ? quote : undefined;
   const [directory, setDirectory] = useState('');
   const [listOpen, setListOpen] = useState(true);
   const tree = props.tree?.result;
@@ -1029,4 +1036,4 @@ export function ProjectContentPanel(props: ProjectContentPanelProps) {
       </div>
     </ContentFrame>
   );
-}
+});

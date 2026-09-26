@@ -3,7 +3,7 @@ export const esc = (value: unknown): string =>
     /[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
-function inline(text: string): string {
+export function markdownInline(text: string): string {
   const tokens = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^\s)]+)\)/g;
   let html = '',
     from = 0;
@@ -25,10 +25,13 @@ function inline(text: string): string {
   }
   return html + esc(text.slice(from));
 }
+export function plainCode(text: string): string {
+  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}
 export function codeBlock(text: string, label = '代码'): string {
   // Only display a bounded preview of large tool output; never run terminal escape sequences or HTML.
   const limit = 120_000;
-  const value = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  const value = plainCode(text);
   return `<div class="code-block"><div class="code-toolbar"><span>${esc(label)}</span><button type="button" data-copy>复制</button></div><pre><code>${esc(value.slice(0, limit))}</code></pre>${value.length > limit ? '<small>输出预览已截断；完整记录保留在执行电脑。</small>' : ''}</div>`;
 }
 // A deliberately small Markdown renderer. Raw HTML and images stay text; no HTML from the agent is trusted.
@@ -47,21 +50,22 @@ export function markdown(text: string): string {
       if (i < lines.length) i++;
       html += codeBlock(code.join('\n'), fence[1].trim() || '代码');
     } else if (/^#{1,6} /.test(line)) {
-      const m = line.match(/^(#{1,6}) (.*)$/)!;
+      const m = line.match(/^(#{1,6}) ([^\n]*)$/)!;
       const n = Math.min(m[1].length + 1, 6);
-      html += `<h${n}>${inline(m[2])}</h${n}>`;
+      html += `<h${n}>${markdownInline(m[2])}</h${n}>`;
     } else if (/^([-*] |\d+\. )/.test(line)) {
       const ordered = /^\d/.test(line),
         re = ordered ? /^\d+\. / : /^[-*] /;
       const items = [line.replace(re, '')];
       while (i < lines.length && re.test(lines[i])) items.push(lines[i++].replace(re, ''));
       const tag = ordered ? 'ol' : 'ul';
-      html += `<${tag}>${items.map((s) => `<li>${inline(s)}</li>`).join('')}</${tag}>`;
-    } else if (line.startsWith('> ')) html += `<blockquote>${inline(line.slice(2))}</blockquote>`;
+      html += `<${tag}>${items.map((s) => `<li>${markdownInline(s)}</li>`).join('')}</${tag}>`;
+    } else if (line.startsWith('> '))
+      html += `<blockquote>${markdownInline(line.slice(2))}</blockquote>`;
     else {
       const p = [line];
       while (i < lines.length && !boundary(lines[i])) p.push(lines[i++]);
-      html += `<p>${p.map(inline).join('<br>')}</p>`;
+      html += `<p>${p.map(markdownInline).join('<br>')}</p>`;
     }
   }
   return `<div class="markdown">${html}</div>`;

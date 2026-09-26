@@ -30,6 +30,22 @@ window.__benchUpdate=(index)=>{
  next.version='bench-'+(index+1);state.session=next;emit();
 };
 window.__benchFocus=(turnId)=>{state.focusedTurnId=turnId;emit();};
+window.__benchPanelUpdate=index=>{
+ const turns=state.session.history;
+ state.session={...state.session,version:'panel-'+index,history:turns.map((turn,i)=>i===turns.length-1?{...turn,items:[...turn.items,{type:'text',text:'Panel concurrent update '+index}]}:turn)};emit();
+};
+const benchmarkFreeze=value=>{if(value&&typeof value==='object'){for(const child of Object.values(value))benchmarkFreeze(child);Object.freeze(value);}return value;};
+let benchmarkPermissionTool;
+const benchmarkPermissionToolFor=index=>benchmarkFreeze({type:'tool_call',toolCallId:'approval-tool-'+index,title:'Approval display '+index,status:'pending',rawInput:{content:'PERMISSION_PAYLOAD_'+index+' '+('x'.repeat(128*1024))},permissionRequest:{requestId:'approval-request-'+index,options:[{optionId:'allow-'+index,name:'允许本次合成操作 '+index,kind:'allow_once'}]}});
+window.__benchPermissionLoad=()=>{
+ benchmarkPermissionTool=benchmarkPermissionToolFor(1);
+ state.offline=false;state.sessionLoad={status:'ready',source:'host'};
+ state.session={...state.session,version:'approval-0',online:true,synced:true,persisted:true,meta:{...state.session.meta,id:state.sessionId,userId:target.userId,machineId:target.machineId,project:{kind:'local',localProjectId:target.localProjectId},latestUserMsgId:'approval-user',lastHandledUserMsgId:'approval-user',status:{type:'working'}},history:[benchmarkFreeze({id:'approval-user',role:'user',finished:true,items:[{type:'text',text:'Review synthetic permission'}]}),{id:'approval-assistant',role:'assistant',userTurnId:'approval-user',finished:false,items:[{type:'text',text:'Approval concurrent stream'},benchmarkPermissionTool]}]};emit();
+};
+window.__benchPermissionUpdate=index=>{const turns=state.session.history;state.session={...state.session,version:'approval-stream-'+index,history:[turns[0],{...turns[1],items:[{type:'text',text:turns[1].items[0].text+' next '+index},benchmarkPermissionTool]}]};emit();};
+window.__benchPermissionOffline=value=>{state.offline=value;state.sessionLoad={status:'ready',source:value?'cache':'host'};state.session={...state.session,online:!value};emit();};
+window.__benchPermissionReplace=()=>{benchmarkPermissionTool=benchmarkPermissionToolFor(2);window.__benchPermissionUpdate('replacement');};
+controller.respondPermission=async(review,outcome)=>{calls.push('permission:'+review.requestId+':'+outcome.optionId);};
 let benchmarkReplica, benchmarkDoc, benchmarkHost, benchmarkResponse;
 window.__benchReplicaLoad=()=>{
  window.__benchLoad();state.focusedTurnId=undefined;
@@ -75,7 +91,7 @@ const renderingInstrumentation = {
     b.onLoad(
       {
         filter:
-          /\/(?:content\.ts|workspace-app\.tsx|composer-input\.tsx|client-session-replica\.ts)$/,
+          /\/(?:content\.ts|project-content\.ts|permission-review\.ts|streaming-markdown\.tsx|workspace-app\.tsx|composer-input\.tsx|client-session-replica\.ts)$/,
       },
       ({ path: file }) => {
         let code = fs.readFileSync(file, 'utf8');
@@ -93,7 +109,32 @@ const renderingInstrumentation = {
             "export function codeBlock(text: string, label = '代码'): string {",
             `export function codeBlock(text: string, label = '代码'): string {globalThis.__benchCount?.('codeBlockCalls');`,
           );
+          if (code.includes('export function plainCode(text: string): string {'))
+            inject(
+              'export function plainCode(text: string): string {',
+              `export function plainCode(text: string): string {globalThis.__benchCount?.('plainCodeCalls');globalThis.__benchCount?.('plainCodeChars',text.length);`,
+            );
         }
+        if (file.endsWith('/streaming-markdown.tsx')) {
+          inject(
+            'function line(state: Cursor, text: string): Cursor {',
+            `function line(state: Cursor, text: string): Cursor {globalThis.__benchCount?.('parsedLines');globalThis.__benchCount?.('parsedLineChars',text.length);`,
+          );
+          inject(
+            'function update(previous: Document | undefined, source: string): Document {',
+            `function update(previous: Document | undefined, source: string): Document {globalThis.__benchCount?.('streamingUpdates');if(source.includes('SETTLED'))globalThis.__benchCount?.('settledStreamingUpdates');`,
+          );
+        }
+        if (file.endsWith('/project-content.ts'))
+          inject(
+            'export function compareTextLines(before: string, after: string): DiffLine[] | undefined {',
+            `export function compareTextLines(before: string, after: string): DiffLine[] | undefined {globalThis.__benchCount?.('fileDiffComparisons');`,
+          );
+        if (file.endsWith('/permission-review.ts'))
+          inject(
+            'const result = JSON.stringify(visit(input, 0));',
+            `globalThis.__benchCount?.('permissionItemSerializations'); const result = JSON.stringify(visit(input, 0));`,
+          );
         if (file.endsWith('/workspace-app.tsx')) {
           inject(
             'function readable(value: unknown) {',
@@ -143,7 +184,7 @@ async function runRenderingWorkload(win, output) {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(field, 'Synthetic draft ' + ${index});
       field.dispatchEvent(new Event('input', { bubbles: true }));
     `
-        : `window.__benchUpdate(${index});`
+        : `window.__bench${kind === 'panel' ? 'PanelUpdate' : kind === 'permission' ? 'PermissionUpdate' : 'Update'}(${JSON.stringify(index)});`
     }
   })`);
   let guard;
@@ -153,7 +194,8 @@ async function runRenderingWorkload(win, output) {
       await frames();
       const initial = await read('window.__benchCounters');
       assert(
-        initial.markdownCalls > 0 && initial.codeBlockCalls > 0,
+        (initial.markdownCalls > 0 && initial.codeBlockCalls > 0) ||
+          (initial.parsedLines > 0 && initial.plainCodeCalls > 0),
         'instrumentation must observe actual initial text and code rendering',
       );
       await commit('input', -1);
@@ -206,6 +248,12 @@ async function runRenderingWorkload(win, output) {
           `${kind} must not serialize closed settled tool results`,
         );
         assert.equal(counts.codeBlockCalls ?? 0, 0, `${kind} must not rebuild settled code blocks`);
+        assert.equal(
+          counts.settledStreamingUpdates ?? 0,
+          0,
+          `${kind} must not revisit settled streaming Markdown`,
+        );
+        assert.equal(counts.plainCodeCalls ?? 0, 0, `${kind} must not reconvert settled code`);
       }
       report.final = await read(`({
         turns: document.querySelectorAll('.workspace-turn').length,
@@ -214,7 +262,15 @@ async function runRenderingWorkload(win, output) {
       })`);
       assert.equal(report.final.turns, 301);
       assert.match(report.final.activeText, /ACTIVE chunk 28/);
-      assert.match(report.final.activeText, /ACTIVE tool result 29/);
+      assert.match(report.final.activeText, /Active synthetic tool/);
+      await read(
+        `document.querySelector('[data-turn-id="active-benchmark"] details > summary').click()`,
+      );
+      await frames();
+      assert.match(
+        await read(`document.querySelector('[data-turn-id="active-benchmark"]').textContent`),
+        /ACTIVE tool result 29/,
+      );
       assert.equal(report.final.input, 'Synthetic draft 29');
       fs.writeFileSync(
         path.join(output, 'rendering-comparison.json'),
@@ -261,6 +317,8 @@ async function runRenderingWorkload(win, output) {
       assert.equal(replicaCounts.settledMarkdownCalls ?? 0, 0);
       assert.equal(replicaCounts.settledToolSerializations ?? 0, 0);
       assert.equal(replicaCounts.codeBlockCalls ?? 0, 0);
+      assert.equal(replicaCounts.settledStreamingUpdates ?? 0, 0);
+      assert.equal(replicaCounts.plainCodeCalls ?? 0, 0);
       assert.equal(
         replicaCounts.fullExports ?? 0,
         0,
@@ -297,6 +355,121 @@ async function runRenderingWorkload(win, output) {
         JSON.stringify(report, null, 2),
       );
       await read('window.__benchReplicaDispose()');
+      if (initial.parsedLines) {
+        await read('window.__moorFixture.fileChanges(1)');
+        await frames();
+        for (const mode of ['markdown', 'diff']) {
+          await read(
+            `document.querySelector('[aria-label="${mode === 'markdown' ? '项目文件' : '查看文件变更'}"]').click()`,
+          );
+          if (mode === 'markdown') {
+            await until(`document.querySelector('[aria-label="查看文件：README.md"]')`);
+            await read(`document.querySelector('[aria-label="查看文件：README.md"]').click()`);
+          }
+          await until(
+            `document.querySelector('${mode === 'markdown' ? '.project-markdown' : '.project-lines'}') && !document.querySelector('.project-loading')`,
+          );
+          await frames();
+          const initialPanel = await read('window.__benchCounters');
+          assert(
+            (mode === 'markdown' ? initialPanel.markdownCalls : initialPanel.fileDiffComparisons) >
+              0,
+            'panel instrumentation observes initial ' + mode,
+          );
+          await read('window.__benchCounters = {}');
+          for (let index = 0; index < 10; index++) {
+            await commit('input', index);
+            await commit('panel', mode + '-' + index);
+            await frames();
+          }
+          const counts = await read('window.__benchCounters');
+          assert.equal(
+            counts.markdownCalls ?? 0,
+            0,
+            'concurrent draft/stream does not rebuild a stable file preview',
+          );
+          assert.equal(
+            counts.fileDiffComparisons ?? 0,
+            0,
+            'concurrent draft/stream does not recompute a stable diff',
+          );
+          report.stages[mode + 'Panel'] = { counts, inputEvents: 10, updates: 10 };
+          await read(`document.querySelector('[aria-label="关闭文件与变更"]').click()`);
+          await until(`!document.querySelector('.project-content-docked')`);
+        }
+        fs.writeFileSync(
+          path.join(output, 'rendering-comparison.json'),
+          JSON.stringify(report, null, 2),
+        );
+      }
+      await read('window.__benchCounters = {}; window.__benchPermissionLoad()');
+      await until(
+        `document.querySelector('.workspace-permission pre')?.textContent.includes('PERMISSION_PAYLOAD_1')`,
+      );
+      const permissionInitial = await read('window.__benchCounters');
+      assert.equal(
+        permissionInitial.permissionItemSerializations,
+        1,
+        'deeply frozen permission contents serialize once across both approval consumers',
+      );
+      assert.equal(
+        permissionInitial.toolSerializations,
+        1,
+        'display formats the initial approval once',
+      );
+      await read('window.__benchCounters = {}');
+      for (let index = 0; index < 10; index++) {
+        await commit('input', index);
+        await commit('permission', index);
+        await frames();
+      }
+      const permissionCounts = await read('window.__benchCounters');
+      assert.equal(
+        permissionCounts.permissionItemSerializations ?? 0,
+        0,
+        'unchanged frozen permission contents do not serialize on concurrent updates',
+      );
+      assert.equal(
+        permissionCounts.toolSerializations ?? 0,
+        0,
+        'unchanged permission display does not parse and pretty-print on concurrent updates',
+      );
+      const approvalButton = `[...document.querySelectorAll('.workspace-permission button')].find(node=>node.textContent==='允许本次合成操作 1')`;
+      assert.equal(await read(`${approvalButton}.disabled`), false);
+      await read('window.__benchPermissionOffline(true)');
+      await frames();
+      assert.equal(
+        await read(`${approvalButton}.disabled`),
+        true,
+        'offline approval remains disabled despite cached display',
+      );
+      await read('window.__benchPermissionOffline(false)');
+      await frames();
+      assert.equal(await read(`${approvalButton}.disabled`), false);
+      await read('window.__benchPermissionReplace()');
+      await until(
+        `document.querySelector('.workspace-permission pre')?.textContent.includes('PERMISSION_PAYLOAD_2')`,
+      );
+      assert.equal(
+        await read(`!!${approvalButton}`),
+        false,
+        'a new request replaces the old choices',
+      );
+      await read(
+        `[...document.querySelectorAll('.workspace-permission button')].find(node=>node.textContent==='允许本次合成操作 2').click()`,
+      );
+      await until(`window.__moorFixture.calls.includes('permission:approval-request-2:allow-2')`);
+      report.stages.permissionDisplay = {
+        initialCounts: permissionInitial,
+        counts: permissionCounts,
+        inputEvents: 10,
+        updates: 10,
+        payloadBytes: 128 * 1024,
+      };
+      fs.writeFileSync(
+        path.join(output, 'rendering-comparison.json'),
+        JSON.stringify(report, null, 2),
+      );
       await read('window.__benchBehavior()');
       await frames();
       const article = `document.querySelector('[data-turn-id="behavior-turn"]')`;
@@ -316,6 +489,15 @@ async function runRenderingWorkload(win, output) {
         );
       }
       await read(`${article}.querySelector('.session-tool-details > summary').click()`);
+      await until(`${article}.querySelector('.session-tool-content details > summary')`);
+      assert.equal(
+        await read(`${article}.textContent.includes('BODY_TOKEN_FIRST')`),
+        false,
+        'outer group expansion keeps individual payloads lazy',
+      );
+      await read(
+        `[...${article}.querySelectorAll('.session-tool-content details > summary')].forEach(node=>node.click())`,
+      );
       await until(`${article}.textContent.includes('BODY_TOKEN_FIRST')`);
       const order = await read(`${article}.textContent`);
       assert(order.indexOf('BEFORE') < order.indexOf('BODY_TOKEN_FIRST'));
