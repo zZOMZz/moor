@@ -7,7 +7,17 @@ import { PERMISSION_REVIEW_FEATURE } from '@moor/protocol/permission-review';
 import { randomUUID, createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import {
+  Flock,
+  LoroDoc,
+  LoroList,
+  LoroMap,
+  delta,
+  metas,
+  mirror,
+  putMeta,
+  vv,
+} from '@moor/session/model';
 import { readSessionPage } from './page';
 import type { SessionPageRequest } from '@moor/protocol/session-page';
 import { appendSessionText } from '@moor/session/session-output';
@@ -212,6 +222,119 @@ import {
   type ForkOptionsRead,
   type SessionFork,
 } from '@moor/protocol/fork-protocol';
+
+// Derive the wire version from the pinned Flock implementation without exporting
+// the workspace. Prefix scans retain each raw clock, metadata and tombstone.
+const metadataBundleVersion = new Flock().exportJson().version;
+function sessionMetadata(meta: Flock, sessionId: string) {
+  let value: Record<string, unknown> | undefined;
+  for (const row of meta.scan({ prefix: ['m', 'session-' + sessionId], includeRaw: false })) {
+    const field = row.key[2];
+    if (typeof field === 'string' && row.value !== undefined) (value ??= {})[field] = row.value;
+  }
+  return value;
+}
+function sessionMetadataBundle(meta: Flock, sessionId: string) {
+  const name = 'session-' + sessionId;
+  return {
+    version: metadataBundleVersion,
+    entries: Object.fromEntries(
+      ['e', 'm'].flatMap((kind) =>
+        meta.scan({ prefix: [kind, name] }).map(({ key, raw }) => [JSON.stringify(key), raw]),
+      ),
+    ),
+  };
+}
+
+// Replace a supplied tool field in full while retaining unchanged nested CRDT
+// values. A status/sequence update must not retransmit an unchanged large detail.
+function writeToolValue(parent: LoroMap | LoroList, key: string | number, value: any) {
+  // Mirror preserves array positions by persisting undefined entries as null.
+  if (parent instanceof LoroList && value === undefined) value = null;
+  const previous = parent instanceof LoroMap ? parent.get(String(key)) : parent.get(Number(key));
+  if (
+    !(previous instanceof LoroMap) &&
+    !(previous instanceof LoroList) &&
+    isDeepStrictEqual(previous, value)
+  )
+    return;
+  const attach = <T extends LoroMap | LoroList>(container: T): T => {
+    if (parent instanceof LoroMap) return parent.setContainer(String(key), container);
+    const index = Number(key);
+    if (index < parent.length) parent.delete(index, 1);
+    return parent.insertContainer(index, container);
+  };
+  if (Array.isArray(value)) {
+    const target = previous instanceof LoroList ? previous : attach(new LoroList());
+    for (let index = 0; index < value.length; index++) writeToolValue(target, index, value[index]);
+    if (target.length > value.length) target.delete(value.length, target.length - value.length);
+  } else if (value !== null && typeof value === 'object') {
+    const target = previous instanceof LoroMap ? previous : attach(new LoroMap());
+    for (const oldKey of target.keys()) if (!Object.hasOwn(value, oldKey)) target.delete(oldKey);
+    for (const [field, next] of Object.entries(value)) writeToolValue(target, field, next);
+  } else if (parent instanceof LoroMap) {
+    if (value === undefined) parent.delete(String(key));
+    else parent.set(String(key), value);
+  } else {
+    const index = Number(key);
+    if (index < parent.length) parent.delete(index, 1);
+    parent.insert(index, value);
+  }
+}
+
+/** Locate the live tool without decoding settled turns or unrelated tool bodies. */
+function activeTool(doc: LoroDoc, sessionId: string, turnId: string, toolCallId: string) {
+  assert(doc.getMap('session').get('id') === sessionId, 409, '输出会话身份不匹配');
+  const history = doc.getList('history');
+  let turn: LoroMap | undefined;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const candidate = history.get(index);
+    if (candidate instanceof LoroMap && candidate.get('id') === turnId) {
+      turn = candidate;
+      break;
+    }
+  }
+  assert(
+    turn?.get('role') === 'assistant' && turn.get('finished') === false,
+    409,
+    '输出不属于活动助手回合',
+  );
+  const previous = turn.get('items');
+  let items: LoroList;
+  if (previous === undefined || Array.isArray(previous)) {
+    items = turn.setContainer('items', new LoroList());
+    // A legacy JSON list is promoted once, preserving every existing item.
+    if (previous) for (const value of previous) items.push(value);
+  } else {
+    assert(previous instanceof LoroList, 409, '输出内容结构不可用');
+    items = previous;
+  }
+  for (let index = items.length - 1; index >= 0; index--) {
+    const value = items.get(index);
+    if (value instanceof LoroMap) {
+      if (value.get('type') === 'tool_call' && value.get('toolCallId') === toolCallId) return value;
+    } else if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      'type' in value &&
+      value.type === 'tool_call' &&
+      'toolCallId' in value &&
+      value.toolCallId === toolCallId
+    ) {
+      // schema.Any also accepts older inline JSON objects. Promote only the
+      // selected item and retain fields unknown to this Host version.
+      items.delete(index, 1);
+      const tool = items.insertContainer(index, new LoroMap());
+      for (const [key, field] of Object.entries(value)) tool.set(key, field);
+      return tool;
+    }
+  }
+  const tool = items.pushContainer(new LoroMap());
+  tool.set('type', 'tool_call');
+  if (toolCallId !== undefined) tool.set('toolCallId', toolCallId);
+  return tool;
+}
 
 type Active = {
   turnId: string;
@@ -571,7 +694,7 @@ export class HostWorkspace {
   }
   sessionAgent(scope: AttachmentScope) {
     const agent = this.store.agents.binding(scope);
-    const meta = metas(this.meta)['session-' + scope.sessionId];
+    const meta = sessionMetadata(this.meta, scope.sessionId);
     assert(
       agent &&
         agent.id === meta?.agentConfigId &&
@@ -779,7 +902,7 @@ export class HostWorkspace {
     );
   }
   checkProject(sessionId: string, localProjectId?: string) {
-    const meta = metas(this.meta)['session-' + sessionId];
+    const meta = sessionMetadata(this.meta, sessionId);
     assert(
       meta?.machineId === this.workspace.machineId && meta.userId === this.workspace.userId,
       404,
@@ -787,11 +910,11 @@ export class HostWorkspace {
     );
     if (localProjectId)
       assert((meta.project as any)?.localProjectId === localProjectId, 404, '会话不属于该项目副本');
+    return meta;
   }
   async read(sessionId: string, version?: string, localProjectId?: string) {
     this.ensureConnected();
-    this.checkProject(sessionId, localProjectId);
-    const metadata = metas(this.meta)['session-' + sessionId];
+    const metadata = this.checkProject(sessionId, localProjectId);
     const scope = this.attachmentScope(
       {
         workspaceId: this.workspace.id,
@@ -806,14 +929,11 @@ export class HostWorkspace {
     const document = activeDocument ?? this.store.doc(sessionId);
     let update: string;
     try {
-      const identity = mirror(document, sessionId);
-      try {
-        const id = identity.getState().session.id;
-        assert(!id || id === sessionId, 409, '会话文档身份与主机记录不匹配');
-        assert(id, 409, '会话文档身份尚未迁移，请重启执行主机');
-      } finally {
-        identity.dispose();
-      }
+      // Identity lives in the root map; constructing a Mirror here decodes the
+      // whole settled history even when this response contains only one delta.
+      const id = document.getMap('session').get('id');
+      assert(!id || id === sessionId, 409, '会话文档身份与主机记录不匹配');
+      assert(id, 409, '会话文档身份尚未迁移，请重启执行主机');
       update = delta(document, version);
     } finally {
       if (!activeDocument) document.free();
@@ -828,16 +948,8 @@ export class HostWorkspace {
       ...(agent
         ? { accountUsage: this.cachedUsage(agent.id, sessionId, scope.localProjectId) }
         : {}),
-      meta: metas(this.meta)['session-' + sessionId],
-      metaBundle: {
-        ...this.meta.exportJson(),
-        entries: Object.fromEntries(
-          Object.entries(this.meta.exportJson().entries).filter(([key]) => {
-            const parts = JSON.parse(key);
-            return parts[1] === 'session-' + sessionId && ['e', 'm'].includes(parts[0]);
-          }),
-        ),
-      },
+      meta: metadata,
+      metaBundle: sessionMetadataBundle(this.meta, sessionId),
       update,
       synced: true,
       persisted: !this.settlementFailures.has(sessionId),
@@ -1387,7 +1499,7 @@ export class HostWorkspace {
       404,
       '项目副本已从主机移除',
     );
-    if (metas(this.meta)['session-' + input.sessionId])
+    if (sessionMetadata(this.meta, input.sessionId))
       this.checkProject(input.sessionId, input.localProjectId);
     const scope = {
       workspaceId: input.workspaceId,
@@ -2124,6 +2236,58 @@ export class HostWorkspace {
     }
     this.changed(id);
   }
+  private saveAgentAttachment(
+    scope: AttachmentScope,
+    reference: AttachmentReference,
+    bytes: Buffer,
+  ) {
+    const existing = this.store.generatedAttachment(scope, reference);
+    if (existing) return existing;
+    assert(
+      this.store.attachmentBytes(scope) + bytes.length <= MAX_SESSION_ATTACHMENT_BYTES,
+      413,
+      '会话附件容量不足',
+    );
+    this.store.reserveAttachmentScope(scope);
+    this.store.saveAttachment(scope, reference, bytes);
+    this.store.referenceAttachment(scope, reference.attachmentId);
+    return reference;
+  }
+  private updateTool(id: string, run: Active, update: any) {
+    if (run.stopped || this.closed || this.active.get(id) !== run) return;
+    assert(this.meta.get(['m', 'session-' + id, 'id']) === id, 409, '输出会话已变化');
+    const scope = this.attachmentScope(run.projectScope);
+    const previous = run.doc;
+    const from = previous.version();
+    const candidate = previous.fork();
+    candidate.setPeerId(previous.peerIdStr);
+    try {
+      this.store.transaction(() => {
+        const tool = activeTool(candidate, id, run.turnId, update.toolCallId);
+        for (const key of ['title', 'kind', 'status'])
+          if (update[key] !== undefined) writeToolValue(tool, key, update[key]);
+        if (update.content !== undefined)
+          writeToolValue(
+            tool,
+            'content',
+            normalizeAgentToolContent(update.content, (reference, bytes) =>
+              this.saveAgentAttachment(scope, reference, bytes),
+            ),
+          );
+        for (const key of ['rawInput', 'rawOutput'])
+          if (update[key] !== undefined) writeToolValue(tool, key, safeAgentMetadata(update[key]));
+        // Artifact bytes/references, exact output operations and recovery/search
+        // indexes commit together before either memory or notifications advance.
+        this.store.persistOutput(id, candidate, from);
+      });
+      run.doc = candidate;
+    } finally {
+      from.free();
+      if (run.doc === candidate) previous.free();
+      else candidate.free();
+    }
+    this.changed(id);
+  }
   update(id: string, run: Active, update: any) {
     if (
       ['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate) &&
@@ -2156,43 +2320,27 @@ export class HostWorkspace {
       this.changed(id);
       return;
     }
+    if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
+      this.updateTool(id, run, update);
+      return;
+    }
     this.edit(id, run, (turn) => {
       const items = (turn.items ??= []);
-      const meta = metas(this.meta)['session-' + id];
+      const meta = sessionMetadata(this.meta, id)!;
       const scope = this.attachmentScope({
         workspaceId: this.workspace.id,
         localProjectId: (meta.project as any).localProjectId,
         sessionId: id,
       });
-      const save = (reference: AttachmentReference, bytes: Buffer) => {
-        const existing = this.store.generatedAttachment(scope, reference);
-        if (existing) return existing;
-        assert(
-          this.store.attachmentBytes(scope) + bytes.length <= MAX_SESSION_ATTACHMENT_BYTES,
-          413,
-          '会话附件容量不足',
+      if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate))
+        items.push(
+          normalizeAgentContent(update.content, (reference, bytes) =>
+            this.saveAgentAttachment(scope, reference, bytes),
+          ),
         );
-        this.store.reserveAttachmentScope(scope);
-        this.store.saveAttachment(scope, reference, bytes);
-        this.store.referenceAttachment(scope, reference.attachmentId);
-        return reference;
-      };
-      if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate)) {
-        items.push(normalizeAgentContent(update.content, save));
-      } else if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
-        let tool = items.findLast(
-          (i: any) => i.type === 'tool_call' && i.toolCallId === update.toolCallId,
-        );
-        if (!tool) items.push((tool = { type: 'tool_call', toolCallId: update.toolCallId }));
-        for (const key of ['title', 'kind', 'status'])
-          if (update[key] !== undefined) tool[key] = update[key];
-        if (update.content !== undefined)
-          tool.content = normalizeAgentToolContent(update.content, save);
-        for (const key of ['rawInput', 'rawOutput'])
-          if (update[key] !== undefined) tool[key] = safeAgentMetadata(update[key]);
-      }
     });
   }
+
   async execute(id: string, run: Active) {
     try {
       try {

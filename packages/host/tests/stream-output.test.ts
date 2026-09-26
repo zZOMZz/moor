@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LoroDoc, mirror, putMeta } from '@moor/session/model';
+import { LoroDoc, LoroList, LoroMap, mirror, putMeta } from '@moor/session/model';
 import { appendSessionText } from '@moor/session/session-output';
 import {
   buildSessionPermission,
@@ -15,6 +15,7 @@ import {
 import { validateMutation } from '../src/commands/validate-mutation';
 import { RuntimeStore } from '../src/persistence/store';
 import { HostWorkspace } from '../src/sessions/workspace';
+import { safeAgentMetadata } from '../src/agents/attachments';
 import { searchHostSessions } from '../src/sessions/search';
 
 function fixture(
@@ -142,6 +143,13 @@ function fixture(
     close,
     published: () => published,
     opened: () => opened,
+    tool(patch: Record<string, unknown> = {}) {
+      host.update(scope.sessionId, run, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tool-a',
+        ...patch,
+      });
+    },
     emit(text: string, type: 'text' | 'thought' = 'text') {
       host.update(scope.sessionId, run, {
         sessionUpdate: type === 'text' ? 'agent_message_chunk' : 'agent_thought_chunk',
@@ -213,6 +221,258 @@ test('100 streamed chunks persist actual additions without exporting snapshots o
   assert.equal(f.store.searchSource(f.scope.sessionId)!.revision, initial.revision + 100);
   assert.equal(f.store.searchSource(f.scope.sessionId)!.bytes, initial.bytes + bytes);
   assert.equal(count(f, 'session_recovery'), 1);
+  assert.equal(f.opened(), 0);
+});
+
+test('tool creation and 100 updates persist deltas without snapshots or metadata rewrites', (t) => {
+  const f = fixture(t, { history: content(100000) });
+  const source = f.store.searchSource(f.scope.sessionId)!;
+  f.store.journal.db.exec(`
+    CREATE TRIGGER reject_tool_snapshot BEFORE INSERT ON session BEGIN SELECT RAISE(ABORT,'unexpected snapshot'); END;
+    CREATE TRIGGER reject_tool_meta BEFORE INSERT ON runtime_state WHEN NEW.key='meta' BEGIN SELECT RAISE(ABORT,'unexpected metadata'); END;
+  `);
+  const originalExport = LoroDoc.prototype.export;
+  let snapshots = 0;
+  t.mock.method(
+    LoroDoc.prototype,
+    'export',
+    function (this: LoroDoc, mode: Parameters<LoroDoc['export']>[0]) {
+      if (mode.mode === 'snapshot') snapshots++;
+      return originalExport.call(this, mode);
+    },
+  );
+  let subscriptions = 0;
+  const originalSubscribe = LoroDoc.prototype.subscribe;
+  const subscribe = t.mock.method(
+    LoroDoc.prototype,
+    'subscribe',
+    function (this: LoroDoc, listener: Parameters<LoroDoc['subscribe']>[0]) {
+      subscriptions++;
+      return originalSubscribe.call(this, listener);
+    },
+  );
+  f.tool({
+    sessionUpdate: 'tool_call',
+    title: 'Synthetic tool',
+    status: 'in_progress',
+    rawInput: { command: 'synthetic-only' },
+  });
+  const detail = 'unchanged tool detail '.repeat(200);
+  for (let sequence = 0; sequence < 100; sequence++) f.tool({ rawOutput: { sequence, detail } });
+  assert.equal(snapshots, 0);
+  assert.equal(subscriptions, 0, 'tool deltas do not construct document-wide Mirror subscriptions');
+  subscribe.mock.restore();
+  assert.equal(count(f, 'session_delta'), 101);
+  assert.equal(f.store.searchSource(f.scope.sessionId)!.revision, source.revision + 101);
+  assert.equal(count(f, 'session_recovery'), 1);
+  const tool = durable(f).state.history.at(-1)!.items![0] as any;
+  assert.equal(tool.title, 'Synthetic tool');
+  assert.deepEqual(tool.rawInput, { command: 'synthetic-only' });
+  assert.deepEqual(tool.rawOutput, { sequence: 99, detail });
+  const deltaBytes = Number(
+    f.store.journal.db
+      .prepare('SELECT SUM(length(update_bytes)) AS bytes FROM session_delta')
+      .get()!.bytes,
+  );
+  assert(
+    deltaBytes < 100000,
+    `unchanged tool detail must not be retransmitted on every sequence: ${deltaBytes}`,
+  );
+  assert.deepEqual(durable(f).version, Buffer.from(f.run.doc.version().encode()));
+  assert.equal(f.published(), 101);
+  assert.equal(f.opened(), 0);
+});
+
+for (const representation of ['containers', 'json-item', 'json-list'] as const)
+  test(`direct tool edits preserve the legacy Mirror result for ${representation}`, (t) => {
+    const f = fixture(t, { history: 'settled history must remain untouched' });
+    const originalItems = [
+      {
+        type: 'tool_call',
+        toolCallId: 'tool-a',
+        title: 'earlier duplicate',
+        rawOutput: { first: true },
+      },
+      { type: 'text', text: 'between tools' },
+      {
+        type: 'tool_call',
+        toolCallId: 'tool-a',
+        title: 'last duplicate',
+        kind: 'execute',
+        status: 'pending',
+        rawInput: { remove: true, nested: { old: true } },
+        rawOutput: { old: true },
+        content: [{ type: 'content', content: { type: 'text', text: 'old detail' } }],
+        permissionRequest: { requestId: 'request-a', options: [] },
+        future: { keep: ['unknown', { value: 7 }] },
+      },
+      { type: 'tool_call', toolCallId: 'other-tool', rawOutput: { untouched: true } },
+    ];
+    const history = f.run.doc.getList('history');
+    const turn = history.get(history.length - 1) as LoroMap;
+    const settledId = (history.get(0) as LoroMap).id;
+    if (representation === 'containers') {
+      const seed = mirror(f.run.doc, f.scope.sessionId);
+      seed.setState((state) => {
+        state.history.at(-1)!.items = structuredClone(originalItems);
+      });
+      seed.dispose();
+    } else if (representation === 'json-list') turn.set('items', originalItems);
+    else {
+      const items = turn.setContainer('items', new LoroList());
+      for (const item of originalItems) items.push(item);
+    }
+    f.store.persist(f.scope.sessionId, f.run.doc);
+    const oracleDoc = f.run.doc.fork();
+    const oracle = mirror(oracleDoc, f.scope.sessionId);
+    t.after(() => {
+      oracle.dispose();
+      oracleDoc.free();
+    });
+    let toolContainer: string | undefined;
+    for (const patch of [
+      { status: 'in_progress' },
+      { rawInput: { replacement: ['中文', null] }, rawOutput: null, content: [] },
+      {
+        title: '',
+        kind: null,
+        status: 'completed',
+        rawInput: [],
+        rawOutput: { final: { objects: [true, 1, null] } },
+      },
+      { rawOutput: [undefined, 'tail'] },
+      { rawOutput: [undefined] },
+      { rawInput: undefined, rawOutput: undefined, content: undefined },
+    ] as Record<string, unknown>[]) {
+      // The former host path is the semantic oracle: last matching ID, replace
+      // provided fields in full, retain omitted and unknown fields.
+      oracle.setState((state) => {
+        const tool: any = state.history
+          .at(-1)!
+          .items!.findLast(
+            (item: any) => item.type === 'tool_call' && item.toolCallId === 'tool-a',
+          );
+        for (const key of ['title', 'kind', 'status'])
+          if (patch[key] !== undefined) tool[key] = patch[key];
+        if (patch.content !== undefined) tool.content = patch.content;
+        for (const key of ['rawInput', 'rawOutput'])
+          if (patch[key] !== undefined) tool[key] = safeAgentMetadata(patch[key]);
+      });
+      f.tool(patch);
+      assert.deepEqual(read(f.run.doc), read(oracleDoc));
+      const currentHistory = f.run.doc.getList('history');
+      assert.equal((currentHistory.get(0) as LoroMap).id, settledId);
+      const currentItems = (currentHistory.get(currentHistory.length - 1) as LoroMap).get(
+        'items',
+      ) as LoroList;
+      const currentTool = currentItems.get(2) as LoroMap;
+      assert.ok(currentTool instanceof LoroMap);
+      if (toolContainer)
+        assert.equal(
+          currentTool.id,
+          toolContainer,
+          'later patches retain the promoted tool container',
+        );
+      toolContainer = currentTool.id;
+    }
+    f.host.edit(f.scope.sessionId, f.run, (turn) => {
+      turn.items[2].future.keep.push('generic edit');
+    });
+    const items = durable(f).state.history.at(-1)!.items as any[];
+    assert.deepEqual(items[0], originalItems[0]);
+    assert.deepEqual(items[3], originalItems[3]);
+    assert.deepEqual(items[2].future.keep, ['unknown', { value: 7 }, 'generic edit']);
+    assert.deepEqual(items[2].permissionRequest, originalItems[2]!.permissionRequest);
+  });
+
+for (const fault of ['delta', 'checkpoint'] as const)
+  test(`tool ${fault} failure rolls embedded attachments and document output back before publication`, (t) => {
+    const f = fixture(t, {
+      checkpoint: { updates: fault === 'checkpoint' ? 1 : 512, bytes: 1024 * 1024 },
+    });
+    const before = durable(f),
+      source = f.store.searchSource(f.scope.sessionId),
+      published = f.published();
+    const metadata = Buffer.from(f.store.load('meta')!);
+    const update = {
+      sessionUpdate: 'tool_call',
+      title: 'attachment output',
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'resource',
+            resource: {
+              uri: 'file:///synthetic.txt',
+              text: 'synthetic attachment',
+              mimeType: 'text/plain',
+            },
+          },
+        },
+      ],
+    };
+    f.store.journal.db.exec(
+      `CREATE TRIGGER reject_tool_output BEFORE INSERT ON ${fault === 'delta' ? 'session_delta' : 'session'} BEGIN SELECT RAISE(ABORT,'synthetic tool failure'); END`,
+    );
+    assert.throws(() => f.tool(update), /synthetic tool failure/);
+    assert.deepEqual(durable(f), before);
+    assert.deepEqual(Buffer.from(f.run.doc.version().encode()), before.version);
+    assert.deepEqual(f.store.searchSource(f.scope.sessionId), source);
+    assert.deepEqual(Buffer.from(f.store.load('meta')!), metadata);
+    assert.equal(count(f, 'attachment'), 0);
+    assert.equal(f.published(), published);
+    f.store.journal.db.exec('DROP TRIGGER reject_tool_output');
+    f.tool(update);
+    const tool = durable(f).state.history.at(-1)!.items![0] as any;
+    assert.equal(tool.content[0].content.type, 'attachment');
+    assert.equal(count(f, 'attachment'), 1);
+    assert.equal(f.published(), published + 1);
+  });
+
+test('tool compaction and restart retain final detail, exact attachment references and old client history', (t) => {
+  const f = fixture(t, { checkpoint: { updates: 3, bytes: 1024 * 1024 } });
+  const cached = f.run.doc.fork();
+  t.after(() => cached.free());
+  f.tool({ sessionUpdate: 'tool_call', title: 'Saved tool', status: 'pending' });
+  f.tool({ status: 'in_progress', rawOutput: { sequence: 1 } });
+  f.tool({ rawOutput: { sequence: 2 } });
+  assert.equal(count(f, 'session_delta'), 0, 'the existing threshold still checkpoints');
+  f.tool({
+    status: 'completed',
+    rawOutput: { sequence: 3 },
+    content: [
+      {
+        type: 'content',
+        content: {
+          type: 'resource',
+          resource: {
+            uri: 'file:///result.txt',
+            text: 'saved final tool artifact',
+            mimeType: 'text/plain',
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(count(f, 'session_delta'), 1);
+  const before = durable(f).state.history.at(-1)!.items![0];
+  f.close();
+  const restored = new RuntimeStore(f.file);
+  t.after(() => restored.close());
+  const doc = restored.doc(f.scope.sessionId);
+  t.after(() => doc.free());
+  cached.import(doc.export({ mode: 'update', from: cached.version() }));
+  assert.deepEqual(read(cached), read(doc));
+  assert.deepEqual(read(doc).history.at(-1)!.items![0], before);
+  assert.equal(
+    restored.journal.db.prepare('SELECT COUNT(*) AS count FROM attachment').get()!.count,
+    1,
+  );
+  assert.equal(
+    read(doc).history.at(-1)!.status,
+    'failed',
+    'startup still settles the unfinished assistant',
+  );
   assert.equal(f.opened(), 0);
 });
 
@@ -491,28 +751,29 @@ test('a document read before a later checkpoint retains its original CAS base, a
   assert.equal(durable(f).state.history.at(-1)!.status, 'working');
 });
 
-for (const change of ['owner', 'project', 'metadata', 'active-turn'] as const)
-  test(`stream output preserves scope checks after ${change} replacement`, (t) => {
-    const f = fixture(t);
-    f.emit('before scope change');
-    const source = f.store.searchSource(f.scope.sessionId),
-      published = f.published();
-    if (change === 'owner') f.store.workspace.userId = 'another-owner';
-    if (change === 'project') f.store.workspace.projects = [];
-    if (change === 'metadata')
-      putMeta(f.store.meta, 'session-' + f.scope.sessionId, {
-        project: { kind: 'local', localProjectId: 'another-project' },
-      });
-    if (change === 'active-turn') f.host.active.set(f.scope.sessionId, { ...f.run });
-    if (change === 'active-turn') f.emit('late');
-    else assert.throws(() => f.emit('late'));
-    assert.deepEqual(f.store.searchSource(f.scope.sessionId), source);
-    assert.equal(f.published(), published);
-    assert.equal(
-      (durable(f).state.history[0].items![0] as { text: string }).text,
-      'before scope change',
-    );
-  });
+for (const kind of ['text', 'tool'] as const)
+  for (const change of ['owner', 'project', 'metadata', 'active-turn'] as const)
+    test(`${kind} output preserves scope checks after ${change} replacement`, (t) => {
+      const f = fixture(t);
+      const emit = (text: string) =>
+        kind === 'text' ? f.emit(text) : f.tool({ rawOutput: { text } });
+      emit('before scope change');
+      const source = f.store.searchSource(f.scope.sessionId),
+        published = f.published();
+      if (change === 'owner') f.store.workspace.userId = 'another-owner';
+      if (change === 'project') f.store.workspace.projects = [];
+      if (change === 'metadata')
+        putMeta(f.store.meta, 'session-' + f.scope.sessionId, {
+          project: { kind: 'local', localProjectId: 'another-project' },
+        });
+      if (change === 'active-turn') f.host.active.set(f.scope.sessionId, { ...f.run });
+      if (change === 'active-turn') emit('late');
+      else assert.throws(() => emit('late'));
+      assert.deepEqual(f.store.searchSource(f.scope.sessionId), source);
+      assert.equal(f.published(), published);
+      const item = durable(f).state.history[0].items![0] as any;
+      assert.equal(kind === 'text' ? item.text : item.rawOutput.text, 'before scope change');
+    });
 
 test('generic edits still atomically combine checkpoints with attachments, attention and notifications', (t) => {
   const f = fixture(t);
@@ -614,6 +875,7 @@ test('existing client permission and next-turn builders preserve text containers
       permissionRequest: { requestId: 'request-a', options },
     });
   });
+  f.tool({ status: 'in_progress', rawOutput: { progress: 'while approval is pending' } });
   const response = await f.host.read(f.scope.sessionId, undefined, f.scope.localProjectId);
   const reviews = sessionPermissionReviews(readClientSession(response, f.scope), f.scope);
   assert.equal(reviews.length, 1);

@@ -1,8 +1,8 @@
-import { LoroDoc, VersionVector } from 'loro-crdt';
+import { LoroDoc, LoroList, LoroMap, VersionVector } from 'loro-crdt';
 import { Flock } from '@loro-dev/flock-wasm/base64';
 import { Mirror } from 'loro-mirror';
 import { sessionDocSchema } from './session-schema';
-export { LoroDoc, VersionVector, Flock };
+export { LoroDoc, LoroList, LoroMap, VersionVector, Flock };
 
 type Base64Buffer = {
   from(value: Uint8Array): { toString(encoding: 'base64'): string };
