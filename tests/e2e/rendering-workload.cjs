@@ -168,6 +168,14 @@ const renderingInstrumentation = {
 
 async function runRenderingWorkload(win, output) {
   const read = (expression) => win.webContents.executeJavaScript(expression);
+  // document.hidden can be false with backgroundThrottling disabled even when
+  // the native window is hidden. Both must be visible for compositor frame waits.
+  assert.equal(win.isVisible(), true, 'rendering workload requires a visible native window');
+  assert.equal(
+    await read('document.hidden'),
+    false,
+    'rendering workload requires foreground frames',
+  );
   const frames = () =>
     read('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const commit = (kind, index) =>
