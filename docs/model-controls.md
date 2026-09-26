@@ -2,7 +2,7 @@
 
 状态：已实现。本文记录产品行为、协议与验证范围。审批入口保持独立，包含 Read-only、Agent、Auto review 和 Full access 四种明确权限模式。
 
-当前界面见[工作区界面](workspace-ui.md)，能力读取与执行校验见[运行与恢复](runtime.md)。模型探测的触发时机与交互以本文为准，取代[客户端统一计划](client-unification.md)中进入会话、展开选择器及切换模型时重新探测的设计。
+当前界面见[工作区界面](workspace-ui.md)，能力读取与执行校验见[运行与恢复](runtime.md)。模型探测的触发时机与交互以本文和当前实现为准。
 
 ## 已确认的产品行为
 
@@ -98,8 +98,7 @@ Lody 的 Agent Role 可以把 Agent、模型、强度、权限和说明组合成
 
 - 主机能力缓存：`packages/host/src/sessions/workspace.ts`，目录按实际执行范围共享，单次主机生命周期内记录初始化成功或失败，并发刷新合并。
 - ACP 能力投影：`packages/host/src/agents/capabilities.ts`、`packages/host/src/agents/acp/driver.ts`，在一次探测中收齐可用档位与默认值；补丁与上游许可、版本保持可追溯。
-- 统一客户端：`apps/web/src/features/workspace/workspace-controller.ts`，工作区就绪初始化，草稿选项独立保存。
-- 普通与加密客户端：`apps/web/src/app/app.ts`、`apps/web/src/platform/secure-controller.ts`，共用就绪触发、缓存读取和手动刷新语义。
+- 统一工作区控制器：`apps/web/src/features/workspace/workspace-controller.ts`，本机和远程共用就绪触发、缓存读取和手动刷新语义，草稿选项独立保存。
 - 共享控件：`apps/web/src/components/ui.tsx`，合并模型与推理强度入口，移除虚拟模型选项和常驻刷新。
 - 设置入口：`apps/desktop/src/settings/settings.html`、`apps/desktop/src/settings/settings.js`，接入明确的手动能力刷新；远程访问端的入口沿用目标执行主机的授权边界。
 - 运行默认配置：`packages/host/src/agents/run-preferences.ts` 保留全局审批默认记录，并把模型/强度写入按用户与 Agent 配置隔离的 `run-defaults-v1` 记录。两者使用独立递增 revision；新会话冻结 `initialModeId`、`initialModelId` 和 `initialReasoningEffort`，恢复只读，不反写偏好。
@@ -111,7 +110,7 @@ Lody 的 Agent Role 可以把 Agent、模型、强度、权限和说明组合成
 3. 设置中一次手动刷新只触发一次查询，更新对应范围的缓存，保留会话选择和草稿。
 4. 首次采集包含每个模型的可用档位；切换模型能直接显示正确强度并按已确认默认值处理不兼容档位。
 5. 模型菜单只展示具体型号；默认模型与会话当前模型不混淆，未知状态不伪装成具体选择。
-6. 普通与加密客户端、桌面与窄屏行为一致，支持键盘操作、焦点返回及可访问名称。
+6. 本机与远程工作区、桌面与窄屏行为一致，支持键盘操作、焦点返回及可访问名称。
 7. 失败、重连、程序或配置变化、迟到响应不会产生循环探测、跨范围缓存污染或自动发送。
 8. 没有已保存审批偏好时，新会话采用 Agent，实际执行参数为工作区权限、按需请求审批、用户审批者。
 9. 用户手动选择 Auto review 后，创建的新会话默认采用 Auto review；重新打开应用或重启执行主机后仍保持，其他可用模式遵守相同保存规则。

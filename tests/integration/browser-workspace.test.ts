@@ -6,7 +6,6 @@ import {
   WorkspaceStore,
   type WorkspaceScope,
 } from '../../apps/web/src/features/workspace/workspace-store';
-import { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
 import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
 
 class Memory implements StorageBackend {
@@ -233,6 +232,23 @@ test('old browser requests migrate only after the original host confirms the sam
   f.legacy.set(prefix + '/session', f.snapshot);
   f.legacy.set(prefix + '/draft', 'Old editable draft');
   f.legacy.set(prefix + '/pending', pending);
+  const metadata = {
+    owner: 'owner',
+    deviceId: 'device',
+    catalogWorkspaceId: 'catalog',
+    replicaId: 'replica',
+    request: {
+      operationId: 'old-metadata',
+      workspaceId: 'runtime',
+      localProjectId: 'project',
+      sessionId: 'session',
+      expectedRevision: 0,
+      action: 'rename',
+      title: 'Original reviewed title',
+    },
+  };
+  const metadataKey = 'owner/device/runtime/project/session/session-action';
+  f.legacy.set(metadataKey, metadata);
   const original = structuredClone(f.legacy);
   await f.client.request({ action: 'catalog', source: 'remote' });
   await f.client.restoreLegacy(f.scope, 'session', current);
@@ -240,6 +256,10 @@ test('old browser requests migrate only after the original host confirms the sam
     kind: 'mutation',
     value: pending,
   });
+  assert.deepEqual(
+    (await f.store.operation(f.scope, metadata.request.operationId, current))?.original,
+    { kind: 'metadata', value: metadata.request },
+  );
   assert.equal((await f.store.readDraft(f.scope, 'session', current)).text, 'Old editable draft');
   assert.deepEqual(f.legacy, original);
   assert(f.calls.every((call) => call.method === 'GET'));
@@ -247,6 +267,17 @@ test('old browser requests migrate only after the original host confirms the sam
   await f.client.restoreLegacy(f.scope, 'session', current);
   assert.equal((await f.store.read(f.scope, current)).revision, revision);
   assert.equal(f.calls.filter((call) => call.path.endsWith('/sessions/session')).length, 1);
+  for (const field of ['owner', 'deviceId', 'catalogWorkspaceId', 'replicaId']) {
+    const other = fixture();
+    other.legacy.set(prefix + '/session', other.snapshot);
+    other.legacy.set(metadataKey, { ...metadata, [field]: 'different' });
+    const retained = structuredClone(other.legacy);
+    await other.client.request({ action: 'catalog', source: 'remote' });
+    await assert.rejects(other.client.restoreLegacy(other.scope, 'session', current));
+    assert.equal((await other.store.read(other.scope, current)).operations.length, 0);
+    assert.deepEqual(other.legacy, retained);
+    assert(other.calls.every((call) => call.method === 'GET'));
+  }
 });
 
 test('foreign and unsupported old records remain in their original database with no new dispatchable operation', async () => {
@@ -275,30 +306,4 @@ test('foreign and unsupported old records remain in their original database with
     assert.equal((await f.store.read(f.scope, current)).operations.length, 0);
     assert(f.calls.every((call) => call.method === 'GET'));
   }
-});
-
-test('a restarted browser restores scoped session lists, snapshots and drafts offline without replay', async () => {
-  const f = fixture();
-  const controller = new WorkspaceController({
-    store: f.store,
-    request: (value) => f.client.request(value),
-  });
-  await controller.refreshCatalog('remote');
-  await controller.selectProject('remote', f.scope.target);
-  await controller.openSession('session');
-  await controller.saveDraft('Offline editable draft', {});
-  const next = fixture(f.memory);
-  next.state.offline = true;
-  const restored = new WorkspaceController({
-    store: next.store,
-    request: (value) => next.client.request(value),
-  });
-  await restored.refreshCatalog('remote');
-  await restored.selectProject('remote', f.scope.target);
-  assert.equal(restored.state.sessions[0]?.id, 'session');
-  await assert.rejects(restored.openSession('session'));
-  assert.equal(restored.state.session?.meta.id, 'session');
-  assert.equal(restored.state.draft?.text, 'Offline editable draft');
-  assert.equal(restored.state.offline, true);
-  assert(next.calls.every((call) => call.method === 'GET'));
 });

@@ -96,39 +96,6 @@ export const attachmentReferenceSchema = z
     content: contentDescriptorSchema,
   })
   .strict();
-export const fileChangeSchema = z
-  .object({
-    path: projectFilePathSchema,
-    previousPath: projectFilePathSchema.optional(),
-    before: contentDescriptorSchema.nullable(),
-    after: contentDescriptorSchema.nullable(),
-  })
-  .strict()
-  .refine((change) => change.before !== null || change.after !== null)
-  .refine(
-    (change) =>
-      !change.previousPath ||
-      (change.before !== null && change.after !== null && change.previousPath !== change.path),
-  );
-export const fileDiffReferenceSchema = z
-  .object({
-    contentVersion: z.literal(CONTENT_VERSION),
-    turnId: id,
-    basis: z.literal('project-snapshot'),
-    files: z.array(fileChangeSchema).max(CONTENT_LIMITS.diffFiles),
-  })
-  .strict()
-  .refine((diff) => {
-    const before = new Set<string>(),
-      after = new Set<string>();
-    for (const file of diff.files) {
-      const source = file.previousPath ?? file.path;
-      if ((file.before && before.has(source)) || (file.after && after.has(file.path))) return false;
-      if (file.before) before.add(source);
-      if (file.after) after.add(file.path);
-    }
-    return true;
-  }, '文件基线来源或目标路径重复');
 export type ContentScope = z.infer<typeof contentScopeSchema>;
 export type ProjectFileRead = z.infer<typeof projectFileReadSchema>;
 export type ProjectFileResult = z.infer<typeof projectFileResultSchema>;

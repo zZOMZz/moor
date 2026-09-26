@@ -3,7 +3,6 @@ import { sessionForkSchema } from '@moor/protocol/fork-protocol';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { createRequire as createPackageRequire } from 'node:module';
 import {
   HOST_COMMAND_METHODS,
   hostCommandSchema,
@@ -1813,24 +1812,4 @@ test('session document bytes use canonical base64 and preserve archived Agent ve
     oldAgent,
   );
   await assert.rejects(valid('agent-options', oldAgent, { agentId: 'archived-agent' }), failure);
-});
-
-test('the entire validation module bundles for a browser without a Node runtime', async () => {
-  const { build } = createPackageRequire(import.meta.url)('esbuild') as typeof import('esbuild');
-  const output = await build({
-    entryPoints: ['packages/protocol/src/host-response.ts'],
-    bundle: true,
-    platform: 'browser',
-    format: 'esm',
-    write: false,
-    metafile: true,
-  });
-  assert.ok(output.outputFiles[0]?.contents.length);
-  assert.equal(
-    Object.keys(output.metafile.inputs).some(
-      (path) => path.includes('bridge/host-') || path.includes('preview-validation'),
-    ),
-    false,
-  );
-  assert.equal(output.outputFiles[0]!.text.includes('node:'), false);
 });

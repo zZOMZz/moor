@@ -1373,6 +1373,13 @@ test('workspace attachments remain local until upload, then send their exact byt
     new File(['Synthetic attachment'], 'notes.txt', { type: 'text/plain' }),
   ]);
   const item = f.controller.state.ledger!.attachments![id]!.items[0]!;
+  for (const files of [
+    Array.from({ length: 8 }, () => new File(['extra'], 'extra.txt')),
+    [new File([new Uint8Array(8 * 1024 * 1024 + 1)], 'huge.bin')],
+    [new File(['invalid name'], 'bad/path.txt')],
+  ])
+    await assert.rejects(f.controller.addAttachments(files));
+  assert.deepEqual(f.controller.state.ledger!.attachments![id]!.items, [item]);
   assert.equal(f.prompts(), 0);
   assert.equal(item.uploaded, false);
   assert.equal(

@@ -14,8 +14,20 @@ const options = () => [
     name: 'Model',
     currentValue: model,
     options: [
-      { value: 'a', name: 'A' },
-      { value: 'b', name: 'B' },
+      ...(settings.groupedModels
+        ? [
+            {
+              group: 'synthetic-vendor',
+              options: [
+                { value: 'a', name: 'A' },
+                { value: 'b', name: 'B' },
+              ],
+            },
+          ]
+        : [
+            { value: 'a', name: 'A' },
+            { value: 'b', name: 'B' },
+          ]),
     ],
   },
   {

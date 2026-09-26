@@ -10,6 +10,7 @@ Moor owns its session schema and persistence; pinned ACP adapters connect local 
 - Offline drafts never execute on reconnect. Explicitly submitted durable task intents may synchronize and enter the execution queue automatically after reconnect; freeze their input and authorization separately from editable drafts. Legacy uncertain command retries still use the original operation id and require a manual action.
 - Delivery requires host confirmation. Approvals must match the exact active turn and request.
 - Test with synthetic data and deterministic signals or injected timers, never real agent accounts or sleeps.
+- Prefer end-to-end user journeys through built clients, Host and Relay. Add focused integration or unit tests only for boundaries and failure cases that cannot be exercised reliably through those journeys; do not duplicate implementation details or keep tests for removed execution paths.
 - Never commit transcripts, secrets, local databases, generated bundles or internal task records.
 - Relay archives and Docker contexts include only packaged program files. Preserve operator data when rebuilding a package; never include it in distribution artifacts.
 - Run pnpm check, pnpm test, pnpm build and pnpm format:check before committing.

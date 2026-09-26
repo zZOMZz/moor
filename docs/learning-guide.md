@@ -19,9 +19,7 @@
 
 ### 版本与证据范围
 
-本文以 0.2 开发预览版的现有文档及核心实现为依据，主线解释默认桌面/Web/PWA 的 v3 路径。Moor 会话格式为 v1。显式 v4 加密主机与 `secure` CLI 单独在第 11 章说明，不能把一条加密链路的能力套用到所有客户端。
-
-阅读时按“具体入口、具体版本、具体证据”判断状态。旧架构文档中笼统的“当前没有端到端加密”应理解为默认 v3 路径；显式加密入口的进展以[加密专题](end-to-end-encryption.md)为准。工作区中的新代码、路线图中的目标和已有验收记录也不能相互替代。尤其是加密产品目录映射仍在演进，本文不把进行中的接线作为已发布承诺。
+本文描述 0.2 开发预览版的 v3 连接和会话格式 v1。独立加密工作区、v4 和 secure CLI 已退场，旧设备与操作记录只读保留。能力以[当前范围](capabilities.md)为准，验证以当前可运行的 E2E、集成测试及[设备清单](validation.md)为准；源码、测试与真实设备结论不能相互替代。
 
 ## 2. Moor 解决的使用问题
 
@@ -174,7 +172,7 @@ CRDT 可以使文档副本合并，但不会判断一条指令是否应该运行
 
 ## 6. 一条指令的完整路径
 
-本章先只考虑默认 v3 的普通文本发送，不展开附件、MCP 和任务授权。
+本章先考虑 v3 的普通文本发送，不展开附件和共享任务授权。
 
 ```mermaid
 sequenceDiagram
@@ -185,11 +183,11 @@ sequenceDiagram
   participant D as SQLite
   participant A as Agent
   U->>C: 手动发送
-  C->>C: 生成 Mutation，持久保存完整原请求
+  C->>C: 生成 send-turn，持久保存完整原请求
   C->>R: 原请求与项目副本路由
   R->>R: 核对账号、设备、组织与在线连接
   R->>H: 带明确执行范围转发
-  H->>H: 按会话串行，查原凭据，隔离导入与校验
+  H->>H: 按会话串行，查原凭据，校验输入并构造文档
   H->>D: 事务保存会话、元数据、固定绑定与凭据
   D-->>H: 提交成功
   Note over H,A: 事务成功之后才允许执行；确认与输出可能交错到达
@@ -333,7 +331,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 
 **理解检查：** 为什么不能从 Moor 历史复制文本就宣称恢复了原生上下文？为什么改变审批模式不能回应旧审批？
 
-源码入口：[AgentDriver](../packages/host/src/agents/driver.ts)、[ACP](../packages/host/src/agents/acp/driver.ts)、[固定 Agent 绑定](../packages/host/src/sessions/agent.ts)。证据：[runtime 测试](../tests/integration/runtime.test.ts)、[ACP 测试](../tests/integration/acp.test.ts)。
+源码入口：[AgentDriver](../packages/host/src/agents/driver.ts)、[ACP](../packages/host/src/agents/acp/driver.ts)、[固定 Agent 绑定](../packages/host/src/sessions/agent.ts)。证据：[主机会话测试](../tests/integration/runtime.test.ts)、[CLI/Host E2E](../tests/e2e/cli-host.test.ts)。
 
 ## 9. 进程恢复与任务恢复
 
@@ -412,25 +410,21 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 | -------- | ---------------------------------- | ----------------------------------------------------------------------------- |
 | 登录身份 | 谁在访问？                         | 个人账号与可选 Google 登录提供账号会话，不自动建立加密设备信任                |
 | 授权范围 | 可以访问哪台主机、哪个项目和会话？ | 中转与执行主机各自核验范围，异步期间身份变化也可能使操作失效                  |
-| 传输保护 | 谁能看到链路内容？                 | 默认 v3 使用 HTTPS/WSS，中转进程可见转发正文；显式 v4 路径在端点加密          |
+| 传输保护 | 谁能看到链路内容？                 | v3 使用 HTTPS/WSS，中转进程可见转发正文；当前不提供 E2EE                      |
 | 本机凭据 | 凭据是否进入共享文档？             | 启动参数、token 和 MCP 连接私下配置；文件权限保护不能等同 Keychain 或磁盘加密 |
 | 执行权限 | Agent 能操作什么？                 | Moor 限制类型化远程入口，Agent 自身原生工具和权限仍由其运行环境约束           |
 
 项目路径检查、worktree、配置私有化各有用途，但都不能合并宣称为“完整系统沙箱”。同样，“中转不持久保存会话”只描述落盘策略，不能推出中转进程看不到经过的明文。
 
-### 11.2 显式 v4 加密链路
+### 11.2 已退场的加密实现
 
-现有加密实现包含设备密钥、根签名设备清单、配对与恢复、公开信任版本分发，以及显式加密主机与 `secure` CLI。端点核验对端身份和范围，解密响应后继续进行 schema、版本与原操作匹配检查；加密不会绕过原主机接受边界。
+独立加密客户端、v4 Host/Client、secure CLI 和设备信任运行命令已移除，不能按旧指南启用。已有设备材料、恢复包和未知原操作保留；只读归档不能推断主机已接受，不会把旧请求转换到普通连接。
 
-理解这条链路，先掌握三个问题：用户如何核对信任根？如何拒绝旧设备或重放消息？如何保证运行解密逻辑的客户端代码可信？具体密码算法和数值限制放到[加密专题](end-to-end-encryption.md)深入阅读，不需要先背参数。
+后续若重新引入 E2EE，需要独立威胁模型、可信客户端、设备生命周期和密钥恢复设计。TLS、登录身份与正文不落盘不能替代这些保证。当前先完成统一工作区的核心流程与设备验收。
 
-即便内容加密，中转仍能看到部分路由标识、大小和时序。如果网页代码完全由中转提供，中转对代码的替换能力也会影响端点可信性，因此可信桌面入口与独立来源 PWA 是完整方案的一部分。
+**理解检查：** 为什么 HTTPS、中转不落盘和端到端加密是三个不同结论？为什么导出旧操作不能把未知结果改成成功？
 
-默认桌面/PWA、加密事件与通知、设备界面仍需接线与验收。加密目录映射实现正在演进，具体命令以当前 [CLI 文档](cli.md)为准，完整产品状态仍要结合[加密专题](end-to-end-encryption.md)和[验收记录](validation.md)核对。
-
-**理解检查：** 为什么 Google 登录不能替代设备根指纹核对？为什么 HTTPS、中转不落盘和端到端加密是三个不同结论？
-
-继续阅读：[个人 Google 登录](google-login.md)、[设备安全命令](device-security.md)、[加密进展](end-to-end-encryption.md)。
+继续阅读：[个人 Google 登录](google-login.md)、[旧设备材料](device-security.md)、[加密退场](end-to-end-encryption-deferral.md)。
 
 ## 12. 当前能力、实现取舍与尚未完成的部分
 
@@ -441,7 +435,7 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 | 产品平台             | 0.2 开发预览，macOS Apple Silicon 与 Web/PWA             | 不能宣称 Windows、团队权限、公司 SSO 已可用         |
 | 多设备工作流         | 会话管理、审批、结果阅读和工作台已有实现                 | 真实双 Mac、iPhone 与 Agent 专项仍需按记录核验      |
 | 扩展执行             | Git/Fork、发布、Skills 和 TaskDoc 队列已有接线与合成证据 | 不表示所有真实账号、适配器行为和设备组合已通过      |
-| 加密                 | 显式 v4 Host/secure CLI 已有链路                         | 默认界面没有因此自动变成端到端加密                  |
+| 加密                 | v4 Host/secure CLI 已退场，旧记录只读保留                | 当前远程连接不是端到端加密                          |
 | 发布                 | 预览打包与签名公证工具已有实现                           | 正式 Developer ID、公证及干净设备验收尚不能宣称完成 |
 | 跨主机迁移与长期任务 | 路线图包含后续方向                                       | 切换设备、项目归组和恢复进程不提供这些能力          |
 
@@ -475,7 +469,7 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 | 7    | [WorkspaceController](../apps/web/src/features/workspace/workspace-controller.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
 | 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                                         | 路由与响应范围、共同方法校验和分发                                   |
 | 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                                           | 用断言核验自己对顺序与恢复的解释                                     |
-| 10   | [开发文档](development.md#从行为找到实现)                                                                                                            | 按感兴趣的功能查专门实现及测试                                       |
+| 10   | [开发文档](development.md#e2e-入口与覆盖)                                                                                                            | 按感兴趣的功能查专门实现及测试                                       |
 
 可在仓库根目录使用以下只读搜索。文件以符号定位，比记住容易变化的行号更可靠。
 

@@ -115,10 +115,10 @@ corepack pnpm exec tsx --test --test-name-pattern='restart retains receipt' test
 **先预测：** 不登录真实模型账号，仍能验证哪些 Agent 接入行为？加载原生上下文回放的历史会不会重复进入本轮输出？
 
 ```sh
-corepack pnpm exec tsx --test tests/integration/acp.test.ts tests/integration/runtime.test.ts
+corepack pnpm exec tsx --test tests/integration/runtime.test.ts
 ```
 
-阅读 [synthetic-agent.mjs](../scripts/validation/synthetic-agent.mjs)、[acp.test.ts](../tests/integration/acp.test.ts) 和 [runtime.test.ts](../tests/integration/runtime.test.ts)。后者使用真实 ACP driver，与合成 stdio Agent 跑两轮会话，中间关闭并重开主机存储。
+阅读 [synthetic-agent.mjs](../scripts/validation/synthetic-agent.mjs) 和 [runtime.test.ts](../tests/integration/runtime.test.ts)。测试使用真实主机与 ACP driver，和合成 stdio Agent 跑两轮会话，中间关闭并重开主机存储。
 
 **观察点：** 原生会话编号保留；审批只交给当前请求；历史长度随两轮输入增长；旧历史回放文本没有混进新回复；主机重开时没有活动执行。
 
@@ -131,10 +131,10 @@ corepack pnpm exec tsx --test tests/integration/acp.test.ts tests/integration/ru
 逐个理解后，可以一次跑覆盖这些实验的测试文件：
 
 ```sh
-corepack pnpm exec tsx --test tests/integration/host.test.ts tests/integration/catalog.test.ts tests/integration/acp.test.ts tests/integration/runtime.test.ts
+corepack pnpm exec tsx --test tests/integration/host.test.ts tests/integration/catalog.test.ts tests/integration/runtime.test.ts
 ```
 
-进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/integration/cli-host.test.ts)；已退场加密入口的拒绝与旧数据离线保留见 [retired-e2ee.test.ts](../tests/integration/retired-e2ee.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。
+进一步的实际 HTTP/CLI 往返见 [cli-host.test.ts](../tests/e2e/cli-host.test.ts)；已退场加密入口的拒绝与旧数据离线保留见 [retired-e2ee.test.ts](../tests/integration/retired-e2ee.test.ts)。最终 bundle 与安装包专项的前置条件和命令见[开发文档](development.md)，不要把源码测试替代最终产物测试。
 
 ## 三、闭卷自测与参考答案
 
@@ -206,17 +206,17 @@ corepack pnpm exec tsx --test tests/integration/host.test.ts tests/integration/c
 
 参考答案：共享的是同账号处理状态，未发送草稿仍只在原访问端。带原事项引用的后续发送才由主机原子接受并记录关联。见第 10 章。
 
-**16. 审查并启用任务计划，就启动子 Agent 了吗？**
+**16. 旧父子任务记录会在升级后进入新持久任务队列吗？**
 
-参考答案：尚未。父指令手动发送并被接受后授权成立，父 Agent 再通过私有工具创建和发送子任务；创建目录或空会话也不等于执行。见第 10 章。
+参考答案：不会。旧执行链已退场，grant、slot 和原操作只读保留。新持久任务必须由用户明确提交并冻结输入与授权，普通草稿不会因重连执行。见第 10 章。
 
-**17. 独立 worktree 和 MCP 逐回合授权提供完整 OS 沙箱吗？**
+**17. 独立 worktree 和类型化主机接口提供完整 OS 沙箱吗？**
 
-参考答案：worktree 隔离代码目录，MCP 授权限制 Moor 添加的连接与工具生命周期。Agent 原生权限和自身配置仍有独立边界，不应称为完整系统沙箱。见第 10–11 章。
+参考答案：worktree 隔离代码目录，类型化主机接口限制远程请求范围；Agent 原生权限和自身配置仍有独立边界，不能称为完整系统沙箱。Moor 逐回合额外 MCP 已退场。见第 10–11 章。
 
 **18. 中转不存正文又用了 HTTPS，为什么还要端到端加密？**
 
-参考答案：不落盘不等于转发进程看不到；HTTPS/WSS 在中转处终止，默认 v3 的中转可见正文。显式 v4 在端点加密，仍需可信客户端和独立设备信任。见第 11 章。
+参考答案：不落盘不等于转发进程看不到；HTTPS/WSS 在中转处终止，默认 v3 的中转可见正文。当前 v4 运行路径已退场，不提供端到端加密。未来设计仍需可信客户端和独立设备信任。见第 11 章。
 
 **19. Google 登录成功，为什么不能直接接受中转给的设备公钥？**
 
@@ -246,6 +246,6 @@ corepack pnpm exec tsx --test tests/integration/host.test.ts tests/integration/c
 - 独立解释一个丢回执案例、一个审批竞争案例，以及对应测试中的派发或回调断言。
 - 能区分 Moor 历史、原生 Agent 上下文、代码目录和项目组织关系。
 - 演示使用专用项目；合成录屏明确标明合成场景，真实演示注明设备、Agent 与版本。
-- 分享中的“已实现、已验收、计划中”分别有依据，不把当前 v4 CLI 能力套到默认桌面/PWA。
+- 分享中的“已实现、已验收、计划中”分别有依据，不把已退场的 v4 历史能力当作当前产品承诺。
 
 返回[学习指南](learning-guide.md)或[文档目录](README.md)。

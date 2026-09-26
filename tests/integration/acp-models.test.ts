@@ -103,7 +103,15 @@ async function fixture(
 }
 
 test('new and loaded sessions report observed current model without inventing a loaded default', async (t) => {
-  const fresh = await fixture(t);
+  const fresh = await fixture(t, { groupedModels: true });
+  assert.deepEqual(
+    fresh.session.capabilities.models.map(({ id, efforts }) => ({ id, efforts })),
+    [
+      { id: 'a', efforts: ['low'] },
+      { id: 'b', efforts: [] },
+    ],
+    'grouped model choices retain effort only for the observed model',
+  );
   assert.equal(fresh.session.capabilities.currentModelId, 'a');
   assert.equal(fresh.session.capabilities.defaultModelId, 'a');
   assert.equal(fresh.session.capabilities.currentReasoningEffort, 'low');

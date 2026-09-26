@@ -6,7 +6,6 @@ import {
   questionDefaults,
   answerFromDraft,
   informationHtml,
-  renderInteractionItem,
   sessionInformation,
   type InteractionTarget,
 } from '../../apps/web/src/features/interactions/interactions';
@@ -251,14 +250,4 @@ test('informational snapshots are escaped and replace counters without inferring
   assert.match(html, /0 \/ 100/);
   assert.match(html, /未提供/);
   assert.doesNotMatch(html, /<script>|href=|1 USD/);
-  const rendered = renderInteractionItem(
-    {
-      type: 'question',
-      request: { ...request, message: '<img src=x onerror=bad>' },
-      status: 'pending',
-    },
-    'safe',
-  )!;
-  assert.doesNotMatch(rendered, /<img/);
-  assert.match(rendered, /&lt;img/);
 });

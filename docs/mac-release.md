@@ -48,6 +48,6 @@ node scripts/release/mac-release.mjs plan \
 
 报告的 `notarySubmission` 分为 `not-started`、`possibly-submitted` 和 `confirmed-submitted`。派发前先保存“可能已提交”，收到合法提交编号后保存原编号；超时即使没有最终状态也保留编号。已知编号可由操作者用 `xcrun notarytool info <原编号> --keychain-profile <原 profile>` 查询，用 `log` 检查 Apple 诊断。没有编号时先核查同一 profile 的提交历史，不能直接再次执行上传。当前工具不自动续接失败的执行，也不会把后续人工查询结果改写为完整发布成功。
 
-最终包仍需在干净的目标架构 Mac 验证首次打开、系统权限、本机 Agent 登录与启动、CLI、网页预览、升级后数据可读及退出。另一台 Mac 和 iPhone 的跨设备验收见[设备验收](validation.md)。签名、公证与 Gatekeeper 检查不能证明全部业务流程、真实 Agent 或系统生命周期均已通过。
+最终包仍需在干净的目标架构 Mac 验证首次打开、系统权限、本机 Agent 登录与启动、CLI、项目文件查看、升级后数据可读及退出。另一台 Mac 和 iPhone 的跨设备验收见[设备验收](validation.md)。签名、公证与 Gatekeeper 检查不能证明全部业务流程、真实 Agent 或系统生命周期均已通过。
 
 实现依据：[Apple 签名技术说明](https://developer.apple.com/library/archive/technotes/tn2206/_index.html)、[Apple Mac 分发签名](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac)、[Apple 公证要求](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)、[Electron 签名说明](https://www.electronjs.org/docs/latest/tutorial/code-signing)、[Electron 公证工具](https://github.com/electron/notarize)。返回[开发与验证](development.md)。

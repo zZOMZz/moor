@@ -86,7 +86,7 @@ Moor 的产品 `Workspace` 与执行主机的 `RuntimeWorkspace` 分开。执行
 
 这次升级移除了 Lody 源码、包、IPC 和守护进程依赖。Moor 桥接协议升级为 **v3**，会话格式为 **v1**；中转服务与客户端需一起更新。主机数据保存在 `runtime-v1.sqlite`，浏览器使用 Moor 自己的版本化存储，配对信息使用 `bridge-v3.json`。请重新配对电脑并登记项目；旧设备绑定可在确认后手动撤销。
 
-旧应用的数据库和配对文件均保留原样，Moor 不读取其他应用的数据。Moor 自身旧 Web 数据仅在完整执行目标核实后迁移支持的草稿和原请求，不自动执行；无法验证的记录保留只读导出。既有加密预览数据也只提供只读清单与导出，见[浏览器升级](docs/browser-client.md)和[加密退场](docs/end-to-end-encryption.md)。忽略目录 `.runtime/` 中的旧源码检出可以留存，但安装、测试和打包都不会使用它。
+旧应用的数据库和配对文件均保留原样，Moor 不读取其他应用的数据。Moor 自身旧 Web 数据仅在完整执行目标核实后迁移支持的草稿和原请求，不自动执行；无法验证的记录保留只读导出。既有加密预览数据也只提供只读清单与导出，见[浏览器升级](docs/browser-client.md)和[加密退场](docs/end-to-end-encryption-deferral.md)。忽略目录 `.runtime/` 中的旧源码检出可以留存，但安装、测试和打包都不会使用它。
 
 架构边界见[核心架构](docs/core.md)，事务与重试见[同步、送达与重试](docs/sync.md)，进程生命周期见[运行与恢复](docs/runtime.md)。
 
@@ -102,7 +102,7 @@ Moor 的产品 `Workspace` 与执行主机的 `RuntimeWorkspace` 分开。执行
 
 GitHub token 不进入共享文档或中转。GitHub 只读正文和补丁不持久缓存；用户明确加入聊天草稿或创建 PR 编辑草稿的文本，适用对应草稿与会话保存规则，随后撤销 GitHub 授权不会删除已经复制的内容。浏览器保存手工发布草稿、原待确认请求与最小回执；中转不持久保存写入内容。
 
-浏览器使用 Loro/Flock 生成文档操作，执行主机校验后接收。CRDT 同步不等于指令已经执行：
+普通发送和审批使用范围受限的业务请求，由执行主机校验、构造并持久化会话；旧 CRDT 原请求仍按原编号兼容核查。CRDT 同步不等于指令已经执行：
 
 - **送达**表示 Moor 主机已在同一数据库事务中保存会话与去重凭据并接受执行；不代表模型已成功完成。Agent 启动或执行失败会显示在回合中。
 - **结果待确认**保留原请求编号，点击“重试确认”检查或完成同一个请求。
@@ -124,6 +124,8 @@ corepack pnpm build
 corepack pnpm format:check
 ```
 
+`pnpm test` 优先运行端到端流程，再运行集成与包内回归；只跑 E2E 使用 `pnpm test:e2e`。Linux 无桌面环境时使用 `xvfb-run --auto-servernum corepack pnpm test`。覆盖范围与真实设备缺口见[开发与验证](docs/development.md)。
+
 无需准备外部运行时源码仓库。ACP SDK、Codex ACP 适配器和 Electron 直接锁定在各 workspace 的 `package.json` 与根 `pnpm-lock.yaml` 中；Codex CLI runtime 不进入 Moor 依赖或安装包。登录凭据仍由 Codex 在本机管理。
 
 ```text
@@ -132,8 +134,8 @@ apps/desktop/   Electron 主进程、preload 与本机设置
 apps/cli/       CLI 参数、状态和终端入口
 apps/host/      执行主机启动与组件装配
 apps/relay/     中转启动、Google OIDC 与 Web Push
-packages/       protocol、session、client、host、gateway、e2ee
-tests/          跨包与跨进程集成测试及合成 fixtures
+packages/       protocol、session、client、host、gateway、sync
+tests/          E2E 用户流程、跨包集成回归及合成 fixtures
 scripts/        构建、发布与确定性验证
 ```
 

@@ -40,11 +40,9 @@ Moor 不从适配器私有扩展推断或展示账号额度，也不从模型级
 
 ## 验证范围
 
-本批 `pnpm check`、337 项自动测试、`pnpm build` 和 `pnpm format:check` 通过。合成协议、stdio、主机和真实 app 集成测试覆盖能力约束、回答校验、精确活动请求、原操作去重、确认丢失、离线/刷新与停止竞争。
+当前[交互集成测试](../tests/integration/host-interactions.test.ts)与[ACP 测试](../tests/integration/acp-interactions.test.ts)覆盖能力约束、回答校验、精确活动请求、原操作去重与停止竞争。浏览器草稿和恢复的公共流程由 `pnpm test:e2e` 运行；Agent 专项交互尚不等同于完整浏览器到 Host 的 E2E 覆盖。
 
-实际 Moor 主机与合成 ACP 的浏览器检查验证文本、单选、整数 `0` 和布尔 `false` 回答；命令只填入 `/review` 草稿，没有自动发送。计划进度、上下文 `25/100`、费用 `0 USD`、输入/输出/总 Token `25/5/30` 均按上报内容显示，缺失字段保持未提供。390×844 视口中的问答弹窗无横向溢出，页面没有报告错误。
-
-浏览器使用自定义合成 Agent，按能力边界没有执行追加。真实 Codex 登录和模型调用、Mac 安装包、iPhone/Safari/PWA 仍须完成[第二轮设备验收](validation.md#后续阶段的专项验收)。本阶段不延长 Agent 生命周期，也不增加后台驻留、自动唤醒或离线执行队列。
+真实 Codex 登录和模型调用、Mac 安装包、iPhone/Safari/PWA 按[功能专项](validation.md#功能专项)验收。普通草稿不会自动提交；用户明确提交的共享持久任务遵循独立的队列授权规则。
 
 实现入口：[交互协议](../packages/protocol/src/interaction-protocol.ts)、[事件模型](../packages/host/src/sessions/events.ts)、[ACP 适配](../packages/host/src/agents/acp/driver.ts)、[主机交互](../packages/host/src/sessions/interactions.ts)、[浏览器草稿与确认](../apps/web/src/features/interactions/interactions.ts)。
 

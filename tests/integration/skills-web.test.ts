@@ -1,12 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import {
-  SkillsController,
-  skillsKey,
-  agentCommandText,
-} from '../../apps/web/src/features/skills/skills';
-import { normalizeSessionEvent } from '@moor/host/sessions/events';
+import { SkillsController } from '../../apps/web/src/features/skills/skills';
 import type { SkillsRead } from '@moor/protocol/skills-protocol';
 
 const target = {
@@ -107,17 +102,6 @@ test('Skills are scoped read-only content; a deliberate reference revalidates it
   assert.deepEqual(f.calls[1], f.calls[2]);
   assert.match(f.calls[1].path, /\/catalog\/replicas\/replica\/skills\/read$/);
   assert.equal((f.calls[1].body as any).executionRevision, 3);
-  assert.equal(skillsKey(target), skillsKey({ ...target, replicaId: 'moved' }));
-  for (const field of [
-    'owner',
-    'deviceId',
-    'userId',
-    'machineId',
-    'workspaceId',
-    'localProjectId',
-    'sessionId',
-  ] as const)
-    assert.notEqual(skillsKey(target), skillsKey({ ...target, [field]: 'different' }));
 });
 test('wrong scope, file digest, catalog, execution revision and deceptive source metadata cannot be appended', async () => {
   for (const change of [
@@ -179,23 +163,4 @@ test('a newer explicit read replaces an older response and malformed catalog ref
   f.state.transform = (value) => ({ ...value, skills: [...value.skills, value.skills[0]] });
   await assert.rejects(f.controller.refresh());
   assert.equal(f.controller.list, undefined);
-});
-test('pinned ACP adapter command spellings retain native dollar and slash prefixes', () => {
-  // codex-acp 1.11.0 publishes Skills as $name; claude-agent-acp 0.76.0
-  // publishes supportedCommands names through the same standard ACP event.
-  const event = normalizeSessionEvent({
-    sessionUpdate: 'available_commands_update',
-    availableCommands: [
-      { name: '$synthetic-review', description: 'Synthetic Codex Skill', input: null },
-      { name: 'synthetic-review', description: 'Synthetic Claude command', input: null },
-      { name: '/already-prefixed', description: 'Synthetic custom command', input: null },
-    ],
-  });
-  assert.equal(event.status, 'accepted');
-  if (event.status !== 'accepted' || event.event.kind !== 'commands')
-    assert.fail('Missing command event');
-  assert.deepEqual(
-    event.event.commands.map((command) => agentCommandText(command.name)),
-    ['$synthetic-review', '/synthetic-review', '/already-prefixed'],
-  );
 });

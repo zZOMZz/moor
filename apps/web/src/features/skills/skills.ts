@@ -7,11 +7,9 @@ import {
   type SkillsRead,
   type SkillSummary,
 } from '@moor/protocol/skills-protocol';
-import { gitTargetSchema, gitWorkspaceKey, type GitTarget } from '../git/git-workspace';
+import { gitTargetSchema, type GitTarget } from '../git/git-workspace';
 
 export type SkillsTarget = GitTarget;
-export const skillsKey = (target: SkillsTarget) =>
-  gitWorkspaceKey(target).replace('git-workspace-v1/', 'skills-v1/');
 type Dependencies = {
   request(path: string, value: SkillsRead): Promise<unknown>;
   current(): boolean;

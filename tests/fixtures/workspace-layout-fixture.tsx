@@ -160,7 +160,11 @@ const history = [
           version: 1,
           source: 'acp',
           kind: 'commands',
-          commands: [{ name: 'review', description: '检查当前项目' }],
+          commands: [
+            { name: 'review', description: '检查当前项目' },
+            { name: '$synthetic-review', description: 'Synthetic native Skill' },
+            { name: '/already-prefixed', description: 'Synthetic native command' },
+          ],
         },
       },
       {

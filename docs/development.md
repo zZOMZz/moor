@@ -1,10 +1,10 @@
 # 开发与验证
 
-Moor 的主要约束集中在执行边界：谁可以提交操作、何时算送达，以及断线后会不会重复执行。开发时先确定受影响的行为，再选择对应的合成测试。
+优先通过用户流程验证 Moor：客户端提交操作，经真实 HTTP/WebSocket 到达 Host，由合成 ACP Agent 返回结果，再从客户端确认持久化与恢复。只在端到端流程难以稳定制造的事务失败、权限竞争、路径校验等边界补充集成或单元测试。
 
-## 准备与日常检查
+## 准备与提交检查
 
-需要 Node.js 24+、Corepack 和项目锁定的 pnpm 10.20.0。依赖从仓库锁文件安装，无需准备外部运行时源码。
+需要 Node.js 24+、Corepack 和锁定的 pnpm 10.20.0；安装始终使用锁文件。不需要其他应用源码、数据库或真实 Agent 账号。
 
 ```sh
 corepack pnpm install --frozen-lockfile
@@ -14,47 +14,75 @@ corepack pnpm build
 corepack pnpm format:check
 ```
 
-四项检查分别验证类型、行为、构建产物和格式，提交前都要通过。`pnpm test` 先用 esbuild 打包测试，再交给 Node 测试运行器；构建生成的 `dist` 不提交。
+`pnpm test` 先构建并运行 E2E，再运行集成与包内测试。Electron 是必需测试运行时，不能通过缺少显示环境而跳过图形流程。Linux 无桌面环境时使用 `xvfb-run --auto-servernum corepack pnpm test`，CI 使用同一入口并安装锁定的 Electron 二进制。
 
-### 源码解析与独立构建
+## E2E 入口与覆盖
 
-开发模式从每个 `packages/*/package.json` 的 `exports.types` 发现源码入口，不再维护另一份包名清单。新增包（包括 `@moor/sync`）会自动进入 esbuild 与桌面 Vite 的源码解析；运行时不会因为遗漏 alias 而混用新源码和旧 `dist`。各包仍须通过依赖方向与浏览器边界检查，源码 alias 不授权跨包访问私有文件。
+```sh
+corepack pnpm test:e2e
+```
 
-构建按交付物分开，均使用锁定依赖和仓库源码：
+这个命令先构建 workspace、Host/CLI 和 Web，再串行运行 [tests/e2e](../tests/e2e/README.md)。失败返回非零；测试使用临时项目、独立账号库和浏览器 profile，退出时清理，不读取用户日常数据。
 
-| 命令                                      | 产物与依赖                                                                                                 |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `pnpm build:relay`                        | `dist/server.mjs`、Web/PWA 静态资源及 Relay 许可；不构建 Desktop、Host 或会话 CLI                          |
-| `pnpm build:web`                          | Web/PWA 静态资源、Worker、WASM 和浏览器许可                                                                |
-| `pnpm build:host`                         | Host 与会话 CLI 的 Node bundle                                                                             |
-| `pnpm build:desktop`                      | Electron 主进程、preload、页面与 Host/客户端运行组件；对应 Node bundle 同时生成在 `dist`，只编译一次后复制 |
-| `pnpm build`                              | 所有 workspace 与全部交付物，仍是提交前的完整构建门禁                                                      |
-| `pnpm package:relay` / `pnpm package:mac` | 仅先构建对应交付物，再组装分发包                                                                           |
+| 用户流程   | 实际经过的边界                                            | 验证内容                                                                           |
+| ---------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 本机会话   | 构建后的 CLI → 本机 HTTP → 独立 Host → stdio ACP          | 登录、空会话、发送/等待、原编号去重、停止、整理、重启读取与退出登录                |
+| 远程会话   | 构建后的 CLI → 生产 Relay HTTP/WS → 独立 Host → stdio ACP | 合成账号配对、同一会话闭环与主机重启后的历史/回执；Relay 使用真实应用和独立 SQLite |
+| 浏览器恢复 | 构建后的 Web → Chromium/IndexedDB → 合成 HTTP API         | 打开会话、草稿事务落盘、归组保护、离线重开、禁止自动发送、401 回到登录             |
+| 工作区界面 | 当前 React/CSS → Chromium → 内存控制器夹具                | 有界分页、项目/电脑选择、主题、侧栏、390px 抽屉和空项目流程                        |
 
-Node 入口和编译配置统一在 [runtime-build.mjs](../scripts/build/runtime-build.mjs)，开发 watch 与生产构建共用。每个运行组件生成独立的 `*-NOTICES.txt`，打包按实际交付目标收集；浏览器许可继续随页面资源提供。Relay 归档仍只包含程序白名单，不打包、删除或迁移 operator 数据。Desktop 包不再包含独立 Relay 服务 bundle；本机 HTTP 边界仍由 Host 内部提供。
+后两项验证浏览器边界，API 或控制器由夹具提供，不构成浏览器到真实 Host 的完整执行证明。精确审批、身份撤销、丢回执、附件、Git/Fork 和共享队列目前主要由集成测试覆盖；新增相关用户流程时优先补到 E2E。真实双 Mac、iPhone/PWA、系统权限、模型服务和正式发布另见[设备验收](validation.md)。
 
-[源码解析回归](../tests/integration/workspace-sources.test.ts)实际打包 `@moor/sync/store` 并检查依赖图不落入 workspace 的 `dist`，另验证新包无需修改第二份清单。[独立 Relay 构建回归](../tests/integration/runtime-build.test.ts)在临时目录生成实际服务 bundle，检查产物范围、语法和许可，不启动服务或使用账号。
+已有构建可定向运行 `node scripts/validation/test.mjs --e2e`，但不能用陈旧产物作为本次修改的验收依据。日常完整入口仍是 `pnpm test:e2e`。
 
-构建同时生成 `dist/cli.mjs` 会话命令入口，并随 macOS 包提供。CLI 的真实子进程往返测试见 `tests/integration/cli-host.test.ts`；它启动独立本机主机与合成 ACP，使用真实 HTTP 和私有客户端数据库验证创建、发送、等待、停止、整理、重启与原结果查询。CLI 状态不读取主机数据库，测试准备仅在主机启动前登记虚构项目和 Agent。构建后可用 `MOOR_TEST_CLI_BUNDLES=1 pnpm exec tsx --test tests/integration/cli-host.test.ts` 对最终 `bridge.mjs`/`cli.mjs` 再跑同一流程。使用说明见[会话 CLI](cli.md)。
+## 集成与边界回归
 
-已退场的 v4/secure CLI 只保留拒绝与历史只读数据回归，见 [retired-e2ee](../tests/integration/retired-e2ee.test.ts)。它不再生成生产 bundle；旧端点参数在读取配置和建立网络连接之前拒绝。
+```sh
+corepack pnpm test:integration
+corepack pnpm --filter @moor/host test
+```
 
-最终 macOS 包可用同一 CLI 往返用例验收：
+前者运行 `tests/integration` 和各 workspace 的测试；后者只检查所属包。两者适合定位失败，不能代替提交时的 `pnpm test`。
+
+保留以下自动化边界：
+
+- Host 接受事务、同编号去重、审批的活动回合/原请求绑定、停止与重启不重放。
+- 账号、设备、工作区、项目、会话隔离，以及撤销后的迟到响应拒绝。
+- IndexedDB 多记录 CAS、未确认请求与新草稿不互相覆盖、旧数据只读保留。
+- 文件路径与符号链接、容量限制、附件确认、历史 diff 冻结、凭据隔离。
+- 程序包白名单、第三方许可、重打包保留 operator 数据与生产可达性。
+
+故障通过明确事件或注入检查点制造：等待 Agent 发出审批后再竞争提交；让数据库在写入时失败后断言没有 prompt；等待 IndexedDB 事务完成后再重载。使用注入计时器控制恢复，不用 `sleep` 猜测异步完成。超时只用于失败截止。
+
+删除测试前确认其执行路径确已移除，或已有更高层流程覆盖同一结果。已退场功能的历史格式、原操作核查与数据保留仍有生产消费者，相关回归继续保留。避免只断言源码字符串、私有函数调用顺序或重复每层相同用例。
+
+## 独立构建与源码边界
+
+| 命令                                      | 交付物                                                |
+| ----------------------------------------- | ----------------------------------------------------- |
+| `pnpm build:relay`                        | Relay 服务、Web/PWA 及对应许可                        |
+| `pnpm build:host`                         | Host 和会话 CLI 的 Node bundle                        |
+| `pnpm build:web`                          | Web/PWA、通知 Worker、WASM 和浏览器许可               |
+| `pnpm build:desktop`                      | Electron 主进程、preload、页面、Host 与客户端运行组件 |
+| `pnpm build`                              | 所有 workspace 和交付物                               |
+| `pnpm package:relay` / `pnpm package:mac` | 构建相应交付物后组装分发包                            |
+
+应用入口位于 `apps/{web,desktop,host,relay,cli}`，共享边界位于 `packages/{protocol,session,client,gateway,host,sync}`。`pnpm boundaries` 检查依赖方向；只有 Host 导入并持久接受用户 CRDT 操作，Relay 不保存正文。新增请求必须绑定完整身份，不暴露原始 shell/socket 代理。
+
+开发模式从 workspace manifest 的 `exports.types` 解析源码；Node 构建入口统一在 [runtime-build.mjs](../scripts/build/runtime-build.mjs)，生产构建与开发 watch 共用。每个运行组件按实际依赖生成许可。生成的 `dist`、临时数据库、截图、会话和日志不提交。
+
+桌面开发使用 `pnpm dev:desktop`；修改 Vite、HMR 或原生启动器时，另跑 `pnpm check:desktop:electron`。该专项使用合成 IPC 和隔离空主机，不属于日常会话 E2E，也不证明正式包已通过设备验收。
+
+## 包内与发布检查
+
+对最终 macOS 包运行同一个 CLI 场景：
 
 ```sh
 MOOR_TEST_PACKAGED_APP=/absolute/release/macos-arm64/Moor.app \
-  pnpm exec tsx --test tests/integration/cli-host.test.ts
+  corepack pnpm exec tsx --test tests/e2e/cli-host.test.ts
 ```
 
-这个模式使用包内 Electron Node、`runtime/bridge.mjs` 和 `runtime/cli.mjs`，将独立合成 ACP 复制到临时目录，并从源码之外的工作目录启动全部执行进程。用例验证登录、空会话、发送/等待、停止、整理、原编号查询及主机重启；测试准备本身仍由仓库 Node 执行。它不调用真实模型，也不证明真实 Agent 原生登录或目标设备已经验收。
-
-只改文档时可以先定向格式化，再检查链接、术语与图示。避免运行全仓库 `format` 时顺手改动其他人的代码。
-
-```sh
-corepack pnpm exec prettier --write docs README.md deploy/README.md
-```
-
-## 未使用代码检查
+测试从源码目录之外启动包内 Electron Node、Host 和 CLI，并复制独立合成 ACP。不会修改日常 Moor profile。Relay 仍由测试进程创建；此流程不验证整个包内桌面 UI、Developer ID、公证或真实账号。
 
 ```sh
 corepack pnpm knip
@@ -63,100 +91,6 @@ corepack pnpm build
 corepack pnpm production:check
 ```
 
-[Knip 检查入口](../scripts/validation/check-unused.mjs) 使用独立的 [源码映射配置](../tsconfig.knip.json)，在分析前核对 workspace manifest 的源码出口。锁定版本的 OXC 会先把普通包导入解析到 `dist`，Knip 自身的 `paths` 只在失败时回退，因此必须显式传入源码 tsconfig；构建产物存在与否应产生一致结果。
+Knip 检查源码消费者，生产门禁检查真实构建图及复制资源；测试引用不能证明代码仍在产品使用。不要在运行子进程测试时并行重建 workspace 的 `dist`。细节见[未使用代码与生产可达性](dead-code-checks.md)。
 
-[Knip 配置](../knip.jsonc) 不再将包中全部源码设为入口，也不关闭入口导出检查。默认保留测试引用，生产模式排除测试；未使用导出和导出类型为错误。`ignoreExportsUsedInFile` 保留仍在本文件使用的定义：可以移除多余导出，不能直接删除实现。命令每次重新分析，不复用可能与配置不一致的分析缓存。
-
-Knip 仍会自动展开 manifest 的通配源码出口，因此它不能独自证明某个模块进入了产品。[生产可达性检查](../scripts/validation/check-production-reachability.mjs) 读取完整构建的 8 份实际图：Relay、Host、原生工作区客户端、Web、通知 worker、Electron main、preload 和 renderer。图区分真实输出代码、实际导入/转导连接、编译期类型依赖和未引用实现；被 tree-shaking 删除的实现不会自动算作生产消费者。复制的启动/设置脚本必须与产物逐字相同，源码和最终产物都有 SHA-256，过期图或缺失产物会失败。临时测试构建和开发输出不能覆盖正式图。
-
-浏览器 `startup.js` 的 `__ENTRY__` 映射到实际 Web 入口。Desktop 从固定的 `workspace-client.mjs` 动态加载 `DesktopWorkspaceClient`、`accountManagementPlan` 和 `validateAccountManagementResult`；这三个导出用附有调用方说明的 `@nativeEntry` 标记，生产图还核对它们的实际导出集合。不得用整目录忽略或通配入口隐藏其他未使用代码。已无消费者的 6 个内部包根转导已删除，实际使用的子路径出口继续保留。
-
-清理时检查初始化副作用、动态加载、历史数据读取及同名定义。仅测试引用的接口要判断是否应迁为现用组件的回归，不能机械删除安全验证。先完成类型与测试，再构建并检查真实产物，避免同时重建 workspace 的 `dist` 影响运行中的子进程测试。图只保存在 `dist/validation`，不进入分发包；规则、工具局限和合成验证见[未使用代码与生产可达性](dead-code-checks.md)。
-
-审查已下线功能时，还需核对实际启动分支、打包入口和当前产品说明。确认旧工作流不再被产品调用后，可以一并删除旧实现及其专属测试；旧数据格式、原操作恢复和仍运行的共享逻辑应保留独立回归。Electron 从产物路径动态加载的接口仍可能被生产检查报告，不能据此删除。当前客户端功能边界见[工作区界面](workspace-ui.md)。
-
-## 从行为找到实现
-
-下面是阅读入口；具体语义以专题文档和行为测试共同说明，文件名不代替设计解释。
-
-| 要理解或修改的行为       | 主要入口                                                                                                                                                                                                                               | 对应测试                                                                                                                                                                                                                                                                             |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 会话结构与文档操作       | [session-schema](../packages/session/src/session-schema.ts)、[model](../packages/session/src/model.ts)                                                                                                                                 | [host](../tests/integration/host.test.ts)、[runtime](../tests/integration/runtime.test.ts)                                                                                                                                                                                           |
-| 接受、去重、审批与取消   | [HostWorkspace](../packages/host/src/sessions/workspace.ts)、[校验器](../packages/host/src/commands/validate-mutation.ts)、[RuntimeStore](../packages/host/src/persistence/store.ts)                                                   | [host](../tests/integration/host.test.ts)                                                                                                                                                                                                                                            |
-| 项目归组与跨主机路由     | [Catalog](../packages/gateway/src/catalog.ts)、[HTTP 入口](../packages/gateway/src/http.ts)                                                                                                                                            | [catalog](../tests/integration/catalog.test.ts)、[relay](../tests/integration/relay.test.ts)                                                                                                                                                                                         |
-| Agent 接入与运行设置     | [AgentDriver](../packages/host/src/agents/driver.ts)、[ACP 实现](../packages/host/src/agents/acp/driver.ts)、[运行选项](../packages/protocol/src/run-config.ts)                                                                        | [acp](../tests/integration/acp.test.ts)、[runtime](../tests/integration/runtime.test.ts)、[run-config](../tests/integration/run-config.test.ts)                                                                                                                                      |
-| Agent 本机设置与角色兼容 | [本机设置](../packages/host/src/agents/settings.ts)、[固定版本](../packages/host/src/sessions/agent.ts)、[角色主机](../packages/host/src/sessions/retired.ts)、[旧角色数据](../apps/web/src/features/roles/roles.ts)                   | [本机 CLI/IPC](../tests/integration/agent-settings-host.test.ts)、[角色主机](../tests/integration/retired-session-features.test.ts)、[角色中转](../tests/integration/retired-session-features.test.ts)、[旧工作区记录](../tests/integration/workspace-feature-compatibility.test.ts) |
-| 导航、缓存与输出阅读     | [Web 应用](../apps/web/src/features/workspace/workspace-controller.ts)、[工作区存储](../apps/web/src/platform/indexed-storage.ts)、[内容展示](../apps/web/src/components/content.ts)                                                   | [web](../tests/integration/web.test.ts)、[ui](../tests/integration/ui.test.ts)、[startup](../tests/integration/startup.test.ts)                                                                                                                                                      |
-| 文件范围与内容版本       | [内容协议](../packages/protocol/src/content-protocol.ts)、[主机文件读取](../packages/host/src/projects/files.ts)、[文件缓存](../apps/web/src/features/files/file-content.ts)                                                           | [协议](../packages/protocol/tests/content-protocol.test.ts)、[文件主机](../tests/integration/project-files-host.test.ts)、[文件路由](../tests/integration/file-content-relay.test.ts)、[文件缓存](../apps/web/tests/file-content.test.ts)                                            |
-| GitHub 读取与会话关联    | [协议](../packages/protocol/src/github-protocol.ts)、[GitHub 客户端](../packages/host/src/integrations/github/client.ts)、[会话关联](../packages/host/src/sessions/github.ts)、[Web 控制器](../apps/web/src/features/github/github.ts) | [客户端](../tests/integration/github-client.test.ts)、[主机](../tests/integration/session-github.test.ts)、[中转](../tests/integration/github-relay.test.ts)、[Web](../tests/integration/github-web.test.ts)                                                                         |
-| GitHub 本机私有配置      | [配置](../packages/host/src/integrations/github/config.ts)、[桌面 IPC](../apps/desktop/src/main/github-settings.cjs)、[主机入口](../apps/host/src/main.ts)                                                                             | [配置](../tests/integration/github-config.test.ts)、[桌面设置](../tests/integration/desktop-github-settings.test.ts)、[真实 CLI/IPC](../tests/integration/github-config-host.test.ts)                                                                                                |
-| 进程恢复与主机独占       | [恢复控制](../apps/desktop/src/main/recovery.cjs)、[所有权锁](../packages/protocol/src/node/exclusive-lock.ts)                                                                                                                         | [recovery](../tests/integration/recovery.test.ts)、[runtime-lock](../tests/integration/runtime-lock.test.ts)                                                                                                                                                                         |
-| 打包与中转发布           | [程序包](../scripts/release/relay-package.mjs)、[部署入口](../scripts/release/deploy-relay.mjs)                                                                                                                                        | [package](../tests/integration/package.test.ts)、[deploy](../tests/integration/deploy.test.ts)                                                                                                                                                                                       |
-
-## 用合成信号验证故障
-
-单测可以注入 AgentDriver，明确控制何时输出、请求审批、结束或失败。需要验证进程协议时，使用仓库的合成 stdio ACP Agent；它执行真实握手与加载流程，但不会调用真实模型或读取真实 Agent 账号。
-
-例如，验证“保存失败不执行”，应让数据库在写快照时确定性失败：
-
-```text
-安装一个写快照就报错的测试触发器
-提交合法用户操作
-断言提交失败
-断言会话和 operation 凭据均未写入
-断言 Agent prompt 调用次数为 0
-```
-
-验证审批竞争，则先等待合成 Agent 明确发出请求，再提交两个不同选择。验证恢复重试时注入计时器，主动推进时间。不要使用真实账号、私人项目或 `sleep` 猜测异步操作是否完成。
-
-现有测试覆盖了事务回滚、重复编号、并发发送、重启不重放、精确审批与取消、跨项目隔离、真实 stdio 合成会话恢复，以及打包时保留操作者数据且不把数据放进归档。测试通过只证明这些覆盖到的行为。
-
-CLI 控制与恢复测试另验证空会话身份、正文/配置绑定/回执同事务回滚、精确停止先保存后执行，以及停止记录跨主机重启后区分 `interrupted`。客户端故障测试注入丢回执、错误回执、旧目标、截止信号和并发封存，检查不会因读取、重连或等待超时重发或取消。私有连接测试使用随机挑战和合成密钥验证本机实例证明，拒绝符号链接、硬链接、文件替换和不受信任的祖先目录。通用会话 HTTP 路由在主机成功或失败返回后重新核对登录、连接与项目身份，并只投影所请求会话的元数据。
-
-会话整理测试覆盖主机确认、元数据版本竞争、响应丢失后的原编号重试和重启后去重；旧格式缺少版本或置顶字段时使用兼容默认值。归档不能绕过活动回合校验，已归档会话拒绝新 prompt，恢复不得调用 Agent。测试同时检查会话正文和原生会话映射没有被整理操作改变，并将关闭后的合成数据库复制到新目录，验证身份、元数据、去重凭据与原生会话 ID 保留。
-
-浏览器待确认请求先持久化再发送，刷新恢复只读取请求，手动重试沿用原操作内容和 operationId。产品工作区归属变化时，路由可以更新，但必须先核对账号、设备、执行工作区、本地项目和会话身份未变；合成测试验证其中任意身份改变都会被拒绝。导航使用 2,000 条合成会话验证首批渲染上限和当前选择保留，不据此推断真实手机性能。
-
-文件读取测试使用临时合成项目，覆盖路径穿越、符号链接与文件替换、大小限制和读取中增长；通过注入检查点产生竞争，不使用等待猜测文件状态。中转测试验证范围变更和权限失效时不返回内容，缓存测试验证摘要、离线版本隔离和晚到响应。协议能力及普通 Node 文件接口的隔离限制见[文件与内容协议](content.md)。
-
-通知测试使用注入时间、合成 IPC/WS 与推送传输，覆盖主机事务、旧连接失效、去重、退出登录、订阅权限、加密请求和密钥文件保护。桌面通知与附件保存测试运行真实模块并注入系统事件和对话框，不接触真实通知中心或 Agent 账号。系统权限、实际文件落盘和 PWA 后台送达仍需[专项设备验收](validation.md#m25-通知专项步骤)。
-
-GitHub 测试使用注入的 HTTP 响应、临时项目和虚构 token，不读取真实 GitHub 凭据，也不调用真实 API。真实主机子进程验证 stdin/私有 IPC、主机锁、文件权限、token 不回显和退出不重放。客户端、主机及页面测试分别覆盖数字仓库身份、fork PR 的 head/base、精确 SHA 的 CI、有限分页、权限撤销、旧响应失效、原编号确认和正文明确加入草稿。文件测试还验证私有配置不能通过项目读取或快照泄露；这些保护不等于原生 Agent 的系统沙箱。
-
-## 增加能力时先守住边界
-
-增加一个远程操作，应先定义它的请求范围和主机校验规则。会话写入经过 HostWorkspace；只有执行主机导入并持久接受用户 CRDT 操作。不要让中转或新客户端直接保存主机会话。
-
-接入新的 Agent 时，在 AgentDriver 后实现启动、能力读取、输出、审批、取消和恢复。启动路径与凭据留在本机；共享文档只能带允许的输入。依赖版本保持锁定，更新时保留第三方许可证与来源说明。
-
-修改会话格式或桥接协议时，需同时考虑浏览器缓存、主机持久化和旧连接的处理。当前旧运行时升级采用独立数据名称与拒绝旧协议的方式；不能因为能读取某个旧文件，就自动导入待确认操作。
-
-GitHub 配置入口只属于本机。远端读取接受类型化的项目与会话请求，不接受 token、任意服务地址、原始 HTTP 路径或 shell。provider 正文只存在于当前读取响应和页面内存，显式加入草稿才按普通会话规则持久化。撤权后确认旧关联操作只返回脱敏回执，不借去重返回旧上下文；外部写操作应在 M4.4 单独设计授权与重试语义。当前范围见[GitHub 文档](github.md)。
-
-网页预览的默认测试不启动图形应用，4 项原生专项明确跳过。有可用图形会话的开发机可执行 `MOOR_TEST_ELECTRON_PREVIEW=1 node --import tsx --test tests/preview-renderer.test.ts tests/desktop-entry.test.ts`；也可设置 `MOOR_TEST_PREVIEW_WORKER` 为最终构建的绝对 worker 路径。设置 `MOOR_TEST_PACKAGED_APP=/absolute/release/macos-arm64/Moor.app` 时，三项原生渲染器用例统一使用包内 Electron 与 worker；这与仅替换 worker、仍使用开发 Electron 的检查不同。专项只启动锁定 Electron 和回环合成 HTTP/WS/TCP/UDP 服务，用事件信号检查输入画面、视口、节点变化与网络隔离，不访问真实网页、凭据或 Agent。包入口测试在 macOS 临时克隆的 Electron.app 中加载合成主模块与 worker，验证固定入口选择，不读取 Moor 用户数据。宿主环境若不允许 Electron 自身沙箱启动，应报告该环境不可用，不能关闭 Chromium 沙箱来使测试通过。实现入口及测试文件见[项目网页预览](preview.md)。
-
-## 发布与真实设备验证
-
-Skills 测试使用临时项目、全局目录和实际 worktree，覆盖有界发现、UTF-8/摘要、目录及文件替换、来源撤权、配置快照与并发读取限额。CLI 和桌面 IPC 使用同一主机锁；Web 用实际 app 与 IndexedDB 事务模拟确定性草稿竞争和原编号重试。测试不访问用户的 `~/.agents`、`~/.claude` 或 `~/.codex`，也不调用真实模型。实现与读取限制见 [Skills](skills.md)。
-
-Agent 版本测试使用独立旧版 SQLite、合成启动参数和确定性信号，覆盖迁移、原生映射、确认事务回滚、等待快照期间切换版本及 Fork 恢复。能力检查另覆盖实际目录替换和中转登录/连接变化；真实 app 测试覆盖旧版本退出目录后的发送、缺失配置的历史读取、离线缓存与原请求确认。测试不会运行参数中描述的程序或访问真实 Agent 账户。固定范围见[会话固定 Agent 版本](runtime.md#会话固定-agent-版本)，本机配置与项目角色完整流程见[Agent 配置与角色预设](agent-roles.md)。
-
-角色测试另覆盖项目目录版本竞争、成功与封存的先后次序、原编号查询和恢复、错误回执不清待确认请求，以及自身目录广播先于 HTTP 回执时仍正确确认。Web 使用实际 React/app 与独立 IndexedDB 事务模拟，验证草稿、运行选项、已应用版本及新会话 Agent 选择一次提交；输入、切换目标、超时或其他页面更新时整个事务中止。默认说明只在明确应用后追加，普通发送仍使用原 mutation；刷新不会重新应用或重发。本机连接检查只在明确动作后启动合成 Agent，读取列表和保存角色不得触发检查。详见[角色说明](agent-roles.md)。
-
-macOS 包需在目标架构的 Mac 上构建；中转包应只包含打包后的程序文件。发布步骤与数据备份见[项目首页](../README.md)和[部署与迁移](../deploy/README.md)，不要把会话记录、凭据、数据库、生成包或内部任务记录提交进 Git。提交主题使用 Conventional Commits，例如 `docs: explain session delivery and recovery`。
-
-第一轮完整真机验收安排在 M0 回归基线与 M1 会话管理实现完成、四项检查通过之后，进入 M2 开发前。第二轮在 M2/M3 各自的可交付流程完成后，重点检查附件、文件预览、通知和 Agent 能力兼容性。涉及休眠、退出、Keychain、PWA 后台或系统权限的改动，应在对应实现完成后提前做一次专项人工检查。步骤与通过条件见[设备验收](validation.md)。
-
-真实 Codex 登录与模型调用只能由操作者在专用测试项目中人工验收；自动测试不得读取真实 Agent 账号。双 Mac + iPhone 的跨设备行为，以及目标服务器的证书与网关仍需在相应环境验收。合成测试、浏览器截图和本机构建都不能替代这些验证；发布说明应明确哪些设备实际测过，哪些尚未测试。
-
-真实 GitHub 授权、组织限制及 API 状态也须由操作者在专用仓库中另行验收。本批使用合成 HTTP 的检查不证明真实账号已连通，更不表示完成推送、评论或 PR 写入。M4.3 专项步骤见[设备验收](validation.md#m43-github-只读集成专项步骤)。
-
-主机停机备份、恢复与原生 Agent 状态的边界见[运行与恢复](runtime.md#主机停机备份与恢复)。仅恢复会话正文无法保留身份和请求去重；浏览器缓存也不能替代主机备份。
-
-### macOS 正式分发准备
-
-日常[打包脚本](../scripts/release/package.mjs) 继续生成 ad-hoc 预览 ZIP。独立的[正式分发工具](mac-release.md)已提供只读计划和显式执行：检查程序文件、复制到新目录、逐层 Developer ID 签名、公证、装订票据、验证 Gatekeeper 并生成最终归档。固定权限模板与失败停止、未知提交保留由合成命令测试覆盖；真实身份和公证凭据仍由发布操作者准备。证书、私钥和公证凭据不进入仓库、日志或程序包，工具实现不表示已完成真实签名。
-
-在干净的目标架构 Mac 上验证下载包的首次打开、Agent 启动、升级后原数据可读和退出行为，记录应用版本、系统/架构、Agent 与锁定适配器版本及未通过项。签名与公证、真机验收未完成时继续标记为开发预览版，不据合成本地测试宣称可正式分发。
-
-返回[文档目录](README.md)。
+文档和验收记录以当前实现、可运行命令及明确覆盖范围为准。已完成的迁移计划、删除脚本的旧通过数量和截图对比留在 Git 历史，不再作为当前操作指南。

@@ -7,15 +7,16 @@
         "scripts/release/*.mjs",
         "scripts/validation/{test,synthetic-agent}.mjs",
         "scripts/validation/check-*.mjs",
-        "scripts/validation/check-*.cjs",
         "scripts/validation/prepare-validation.ts",
         "tests/**/*.test.ts",
+        "tests/e2e/*.cjs",
         "tests/fixtures/synthetic-*.mjs",
         "tests/fixtures/vite-desktop.cjs",
         "tests/fixtures/workspace-layout-fixture.tsx",
       ],
       "project": ["scripts/**/*.{ts,tsx,js,cjs,mjs}", "tests/**/*.{ts,tsx,js,cjs,mjs}"],
-      "ignoreDependencies": ["@agentclientprotocol/codex-acp"],
+      // Node test bundles resolve one external CRDT/WASM runtime from the root.
+      "ignoreDependencies": ["@agentclientprotocol/codex-acp", "loro-crdt"],
     },
     "packages/protocol": {
       "entry": ["tests/**/*.test.ts"],

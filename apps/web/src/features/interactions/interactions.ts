@@ -433,28 +433,3 @@ export function informationHtml(state: SessionEventState) {
       '',
     )}</dl><p class="muted">token 范围由 Agent 报告，未推断为本回合增量；费用仅显示上报币种与金额。</p>${legacyRateLimits ? `<h3>历史账号额度</h3>${legacyRateLimits}<p class="muted">这是旧会话的只读兼容数据，不代表当前实时余额；Moor 不再从 Agent 生成此类报告。</p>` : ''}</section>`;
 }
-export function renderInteractionItem(item: unknown, key: string): string | undefined {
-  const value = item as any;
-  if (value?.type === 'question') {
-    const parsed = questionItemSchema.safeParse(value);
-    if (!parsed.success) return '<p class="interaction-warning">问题记录不可用</p>';
-    const q = parsed.data;
-    return `<section class="interaction-history"><strong>Agent 问题 · ${questionStatus[q.status]}</strong><p>${esc(q.request.title ?? q.request.message)}</p>${q.request.title ? `<p>${esc(q.request.message)}</p>` : ''}<button type="button" data-open-question="${esc(questionDraftKey(q.request))}">查看${q.status === 'pending' ? '并回答' : ''}问题</button></section>`;
-  }
-  if (value?.type === 'steer') {
-    const parsed = steerItemSchema.safeParse(value);
-    if (!parsed.success) return '<p class="interaction-warning">追加记录不可用</p>';
-    return `<section class="interaction-history"><strong>回合内追加 · ${steerStatus[parsed.data.status]}</strong><p>${esc(parsed.data.prompt)}</p>${parsed.data.message ? `<p>${esc(parsed.data.message)}</p>` : ''}</section>`;
-  }
-  if (value?.type === 'agent_features') return '';
-  if (value?.type === 'session_event') {
-    const parsed = sessionEventSchema.safeParse(value.event);
-    if (!parsed.success) return '<p class="interaction-warning">运行事件格式不可用</p>';
-    const event = parsed.data;
-    if (event.kind === 'commands')
-      return `<details class="interaction-history" data-detail="${esc(key)}"><summary>Agent 命令快照 · ${event.commands.length}</summary><p class="muted">命令仅可填入输入框，由你手动发送。</p>${event.commands.map((command) => `<p><code>${esc(command.name)}</code> ${esc(command.description)}</p>`).join('') || '<p>Agent 未提供可用命令</p>'}</details>`;
-    if (event.kind === 'plan-removed')
-      return `<p class="muted">Agent 已移除计划：${esc(event.planId)}</p>`;
-    return `<details class="interaction-history" data-detail="${esc(key)}"><summary>${event.kind === 'plan' ? '计划快照' : '用量快照'} · ACP</summary>${informationHtml(applySessionEvent(undefined, event))}</details>`;
-  }
-}

@@ -20,17 +20,20 @@ async function findTests(directory) {
   return result;
 }
 const scope = process.argv[2];
-const roots = scope
-  ? [join(scope, 'tests')]
-  : [
-      'tests',
-      ...(await readdir('packages', { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => join('packages', entry.name, 'tests')),
-      ...(await readdir('apps', { withFileTypes: true }).catch(() => []))
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => join('apps', entry.name, 'tests')),
-    ];
+const e2e = scope === '--e2e';
+const roots = e2e
+  ? ['tests/e2e']
+  : scope
+    ? [join(scope, 'tests')]
+    : [
+        'tests/integration',
+        ...(await readdir('packages', { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => join('packages', entry.name, 'tests')),
+        ...(await readdir('apps', { withFileTypes: true }).catch(() => []))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => join('apps', entry.name, 'tests')),
+      ];
 const tests = (
   await Promise.all(
     roots.map((root) =>
@@ -40,10 +43,11 @@ const tests = (
 )
   .flat()
   .sort();
+if (!tests.length) throw new Error('No tests found for ' + (scope ?? 'integration'));
 // Hosted CI reports nominal CPUs even when subprocess-heavy suites share a
 // constrained quota. Serialize files there so deliberate test deadlines keep
 // measuring the operation under test rather than unrelated file contention.
-const testConcurrency = process.env.CI ? 1 : Math.min(4, availableParallelism());
+const testConcurrency = e2e || process.env.CI ? 1 : Math.min(4, availableParallelism());
 // Bundle tests like production. One external WASM module owns all CRDT instances.
 for (const file of tests)
   await build({

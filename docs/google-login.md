@@ -66,13 +66,7 @@ node dist/cli.mjs auth google-cancel
 
 取消会先使旧本机流程失效，再尝试取消中转流程；若已保存新 Cookie，则请求撤销该凭据。检查返回的 `serverConfirmed`，不能把仅本机取消等同于服务器撤销。已签发凭据的撤销结果不明时保留待处理状态；后续需手动核查或取消，不能用新登录覆盖未知结果。过期或未完成流程不会在重启后自动继续，重新开始前先手动取消。
 
-需要发布或同步设备公开信任版本时，先核对 CLI 的当前远程登录，再导出专用私有连接文件：
-
-```sh
-node dist/cli.mjs auth export-trust --output /private/device/.moor-security/trust-connection.json
-```
-
-父目录须为当前用户持有的 `0700` 私有目录，输出须是新的绝对文件路径；不会覆盖已有文件。本机 `--connection` 登录不能导出。输出文件含 Moor 登录 Cookie，不能加入项目、会话或仓库；终端只返回路径。发布/同步命令只传公开签名材料，具体流程见[设备安全命令](device-security.md#发布与同步公开信任版本)。
+设备信任导出及公开信任分发已退场。`auth export-trust` 不再导出 Cookie；已有私有连接文件按[旧设备材料](device-security.md)保留，不用于当前普通连接的认证或执行。
 
 ## 解除绑定与本机恢复
 
@@ -98,6 +92,6 @@ MOOR_DATA_DIR=/private/moor-data node dist/server.mjs --recover-account < /priva
 
 合成验证覆盖实际签名校验、短期 state/nonce/PKCE、单次消费、账号事务、密码恢复、浏览器和桌面确认、CLI 手动接续与私有连接导出、取消及异步竞争。Google 令牌验证使用锁定的 `jose`，实现遵循 [OpenID Connect ID Token 校验](https://openid.net/specs/openid-connect-core-1_0-errata2.html#IDTokenValidation)。中转重启不会继续旧认证流程。
 
-真实 Google 客户端、Mac 系统浏览器接回、Mac mini、MacBook Air、iPhone Safari/PWA、Google 同意页面与撤销权限仍需在操作者环境中验收。这是身份认证功能；M6.2 尚未完成，生产远程会话仍是明文 v3，跨主机迁移也未接通，不能将本批 HTTPS 或 Google 登录视为已实现它们。
+真实 Google 客户端、Mac 系统浏览器接回、Mac mini、MacBook Air、iPhone Safari/PWA、Google 同意页面与撤销权限仍需在操作者环境中验收。这是身份认证功能；加密运行入口已退场，当前远程会话由 v3 转发，跨主机迁移不属于当前范围，不能将本批 HTTPS 或 Google 登录视为已实现它们。
 
 返回[文档目录](README.md)。

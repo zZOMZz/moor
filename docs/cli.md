@@ -67,15 +67,15 @@ JSON
 
 接续密钥和登录 Cookie 只保存在私有 CLI 状态，URL 不含这些值。最终 POST 前先保存 `finishing`，未知结果不会重复提交；若已保存 Cookie 为 `issued`，在有效期和原状态内手动再次确认只重读 `/api/me`。取消结果的 `serverConfirmed` 区分本机清理与中转确认，完整步骤及未知结果处理见[Google CLI 接续](google-login.md#cli-系统浏览器接续)。
 
-## 导出设备信任连接
+## 已退场的设备信任导出
 
 `auth export-trust` 与设备安全命令已退场，不再导出登录 Cookie 或生成、配对、撤销、发布设备信任。普通登录、本机连接与账号恢复继续使用各自原有边界；登录成功不表示启用了端到端加密。
 
-## 显式加密连接
+## 已退场的加密连接
 
 独立加密主机、`secure` 执行命令和 `security.mjs` 已退场。旧 `--secure-endpoint`、`--secure-connection` 启动参数在读取配置、设备材料或连接网络前明确失败，不会自动切换到普通 v3 连接。Relay 的旧 v4 和公开信任分发端点返回已退场。
 
-已有设备文件、恢复码、恢复包、Host journal 和映射历史均保留；升级不删除、不重新签名、不执行或封存旧操作。加密传输的旧 CLI 原记录仍留在原私有数据库的 `secure_outbox` 与 `secure_catalog_outbox` 中，不复制到普通操作表。旧会话的 Host 数据不需要格式转换；不得将结果未知请求当作新指令发送。历史设计见[加密历史实现](end-to-end-encryption.md)。
+已有设备文件、恢复码、恢复包、Host journal 和映射历史均保留；升级不删除、不重新签名、不执行或封存旧操作。加密传输的旧 CLI 原记录仍留在原私有数据库的 `secure_outbox` 与 `secure_catalog_outbox` 中，不复制到普通操作表。旧会话的 Host 数据不需要格式转换；不得将结果未知请求当作新指令发送。当前状态见[加密退场](end-to-end-encryption-deferral.md)。
 
 ## 退场数据的离线归档
 
@@ -192,4 +192,4 @@ node dist/cli.mjs operation abandon OPERATION_ID --json
 
 备份前停止使用该状态目录的所有 CLI 进程，并完整保存其数据库和仍存在的 SQLite 辅助文件。客户端状态不替代[执行主机备份](runtime.md#主机停机备份与恢复)。连接描述文件是临时凭据，应由当前主机重新生成，不从备份恢复旧端口和密钥。删除待确认记录会丢失原编号与封存能力，应先处理这些操作。
 
-真实 Google、ACP、Mac mini、MacBook Air、iPhone 与安装包仍需[CLI 专项验收](validation.md#m53-cli-专项步骤)。M6.2 加密会话闭环及跨主机迁移尚未完成。返回[文档目录](README.md)。
+真实 Google、ACP、Mac mini、MacBook Air、iPhone 与安装包仍需[CLI 专项验收](validation.md#cli)。加密运行入口已退场，跨主机迁移不属于当前范围。返回[文档目录](README.md)。

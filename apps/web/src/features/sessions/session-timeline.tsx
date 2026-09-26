@@ -4,6 +4,7 @@ import { markdown } from '../../components/content';
 import { informationHtml, sessionInformation } from '../interactions/interactions';
 import { sessionEventSchema } from '@moor/protocol/session-events';
 import { projectDiffReferenceSchema } from '@moor/protocol/project-content-protocol';
+import { agentCommandText } from '../skills/skills';
 
 export type TimelineTurn = {
   id: string;
@@ -183,9 +184,9 @@ export function SessionInformation({
               <button
                 type="button"
                 disabled={disabled}
-                onClick={() => onCommand('/' + command.name.replace(/^\//, ''))}
+                onClick={() => onCommand(agentCommandText(command.name))}
               >
-                {'/' + command.name.replace(/^\//, '')}
+                {agentCommandText(command.name)}
               </button>
               <p>{command.description}</p>
             </div>

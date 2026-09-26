@@ -449,22 +449,24 @@ Moor 自己拥有并持久化会话格式，不读取其他应用的数据库，
 
 仓库自带一个确定性的合成 ACP Agent。它使用真实 stdio 和 JSON-RPC 往返，但不读取真实账号、不调用模型，也不访问项目文件。
 
-先安装锁定依赖，然后运行 ACP 专项测试：
+先安装锁定依赖，然后运行主机与 ACP 的完整会话测试：
 
 ```sh
 corepack pnpm install --frozen-lockfile
-corepack pnpm exec tsx --test tests/acp.test.ts
+corepack pnpm exec tsx --test tests/integration/runtime.test.ts
 ```
 
-你应看到两个测试通过。它们分别验证：
+该流程使用真实主机存储和 ACP 子进程，验证：
 
 - `initialize → session/new → session/prompt → session/update → permission → PromptResponse` 的完整往返，以及随后用 `session/load` 恢复原生会话。
-- 活动 prompt 收到取消后正常收束，没有偷偷开始另一轮执行。
+- 精确审批、去重、主机存储重开和第二轮继续执行，恢复时不把旧历史追加成新回复。
+
+发送、停止与重启的 HTTP 闭环运行 `corepack pnpm test:e2e`，见 [CLI/Host E2E](../tests/e2e/cli-host.test.ts)。
 
 建议按以下顺序阅读代码：
 
 1. [合成 Agent](../scripts/validation/synthetic-agent.mjs)：先看最小 JSON-RPC 分发器怎样处理 `initialize`、`session/new`、`session/prompt`、权限响应和取消。
-2. [ACP 专项测试](../tests/integration/acp.test.ts)：看 Client 侧怎样收集 updates、回应权限并恢复会话。
+2. [主机与 ACP 会话测试](../tests/integration/runtime.test.ts)：看主机怎样保存 updates、回应当前权限并恢复会话。
 3. [Moor ACP 适配层](../packages/host/src/agents/acp/driver.ts)：再看生产代码怎样启动子进程、协商能力、绑定活动回合、过滤私有信息、处理超时和关闭进程。
 4. [AgentDriver 边界](../packages/host/src/agents/driver.ts)：最后看 ACP 如何被收敛成 Moor 内部的 `open`、`prompt`、`cancel` 与回调接口。
 

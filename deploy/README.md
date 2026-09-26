@@ -10,7 +10,7 @@ Relay 打包只构建服务与 Web/PWA，不再要求 Electron 或 Host 产物�
 
 产品版本来自根 `package.json` 的 `version`，Relay/macOS 包清单、归档文件名和 macOS 展示版本均读取它；workspace 版本检查也与此比较。macOS 的独立构建编号来自同一文件的正整数 `buildNumber`，同一产品版本重新发布不同安装包时应递增。程序包和镜像更新不改变 operator 的数据卷、凭据或备份保留策略。
 
-默认桌面、PWA 和普通 CLI 使用 Moor 桥接协议 **v3**；显式启用的加密 CLI 使用 **v4**。工作台和通知界面仍使用 v3，不能视为已启用端到端加密，具体边界见[端到端加密](../docs/end-to-end-encryption.md)。中转服务与 Mac 客户端需一起更新，已有中转沿用原数据卷。从旧运行时升级时需重新配对电脑并登记项目，旧历史和草稿不自动导入。账号与组织目录的数据迁移不会使旧协议设备兼容新主机。数据边界见[核心架构](../docs/core.md)，版本与恢复语义见[运行与恢复](../docs/runtime.md)。
+桌面、PWA 和 CLI 使用 Moor 桥接协议 **v3**；旧 v4、secure CLI 与设备信任运行入口已退场。HTTPS/WSS 在中转终止，不是端到端加密，已有旧记录按[退场说明](../docs/end-to-end-encryption-deferral.md)只读保留。中转服务与 Mac 客户端需一起更新，已有中转沿用原数据卷。从旧运行时升级时需重新配对电脑并登记项目，旧历史和草稿不自动导入。账号与组织目录的数据迁移不会使旧协议设备兼容新主机。数据边界见[核心架构](../docs/core.md)，版本与恢复语义见[运行与恢复](../docs/runtime.md)。
 
 ## 通过本地 SSH 更新已有 VPS
 

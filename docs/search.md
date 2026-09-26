@@ -1,6 +1,6 @@
 # 正文搜索
 
-正文搜索覆盖会话消息、工具输出和已经保存的文件变更；侧栏搜索继续用于会话标题、项目与电脑名称。M2.4 的主机索引、离线缓存查询与页面定位已实现，四项仓库检查和合成验证通过；真实设备验收仍待完成，当前进度见[功能完善计划](roadmap.md)。
+正文搜索覆盖会话消息、工具输出和已经保存的文件变更；侧栏搜索继续用于会话标题、项目与电脑名称。主机索引、离线缓存查询与页面定位已接通；覆盖范围和真实设备缺口见[当前验收](validation.md)。
 
 ## 搜索范围与查询
 
@@ -38,9 +38,9 @@
 
 ## 验证范围
 
-本批 `pnpm check`、337 项自动测试、`pnpm build` 和 `pnpm format:check` 通过。搜索合成测试覆盖 SQLite 字面查询、范围隔离、源版本与索引替换、冻结 diff 投影、私有字段排除、离线缓存、刷新与晚到响应等行为。实际 Moor 主机和合成 ACP 的浏览器检查验证中文消息命中后定位原消息、保留输入草稿，以及搜索 `answer.txt` 的已保存内文后打开对应冻结 diff；390×844 视口未发现横向溢出或页面错误。
+[搜索集成测试](../tests/integration/session-search.test.ts)及[页面回归](../tests/integration/session-search-web.test.ts)覆盖 SQLite 字面查询、范围隔离、源版本与索引替换、冻结 diff 投影、私有字段排除、离线缓存、刷新与晚到响应。完整搜索用户流程仍需补入 E2E；旧浏览器检查的截图和数量不作为当前版本通过证据。
 
-Mac/iPhone 的输入、结果定位、大列表反馈以及真实网络下的离线恢复，仍须按照[设备验收](validation.md#后续阶段的专项验收)核对。合成数据和桌面窄视口不能替代真实设备验收。
+Mac/iPhone 的输入、结果定位、大列表反馈以及真实网络下的离线恢复，仍须按照[设备验收](validation.md#功能专项)核对。合成数据和桌面窄视口不能替代真实设备验收。
 
 实现入口：[请求与结果协议](../packages/protocol/src/search-protocol.ts)、[内容投影](../packages/session/src/session-search-document.ts)、[主机刷新与授权](../packages/host/src/sessions/search.ts)、[SQLite 索引](../packages/host/src/sessions/search-index.ts)、[离线与在线查询](../apps/web/src/features/sessions/session-search.ts)。
 

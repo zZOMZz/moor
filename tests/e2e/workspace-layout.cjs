@@ -6,8 +6,14 @@ const fs = require('node:fs'),
   http = require('node:http'),
   assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '../..');
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moor-layout-profile-'));
-const output = fs.mkdtempSync(path.join(os.tmpdir(), 'moor-layout-output-'));
+const profile = process.env.MOOR_E2E_DIRECTORY
+  ? path.join(process.env.MOOR_E2E_DIRECTORY, 'profile')
+  : fs.mkdtempSync(path.join(os.tmpdir(), 'moor-layout-profile-'));
+const output = process.env.MOOR_E2E_DIRECTORY
+  ? path.join(process.env.MOOR_E2E_DIRECTORY, 'output')
+  : fs.mkdtempSync(path.join(os.tmpdir(), 'moor-layout-output-'));
+fs.mkdirSync(profile, { recursive: true });
+fs.mkdirSync(output, { recursive: true });
 app.setPath('userData', profile);
 app.on('window-all-closed', () => {});
 let server;
@@ -15,8 +21,8 @@ app
   .whenReady()
   .then(async () => {
     const { build } = await import('esbuild');
-    const { browserWasm } = await import('../build/browser-wasm.mjs');
-    const { workspaceSources } = await import('../build/workspace-sources.mjs');
+    const { browserWasm } = await import('../../scripts/build/browser-wasm.mjs');
+    const { workspaceSources } = await import('../../scripts/build/workspace-sources.mjs');
     const { buildWebStyles } = await import('../../apps/web/scripts/build-styles.mjs');
     const plugins = [workspaceSources, browserWasm()];
     await build({
@@ -183,6 +189,31 @@ app
       );
       await wait('.session-information[open]');
       await shot('information');
+      const commands = ['/review', '$synthetic-review', '/already-prefixed'];
+      assert.deepEqual(
+        await win.webContents.executeJavaScript(
+          `[...document.querySelectorAll('.session-command button')].map(button=>button.textContent)`,
+        ),
+        commands,
+        'command buttons preserve the native dollar and slash prefixes',
+      );
+      let draft = await win.webContents.executeJavaScript(
+        'document.querySelector("textarea").value',
+      );
+      for (const command of commands) {
+        const actual = await win.webContents.executeJavaScript(`(async()=>{
+          [...document.querySelectorAll('.session-command button')].find(button=>button.textContent===${JSON.stringify(command)}).click();
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          return document.querySelector('textarea').value;
+        })()`);
+        draft = draft ? draft + '\n' + command : command;
+        assert.equal(actual, draft, 'selecting a command appends its exact text to the draft');
+      }
+      assert.equal(
+        await win.webContents.executeJavaScript("window.__moorFixture.calls.includes('send')"),
+        false,
+        'selecting a command never submits it',
+      );
       await win.webContents.executeJavaScript(
         "document.querySelector('.session-information').open=false;document.querySelector('.workspace-header-tools .workspace-menu-environment > summary').click()",
       );

@@ -6,7 +6,6 @@ import {
   CONTENT_VERSION,
   attachmentReferenceSchema,
   contentDescriptorSchema,
-  fileDiffReferenceSchema,
   projectFilePathSchema,
   projectFileReadSchema,
   projectFileResultSchema,
@@ -36,15 +35,6 @@ function response(bytes: Uint8Array = Buffer.from('synthetic')) {
   };
 }
 const content = descriptor();
-function diff(files: unknown[]) {
-  return {
-    contentVersion: CONTENT_VERSION,
-    turnId: 'synthetic-turn',
-    basis: 'project-snapshot',
-    files,
-  };
-}
-
 test('project paths reject traversal and platform aliases without decoding literal percent names', () => {
   for (const path of [
     'src/main.ts',
@@ -193,56 +183,4 @@ test('content references bound attachment bytes and reject ambiguous MIME and un
     contentDescriptorSchema.safeParse({ ...content, data: 'hidden body' }).success,
     false,
   );
-});
-
-test('saved diff contracts bound file counts and preserve meaningful add, delete and rename states', () => {
-  const files = [
-    { path: 'added.txt', before: null, after: content },
-    { path: 'deleted.txt', before: content, after: null },
-    {
-      path: 'changed.txt',
-      before: content,
-      after: { ...content, version: 'sha256:' + 'a'.repeat(64) },
-    },
-    { path: 'renamed.txt', previousPath: 'original.txt', before: content, after: content },
-  ];
-  assert.deepEqual(fileDiffReferenceSchema.parse(diff(files)), diff(files));
-  for (const file of [
-    { path: 'empty.txt', before: null, after: null },
-    { path: 'new.txt', previousPath: 'old.txt', before: null, after: content },
-    { path: 'new.txt', previousPath: 'old.txt', before: content, after: null },
-    { path: 'same.txt', previousPath: 'same.txt', before: content, after: content },
-  ])
-    assert.equal(fileDiffReferenceSchema.safeParse(diff([file])).success, false);
-  const many = Array.from({ length: CONTENT_LIMITS.diffFiles }, (_, i) => ({
-    path: `synthetic-${i}.txt`,
-    before: null,
-    after: content,
-  }));
-  assert.equal(fileDiffReferenceSchema.safeParse(diff(many)).success, true);
-  assert.equal(fileDiffReferenceSchema.safeParse(diff([...many, files[0]])).success, false);
-  assert.equal(
-    fileDiffReferenceSchema.safeParse({ ...diff(files), contentVersion: CONTENT_VERSION + 1 })
-      .success,
-    false,
-  );
-});
-
-test('saved diff references reject duplicate source or destination paths while allowing a rename swap', () => {
-  const rename = { path: 'new.txt', previousPath: 'old.txt', before: content, after: content };
-  for (const files of [
-    [rename, { path: 'new.txt', before: null, after: content }],
-    [rename, { path: 'another.txt', previousPath: 'old.txt', before: content, after: content }],
-    [rename, { path: 'old.txt', before: content, after: null }],
-    [
-      { path: 'deleted.txt', before: content, after: null },
-      { path: 'deleted.txt', before: content, after: null },
-    ],
-  ])
-    assert.equal(fileDiffReferenceSchema.safeParse(diff(files)).success, false);
-  const swap = [
-    { path: 'b.txt', previousPath: 'a.txt', before: content, after: content },
-    { path: 'a.txt', previousPath: 'b.txt', before: content, after: content },
-  ];
-  assert.deepEqual(fileDiffReferenceSchema.parse(diff(swap)), diff(swap));
 });
