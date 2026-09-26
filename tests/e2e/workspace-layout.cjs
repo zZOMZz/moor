@@ -918,11 +918,49 @@ app
       `document.querySelector('.workspace-history').scrollHeight > document.querySelector('.workspace-history').clientHeight`,
     );
     await frames();
+    const composerMinHeight = await read(
+      `document.querySelector('.workspace-input-box').style.minHeight`,
+    );
+    const tallDraft = Array.from({ length: 12 }, (_, index) => `连续输入第 ${index + 1} 行`).join(
+      '\n',
+    );
+    await input('[aria-label="消息"]', tallDraft);
+    for (let index = 0; index < 12; index++) {
+      await input('[aria-label="消息"]', tallDraft + '\n追加文字 ' + index);
+      assert.equal(
+        await read(`!!document.querySelector('.session-jump-latest')`),
+        false,
+        'measuring a tall draft does not mistake browser scroll clamping for reading history',
+      );
+      assert.equal(
+        await read(`document.querySelector('.workspace-input-box').style.minHeight`),
+        composerMinHeight,
+        'temporary composer sizing is restored after each measurement',
+      );
+    }
+    for (const draft of ['短', '', '简短草稿']) {
+      await input('[aria-label="消息"]', draft);
+      await until(
+        `(() => { const history = document.querySelector('.workspace-history'); return history.scrollHeight - history.scrollTop - history.clientHeight < 2; })()`,
+      );
+      assert.equal(await read(`!!document.querySelector('.session-jump-latest')`), false);
+      assert.equal(
+        await read(`document.querySelector('.workspace-input-box').style.minHeight`),
+        composerMinHeight,
+      );
+    }
     await read(
       `const history = document.querySelector('.workspace-history'); history.scrollTop = 0; history.dispatchEvent(new Event('scroll'));`,
     );
     await wait('.session-jump-latest');
     const readingPosition = await read(`document.querySelector('.workspace-history').scrollTop`);
+    await input('[aria-label="消息"]', tallDraft);
+    await input('[aria-label="消息"]', '简短草稿');
+    assert.equal(
+      await read(`document.querySelector('.workspace-history').scrollTop`),
+      readingPosition,
+      'draft growth and shrinkage preserve an intentional history reading position',
+    );
     await read('window.__moorFixture.appendMessage()');
     await frames();
     assert.equal(
@@ -936,6 +974,12 @@ app
       `(() => { const history = document.querySelector('.workspace-history'); return history.scrollHeight - history.scrollTop - history.clientHeight < 2; })()`,
     );
     assert.equal(await read(`!!document.querySelector('.session-jump-latest')`), false);
+    assert(
+      await read(
+        `(() => { const history = document.querySelector('.workspace-history').getBoundingClientRect(); const text = [...document.querySelectorAll('.session-message-text')].at(-1); const range = document.createRange(); range.selectNodeContents(text); const row = [...range.getClientRects()].at(-1); return row.bottom > history.top && row.top < history.bottom; })()`,
+      ),
+      'the newest appended message is visible after restoring follow',
+    );
     assert.equal(await read(`document.querySelector('[aria-label="消息"]').value`), '简短草稿');
     await read('window.__moorFixture.cachedRun()');
     await wait('.session-timeline-shell[data-live="false"] .session-item-running');

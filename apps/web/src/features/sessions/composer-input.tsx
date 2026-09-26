@@ -28,12 +28,29 @@ export function ComposerInput({
   const resize = () => {
     const node = input.current;
     if (!node) return;
-    node.style.height = 'auto';
-    // Hidden panes (and non-layout DOMs) have no usable measurement yet.
-    if (!node.scrollHeight) return;
-    // Let CSS clamp the used height, including viewport-dependent limits.
-    node.style.height = node.scrollHeight + 'px';
-    node.style.overflowY = node.scrollHeight > node.clientHeight ? 'auto' : 'hidden';
+    const box = node.parentElement;
+    const previousMinHeight = box?.style.getPropertyValue('min-height') ?? '';
+    const previousPriority = box?.style.getPropertyPriority('min-height') ?? '';
+    const boxHeight = box ? getComputedStyle(box).height : '';
+    const preserveBox = box && Number.parseFloat(boxHeight) > 0;
+    // Measuring at auto height must not temporarily enlarge the transcript's
+    // viewport and clamp its scroll position away from the latest output.
+    // The resolved height has the same box-sizing basis as min-height.
+    if (preserveBox) box.style.setProperty('min-height', boxHeight, previousPriority);
+    try {
+      node.style.height = 'auto';
+      // Hidden panes (and non-layout DOMs) have no usable measurement yet.
+      if (!node.scrollHeight) return;
+      // Let CSS clamp the used height, including viewport-dependent limits.
+      node.style.height = node.scrollHeight + 'px';
+      node.style.overflowY = node.scrollHeight > node.clientHeight ? 'auto' : 'hidden';
+    } finally {
+      if (preserveBox) {
+        if (previousMinHeight)
+          box.style.setProperty('min-height', previousMinHeight, previousPriority);
+        else box.style.removeProperty('min-height');
+      }
+    }
   };
   useLayoutEffect(resize, [value]);
   useLayoutEffect(() => {
