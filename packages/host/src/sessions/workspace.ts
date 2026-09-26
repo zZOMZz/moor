@@ -369,6 +369,10 @@ export class HostWorkspace {
   }
   locks = new Map<string, Promise<unknown>>();
   active = new Map<string, Active>();
+  private outputDocuments = new Map<
+    Active,
+    { confirmed: LoroDoc; working: LoroDoc; version: Uint8Array }
+  >();
   settlementFailures = new Map<string, LoroDoc>();
   interactions: SessionInteractions<Active>;
   executionManager: SessionExecutionManager;
@@ -1280,7 +1284,10 @@ export class HostWorkspace {
         }
         write?.();
       });
-      if (doc) run!.doc = doc;
+      if (doc) {
+        this.discardOutput(run!);
+        run!.doc = doc;
+      }
     } finally {
       view?.dispose();
       from?.free();
@@ -2169,6 +2176,7 @@ export class HostWorkspace {
       from.free();
     }
     if (m.kind === 'permission') {
+      this.discardOutput(active!);
       active!.doc = validated.doc;
       active!.permissions.delete(m.requestId!);
       permission!.resolve({ outcome: outcome! });
@@ -2210,6 +2218,7 @@ export class HostWorkspace {
     persist?: (turn: any) => void,
   ) {
     if ((run.stopped && !terminal) || this.closed) return;
+    this.discardOutput(run);
     const previous = run.doc;
     const from = previous.version();
     const candidate = previous.fork();
@@ -2225,6 +2234,11 @@ export class HostWorkspace {
         persist?.(turn);
       });
       run.doc = candidate;
+      // A failed output publication may retain the live document for reads.
+      // Retire that reference only after the terminal transaction commits,
+      // before freeing the old document or notifying readers.
+      if (terminal && this.settlementFailures.get(id) === previous)
+        this.settlementFailures.delete(id);
     } catch (error) {
       this.store.meta = this.store.loadFlock('meta');
       throw error;
@@ -2253,16 +2267,91 @@ export class HostWorkspace {
     this.store.referenceAttachment(scope, reference.attachmentId);
     return reference;
   }
+  private discardOutput(run: Active) {
+    const output = this.outputDocuments.get(run);
+    if (!output) return;
+    this.outputDocuments.delete(run);
+    output.working.free();
+  }
+  private writeOutput(
+    id: string,
+    run: Active,
+    change: (doc: LoroDoc) => void,
+    withAttachments = false,
+  ) {
+    // There is no completion hook for transactions opened by external callers.
+    // Never expose their uncommitted output or retain a potentially rolled-back writer.
+    assert(!this.store.journal.db.isTransaction, 409, '输出必须使用独立持久事务');
+    const confirmed = run.doc;
+    const from = confirmed.version();
+    try {
+      const version = from.encode();
+      let output = this.outputDocuments.get(run);
+      if (
+        output &&
+        (output.confirmed !== confirmed ||
+          output.working.peerIdStr !== confirmed.peerIdStr ||
+          !Buffer.from(output.version).equals(version))
+      ) {
+        this.discardOutput(run);
+        output = undefined;
+      }
+      if (!output) {
+        const working = confirmed.fork();
+        working.setPeerId(confirmed.peerIdStr);
+        output = { confirmed, working, version };
+        this.outputDocuments.set(run, output);
+      }
+      const working = output.working;
+      const persist = () => {
+        change(working);
+        return this.store.persistOutput(id, working, from);
+      };
+      const update = withAttachments ? this.store.transaction(persist) : persist();
+      const next = working.version();
+      try {
+        output.version = next.encode();
+      } finally {
+        next.free();
+      }
+      if (update) {
+        try {
+          this.store.confirmOutput(id, confirmed, from, update, output.version);
+        } catch (error) {
+          // The transaction is already durable. A failed publication must never
+          // continue on a partial import or a competing same-peer branch.
+          run.stopped = true;
+          run.terminal = { status: 'failed', message: '已保存的输出无法发布，本轮执行已停止。' };
+          try {
+            run.doc = this.store.doc(id);
+            confirmed.free();
+          } catch (recoveryError) {
+            this.settlementFailures.set(id, confirmed);
+            throw new AggregateError([error, recoveryError], '已保存输出无法重新读取，执行已停止');
+          } finally {
+            void Promise.resolve()
+              .then(() => run.session?.close())
+              .catch((closeError) => console.error(closeError));
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      this.discardOutput(run);
+      throw error;
+    } finally {
+      from.free();
+    }
+    this.changed(id);
+  }
   private updateTool(id: string, run: Active, update: any) {
     if (run.stopped || this.closed || this.active.get(id) !== run) return;
     assert(this.meta.get(['m', 'session-' + id, 'id']) === id, 409, '输出会话已变化');
     const scope = this.attachmentScope(run.projectScope);
-    const previous = run.doc;
-    const from = previous.version();
-    const candidate = previous.fork();
-    candidate.setPeerId(previous.peerIdStr);
-    try {
-      this.store.transaction(() => {
+    this.writeOutput(
+      id,
+      run,
+      (candidate) => {
         const tool = activeTool(candidate, id, run.turnId, update.toolCallId);
         for (const key of ['title', 'kind', 'status'])
           if (update[key] !== undefined) writeToolValue(tool, key, update[key]);
@@ -2278,15 +2367,9 @@ export class HostWorkspace {
           if (update[key] !== undefined) writeToolValue(tool, key, safeAgentMetadata(update[key]));
         // Artifact bytes/references, exact output operations and recovery/search
         // indexes commit together before either memory or notifications advance.
-        this.store.persistOutput(id, candidate, from);
-      });
-      run.doc = candidate;
-    } finally {
-      from.free();
-      if (run.doc === candidate) previous.free();
-      else candidate.free();
-    }
-    this.changed(id);
+      },
+      true,
+    );
   }
   update(id: string, run: Active, update: any) {
     if (
@@ -2296,11 +2379,7 @@ export class HostWorkspace {
       if (run.stopped || this.closed || this.active.get(id) !== run) return;
       assert(this.meta.get(['m', 'session-' + id, 'id']) === id, 409, '输出会话已变化');
       this.attachmentScope(run.projectScope);
-      const previous = run.doc;
-      const candidate = previous.fork();
-      candidate.setPeerId(previous.peerIdStr);
-      const from = previous.version();
-      try {
+      this.writeOutput(id, run, (candidate) => {
         appendSessionText(
           candidate,
           id,
@@ -2308,16 +2387,7 @@ export class HostWorkspace {
           update.sessionUpdate === 'agent_message_chunk' ? 'text' : 'thought',
           normalizeAgentText(update.content.text).text,
         );
-        this.store.persistOutput(id, candidate, from);
-      } catch (error) {
-        candidate.free();
-        throw error;
-      } finally {
-        from.free();
-      }
-      run.doc = candidate;
-      previous.free();
-      this.changed(id);
+      });
       return;
     }
     if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
@@ -2521,6 +2591,7 @@ export class HostWorkspace {
       for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
       run.permissions.clear();
       run.stopped = true;
+      this.discardOutput(run);
       this.interactions.cancelPending(id, run);
       await Promise.resolve(run.session?.close()).catch(() => {});
       if (!this.closed) {
@@ -2666,6 +2737,7 @@ export class HostWorkspace {
     assert(run && !run.stopped && run.turnId === turnId, 409, '该回合已经结束');
     run.terminal = { status: 'canceled' };
     run.stopped = true;
+    this.discardOutput(run);
     this.interactions.cancelPending(sessionId, run);
     for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
     await run.session?.cancel().catch(() => {});
@@ -2717,6 +2789,7 @@ export class HostWorkspace {
       }
     }
     this.closed = true;
+    for (const run of this.outputDocuments.keys()) this.discardOutput(run);
     this.active.clear();
     this.watches.clear();
     if (errors.length) throw new AggregateError(errors, '主机已停止，但部分回合状态未能保存');

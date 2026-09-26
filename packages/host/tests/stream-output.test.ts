@@ -196,6 +196,24 @@ test('100 streamed chunks persist actual additions without exporting snapshots o
     CREATE TRIGGER reject_stream_meta BEFORE INSERT ON runtime_state WHEN NEW.key='meta' BEGIN SELECT RAISE(ABORT,'unexpected metadata'); END;
   `);
   const originalExport = LoroDoc.prototype.export;
+  const confirmed = f.run.doc;
+  const writers = new Set<LoroDoc>();
+  const save = f.store.persistOutput.bind(f.store);
+  t.mock.method(
+    f.store,
+    'persistOutput',
+    (...[id, candidate, from]: Parameters<RuntimeStore['persistOutput']>) => {
+      assert.notEqual(candidate, f.run.doc, 'uncommitted output stays isolated from readers');
+      const current = f.run.doc.version();
+      try {
+        assert.deepEqual(current.encode(), from.encode());
+      } finally {
+        current.free();
+      }
+      writers.add(candidate);
+      return save(id, candidate, from);
+    },
+  );
   let snapshots = 0;
   t.mock.method(
     LoroDoc.prototype,
@@ -206,6 +224,8 @@ test('100 streamed chunks persist actual additions without exporting snapshots o
     },
   );
   for (let i = 0; i < 100; i++) f.emit(output.slice(i * 100, (i + 1) * 100));
+  assert.equal(writers.size, 1, 'ordinary chunks reuse the isolated text writer');
+  assert.equal(f.run.doc, confirmed);
   assert.equal(snapshots, 0);
   assert.equal(count(f, 'session_delta'), 100);
   const bytes = Number(
@@ -222,6 +242,103 @@ test('100 streamed chunks persist actual additions without exporting snapshots o
   assert.equal(f.store.searchSource(f.scope.sessionId)!.bytes, initial.bytes + bytes);
   assert.equal(count(f, 'session_recovery'), 1);
   assert.equal(f.opened(), 0);
+});
+
+test('output writers rebase after non-output edits and reject unknown outer transactions', (t) => {
+  const f = fixture(t);
+  const save = f.store.persistOutput.bind(f.store);
+  const writers = new Set<LoroDoc>();
+  t.mock.method(
+    f.store,
+    'persistOutput',
+    (...[id, candidate, from]: Parameters<RuntimeStore['persistOutput']>) => {
+      writers.add(candidate);
+      return save(id, candidate, from);
+    },
+  );
+  f.emit('first');
+  f.tool({ title: 'shared writer', rawOutput: { progress: 1 } });
+  f.emit('second');
+  assert.equal(writers.size, 1);
+  f.host.edit(f.scope.sessionId, f.run, (turn) => {
+    turn.items.push({ type: 'system_notice', text: 'generic edit' });
+  });
+  f.emit('third');
+  assert.equal(writers.size, 2);
+  f.host.persistInteraction(f.scope.sessionId, f.run, (turn) => {
+    (turn.items ??= []).push({ type: 'system_notice', text: 'interaction edit' });
+  });
+  f.emit('fourth');
+  assert.equal(writers.size, 3);
+  const before = durable(f),
+    published = f.published();
+  assert.throws(
+    () => f.store.transaction(() => f.emit('uncommitted outer output')),
+    /独立持久事务/,
+  );
+  assert.deepEqual(durable(f), before);
+  assert.equal(f.published(), published);
+  f.emit(' fifth');
+  assert.equal(writers.size, 3);
+  // Publication also advances RuntimeStore's confirmed baseline for callers
+  // that subsequently persist this same document without an explicit from.
+  f.store.persist(f.scope.sessionId, f.run.doc);
+  assert.deepEqual(
+    (durable(f).state.history.at(-1)!.items as any[])
+      .filter((item) => item.type === 'text')
+      .map((item) => item.text),
+    ['first', 'second', 'third', 'fourth fifth'],
+  );
+});
+
+test('a failed committed output publication reloads the durable head and stops the writer', (t) => {
+  const f = fixture(t);
+  f.emit('confirmed prefix');
+  const confirm = f.store.confirmOutput.bind(f.store);
+  t.mock.method(f.store, 'confirmOutput', (...args: Parameters<RuntimeStore['confirmOutput']>) => {
+    confirm(...args);
+    throw Error('synthetic committed import failure');
+  });
+  const published = f.published();
+  assert.throws(() => f.emit(' durable suffix'), /committed import failure/);
+  assert.equal(f.run.stopped, true);
+  assert.equal(f.run.terminal?.status, 'failed');
+  assert.equal(f.published(), published);
+  assert.deepEqual(read(f.run.doc), durable(f).state);
+  f.emit('late rejected text');
+  assert.equal(
+    (read(f.run.doc).history.at(-1)!.items![0] as { text: string }).text,
+    'confirmed prefix durable suffix',
+  );
+  f.host.finish(f.scope.sessionId, f.run, 'failed');
+  assert.equal(durable(f).state.history.at(-1)!.status, 'failed');
+});
+
+test('a publication and reload failure never advertises the uncertain live view as persisted', async (t) => {
+  const f = fixture(t);
+  f.emit('confirmed');
+  t.mock.method(
+    f.store,
+    'confirmOutput',
+    (...[_id, doc]: Parameters<RuntimeStore['confirmOutput']>) => {
+      const view = mirror(doc, f.scope.sessionId);
+      view.setState((state) => {
+        state.history.at(-1)!.items!.push({ type: 'text', text: 'uncertain partial import' });
+      });
+      view.dispose();
+      throw Error('synthetic partial import');
+    },
+  );
+  t.mock.method(f.store, 'doc', () => {
+    throw Error('synthetic durable read failure');
+  });
+  assert.throws(() => f.emit(' saved'), /已保存输出无法重新读取/);
+  assert.equal(f.run.stopped, true);
+  assert.equal(f.run.terminal?.status, 'failed');
+  assert.equal(f.host.settlementFailures.get(f.scope.sessionId), f.run.doc);
+  const response = await f.host.read(f.scope.sessionId, undefined, f.scope.localProjectId);
+  assert.equal(response.persisted, false);
+  assert.ok(response.persistenceError);
 });
 
 test('tool creation and 100 updates persist deltas without snapshots or metadata rewrites', (t) => {
@@ -889,6 +1006,7 @@ test('existing client permission and next-turn builders preserve text containers
   const receipt = await f.host.mutate(permission, f.scope.localProjectId);
   assert.deepEqual(await f.host.mutate(permission, f.scope.localProjectId), receipt);
   assert.equal(resolutions, 1);
+  f.emit('after permission');
   f.host.finish(f.scope.sessionId, f.run, 'handled');
   const finished = await f.host.read(f.scope.sessionId, undefined, f.scope.localProjectId);
   const mutation = buildSessionTurn({
@@ -906,6 +1024,7 @@ test('existing client permission and next-turn builders preserve text containers
     const state = read(validated.doc);
     assert.equal((state.history[0].items![0] as { text: string }).text, 'old scalar transcript');
     assert.equal((state.history[1].items![0] as { text: string }).text, 'new streamed reply');
+    assert.equal((state.history[1].items!.at(-1) as { text: string }).text, 'after permission');
     assert.equal((state.history[2].items![0] as { text: string }).text, 'next input');
   } finally {
     validated.doc.free();
