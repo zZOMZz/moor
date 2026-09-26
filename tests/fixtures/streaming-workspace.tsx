@@ -178,6 +178,20 @@ const geometry = () => {
       row.left < view.right,
     preVerticalOverflow: pre.scrollHeight - pre.clientHeight,
     distanceFromBottom: viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight,
+    timeline: {
+      scrollTop: viewport.scrollTop,
+      scrollHeight: viewport.scrollHeight,
+      clientHeight: viewport.clientHeight,
+    },
+    root: {
+      scrollY,
+      scrollHeight: document.scrollingElement?.scrollHeight,
+      scrollTop: document.scrollingElement?.scrollTop,
+      clientHeight: document.scrollingElement?.clientHeight,
+    },
+    jumpLatestVisible: !!document
+      .querySelector<HTMLElement>('.session-jump-latest')
+      ?.getBoundingClientRect().height,
   };
 };
 Object.assign(window, {
@@ -209,6 +223,7 @@ Object.assign(window, {
       inputSequence,
       visibility: document.visibilityState,
       cacheStatus: controller.state.sessionCache,
+      geometry: geometry(),
     }),
     ready: () => socket.readyState === WebSocket.OPEN && !!controller.state.session?.version,
     start() {
@@ -221,6 +236,14 @@ Object.assign(window, {
         dpr: devicePixelRatio,
       });
       document.querySelector<HTMLTextAreaElement>('[aria-label="消息"]')?.focus();
+      if (new URLSearchParams(location.search).has('diagnostic'))
+        document
+          .querySelector('.workspace-history')
+          ?.addEventListener(
+            'scroll',
+            (event) => record('diagnostic-scroll', { trusted: event.isTrusted, ...geometry() }),
+            { passive: true },
+          );
     },
     waitForFinal(version: string) {
       return new Promise<void>((resolve) => {
