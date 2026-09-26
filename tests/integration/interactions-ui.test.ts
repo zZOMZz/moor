@@ -245,6 +245,15 @@ test('React question forms preserve all field types, save offline drafts and kee
         },
       }),
     );
+    const information = document.querySelector<HTMLDetailsElement>('.session-information')!;
+    assert.equal(information.querySelector('.session-information-panel'), null);
+    await act(async () => {
+      const toggled = new Promise<void>((resolve) =>
+        information.addEventListener('toggle', () => resolve(), { once: true }),
+      );
+      information.querySelector('summary')!.click();
+      await toggled;
+    });
     assert.equal(document.querySelector('.session-information img'), null);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /0 \/ 100/);
     assert.match(document.querySelector('.agent-usage')!.textContent!, /0 USD/);

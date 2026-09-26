@@ -55,6 +55,15 @@ const turnsSchema = z
     '回合选择与已读取的文件基线不匹配。',
   );
 const canonical = productCanonicalJson;
+const frozenViews = new WeakSet<object>();
+function freezeView<T>(value: T): T {
+  if (value && typeof value === 'object' && !frozenViews.has(value)) {
+    for (const child of Object.values(value)) freezeView(child);
+    Object.freeze(value);
+    frozenViews.add(value);
+  }
+  return value;
+}
 type BoundContext<T> = ProjectContentContext<T> & { target: T };
 
 /** Shared scoped content reads; identity and finite transport are supplied by the connection owner. */
@@ -81,7 +90,7 @@ export class ProjectContentController<T> {
     },
   ) {}
   get state(): ProjectContentState<T> | null {
-    return this.#context && this.#matches(this.#context) ? structuredClone(this.#state) : null;
+    return this.#context && this.#matches(this.#context) ? freezeView(this.#state) : null;
   }
   subscribe(listener: () => void) {
     this.#listeners.add(listener);
@@ -90,6 +99,7 @@ export class ProjectContentController<T> {
     };
   }
   #emit() {
+    freezeView(this.#state);
     for (const listener of this.#listeners) listener();
   }
   #bind(): BoundContext<T> {
@@ -124,8 +134,8 @@ export class ProjectContentController<T> {
       this.invalidate();
       return;
     }
-    const panel = structuredClone(this.#state),
-      context = structuredClone(this.#context),
+    const panel = this.#state,
+      context = this.#context,
       generation = ++this.#generation,
       current = () => this.#current(context, generation),
       writes = new Map<string, unknown>();
@@ -189,7 +199,7 @@ export class ProjectContentController<T> {
     title = '项目内容',
     turnId?: string,
   ) {
-    const context = this.#bind(),
+    const context = structuredClone(this.#bind()),
       choices = turnsSchema.parse(turns);
     this.#context = context;
     this.#generation++;
@@ -274,14 +284,17 @@ export class ProjectContentController<T> {
       this.#emit();
       return;
     }
-    await this.#read(async (value, online, dependencies) => ({
-      currentFile: await readCurrentProjectFile(
+    await this.#read(async (value, online, dependencies) => {
+      const { bytes: _bytes, ...currentFile } = await readCurrentProjectFile(
         this.#target(value.target),
         path,
         online,
         dependencies,
-      ),
-    }));
+      );
+      // The preview uses verified text and metadata. Do not expose mutable binary buffers
+      // in the shared UI snapshot or copy them again on every subscriber read.
+      return { currentFile };
+    });
   }
   async turn(turnId?: string) {
     const panel = this.state;

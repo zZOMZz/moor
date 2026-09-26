@@ -120,6 +120,9 @@
 }
 
 .session-timeline .session-message-text pre {
+  /* Follow streamed code in the transcript instead of hiding its newest lines
+     inside the generic fixed-height preview's second vertical scroller. */
+  max-height: none;
   white-space: pre;
   overflow-wrap: normal;
   tab-size: 2;

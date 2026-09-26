@@ -1,10 +1,36 @@
-import { useEffect, useRef, useState, useImperativeHandle, type Ref, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useImperativeHandle,
+  useSyncExternalStore,
+  type Ref,
+  type RefObject,
+} from 'react';
 import { FolderOpen, GitCompareArrows } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { ProjectContentPanel } from './project-content-ui';
+import { ProjectContentPanel, type ProjectContentPanelProps } from './project-content-ui';
 import type { WorkspaceController } from '../workspace/workspace-controller';
 
 export type WorkspaceContentHandle = { open(mode: 'tree' | 'changes', turnId?: string): boolean };
+type Panel = Awaited<ReturnType<WorkspaceController['openProjectContent']>>;
+const noop = () => {};
+const emptySnapshot = () => null;
+async function previewFirstChange(current: Panel) {
+  const state = current.state;
+  const first = state?.diff?.result.changes[0];
+  if (
+    state?.mode === 'changes' &&
+    !state.error &&
+    !state.diffFile &&
+    state.diff?.result.reference?.version &&
+    first
+  )
+    await current.diffFile(first);
+}
 
 export function WorkspaceContentUI({
   controller,
@@ -31,12 +57,21 @@ export function WorkspaceContentUI({
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
 }) {
-  const [, render] = useState(0);
-  type Panel = Awaited<ReturnType<WorkspaceController['openProjectContent']>>;
+  const [currentPanel, setPanel] = useState<Panel | null>(null);
   const panel = useRef<Panel | null>(null);
   const generation = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const [wide, setWide] = useState(() => window.innerWidth >= 1100);
+  const value = useSyncExternalStore(
+    useCallback((listener) => currentPanel?.subscribe(listener) ?? noop, [currentPanel]),
+    useCallback(() => currentPanel?.state ?? null, [currentPanel]),
+    emptySnapshot,
+  );
+  const docked = !!value && !!dockContainer && wide;
+  const latest = useRef({ controller, run, onQuote, onToggleExpanded, docked });
+  useLayoutEffect(() => {
+    latest.current = { controller, run, onQuote, onToggleExpanded, docked };
+  });
   useEffect(() => {
     const resize = () => setWide(window.innerWidth >= 1100);
     window.addEventListener('resize', resize);
@@ -46,44 +81,34 @@ export function WorkspaceContentUI({
     generation.current++;
     panel.current?.dispose();
     panel.current = null;
-    render((n) => n + 1);
+    setPanel(null);
     return () => {
       generation.current++;
       panel.current?.dispose();
       panel.current = null;
     };
   }, [controller, controller.contextRevision]);
-  const previewFirstChange = async (current: Panel) => {
-    const state = current.state;
-    const first = state?.diff?.result.changes[0];
-    if (
-      state?.mode === 'changes' &&
-      !state.error &&
-      !state.diffFile &&
-      state.diff?.result.reference?.version &&
-      first
-    )
-      await current.diffFile(first);
-  };
-  const open = (mode: 'tree' | 'changes', turnId?: string) =>
-    run(async () => {
-      const current = ++generation.current;
-      opener.current =
-        document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      panel.current?.dispose();
-      panel.current = null;
-      const next = await controller.openProjectContent(() => render((n) => n + 1), mode, turnId);
-      if (current !== generation.current) {
-        next.dispose();
-        return;
-      }
-      panel.current = next;
-      render((n) => n + 1);
-      await previewFirstChange(next);
-    });
-  useImperativeHandle(controlRef, () => ({ open }));
-  const value = panel.current?.state;
-  const docked = !!value && !!dockContainer && wide;
+  const open = useCallback(
+    (mode: 'tree' | 'changes', turnId?: string) =>
+      latest.current.run(async () => {
+        const current = ++generation.current;
+        opener.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        panel.current?.dispose();
+        panel.current = null;
+        setPanel(null);
+        const next = await latest.current.controller.openProjectContent(noop, mode, turnId);
+        if (current !== generation.current) {
+          next.dispose();
+          return;
+        }
+        panel.current = next;
+        setPanel(next);
+        await previewFirstChange(next);
+      }),
+    [],
+  );
+  useImperativeHandle(controlRef, () => ({ open }), [open]);
   useEffect(() => {
     onVisibilityChange?.(docked);
     return () => onVisibilityChange?.(false);
@@ -95,61 +120,63 @@ export function WorkspaceContentUI({
     });
     return () => cancelAnimationFrame(frame);
   }, [docked, dockContainer]);
-  const content =
-    value && panel.current ? (
-      <ProjectContentPanel
-        {...value}
-        docked={docked}
-        returnFocus={opener}
-        quoteFocus={quoteFocus}
-        expanded={expanded}
-        onToggleExpanded={docked ? onToggleExpanded : undefined}
-        onQuote={
-          onQuote
-            ? (text) => {
-                // Recheck the controller's account/device/project/session binding at click time.
-                if (!panel.current?.state) return;
-                if (!docked) {
-                  panel.current.close();
-                  render((n) => n + 1);
-                }
-                onQuote(text);
-              }
-            : undefined
-        }
-        onMode={(mode) => {
-          const current = panel.current!;
-          run(async () => {
-            await current.setMode(mode);
-            await previewFirstChange(current);
-          });
-        }}
-        onTreeMore={() => {
-          run(() => panel.current!.treeMore());
-        }}
-        onFile={(path, size) => {
-          run(() => panel.current!.file(path, size));
-        }}
-        onTurn={(turnId) => {
-          const current = panel.current!;
-          run(async () => {
-            await current.turn(turnId);
-            await previewFirstChange(current);
-          });
-        }}
-        onDiffFile={(change) => {
-          run(() => panel.current!.diffFile(change));
-        }}
-        onRefresh={() => {
-          run(() => panel.current!.refresh());
-        }}
-        onClose={() => {
-          panel.current?.close();
-          render((n) => n + 1);
-          if (opener.current?.isConnected) opener.current.focus();
-        }}
-      />
-    ) : null;
+  // Stable event proxies keep the independent content snapshot memoizable. They read
+  // committed callbacks and validate the live binding at interaction time.
+  const actions = useMemo(() => {
+    const withPanel = (task: (current: Panel) => Promise<unknown>) => {
+      const current = panel.current;
+      if (current?.state) latest.current.run(() => task(current));
+    };
+    return {
+      onToggleExpanded: () => latest.current.onToggleExpanded?.(),
+      onQuote: (text: string) => {
+        if (!panel.current?.state) return;
+        if (!latest.current.docked) panel.current.close();
+        latest.current.onQuote?.(text);
+      },
+      onMode: (mode) =>
+        withPanel(async (current) => {
+          await current.setMode(mode);
+          await previewFirstChange(current);
+        }),
+      onTreeMore: () => withPanel((current) => current.treeMore()),
+      onFile: (path, size) => withPanel((current) => current.file(path, size)),
+      onTurn: (turnId) =>
+        withPanel(async (current) => {
+          await current.turn(turnId);
+          await previewFirstChange(current);
+        }),
+      onDiffFile: (change) => withPanel((current) => current.diffFile(change)),
+      onRefresh: () => withPanel((current) => current.refresh()),
+      onClose: () => {
+        panel.current?.close();
+        if (opener.current?.isConnected) opener.current.focus();
+      },
+    } satisfies Pick<
+      ProjectContentPanelProps,
+      | 'onToggleExpanded'
+      | 'onQuote'
+      | 'onMode'
+      | 'onTreeMore'
+      | 'onFile'
+      | 'onTurn'
+      | 'onDiffFile'
+      | 'onRefresh'
+      | 'onClose'
+    >;
+  }, []);
+  const content = value ? (
+    <ProjectContentPanel
+      {...value}
+      {...actions}
+      docked={docked}
+      returnFocus={opener}
+      quoteFocus={quoteFocus}
+      expanded={expanded}
+      onToggleExpanded={docked && onToggleExpanded ? actions.onToggleExpanded : undefined}
+      onQuote={onQuote ? actions.onQuote : undefined}
+    />
+  ) : null;
   return (
     <>
       {!hideTriggers && (

@@ -717,6 +717,11 @@ test('packaged workspace opens local projects without an account and preserves d
     },
     async openProjectContent(changed: () => void, mode: 'tree' | 'changes' = 'tree') {
       calls.push('content:open:' + mode);
+      const listeners = new Set<() => void>();
+      const notify = () => {
+        changed();
+        for (const listener of listeners) listener();
+      };
       let value: { title: string; mode: 'tree' | 'changes'; turns: [] } | null = {
         title: 'Synthetic project files',
         mode,
@@ -726,10 +731,14 @@ test('packaged workspace opens local projects without an account and preserves d
         get state() {
           return value;
         },
+        subscribe(listener: () => void) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
         async setMode(next: 'tree' | 'changes') {
           calls.push('content:mode:' + next);
-          value!.mode = next;
-          changed();
+          value = { ...value!, mode: next };
+          notify();
         },
         async treeMore() {},
         async file() {},
@@ -741,11 +750,12 @@ test('packaged workspace opens local projects without an account and preserves d
         close() {
           calls.push('content:close');
           value = null;
-          changed();
+          notify();
         },
         dispose() {
           calls.push('content:dispose');
           value = null;
+          listeners.clear();
         },
       };
     },
@@ -891,7 +901,14 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.workspace-history')!.textContent!,
       /查看回合文件变更/,
     );
-    await act(async () => information.querySelector('summary')!.click());
+    assert.equal(information.querySelector('.session-information-panel'), null);
+    await act(async () => {
+      const toggled = new Promise<void>((resolve) =>
+        information.addEventListener('toggle', () => resolve(), { once: true }),
+      );
+      information.querySelector('summary')!.click();
+      await toggled;
+    });
     const sendsBeforeCommand = calls.filter((call) => call === 'send').length;
     await act(async () => visibleButton('/review').click());
     assert.equal(
@@ -900,7 +917,13 @@ test('packaged workspace opens local projects without an account and preserves d
     );
     assert.equal(calls.filter((call) => call === 'send').length, sendsBeforeCommand);
     await act(async () => controller.saveDraft('', {}));
-    await act(async () => visibleButton('关闭会话信息').click());
+    await act(async () => {
+      const toggled = new Promise<void>((resolve) =>
+        information.addEventListener('toggle', () => resolve(), { once: true }),
+      );
+      visibleButton('关闭会话信息').click();
+      await toggled;
+    });
     assert.equal(information.open, false);
     let textarea = dom.window.document.querySelector('textarea')!;
     const composerSurface = dom.window.document.querySelector('.workspace-input-box')!;

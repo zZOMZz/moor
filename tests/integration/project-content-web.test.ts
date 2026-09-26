@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { ProjectContentController } from '../../apps/web/src/features/files/project-content-controller';
 import {
   compareTextLines,
   projectContentKey,
@@ -328,4 +329,73 @@ test('bounded text comparison handles added, deleted and repeated lines without 
   assert.deepEqual(compareTextLines('', 'new'), [{ kind: 'added', text: 'new', after: 1 }]);
   assert.deepEqual(compareTextLines('old', ''), [{ kind: 'removed', text: 'old', before: 1 }]);
   assert.equal(compareTextLines('a\n'.repeat(2000), 'b\n'.repeat(2000)), undefined);
+});
+
+test('content snapshots stay immutable and shared while updates and lost bindings notify subscribers', async () => {
+  let online = true;
+  let generation = 0;
+  let cacheFails = false;
+  const notifications: unknown[] = [];
+  const panel = new ProjectContentController<ProjectContentTarget>({
+    context: () => ({ target, online, generation }),
+    parseTarget: (input) => input as ProjectContentTarget,
+    contentTarget: (value) => value,
+    cache: {
+      read: async () => undefined,
+      writeBatch: async () => {
+        if (cacheFails) throw Error('synthetic unavailable cache');
+      },
+    },
+    request: async (_target, method) => {
+      if (method === 'read-project-tree')
+        return {
+          ...firstTree,
+          entries: [{ path: 'a.txt', type: 'file', size: 3 }],
+          nextOffset: undefined,
+          total: 1,
+        };
+      if (method === 'file-content')
+        return {
+          ...scope,
+          confirmed: true,
+          path: 'a.txt',
+          content: { version: hash('new'), byteLength: 3, mediaType: 'text/plain' },
+          status: 'content',
+          encoding: 'base64',
+          data: Buffer.from('new').toString('base64'),
+        };
+      assert.fail('unexpected content request');
+    },
+  });
+  const unsubscribe = panel.subscribe(() => notifications.push(panel.state));
+  await panel.open('tree', []);
+  const first = panel.state!;
+  assert.strictEqual(panel.state, first, 'unchanged reads are a stable external store snapshot');
+  assert.ok(Object.isFrozen(first));
+  assert.ok(Object.isFrozen(first.tree!.result.entries[0]));
+  assert.throws(() => {
+    first.tree!.result.entries[0]!.path = 'tampered.txt';
+  }, TypeError);
+  cacheFails = true;
+  await panel.file('a.txt', 3);
+  const second = panel.state!;
+  assert.notStrictEqual(first, second);
+  assert.strictEqual(first.tree, second.tree, 'file reads retain the unchanged directory snapshot');
+  assert.equal(first.currentFile, undefined, 'previous snapshots do not acquire future file text');
+  assert.equal(second.currentFile!.text, 'new');
+  assert.equal(second.currentFile!.cacheSaved, false, 'cache failures remain visible');
+  assert.equal('bytes' in second.currentFile!, false, 'shared views omit mutable binary buffers');
+  assert.ok(Object.isFrozen(second.currentFile));
+  assert.equal(notifications.at(-1), second);
+  online = false;
+  assert.equal(panel.state, null, 'a lost connection binding is hidden synchronously');
+  panel.sync();
+  assert.equal(notifications.at(-1), null);
+  online = true;
+  generation++;
+  assert.equal(panel.state, null, 'reconnection cannot resurrect a previous content scope');
+  const count = notifications.length;
+  unsubscribe();
+  panel.close();
+  assert.equal(notifications.length, count);
 });
