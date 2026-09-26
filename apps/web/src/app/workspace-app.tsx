@@ -1,5 +1,8 @@
 import { changeRunSelection } from '@moor/protocol/run-config';
 import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
+import { ComposerInput } from '../features/sessions/composer-input';
+import { Popover } from '@base-ui/react/popover';
+import { useContentDockLayout } from '../features/files/workspace-content-layout';
 import { UsagePanel, latestContextUsage } from '../components/usage-panel';
 import { AppearanceSettings } from '../components/appearance';
 import {
@@ -37,6 +40,11 @@ import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } fr
 import { createRoot } from 'react-dom/client';
 import {
   Folder,
+  FolderOpen,
+  GitCompareArrows,
+  Compass,
+  ListChecks,
+  ScanLine,
   Settings,
   Plus,
   RefreshCw,
@@ -129,6 +137,11 @@ function WorkspaceConversation({
     gitPanel = useRef<{ open(): boolean }>(null),
     skillsPanel = useRef<{ open(): boolean }>(null);
   const [branch, setBranch] = useState<string>();
+  const [dockContainer, setDockContainer] = useState<HTMLDivElement | null>(null);
+  const [contentDocked, setContentDocked] = useState(false);
+  const contentLayout = useContentDockLayout(contentDocked);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const [environmentOpen, setEnvironmentOpen] = useState(false);
   const readBranch = useCallback(() => {
     let active = true;
     if (!state.sessionId || state.offline || state.sessionLoad.status !== 'ready') {
@@ -149,12 +162,12 @@ function WorkspaceConversation({
   const active = useRef(true),
     draftVersion = useRef(0),
     draftDirty = useRef(false);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    active.current = true;
+    return () => {
       active.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   useEffect(() => {
     if (!draftDirty.current && !saveError) {
       setText(state.draft?.text ?? '');
@@ -162,6 +175,7 @@ function WorkspaceConversation({
     }
   }, [state.draft?.revision, saveError]);
   const save = (nextText: string, nextSelection: RunSelection) => {
+    latestComposer.current = { text: nextText, selection: nextSelection };
     setText(nextText);
     setSelection(nextSelection);
     setSaveError('');
@@ -252,6 +266,11 @@ function WorkspaceConversation({
   const retiredTask = state.ledger?.tasks?.[state.sessionId]?.pending;
   const attachments = state.ledger?.attachments?.[state.sessionId]?.items ?? [];
   const attachmentSupported = state.project?.runtime.features?.includes(ATTACHMENTS_FEATURE);
+  const contextUsage = latestContextUsage(session.history);
+  const contextPercent =
+    contextUsage && contextUsage.size > 0
+      ? Math.min(100, Math.max(0, (contextUsage.used / contextUsage.size) * 100))
+      : undefined;
   const sessionRefreshing = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
   const sessionWritable = state.sessionLoad.status === 'ready' && !state.offline;
   const attachmentBlocked = attachments.some(
@@ -272,578 +291,813 @@ function WorkspaceConversation({
     !retiredTask &&
     !activeTurns.length &&
     !state.ledger?.interactions?.[state.sessionId]?.value.pending;
+  const changeCount = session.history.reduce(
+    (count, turn) => count + (hasTurnFileChanges(turn) ? turnFileChanges(turn)!.changeCount : 0),
+    0,
+  );
+  const activityLabel = state.offline
+    ? '离线'
+    : sessionRefreshing
+      ? '同步中'
+      : !sessionWritable
+        ? '待同步'
+        : reviews.length
+          ? '等待确认'
+          : activeTurns.length
+            ? '正在执行'
+            : '';
+  const composerStatus = saveError
+    ? '草稿保存失败'
+    : state.offline
+      ? '离线草稿 · 连接后手动发送'
+      : sessionRefreshing
+        ? '正在同步会话'
+        : !sessionWritable
+          ? '会话尚未就绪'
+          : reviews.length
+            ? '确认操作后继续'
+            : activeTurns.length
+              ? 'Agent 正在执行，你可以先写下下一条指令'
+              : pending.length
+                ? '上一条操作等待确认'
+                : '';
   return (
-    <>
-      <header className="workspace-session-header">
-        <h1>{session.meta.title || '新对话'}</h1>
-        <div className="workspace-header-tools">
-          {sessionRefreshing && (
-            <span
-              className="workspace-session-sync"
-              role="status"
-              aria-label="正在与执行电脑同步会话"
-              title="正在同步会话"
-            >
-              <RefreshCw className="spin" size={15} aria-hidden="true" />
-            </span>
-          )}
-          <WorkspaceToolMenu>
-            <WorkspaceSessionTools
-              controller={controller}
-              state={state}
-              busy={busy}
-              run={run}
-              navigate={navigate}
-            />
-            <WorkspaceForkUI
-              controller={controller}
-              state={state}
-              busy={busy || !sessionWritable}
-              run={run}
-              navigate={navigate}
-              controlRef={forkPanel}
-            />
-            <SessionInformation
-              history={session.history}
-              disabled={busy || !sessionWritable || !!saveError}
-              onCommand={(command) => save(text ? text + '\n' + command : command, selection)}
-              onFiles={
-                state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE)
-                  ? (turnId) => {
-                      contentPanel.current?.open('changes', turnId);
-                    }
-                  : undefined
-              }
-            />
-            <button
-              disabled={busy || sessionRefreshing}
-              onClick={() => navigate(() => controller.refreshSession())}
-              aria-label="刷新会话"
-            >
-              <RefreshCw size={16} />
-              <span>刷新会话</span>
-            </button>
-          </WorkspaceToolMenu>
-          <WorkspaceToolMenu kind="environment" hidden={!session.history.length}>
-            <WorkspaceContentUI
-              controller={controller}
-              busy={busy}
-              run={run}
-              controlRef={contentPanel}
-            />
-            <div className="workspace-environment-location">
-              <Monitor size={16} />
-              <span>{state.project?.hostName}</span>
-              <small>{sessionRefreshing ? '同步中' : state.offline ? '离线' : '已连接'}</small>
-            </div>
-            <WorkspaceGitUI
-              controller={controller}
-              state={state}
-              busy={busy}
-              run={run}
-              controlRef={gitPanel}
-              onChanged={readBranch}
-            />
-            <WorkspaceGithubUI
-              controller={controller}
-              state={state}
-              busy={busy || !sessionWritable}
-              run={run}
-            />
-          </WorkspaceToolMenu>
-        </div>
-      </header>
-      {!session.history.length && (
-        <div className="workspace-welcome">
-          <h2>今天想完成什么？</h2>
-          <p>{state.project?.projectName} · 随时开始一个想法</p>
-        </div>
-      )}
-      {session.meta.forkOrigin && (
-        <aside className="fork-origin">
-          <span>
-            来自「{session.meta.forkOrigin.sourceTitle || '未命名会话'}」 ·{' '}
-            {session.meta.forkOrigin.directory === 'worktree' ? '独立工作目录' : '沿用源目录'}
-          </span>
-          <details>
-            <summary>来源与截止点</summary>
+    <div
+      className="workspace-session-layout"
+      ref={contentLayout.ref}
+      style={contentLayout.style}
+      data-content-open={contentDocked}
+      data-review-expanded={contentLayout.expanded}
+    >
+      <div className="workspace-conversation-main">
+        <header className="workspace-session-header">
+          <div className="workspace-session-heading">
+            <h1 title={session.meta.title || '新对话'}>{session.meta.title || '新对话'}</h1>
             <p>
-              {session.meta.forkOrigin.cutoff.kind === 'current'
-                ? '创建时 Agent 已保存上下文'
-                : '完成回合：' + session.meta.forkOrigin.cutoff.turnId}
-            </p>
-            <code>{session.meta.forkOrigin.sourceVersion}</code>
-          </details>
-          <button
-            disabled={busy}
-            onClick={() =>
-              navigate(() => controller.openSession(session.meta.forkOrigin!.sourceSessionId))
-            }
-          >
-            打开源会话
-          </button>
-        </aside>
-      )}
-      {!sessionRefreshing && (state.offline || state.sessionLoad.status === 'failed') && (
-        <p className="workspace-status" role="status">
-          {state.sessionLoad.status === 'failed' && state.sessionLoad.reason === 'local'
-            ? '本机缓存读取失败；当前输入仍保留在编辑器中。'
-            : state.offline
-              ? '执行电脑暂不可达，显示本机缓存；草稿仍可编辑。'
-              : '连接已恢复，当前会话尚未重新同步，正在显示本机缓存。'}
-        </p>
-      )}
-      <SessionTimeline
-        history={session.history}
-        focusTurnId={state.focusedTurnId ?? state.searchFocus?.turnId}
-        renderItem={(item, turn, index) => {
-          if (!item || typeof item !== 'object') return null;
-          const entry = item as Record<string, unknown>;
-          if (entry.type === 'attachment') {
-            const reference = attachmentReferenceSchema.safeParse(entry.attachment);
-            if (reference.success)
-              return (
-                <WorkspaceAttachmentView
-                  key={index}
-                  controller={controller}
-                  scope={state.scope!}
-                  sessionId={state.sessionId!}
-                  reference={reference.data}
-                  busy={busy}
-                  run={run}
-                />
-              );
-          }
-          if (entry.type === 'text')
-            return (
-              <div
-                key={index}
-                dangerouslySetInnerHTML={{
-                  __html: markdown(typeof entry.text === 'string' ? entry.text : ''),
-                }}
-              />
-            );
-          if (entry.type === 'system_notice')
-            return (
-              <p key={index} role="status">
-                {readable(entry.text ?? entry.message ?? entry.meta ?? entry.name)}
-              </p>
-            );
-          return (
-            <details key={index}>
-              <summary>
-                {readable(
-                  entry.title ??
-                    (entry.type === 'thought'
-                      ? '思考过程'
-                      : entry.type === 'tool_call'
-                        ? '工具调用'
-                        : '回合详情'),
-                )}
-              </summary>
-              <pre>{readable(entry)}</pre>
-            </details>
-          );
-        }}
-        afterTurn={(turn) =>
-          reviews
-            .filter((review) => review.assistantTurnId === turn.id)
-            .map((review) => (
-              <section
-                className="workspace-permission"
-                key={review.requestId}
-                aria-label="待审批操作"
-              >
-                <strong>需要你的确认</strong>
-                <pre>{readable(JSON.parse(review.itemJson))}</pre>
-                {review.options.map((option) => (
-                  <button
-                    key={option.optionId}
-                    disabled={busy || !sessionWritable}
-                    onClick={() =>
-                      run(() =>
-                        controller.respondPermission(review, {
-                          outcome: 'selected',
-                          optionId: option.optionId,
-                        }),
-                      )
-                    }
-                  >
-                    {option.name}
-                  </button>
-                ))}
-                <button
-                  disabled={busy || !sessionWritable}
-                  onClick={() =>
-                    run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
-                  }
+              <span title={state.project?.projectName}>{state.project?.projectName}</span>
+              <span aria-hidden="true">/</span>
+              <span>{session.agent?.name || session.meta.agentType}</span>
+              {activityLabel && (
+                <span
+                  className="workspace-activity"
+                  data-working={sessionWritable && !!activeTurns.length}
                 >
-                  取消操作
-                </button>
-              </section>
-            ))
-        }
-        actions={(turn) => (
-          <>
-            {hasTurnFileChanges(turn) &&
-              state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE) && (
+                  {activityLabel}
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="workspace-header-tools">
+            {sessionRefreshing && (
+              <span
+                className="workspace-session-sync"
+                role="status"
+                aria-label="正在与执行电脑同步会话"
+                title="正在同步会话"
+              >
+                <RefreshCw className="spin" size={15} aria-hidden="true" />
+              </span>
+            )}
+            {!!session.history.length && (
+              <>
                 <button
                   type="button"
+                  className="workspace-header-action"
+                  aria-label="项目文件"
+                  title="项目文件"
                   disabled={busy}
-                  onClick={() => contentPanel.current?.open('changes', turn.id)}
+                  onClick={() => contentPanel.current?.open('tree')}
                 >
-                  查看回合文件变更 · {turnFileChanges(turn)!.changeCount}
+                  <FolderOpen size={16} />
+                  <span>文件</span>
                 </button>
-              )}
-            {turn.finished && state.project?.runtime.features?.includes(SESSION_FORK_FEATURE) && (
-              <button
-                type="button"
-                className="session-fork-action"
-                aria-label="从此回合创建副本"
-                title="从此回合创建副本"
-                disabled={busy || !sessionWritable}
-                onClick={() => forkPanel.current?.open(turn.id)}
-              >
-                <GitFork size={15} />
-              </button>
-            )}
-          </>
-        )}
-      />
-      {!!pending.length && (
-        <details className="workspace-pending">
-          <summary>待确认操作 · {pending.length}</summary>
-          {pending.map((entry) => (
-            <div key={entry.original.value.operationId}>
-              <p>
-                {entry.original.kind === 'control'
-                  ? entry.original.value.action === 'create'
-                    ? '创建会话'
-                    : '停止回合'
-                  : '会话操作'}{' '}
-                · {entry.original.value.sessionId}
-              </p>
-              <small>{entry.original.value.operationId}</small>
-              <button
-                disabled={busy || !sessionWritable}
-                onClick={() => run(() => controller.inspect(entry.original.value.operationId))}
-              >
-                核查结果
-              </button>
-              <button
-                disabled={busy || !sessionWritable}
-                onClick={() => run(() => controller.retry(entry.original.value.operationId))}
-              >
-                重试原操作
-              </button>
-              <button
-                disabled={busy || !sessionWritable}
-                onClick={() => run(() => controller.abandon(entry.original.value.operationId))}
-              >
-                结束原操作
-              </button>
-            </div>
-          ))}
-        </details>
-      )}
-      {retiredTask && (
-        <details className="workspace-pending">
-          <summary>待确认的旧版操作</summary>
-          <p>协作功能已移除，原操作记录仍保留。核查结果不会创建任务。</p>
-          <code>{retiredTask.operationId}</code>
-          <button
-            disabled={busy || !sessionWritable}
-            onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'inspect'))}
-          >
-            核查旧版操作
-          </button>
-          <button
-            disabled={busy || !sessionWritable}
-            onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'retry'))}
-          >
-            重试旧版原操作
-          </button>
-        </details>
-      )}
-      <WorkspaceInteractionUI
-        controller={controller}
-        state={state}
-        busy={busy || !sessionWritable}
-        run={run}
-        onDirty={onDirty}
-      />
-      <form
-        className="workspace-composer"
-        data-empty={!session.history.length}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (canSend) run(() => controller.send());
-        }}
-      >
-        <div className="workspace-composer-context" aria-label="执行上下文">
-          <label>
-            <Folder size={14} />
-            <select
-              aria-label="选择项目"
-              value={
-                state.project && state.scope
-                  ? projectKey({ ...state.project, source: state.scope.source })
-                  : ''
-              }
-              disabled={busy || !!saveError}
-              onChange={(event) => {
-                const project = projects.find((entry) => projectKey(entry) === event.target.value);
-                if (project) onProjectChange(project);
-              }}
-            >
-              {projects.map((entry) => (
-                <option key={projectKey(entry)} value={projectKey(entry)}>
-                  {entry.projectName} · {entry.hostName}
-                </option>
-              ))}
-            </select>
-            <ChevronDown size={12} />
-          </label>
-          <label>
-            <Monitor size={14} />
-            <select
-              aria-label="执行电脑"
-              value={
-                state.project && state.scope
-                  ? projectKey({ ...state.project, source: state.scope.source })
-                  : ''
-              }
-              disabled={busy || !!saveError}
-              onChange={(event) => {
-                const project = projects.find((entry) => projectKey(entry) === event.target.value);
-                if (project) onProjectChange(project);
-              }}
-            >
-              {projects
-                .filter(
-                  (entry) =>
-                    entry.target.catalogProjectId === state.scope?.target.catalogProjectId &&
-                    entry.target.owner === state.scope?.target.owner &&
-                    entry.target.serverKey === state.scope?.target.serverKey,
-                )
-                .map((entry) => (
-                  <option key={projectKey(entry)} value={projectKey(entry)}>
-                    {entry.hostName}
-                    {entry.online ? '' : ' · 离线'}
-                  </option>
-                ))}
-            </select>
-            <ChevronDown size={12} />
-          </label>
-          <button
-            type="button"
-            disabled={busy || !sessionWritable}
-            onClick={() => gitPanel.current?.open()}
-            title="选择 Git 分支与工作目录"
-          >
-            <GitBranch size={14} />
-            <span>{branch ?? '工作目录'}</span>
-            <ChevronDown size={12} />
-          </button>
-        </div>
-        <div className="workspace-input-box">
-          <textarea
-            aria-label="消息"
-            placeholder="描述你想完成的事情，输入 $ 使用 Skills…"
-            rows={2}
-            onKeyDown={(event) => {
-              if (event.key === '$' && !event.nativeEvent.isComposing && !text.trim() && !busy) {
-                event.preventDefault();
-                skillsPanel.current?.open();
-              }
-              if (
-                event.key === 'Enter' &&
-                (event.metaKey || event.ctrlKey) &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            value={text}
-            onChange={(event) => save(event.target.value, selection)}
-            onPaste={(event) => {
-              const files = [...event.clipboardData.files];
-              if (files.length && !busy) {
-                event.preventDefault();
-                run(() => controller.addAttachments(files));
-              }
-            }}
-          />
-          <div className="workspace-attachments">
-            {!!attachments.length && (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => run(() => controller.reloadDraft())}
-              >
-                重新读取附件
-              </button>
-            )}
-            {attachments.map((item) => {
-              const image = attachmentPreviewUrl(item.reference, item.data),
-                text = attachmentText(item.reference, item.data);
-              const reason = attachmentSupported
-                ? attachmentInputReason(item.reference, session.agent?.inputCapabilities)
-                : '此执行电脑尚未提供附件能力，请更新主机。';
-              return (
-                <article key={item.reference.attachmentId}>
-                  <span>
-                    {item.reference.name} ·{' '}
-                    {formatAttachmentSize(item.reference.content.byteLength)}
-                  </span>
-                  <small>
-                    {item.pending ? '等待主机确认' : item.uploaded ? '已上传' : '保存在本机'}
-                  </small>
-                  {image && <img src={image} alt={item.reference.name} />}
-                  {text !== undefined && (
-                    <details>
-                      <summary>预览附件</summary>
-                      <pre>{text}</pre>
-                    </details>
-                  )}
-                  {reason && <p>{reason}</p>}
-                  {item.pending ? (
+                {changeCount > 0 &&
+                  state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE) && (
                     <button
                       type="button"
-                      disabled={busy || !sessionWritable}
-                      onClick={() => run(() => controller.retry(item.pending!.request.operationId))}
+                      className="workspace-header-action"
+                      aria-label="查看文件变更"
+                      title="按回合查看已记录的文件变更"
+                      disabled={busy}
+                      onClick={() => contentPanel.current?.open('changes')}
                     >
-                      重试附件原操作
+                      <GitCompareArrows size={16} />
+                      <span>变更</span>
+                      <small>{changeCount}</small>
                     </button>
-                  ) : (
-                    <>
-                      {!item.uploaded && (
-                        <button
-                          type="button"
-                          disabled={busy || !sessionWritable || !!reason}
-                          onClick={() =>
-                            run(() => controller.uploadAttachment(item.reference.attachmentId))
-                          }
-                        >
-                          上传附件
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        disabled={
-                          busy || (item.uploaded && (!sessionWritable || !attachmentSupported))
-                        }
-                        onClick={() =>
-                          run(() => controller.removeAttachment(item.reference.attachmentId))
-                        }
-                      >
-                        移除附件
-                      </button>
-                    </>
                   )}
-                </article>
-              );
-            })}
-          </div>
-          {saveError && (
-            <div role="alert">
-              <p>{saveError} 当前输入保留在编辑框中。</p>
-              <button
-                type="button"
-                onClick={() =>
-                  run(async () => {
-                    await controller.reloadDraft();
-                    setText(controller.state.draft?.text ?? '');
-                    setSelection(controller.state.draft?.selection ?? {});
-                    draftVersion.current++;
-                    draftDirty.current = false;
-                    setSaveError('');
-                  })
-                }
-              >
-                重新读取已保存草稿
-              </button>
-            </div>
-          )}
-          <div className="workspace-compose-actions">
-            <WorkspaceToolMenu kind="composer">
-              <label className="workspace-attach-trigger">
-                <Paperclip size={14} />
-                添加附件
-                <input
-                  type="file"
-                  multiple
-                  aria-label="添加附件"
-                  disabled={busy}
-                  onChange={(event) => {
-                    const files = [...(event.currentTarget.files ?? [])];
-                    event.currentTarget.value = '';
-                    if (files.length) run(() => controller.addAttachments(files));
-                  }}
-                />
-              </label>
-              <WorkspaceSkillsUI
+              </>
+            )}
+            <WorkspaceToolMenu>
+              <WorkspaceSessionTools
+                controller={controller}
+                state={state}
+                busy={busy}
+                run={run}
+                navigate={navigate}
+              />
+              <WorkspaceForkUI
                 controller={controller}
                 state={state}
                 busy={busy || !sessionWritable}
                 run={run}
-                controlRef={skillsPanel}
+                navigate={navigate}
+                controlRef={forkPanel}
+              />
+              <SessionInformation
+                history={session.history}
+                disabled={busy || !sessionWritable || !!saveError}
+                onCommand={(command) => save(text ? text + '\n' + command : command, selection)}
+                onFiles={
+                  state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE)
+                    ? (turnId) => {
+                        contentPanel.current?.open('changes', turnId);
+                      }
+                    : undefined
+                }
+              />
+              <button
+                disabled={busy || sessionRefreshing}
+                onClick={() => navigate(() => controller.refreshSession())}
+                aria-label="刷新会话"
+              >
+                <RefreshCw size={16} />
+                <span>刷新会话</span>
+              </button>
+            </WorkspaceToolMenu>
+            <WorkspaceToolMenu kind="environment" hidden={!session.history.length}>
+              <div className="workspace-environment-location">
+                <Monitor size={16} />
+                <span>{state.project?.hostName}</span>
+                <small>{sessionRefreshing ? '同步中' : state.offline ? '离线' : '已连接'}</small>
+              </div>
+              <WorkspaceGitUI
+                controller={controller}
+                state={state}
+                busy={busy}
+                run={run}
+                controlRef={gitPanel}
+                onChanged={readBranch}
+              />
+              <WorkspaceGithubUI
+                controller={controller}
+                state={state}
+                busy={busy || !sessionWritable}
+                run={run}
               />
             </WorkspaceToolMenu>
-            <RunControls
-              idPrefix="workspace"
-              capabilities={session.agent?.runConfig}
-              selection={selection}
-              agentType={session.meta.agentType}
+          </div>
+        </header>
+        <WorkspaceContentUI
+          controller={controller}
+          busy={busy}
+          run={run}
+          controlRef={contentPanel}
+          dockContainer={dockContainer}
+          onVisibilityChange={setContentDocked}
+          quoteFocus={composerInput}
+          onQuote={(quote) => {
+            const latest = latestComposer.current;
+            save(latest.text + (latest.text ? '\n\n' : '') + quote, latest.selection);
+            requestAnimationFrame(() => {
+              if (!active.current) return;
+              // Dialog finalFocus handles modal teardown; a dock has no focus trap.
+              if (contentDocked) composerInput.current?.focus();
+              const length = composerInput.current?.value.length ?? 0;
+              composerInput.current?.setSelectionRange(length, length);
+              if (composerInput.current)
+                composerInput.current.scrollTop = composerInput.current.scrollHeight;
+            });
+          }}
+          expanded={contentLayout.expanded}
+          onToggleExpanded={contentLayout.toggleExpanded}
+          hideTriggers
+        />
+        {!session.history.length && (
+          <div className="workspace-welcome">
+            <h2>今天想完成什么？</h2>
+            <p>从一个问题、一个想法，或一处待改进的代码开始。</p>
+            <div className="workspace-welcome-suggestions">
+              {[
+                {
+                  label: '了解项目',
+                  icon: Compass,
+                  prompt: '帮我梳理这个项目的结构、主要模块和运行方式。',
+                },
+                {
+                  label: '规划任务',
+                  icon: ListChecks,
+                  prompt: '我想实现一个功能，请先帮我分析现有代码并制定计划：',
+                },
+                {
+                  label: '检查改动',
+                  icon: ScanLine,
+                  prompt: '请审查当前项目的未提交改动，重点检查潜在问题和遗漏的验证。',
+                },
+              ].map(({ label, icon: Icon, prompt }) => (
+                <button
+                  key={label}
+                  type="button"
+                  disabled={!!text.trim() || !!saveError || busy}
+                  onClick={() => {
+                    save(prompt, selection);
+                    composerInput.current?.focus();
+                  }}
+                >
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {session.meta.forkOrigin && (
+          <aside className="fork-origin">
+            <span>
+              来自「{session.meta.forkOrigin.sourceTitle || '未命名会话'}」 ·{' '}
+              {session.meta.forkOrigin.directory === 'worktree' ? '独立工作目录' : '沿用源目录'}
+            </span>
+            <details>
+              <summary>来源与截止点</summary>
+              <p>
+                {session.meta.forkOrigin.cutoff.kind === 'current'
+                  ? '创建时 Agent 已保存上下文'
+                  : '完成回合：' + session.meta.forkOrigin.cutoff.turnId}
+              </p>
+              <code>{session.meta.forkOrigin.sourceVersion}</code>
+            </details>
+            <button
               disabled={busy}
-              loading={state.modelLoading === true}
-              canRefresh={sessionWritable && !busy}
-              validation={validation}
-              status={state.modelError}
-              existing
-              onChange={(key, value) => {
-                const next = changeRunSelection(selection, key, value, session.agent?.runConfig);
-                if (key === 'modeId')
-                  run(async () => {
-                    await controller.saveApprovalDefault(value);
-                    const latest = latestComposer.current;
-                    save(latest.text, { ...latest.selection, modeId: value });
-                  });
-                else save(text, next);
-              }}
-              onRefresh={() => run(() => controller.refreshAgentOptions())}
-              onSaveDefaults={
-                state.project?.runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)
-                  ? (defaults) => controller.saveRunDefaults(defaults)
-                  : undefined
+              onClick={() =>
+                navigate(() => controller.openSession(session.meta.forkOrigin!.sourceSessionId))
               }
-            />
-            <UsagePanel
-              context={latestContextUsage(session.history)}
-              usage={session.accountUsage}
-              loading={state.usageLoading}
-              onRead={() => run(() => controller.readUsage())}
-            />
-            {activeTurns.length === 1 ? (
-              <button
-                type="button"
-                disabled={busy || !sessionWritable}
-                onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
+            >
+              打开源会话
+            </button>
+          </aside>
+        )}
+        {!sessionRefreshing && (state.offline || state.sessionLoad.status === 'failed') && (
+          <p className="workspace-status" role="status">
+            {state.sessionLoad.status === 'failed' && state.sessionLoad.reason === 'local'
+              ? '本机缓存读取失败；当前输入仍保留在编辑器中。'
+              : state.offline
+                ? '执行电脑暂不可达，显示本机缓存；草稿仍可编辑。'
+                : '连接已恢复，当前会话尚未重新同步，正在显示本机缓存。'}
+          </p>
+        )}
+        <SessionTimeline
+          history={session.history}
+          live={sessionWritable}
+          focusTurnId={state.focusedTurnId ?? state.searchFocus?.turnId}
+          renderItem={(item, turn, index) => {
+            if (!item || typeof item !== 'object') return null;
+            const entry = item as Record<string, unknown>;
+            if (entry.type === 'attachment') {
+              const reference = attachmentReferenceSchema.safeParse(entry.attachment);
+              if (reference.success)
+                return (
+                  <WorkspaceAttachmentView
+                    key={index}
+                    controller={controller}
+                    scope={state.scope!}
+                    sessionId={state.sessionId!}
+                    reference={reference.data}
+                    busy={busy}
+                    run={run}
+                  />
+                );
+            }
+            if (entry.type === 'text')
+              return (
+                <div
+                  key={index}
+                  dangerouslySetInnerHTML={{
+                    __html: markdown(typeof entry.text === 'string' ? entry.text : ''),
+                  }}
+                />
+              );
+            if (entry.type === 'system_notice')
+              return (
+                <p key={index} role="status">
+                  {readable(entry.text ?? entry.message ?? entry.meta ?? entry.name)}
+                </p>
+              );
+            return (
+              <details key={index}>
+                <summary>
+                  {readable(
+                    entry.title ??
+                      (entry.type === 'thought'
+                        ? '思考过程'
+                        : entry.type === 'tool_call'
+                          ? '工具调用'
+                          : '回合详情'),
+                  )}
+                </summary>
+                <pre>{readable(entry)}</pre>
+              </details>
+            );
+          }}
+          afterTurn={(turn) =>
+            reviews
+              .filter((review) => review.assistantTurnId === turn.id)
+              .map((review) => (
+                <section
+                  className="workspace-permission"
+                  key={review.requestId}
+                  aria-label="待审批操作"
+                >
+                  <strong>需要你的确认</strong>
+                  <pre>{readable(JSON.parse(review.itemJson))}</pre>
+                  {review.options.map((option) => (
+                    <button
+                      key={option.optionId}
+                      disabled={busy || !sessionWritable}
+                      onClick={() =>
+                        run(() =>
+                          controller.respondPermission(review, {
+                            outcome: 'selected',
+                            optionId: option.optionId,
+                          }),
+                        )
+                      }
+                    >
+                      {option.name}
+                    </button>
+                  ))}
+                  <button
+                    disabled={busy || !sessionWritable}
+                    onClick={() =>
+                      run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
+                    }
+                  >
+                    取消操作
+                  </button>
+                </section>
+              ))
+          }
+          actions={(turn) => (
+            <>
+              {hasTurnFileChanges(turn) &&
+                state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE) && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => contentPanel.current?.open('changes', turn.id)}
+                  >
+                    查看回合文件变更 · {turnFileChanges(turn)!.changeCount}
+                  </button>
+                )}
+              {turn.finished && state.project?.runtime.features?.includes(SESSION_FORK_FEATURE) && (
+                <button
+                  type="button"
+                  className="session-fork-action"
+                  aria-label="从此回合创建副本"
+                  title="从此回合创建副本"
+                  disabled={busy || !sessionWritable}
+                  onClick={() => forkPanel.current?.open(turn.id)}
+                >
+                  <GitFork size={15} />
+                </button>
+              )}
+            </>
+          )}
+        />
+        {!!pending.length && (
+          <details className="workspace-pending">
+            <summary>待确认操作 · {pending.length}</summary>
+            {pending.map((entry) => (
+              <div key={entry.original.value.operationId}>
+                <p>
+                  {entry.original.kind === 'control'
+                    ? entry.original.value.action === 'create'
+                      ? '创建会话'
+                      : '停止回合'
+                    : '会话操作'}{' '}
+                  · {entry.original.value.sessionId}
+                </p>
+                <small>{entry.original.value.operationId}</small>
+                <button
+                  disabled={busy || !sessionWritable}
+                  onClick={() => run(() => controller.inspect(entry.original.value.operationId))}
+                >
+                  核查结果
+                </button>
+                <button
+                  disabled={busy || !sessionWritable}
+                  onClick={() => run(() => controller.retry(entry.original.value.operationId))}
+                >
+                  重试原操作
+                </button>
+                <button
+                  disabled={busy || !sessionWritable}
+                  onClick={() => run(() => controller.abandon(entry.original.value.operationId))}
+                >
+                  结束原操作
+                </button>
+              </div>
+            ))}
+          </details>
+        )}
+        {retiredTask && (
+          <details className="workspace-pending">
+            <summary>待确认的旧版操作</summary>
+            <p>协作功能已移除，原操作记录仍保留。核查结果不会创建任务。</p>
+            <code>{retiredTask.operationId}</code>
+            <button
+              disabled={busy || !sessionWritable}
+              onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'inspect'))}
+            >
+              核查旧版操作
+            </button>
+            <button
+              disabled={busy || !sessionWritable}
+              onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'retry'))}
+            >
+              重试旧版原操作
+            </button>
+          </details>
+        )}
+        <WorkspaceInteractionUI
+          controller={controller}
+          state={state}
+          busy={busy || !sessionWritable}
+          run={run}
+          onDirty={onDirty}
+        />
+        <form
+          className="workspace-composer workspace-composer-compact"
+          data-empty={!session.history.length}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canSend) run(() => controller.send());
+          }}
+        >
+          <div className="workspace-composer-context" aria-label="执行上下文">
+            <Popover.Root open={environmentOpen} onOpenChange={setEnvironmentOpen}>
+              <Popover.Trigger
+                className="workspace-environment-trigger"
+                aria-label="执行环境"
+                title={`${state.project?.projectName ?? '项目'} · ${state.project?.hostName ?? '执行电脑'} · ${branch ?? '工作目录'}`}
               >
-                <Square size={14} fill="currentColor" />
-                <span className="sr-only">停止</span>
-              </button>
-            ) : (
-              <button type="submit" disabled={!canSend}>
-                <ArrowUp size={18} />
-                <span className="sr-only">发送</span>
-              </button>
+                <Folder size={14} />
+                <span className="workspace-environment-project">
+                  {state.project?.projectName ?? '项目'}
+                </span>
+                <span className="workspace-environment-divider" aria-hidden="true">
+                  /
+                </span>
+                <span className="workspace-environment-branch">{branch ?? '工作目录'}</span>
+                <ChevronDown size={12} />
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Positioner
+                  side="top"
+                  align="start"
+                  sideOffset={8}
+                  className="popup-positioner"
+                >
+                  <Popover.Popup className="menu-popup workspace-environment-popup">
+                    <Popover.Title>执行环境</Popover.Title>
+                    <label>
+                      <span>
+                        <Folder size={14} />
+                        项目
+                      </span>
+                      <select
+                        aria-label="选择项目"
+                        value={
+                          state.project && state.scope
+                            ? projectKey({ ...state.project, source: state.scope.source })
+                            : ''
+                        }
+                        disabled={busy || !!saveError}
+                        onChange={(event) => {
+                          const project = projects.find(
+                            (entry) => projectKey(entry) === event.target.value,
+                          );
+                          if (project) {
+                            setEnvironmentOpen(false);
+                            onProjectChange(project);
+                          }
+                        }}
+                      >
+                        {projects.map((entry) => (
+                          <option key={projectKey(entry)} value={projectKey(entry)}>
+                            {entry.projectName} · {entry.hostName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>
+                        <Monitor size={14} />
+                        执行电脑
+                      </span>
+                      <select
+                        aria-label="执行电脑"
+                        value={
+                          state.project && state.scope
+                            ? projectKey({ ...state.project, source: state.scope.source })
+                            : ''
+                        }
+                        disabled={busy || !!saveError}
+                        onChange={(event) => {
+                          const project = projects.find(
+                            (entry) => projectKey(entry) === event.target.value,
+                          );
+                          if (project) {
+                            setEnvironmentOpen(false);
+                            onProjectChange(project);
+                          }
+                        }}
+                      >
+                        {projects
+                          .filter(
+                            (entry) =>
+                              entry.target.catalogProjectId ===
+                                state.scope?.target.catalogProjectId &&
+                              entry.target.owner === state.scope?.target.owner &&
+                              entry.target.serverKey === state.scope?.target.serverKey,
+                          )
+                          .map((entry) => (
+                            <option key={projectKey(entry)} value={projectKey(entry)}>
+                              {entry.hostName}
+                              {entry.online ? '' : ' · 离线'}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={busy || !sessionWritable}
+                      onClick={() => {
+                        setEnvironmentOpen(false);
+                        gitPanel.current?.open();
+                      }}
+                      aria-label="选择 Git 分支与工作目录"
+                    >
+                      <GitBranch size={14} />
+                      <span>{branch ?? '工作目录'}</span>
+                      <ChevronDown size={12} />
+                    </button>
+                    <p>切换项目或电脑将打开对应项目。</p>
+                    <small>
+                      {state.project?.hostName} ·{' '}
+                      {sessionRefreshing ? '同步中' : state.offline ? '离线' : '已连接'}
+                    </small>
+                  </Popover.Popup>
+                </Popover.Positioner>
+              </Popover.Portal>
+            </Popover.Root>
+            {(state.offline || sessionRefreshing || state.scope.source === 'remote') && (
+              <span className="workspace-environment-status" title={state.project?.hostName}>
+                {state.scope.source === 'remote' && state.project?.hostName}
+                {state.scope.source === 'remote' && (state.offline || sessionRefreshing)
+                  ? ' · '
+                  : ''}
+                {state.offline ? '主机离线' : sessionRefreshing ? '同步中' : ''}
+              </span>
             )}
           </div>
-        </div>
-      </form>
-    </>
+          <div className="workspace-input-box">
+            <ComposerInput
+              ref={composerInput}
+              aria-label="消息"
+              placeholder="描述你想完成的事情，输入 $ 使用 Skills…"
+              rows={2}
+              onKeyDown={(event) => {
+                if (event.key === '$' && !event.nativeEvent.isComposing && !text.trim() && !busy) {
+                  event.preventDefault();
+                  skillsPanel.current?.open();
+                }
+                if (
+                  event.key === 'Enter' &&
+                  (event.metaKey || event.ctrlKey) &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
+              value={text}
+              onChange={(event) => save(event.target.value, selection)}
+              onPaste={(event) => {
+                const files = [...event.clipboardData.files];
+                if (files.length && !busy) {
+                  event.preventDefault();
+                  run(() => controller.addAttachments(files));
+                }
+              }}
+            />
+            <div className="workspace-attachments">
+              {!!attachments.length && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(() => controller.reloadDraft())}
+                >
+                  重新读取附件
+                </button>
+              )}
+              {attachments.map((item) => {
+                const image = attachmentPreviewUrl(item.reference, item.data),
+                  text = attachmentText(item.reference, item.data);
+                const reason = attachmentSupported
+                  ? attachmentInputReason(item.reference, session.agent?.inputCapabilities)
+                  : '此执行电脑尚未提供附件能力，请更新主机。';
+                return (
+                  <details className="workspace-attachment-chip" key={item.reference.attachmentId}>
+                    <summary>
+                      <Paperclip size={13} />
+                      <span title={item.reference.name}>{item.reference.name}</span>
+                      <small>
+                        {reason
+                          ? '不可发送'
+                          : item.pending
+                            ? '待确认'
+                            : item.uploaded
+                              ? '已上传'
+                              : '待上传'}
+                      </small>
+                    </summary>
+                    <div className="workspace-attachment-preview">
+                      <span>
+                        {item.reference.name} ·{' '}
+                        {formatAttachmentSize(item.reference.content.byteLength)}
+                      </span>
+                      <small>
+                        {item.pending ? '等待主机确认' : item.uploaded ? '已上传' : '保存在本机'}
+                      </small>
+                      {image && <img src={image} alt={item.reference.name} />}
+                      {text !== undefined && (
+                        <details>
+                          <summary>预览附件</summary>
+                          <pre>{text}</pre>
+                        </details>
+                      )}
+                      {reason && <p>{reason}</p>}
+                      {item.pending ? (
+                        <button
+                          type="button"
+                          disabled={busy || !sessionWritable}
+                          onClick={() =>
+                            run(() => controller.retry(item.pending!.request.operationId))
+                          }
+                        >
+                          重试附件原操作
+                        </button>
+                      ) : (
+                        <>
+                          {!item.uploaded && (
+                            <button
+                              type="button"
+                              disabled={busy || !sessionWritable || !!reason}
+                              onClick={() =>
+                                run(() => controller.uploadAttachment(item.reference.attachmentId))
+                              }
+                            >
+                              上传附件
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={
+                              busy || (item.uploaded && (!sessionWritable || !attachmentSupported))
+                            }
+                            onClick={() =>
+                              run(() => controller.removeAttachment(item.reference.attachmentId))
+                            }
+                          >
+                            移除附件
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+            {saveError && (
+              <div role="alert">
+                <p>{saveError} 当前输入保留在编辑框中。</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    run(async () => {
+                      await controller.reloadDraft();
+                      setText(controller.state.draft?.text ?? '');
+                      setSelection(controller.state.draft?.selection ?? {});
+                      draftVersion.current++;
+                      draftDirty.current = false;
+                      setSaveError('');
+                    })
+                  }
+                >
+                  重新读取已保存草稿
+                </button>
+              </div>
+            )}
+            <div className="workspace-compose-actions">
+              <WorkspaceToolMenu kind="composer">
+                <label className="workspace-attach-trigger">
+                  <Paperclip size={14} />
+                  添加附件
+                  <input
+                    type="file"
+                    multiple
+                    aria-label="添加附件"
+                    disabled={busy}
+                    onChange={(event) => {
+                      const files = [...(event.currentTarget.files ?? [])];
+                      event.currentTarget.value = '';
+                      if (files.length) run(() => controller.addAttachments(files));
+                    }}
+                  />
+                </label>
+                <WorkspaceSkillsUI
+                  controller={controller}
+                  state={state}
+                  busy={busy || !sessionWritable}
+                  run={run}
+                  controlRef={skillsPanel}
+                />
+                <div className="workspace-composer-extras">
+                  <UsagePanel
+                    context={contextUsage}
+                    usage={session.accountUsage}
+                    loading={state.usageLoading}
+                    onRead={() => run(() => controller.readUsage())}
+                    triggerLabel="上下文与账号额度"
+                  />
+                </div>
+              </WorkspaceToolMenu>
+              <RunControls
+                idPrefix="workspace"
+                capabilities={session.agent?.runConfig}
+                selection={selection}
+                agentType={session.meta.agentType}
+                disabled={busy}
+                loading={state.modelLoading === true}
+                canRefresh={sessionWritable && !busy}
+                validation={validation}
+                status={state.modelError}
+                existing
+                compact
+                onChange={(key, value) => {
+                  const next = changeRunSelection(selection, key, value, session.agent?.runConfig);
+                  if (key === 'modeId')
+                    run(async () => {
+                      await controller.saveApprovalDefault(value);
+                      const latest = latestComposer.current;
+                      save(latest.text, { ...latest.selection, modeId: value });
+                    });
+                  else save(text, next);
+                }}
+                onRefresh={() => run(() => controller.refreshAgentOptions())}
+                onSaveDefaults={
+                  state.project?.runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)
+                    ? (defaults) => controller.saveRunDefaults(defaults)
+                    : undefined
+                }
+              />
+              {activeTurns.length === 1 ? (
+                <button
+                  type="button"
+                  className="workspace-compose-submit"
+                  title="停止当前执行"
+                  disabled={busy || !sessionWritable}
+                  onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
+                >
+                  <Square size={14} fill="currentColor" />
+                  <span className="sr-only">停止</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="workspace-compose-submit"
+                  title="发送（⌘ / Ctrl + Enter）"
+                  disabled={!canSend}
+                >
+                  <ArrowUp size={18} />
+                  <span className="sr-only">发送</span>
+                </button>
+              )}
+            </div>
+          </div>
+          {(composerStatus || (contextPercent !== undefined && contextPercent >= 85)) && (
+            <div className="workspace-composer-status" role="status">
+              {composerStatus && <span>{composerStatus}</span>}
+              {contextPercent !== undefined && contextPercent >= 85 && (
+                <span>上下文已使用 {Math.round(contextPercent)}%</span>
+              )}
+            </div>
+          )}
+        </form>
+      </div>
+      {contentDocked && contentLayout.sizer}
+      <div className="workspace-content-dock" ref={setDockContainer} hidden={!contentDocked} />
+    </div>
   );
 }
 
@@ -903,6 +1157,11 @@ export function WorkspaceApp({
   const navigationOpen = layout.open,
     setNavigationOpen = layout.setOpen;
   const [sessionQuery, setSessionQuery] = useState('');
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searchTrigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (searchOpen && navigationOpen) searchInput.current?.focus();
+  }, [searchOpen, navigationOpen]);
   const [pinnedShown, setPinnedShown] = useState(30),
     [recentShown, setRecentShown] = useState(30);
   const navigation = useNavigationSessions(controller, state, projects, sessionQuery);
@@ -918,6 +1177,39 @@ export function WorkspaceApp({
     setRecentShown(30);
   }, [activeWorkspace, selectedGroup?.key, sessionQuery]);
   const rootElement = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const shortcuts = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        event.altKey ||
+        !(event.metaKey || event.ctrlKey)
+      )
+        return;
+      const inDialog =
+        event.target instanceof Element ? event.target.closest('[role="dialog"]') : null;
+      if (inDialog && inDialog.id !== 'workspace-navigation') return;
+      if (event.key.toLowerCase() === 'k' && !event.shiftKey) {
+        event.preventDefault();
+        setNavigationOpen(true);
+        setSearchOpen(true);
+        searchInput.current?.focus();
+        searchInput.current?.select();
+      } else if (event.key.toLowerCase() === 'b' && !event.shiftKey) {
+        event.preventDefault();
+        setNavigationOpen((open) => !open);
+      } else if (event.key.toLowerCase() === 'o' && event.shiftKey) {
+        event.preventDefault();
+        rootElement.current
+          ?.querySelector<HTMLFormElement>('.workspace-new-conversation')
+          ?.requestSubmit();
+      }
+    };
+    document.addEventListener('keydown', shortcuts);
+    return () => document.removeEventListener('keydown', shortcuts);
+  }, [setNavigationOpen]);
+
   useEffect(() => {
     if (!layout.narrow || !navigationOpen) return;
     const root = rootElement.current,
@@ -1139,6 +1431,14 @@ export function WorkspaceApp({
     view === 'plain' && state.project && state.scope
       ? canonical([projectKey({ ...state.project, source: state.scope.source }), state.sessionId])
       : undefined;
+  const selectedAttention =
+    state.session &&
+    state.scope &&
+    state.sessionId &&
+    sessionPermissionReviews(state.session, { ...state.scope.target, sessionId: state.sessionId })
+      .length
+      ? ('approval' as const)
+      : undefined;
   const openNavigationSession = (
     project: NavigationProject,
     session: (typeof sessions)[number],
@@ -1204,6 +1504,15 @@ export function WorkspaceApp({
           if (details) {
             details.removeAttribute('open');
             details.querySelector('summary')?.focus();
+          } else if (
+            searchOpen &&
+            (event.target as HTMLElement).closest('.workspace-sidebar-search')
+          ) {
+            if (sessionQuery) setSessionQuery('');
+            else {
+              setSearchOpen(false);
+              searchTrigger.current?.focus();
+            }
           } else if (window.innerWidth <= 700) setNavigationOpen(false);
         }
       }}
@@ -1245,6 +1554,7 @@ export function WorkspaceApp({
           <button
             className="workspace-navigation-close"
             aria-label="关闭项目与会话"
+            title="收起侧栏（⌘ / Ctrl B）"
             onClick={() => setNavigationOpen(false)}
           >
             <PanelLeft size={16} />
@@ -1277,7 +1587,12 @@ export function WorkspaceApp({
                 </option>
               ))}
             </select>
-            <button type="submit" disabled={blocked || !selectedAgent}>
+            <button
+              type="submit"
+              disabled={blocked || !selectedAgent}
+              title="新对话（⌘ / Ctrl Shift O）"
+              aria-keyshortcuts="Meta+Shift+O Control+Shift+O"
+            >
               <SquarePen size={16} />
               新对话
             </button>
@@ -1297,21 +1612,41 @@ export function WorkspaceApp({
         </div>
         <div className="workspace-sidebar-search">
           <button
+            ref={searchTrigger}
             aria-label="搜索会话"
+            title="搜索会话（⌘ / Ctrl K）"
+            aria-keyshortcuts="Meta+K Control+K"
             aria-expanded={searchOpen}
-            onClick={() => setSearchOpen((open) => !open)}
+            onClick={() => {
+              setSearchOpen((open) => !open);
+              setSessionQuery('');
+            }}
           >
             <Search size={15} />
             <span>搜索</span>
+            <kbd>⌘ K</kbd>
           </button>
-          <input
-            hidden={!searchOpen}
-            aria-label="筛选当前工作区会话"
-            placeholder="项目、电脑或会话"
-            maxLength={200}
-            value={sessionQuery}
-            onChange={(event) => setSessionQuery(event.target.value)}
-          />{' '}
+          <div className="workspace-search-field" hidden={!searchOpen}>
+            <input
+              ref={searchInput}
+              aria-label="筛选当前工作区会话"
+              placeholder="项目、电脑或会话"
+              maxLength={200}
+              value={sessionQuery}
+              onChange={(event) => setSessionQuery(event.target.value)}
+            />
+            {!!sessionQuery && (
+              <button
+                aria-label="清空搜索"
+                onClick={() => {
+                  setSessionQuery('');
+                  searchInput.current?.focus();
+                }}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
           {view === 'plain' && (
             <WorkspaceAttentionUI controller={controller} state={state} busy={blocked} run={run} />
           )}
@@ -1330,6 +1665,7 @@ export function WorkspaceApp({
           )}
           <NavigationSessions
             kind="pinned"
+            query={sessionQuery}
             entries={pinnedEntries.slice(0, pinnedShown)}
             more={navigation.summaries.pinned.more || pinnedEntries.length > pinnedShown}
             loading={navigation.summaries.pinned.loading}
@@ -1349,6 +1685,7 @@ export function WorkspaceApp({
               })
             }
             selected={navigationSelected}
+            selectedAttention={selectedAttention}
             disabled={blocked}
             onOpen={openNavigationSession}
             onAction={manageNavigationSession}
@@ -1395,6 +1732,7 @@ export function WorkspaceApp({
                     selectedSession={state.sessionId}
                     disabled={blocked}
                     query={sessionQuery}
+                    selectedAttention={selectedAttention}
                     controller={controller}
                     revision={
                       controller.projectRevision?.(project.source, project.target) ??
@@ -1426,6 +1764,7 @@ export function WorkspaceApp({
           </section>
           <NavigationSessions
             kind="recent"
+            query={sessionQuery}
             entries={recentEntries.slice(0, recentShown)}
             more={navigation.summaries.recent.more || recentEntries.length > recentShown}
             loading={navigation.summaries.recent.loading}
@@ -1445,6 +1784,7 @@ export function WorkspaceApp({
               })
             }
             selected={navigationSelected}
+            selectedAttention={selectedAttention}
             disabled={blocked}
             onOpen={openNavigationSession}
             onAction={manageNavigationSession}
@@ -1545,6 +1885,8 @@ export function WorkspaceApp({
           <button
             aria-controls="workspace-navigation"
             aria-expanded={navigationOpen}
+            title="切换侧栏（⌘ / Ctrl B）"
+            aria-keyshortcuts="Meta+B Control+B"
             onClick={() => setNavigationOpen((open) => !open)}
           >
             <PanelLeft size={16} />

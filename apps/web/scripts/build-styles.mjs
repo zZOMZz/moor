@@ -14,7 +14,20 @@ export async function buildWebStyles(output) {
   await mkdir(dirname(output), { recursive: true });
   await writeFile(
     output,
-    utilities.css + '\n' + (await readFile(resolve(appRoot, 'public/style.css'), 'utf8')),
+    utilities.css +
+      '\n' +
+      (
+        await Promise.all(
+          [
+            'public/style.css',
+            'src/features/sessions/workspace-navigation.css',
+            'src/features/sessions/session-timeline.css',
+            'src/features/sessions/composer-input.css',
+            'src/styles/desktop-workspace.css',
+            'src/features/files/project-content-ui.css',
+          ].map((file) => readFile(resolve(appRoot, file), 'utf8')),
+        )
+      ).join('\n'),
   );
 }
 

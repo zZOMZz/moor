@@ -31,12 +31,14 @@ export function UsagePanel({
   loading,
   onRead,
   now: suppliedNow,
+  triggerLabel,
 }: {
   context?: { used: number; size: number };
   usage?: AccountUsage;
   loading?: boolean;
   onRead?(): void;
   now?: number;
+  triggerLabel?: string;
 }) {
   const [open, setOpen] = useState(false),
     [clock, setClock] = useState(Date.now);
@@ -104,11 +106,14 @@ export function UsagePanel({
             transform="rotate(-90 10 10)"
           />
         </svg>
-        <span>{used === undefined ? '—' : `${Math.round(used)}%`}</span>
+        <span>{triggerLabel ?? (used === undefined ? '—' : `${Math.round(used)}%`)}</span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="end" sideOffset={8} className="popup-positioner">
-          <Popover.Popup className="menu-popup usage-panel">
+          <Popover.Popup
+            className="menu-popup usage-panel"
+            onPointerDown={triggerLabel ? (event) => event.stopPropagation() : undefined}
+          >
             <Popover.Title className="usage-line">
               <span>上下文</span>
               <span>{used === undefined ? '暂无数据' : `已用 ${Math.round(used)}%`}</span>

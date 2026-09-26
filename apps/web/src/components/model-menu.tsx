@@ -23,6 +23,7 @@ export function ModelMenu({
   onChange,
   onSaveDefault,
   id,
+  compact = false,
 }: {
   capabilities?: RunCapabilities;
   selection: RunSelection;
@@ -32,6 +33,7 @@ export function ModelMenu({
   onChange(key: keyof RunSelection, value: string): void;
   onSaveDefault?(selection: RunSelection): Promise<unknown>;
   id: string;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false),
     [page, setPage] = useState<'modelId' | 'reasoningEffort' | null>(null),
@@ -57,7 +59,7 @@ export function ModelMenu({
   const modelLabel =
     model?.name ??
     (modelId ? modelId + '（不可用）' : undefined) ??
-    (loading ? '读取模型…' : '选择模型');
+    (loading ? '读取模型…' : compact ? '模型未获取' : '选择模型');
   const effortLabel =
     (effort ? effortName(effort) : undefined) ??
     (model?.efforts.length ? '选择强度' : model ? '不支持推理设置' : '先选模型');
@@ -117,6 +119,7 @@ export function ModelMenu({
         id={id}
         className="picker-trigger model-menu-trigger"
         aria-label="模型与推理强度"
+        title={[modelLabel, effort ? effortName(effort) : undefined].filter(Boolean).join(' · ')}
         disabled={disabled}
       >
         <Cpu size={15} />

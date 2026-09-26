@@ -34,7 +34,8 @@ test('shared timeline retains actionable records and share plain text, collapsed
     );
     assert.match(html, /<strong>正文<\/strong>/);
     assert.doesNotMatch(html, /context-usage|用量/);
-    assert.match(html, /<details class="session-tool-details"><summary>工具与思考 · 1<\/summary>/);
+    assert.match(html, /<details class="session-tool-details">/);
+    assert.match(html, /<span>工具与思考<\/span><span class="session-tool-count">1<\/span>/);
     assert.match(html, /approval required/);
     assert.match(html, /failed tool/);
     const tools = html.slice(html.indexOf('<details'), html.indexOf('</details>'));
@@ -46,6 +47,37 @@ test('shared timeline retains actionable records and share plain text, collapsed
   assert.match(html, /10/);
   assert.match(html, /未提供/);
   assert.doesNotMatch(html, /<details[^>]* open/);
+});
+test('tool disclosures preserve transcript order and keep active work outside collapsed groups', () => {
+  const html = renderToStaticMarkup(
+    createElement(SessionTimeline, {
+      history: [
+        {
+          ...turn,
+          finished: false,
+          items: [
+            { type: 'text', text: 'before operation' },
+            { type: 'tool_call', title: 'read synthetic file', status: 'completed' },
+            { type: 'text', text: 'after operation' },
+            { type: 'tool_call', title: 'check synthetic file', status: 'completed' },
+            { type: 'tool_call', title: 'running synthetic check', status: 'in_progress' },
+            { type: 'tool_call', title: 'waiting synthetic approval', permissionRequest: {} },
+            { type: 'tool_call', title: 'failed synthetic check', status: 'failed' },
+          ],
+        },
+      ],
+      renderItem: (item: any) => createElement('p', null, item.title),
+    }),
+  );
+  assert.ok(html.indexOf('before operation') < html.indexOf('read synthetic file'));
+  assert.ok(html.indexOf('read synthetic file') < html.indexOf('after operation'));
+  assert.ok(html.indexOf('after operation') < html.indexOf('check synthetic file'));
+  const disclosures = [...html.matchAll(/<details class="session-tool-details">.*?<\/details>/g)];
+  assert.equal(disclosures.length, 2);
+  for (const [details] of disclosures)
+    assert.doesNotMatch(details, /running synthetic|waiting synthetic|failed synthetic/);
+  assert.match(html, /正在执行/);
+  assert.match(html, /执行失败/);
 });
 test('turn changes need a matching saved reference and positive count; unknown or empty results never create a diff action', () => {
   const fileDiff = {

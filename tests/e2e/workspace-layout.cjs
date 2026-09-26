@@ -87,13 +87,130 @@ app
       if (details?.level === 'error') errors.push(details.message);
     });
     const url = 'http://127.0.0.1:' + server.address().port;
+    const bounded = async (operation, label) => {
+      let timeout;
+      try {
+        return await Promise.race([
+          operation,
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('UI did not reach: ' + label)), 7000);
+          }),
+        ]);
+      } catch (error) {
+        fs.writeFileSync(
+          path.join(output, 'failure.png'),
+          (await win.webContents.capturePage()).toPNG(),
+        );
+        console.error(
+          await win.webContents.executeJavaScript(
+            `JSON.stringify({ active: document.activeElement?.outerHTML, notices: [...document.querySelectorAll('[role="alert"], .workspace-status')].map(node => node.textContent) })`,
+          ),
+        );
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
     const wait = (selector) =>
-      win.webContents.executeJavaScript(
-        `new Promise(resolve=>{const ready=()=>{if(document.querySelector(${JSON.stringify(selector)})){observer.disconnect();requestAnimationFrame(()=>requestAnimationFrame(resolve));}};const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true,attributes:true});ready();})`,
+      bounded(
+        win.webContents.executeJavaScript(
+          `new Promise(resolve=>{const ready=()=>{if(document.querySelector(${JSON.stringify(selector)})){observer.disconnect();requestAnimationFrame(()=>requestAnimationFrame(resolve));}};const observer=new MutationObserver(ready);observer.observe(document,{subtree:true,childList:true,attributes:true});ready();})`,
+        ),
+        selector,
       );
+    const read = (expression) => win.webContents.executeJavaScript(expression);
+    const frames = () =>
+      read('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const until = (expression) =>
+      bounded(
+        read(
+          `new Promise(resolve => { const check = () => { if (${expression}) resolve(); else requestAnimationFrame(check); }; check(); })`,
+        ),
+        expression,
+      );
+    const input = async (selector, value) => {
+      await read(
+        `(() => { const input = document.querySelector(${JSON.stringify(selector)}); input.focus(); Object.getOwnPropertyDescriptor(input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`,
+      );
+      await frames();
+    };
+    const shortcut = async (key, modifier = 'metaKey', shiftKey = false) => {
+      await read(
+        `(document.activeElement?.closest('.workspace-app') ? document.activeElement : document.querySelector('.workspace-app')).dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, ${modifier}: true, shiftKey: ${shiftKey}, bubbles: true }))`,
+      );
+      await frames();
+    };
+    const escape = async () => {
+      await read(
+        `document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`,
+      );
+      await frames();
+    };
+    const toolbarRow = async () => {
+      const controls = await read(`(() => {
+        const box = document.querySelector('.workspace-input-box').getBoundingClientRect();
+        return [...document.querySelectorAll('.workspace-compose-actions > .workspace-menu-composer > summary, .workspace-compose-actions .run-approval .picker-trigger, .workspace-compose-actions .model-menu-trigger, .workspace-compose-submit')].map(node => {
+          const rect = node.getBoundingClientRect();
+          return { label: node.getAttribute('aria-label') || node.textContent, left: rect.left, right: rect.right, top: rect.top, center: rect.top + rect.height / 2, height: rect.height, inside: rect.left >= box.left - 1 && rect.right <= box.right + 1 };
+        });
+      })()`);
+      assert.equal(controls.length, 4, JSON.stringify(controls));
+      assert(
+        controls.every((control) => control.inside && control.height <= 44),
+        JSON.stringify(controls),
+      );
+      assert(
+        Math.max(...controls.map((control) => control.center)) -
+          Math.min(...controls.map((control) => control.center)) <=
+          3,
+        'composer controls share one row: ' + JSON.stringify(controls),
+      );
+      const permission = await read(`(() => {
+        const value = document.querySelector('.run-approval .picker-value');
+        const rect = value.getBoundingClientRect(), trigger = value.closest('button').getBoundingClientRect();
+        const style = getComputedStyle(value);
+        return { text: value.textContent.trim(), width: Math.min(rect.right, trigger.right) - Math.max(rect.left, trigger.left), contentWidth: value.scrollWidth, visible: rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' };
+      })()`);
+      assert(
+        permission.text &&
+          permission.visible &&
+          permission.width >= Math.min(permission.contentWidth, 40),
+        'permission mode remains readable beside a long model name: ' + JSON.stringify(permission),
+      );
+      return controls;
+    };
+    const selectLines = async (side, start, end = start) => {
+      await read(
+        `document.querySelector(${JSON.stringify(`[aria-label="选择${side}第 ${start} 行"]`)}).click()`,
+      );
+      if (end !== start)
+        await read(
+          `document.querySelector(${JSON.stringify(`[aria-label="选择${side}第 ${end} 行"]`)}).dispatchEvent(new MouseEvent('click', {bubbles: true, shiftKey: true}))`,
+        );
+      await frames();
+      assert.equal(
+        await read(`document.querySelectorAll('.project-select-line[aria-pressed="true"]').length`),
+        end - start + 1,
+      );
+    };
+    const diffFile = async (path) => {
+      await until(`!document.querySelector('.project-loading')`);
+      await frames();
+      await read(
+        `[...document.querySelectorAll('.project-change-list button')].find(button => button.textContent.includes(${JSON.stringify(path)})).click()`,
+      );
+      await until(
+        `document.querySelector('.project-preview-heading h3')?.textContent === ${JSON.stringify(path)}`,
+      );
+    };
     const shot = async (name) => {
       await win.webContents.executeJavaScript(
-        'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',
+        `(async () => {
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          await Promise.all(document.getAnimations()
+            .filter(animation => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+            .map(animation => animation.finished.catch(() => {})));
+        })()`,
       );
       fs.writeFileSync(
         path.join(output, name + '.png'),
@@ -230,6 +347,396 @@ app
       );
       await wait('[aria-label="调整侧栏宽度"][aria-valuenow="260"]');
     }
+
+    // Everyday desktop navigation uses the same scoped actions as the visible controls.
+    await read(
+      `document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', metaKey: true, bubbles: true}))`,
+    );
+    await until(`document.activeElement?.getAttribute('aria-label') === '筛选当前工作区会话'`);
+    await escape();
+    for (const modifier of ['metaKey', 'ctrlKey']) {
+      await shortcut('k', modifier);
+      assert.equal(
+        await read(`document.activeElement.getAttribute('aria-label')`),
+        '筛选当前工作区会话',
+      );
+      await input('[aria-label="筛选当前工作区会话"]', '检查');
+      await escape();
+      assert.equal(
+        await read(`document.querySelector('[aria-label="筛选当前工作区会话"]').value`),
+        '',
+      );
+      assert.equal(
+        await read(
+          `document.querySelector('[aria-label="搜索会话"]').getAttribute('aria-expanded')`,
+        ),
+        'true',
+      );
+      await escape();
+      assert.equal(
+        await read(
+          `document.querySelector('[aria-label="搜索会话"]').getAttribute('aria-expanded')`,
+        ),
+        'false',
+      );
+      await shortcut('b', modifier);
+      await wait('.workspace-app[data-navigation="closed"]');
+      await shortcut('b', modifier);
+      await wait('.workspace-app[data-navigation="open"]');
+    }
+    await read('window.__moorFixture.holdContentReads()');
+    await read(
+      `document.querySelector('.workspace-session-header [aria-label="项目文件"]').focus(); document.activeElement.click()`,
+    );
+    await wait('.workspace-new-conversation button:disabled');
+    await shortcut('O', 'metaKey', true);
+    assert.equal(
+      await read(`window.__moorFixture.calls.filter(call => call === 'create').length`),
+      0,
+      'new conversation shortcut respects a pending workspace action',
+    );
+    await read('window.__moorFixture.releaseContentReads()');
+    await wait('.project-content-docked');
+    assert.equal(
+      await read(`document.activeElement.getAttribute('aria-label')`),
+      '关闭文件与变更',
+      'opening a dock gives its controls keyboard focus',
+    );
+    await escape();
+    await until(`!document.querySelector('.project-content-docked')`);
+    assert.equal(await read(`document.activeElement.getAttribute('aria-label')`), '项目文件');
+    await wait('.workspace-new-conversation button:not(:disabled)');
+    await shortcut('O', 'ctrlKey', true);
+    await until(`window.__moorFixture.calls.filter(call => call === 'create').length === 1`);
+    await win.loadURL(url);
+    await wait('.workspace-session-heading');
+    await toolbarRow();
+    assert.equal(
+      await read(
+        `document.querySelectorAll('.workspace-composer-context > button, .workspace-composer-context > label').length`,
+      ),
+      1,
+      'execution context has one compact entry point',
+    );
+    await read(`document.querySelector('[aria-label="执行环境"]').click()`);
+    await wait('.workspace-environment-popup');
+    assert(
+      await read(
+        `!!document.querySelector('.workspace-environment-popup [aria-label="选择项目"]') && !!document.querySelector('.workspace-environment-popup [aria-label="执行电脑"]') && !!document.querySelector('.workspace-environment-popup [aria-label="选择 Git 分支与工作目录"]')`,
+      ),
+    );
+    await read(
+      `document.querySelector('.workspace-environment-popup [aria-label="选择项目"]').focus()`,
+    );
+    await escape();
+    await until(`!document.querySelector('.workspace-environment-popup')`);
+    await read(`document.querySelector('.workspace-menu-composer > summary').click()`);
+    await wait('.workspace-menu-composer[open] .workspace-composer-extras .usage-trigger');
+    await read(`document.querySelector('.workspace-menu-composer > summary').click()`);
+    assert.match(
+      await read(`document.querySelector('.workspace-session-heading').textContent`),
+      /Moor.*Synthetic/s,
+    );
+    assert.equal(
+      await read(`!!document.querySelector('[aria-label="查看文件变更"]')`),
+      false,
+      'sessions without changes have no change action',
+    );
+    await read('window.__moorFixture.fileChanges(0)');
+    await frames();
+    assert.equal(
+      await read(`!!document.querySelector('[aria-label="查看文件变更"]')`),
+      false,
+      'zero-change baselines do not advertise changes',
+    );
+    await read('window.__moorFixture.fileChanges(1)');
+    await wait('[aria-label="查看文件变更"]');
+    await input('[aria-label="消息"]', '查看文件时保留的草稿');
+    await read(
+      `document.querySelector('.workspace-session-header [aria-label="项目文件"]').focus(); document.activeElement.click()`,
+    );
+    await wait('.workspace-content-dock .project-content-docked');
+    await wait('[aria-label="查看文件：README.md"]');
+    await read(`document.querySelector('[aria-label="查看文件：README.md"]').click()`);
+    await wait('.project-markdown');
+    assert.equal(
+      await read(
+        `document.querySelector('.project-markdown').textContent.includes('Synthetic project')`,
+      ),
+      true,
+    );
+    await input('[aria-label="消息"]', '查看文件时仍可继续编辑的草稿');
+    assert.equal(
+      await read(`document.activeElement.getAttribute('aria-label')`),
+      '消息',
+      'docked files do not trap focus away from the composer',
+    );
+    const dockLayout = await read(
+      `(() => { const dock = document.querySelector('.project-content-docked').getBoundingClientRect(); const composer = document.querySelector('.workspace-composer').getBoundingClientRect(); return {dockLeft: dock.left, composerRight: composer.right, overflow: document.documentElement.scrollWidth > innerWidth}; })()`,
+    );
+    assert(dockLayout.composerRight <= dockLayout.dockLeft + 1, JSON.stringify(dockLayout));
+    assert.equal(dockLayout.overflow, false);
+    await read(
+      `document.querySelector('.workspace-session-header [aria-label="项目文件"]').focus(); document.activeElement.click()`,
+    );
+    await wait('.workspace-content-dock [aria-label="查看文件：README.md"]');
+    assert.equal(
+      await read(`document.querySelector('[aria-label="消息"]').value`),
+      '查看文件时仍可继续编辑的草稿',
+      'reopening file review preserves the draft',
+    );
+    await read(`document.querySelector('[aria-label="查看文件：README.md"]').click()`);
+    await wait('.project-markdown');
+    await shot('desktop-files');
+    await read(`document.querySelector('[aria-label="打开目录：src"]').click()`);
+    await wait('[aria-label="查看文件：src/engine.ts"]');
+    await read(`document.querySelector('[aria-label="查看文件：src/engine.ts"]').click()`);
+    await wait('[aria-label="选择本次读取第 12 行"]');
+    await selectLines('本次读取', 10, 12);
+    await read(`document.querySelector('.project-quote-button').click()`);
+    await frames();
+    const currentQuote = await read(`document.querySelector('[aria-label="消息"]').value`);
+    assert(currentQuote.startsWith('查看文件时仍可继续编辑的草稿'));
+    assert.match(currentQuote, /src\/engine\.ts/);
+    assert.match(currentQuote, /current working file line 10/);
+    assert.match(currentQuote, /current working file line 12/);
+    assert.doesNotMatch(currentQuote, /current working file line (9|13)'/);
+    assert.match(currentQuote, /sha256:[a-f0-9]{64}/);
+    assert.equal(
+      await read(`window.__moorFixture.calls.includes('send')`),
+      false,
+      'file references only append draft text',
+    );
+    assert.equal(await read(`document.activeElement.getAttribute('aria-label')`), '消息');
+    await shot('file-reference');
+    await input('[aria-label="消息"]', '查看文件时仍可继续编辑的草稿');
+
+    const reviewWidth = await read(
+      `document.querySelector('.project-content-docked').getBoundingClientRect().width`,
+    );
+    await read(`document.querySelector('[aria-label="放大文件与变更"]').click()`);
+    await wait('[data-review-expanded="true"] .project-content-docked');
+    await until(
+      `document.querySelector('.project-content-docked').getBoundingClientRect().width > ${reviewWidth + 1}`,
+    );
+    assert(
+      await read(
+        `document.querySelector('.workspace-composer').getBoundingClientRect().width >= 320`,
+      ),
+    );
+    await shot('review-expanded');
+    await read(`document.querySelector('[aria-label="缩小文件与变更"]').click()`);
+    await wait('[data-review-expanded="false"] .project-content-docked');
+    await until(
+      `Math.abs(document.querySelector('.project-content-docked').getBoundingClientRect().width - ${reviewWidth}) < 2`,
+    );
+    const resizeStart = await read(
+      `(() => {const node = document.querySelector('[aria-label="调整审查面板宽度"]'), r = node.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), width: Number(node.getAttribute('aria-valuenow'))};})()`,
+    );
+    win.webContents.sendInputEvent({
+      type: 'mouseDown',
+      x: resizeStart.x,
+      y: resizeStart.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    win.webContents.sendInputEvent({
+      type: 'mouseMove',
+      x: resizeStart.x - 40,
+      y: resizeStart.y,
+      modifiers: ['leftButtonDown'],
+    });
+    win.webContents.sendInputEvent({
+      type: 'mouseUp',
+      x: resizeStart.x - 40,
+      y: resizeStart.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await until(
+      `Number(document.querySelector('[aria-label="调整审查面板宽度"]').getAttribute('aria-valuenow')) > ${resizeStart.width}`,
+    );
+    const savedReviewWidth = await read(
+      `Number(localStorage.getItem('moor-content-dock-width-v1'))`,
+    );
+    assert(savedReviewWidth > resizeStart.width, 'dragging saves the review width');
+    await read(`document.querySelector('[aria-label="关闭文件与变更"]').click()`);
+    await until(`!document.querySelector('.project-content-docked')`);
+    assert.equal(
+      await read(`document.activeElement.getAttribute('aria-label')`),
+      '项目文件',
+      'closing the dock restores focus to its opener',
+    );
+    assert.equal(
+      await read(`document.querySelector('[aria-label="消息"]').value`),
+      '查看文件时仍可继续编辑的草稿',
+    );
+    await read(
+      `document.querySelector('[aria-label="查看文件变更"]').focus(); document.activeElement.click()`,
+    );
+    await wait('.project-content-docked [aria-label="选择历史回合"]');
+    await wait('.project-change-list button');
+    await read(`document.querySelector('.project-change-list button').click()`);
+    await wait('.project-lines');
+    assert.match(
+      await read(`document.querySelector('.project-lines').textContent`),
+      /Synthetic project/,
+    );
+    await shot('desktop-changes');
+    await read(`document.querySelector('[aria-label="设置"]').click()`);
+    await wait('.appearance-settings');
+    await read(`document.querySelector('input[name="appearance"][value="light"]').click()`);
+    await wait('html[data-theme="light"]');
+    await read(`document.querySelector('[aria-label="关闭设置"]').click()`);
+    await shot('desktop-review-light');
+    await read(`document.querySelector('[aria-label="设置"]').click()`);
+    await wait('.appearance-settings');
+    await read(`document.querySelector('input[name="appearance"][value="dark"]').click()`);
+    await wait('html[data-theme="dark"]');
+    await read(`document.querySelector('[aria-label="关闭设置"]').click()`);
+    assert.equal(await read(`document.querySelectorAll('.project-change-list button').length`), 12);
+    const listSpace = await read(
+      `(() => {const panel = document.querySelector('.project-content-docked').getBoundingClientRect(), list = document.querySelector('.project-compact-files').getBoundingClientRect(); return {panel: panel.height, list: list.height};})()`,
+    );
+    assert(
+      listSpace.list < listSpace.panel * 0.36,
+      'file list leaves most of the panel for content: ' + JSON.stringify(listSpace),
+    );
+    await diffFile('src/engine.ts');
+    await wait('[aria-label="选择修改后第 22 行"]');
+    await selectLines('修改后', 20, 22);
+    await read(`document.querySelector('.project-quote-button').click()`);
+    await frames();
+    const historicalQuote = await read(`document.querySelector('[aria-label="消息"]').value`);
+    assert.match(historicalQuote, /after snapshot line 20/);
+    assert.match(historicalQuote, /after snapshot line 22/);
+    assert.match(historicalQuote, /assistant-turn/);
+    assert.match(historicalQuote, /synthetic-diff/);
+    assert.doesNotMatch(historicalQuote, /current working file/);
+    await read(
+      `const select = document.querySelector('[aria-label="选择历史回合"]'); select.value = 'previous-turn'; select.dispatchEvent(new Event('change', {bubbles: true}));`,
+    );
+    await until(
+      `!document.querySelector('.project-loading') && !document.querySelector('[aria-label="选择历史回合"]').disabled`,
+    );
+    await diffFile('src/engine.ts');
+    await wait('[aria-label="选择修改后第 22 行"]');
+    assert.equal(
+      await read(`document.querySelectorAll('.project-select-line[aria-pressed="true"]').length`),
+      0,
+      'changing historical snapshots clears line selection',
+    );
+    await selectLines('修改后', 20, 22);
+    await read(`document.querySelector('.project-quote-button').click()`);
+    await frames();
+    const previousQuote = await read(`document.querySelector('[aria-label="消息"]').value`);
+    assert(previousQuote.startsWith(historicalQuote));
+    assert.match(previousQuote, /previous snapshot line 20/);
+    assert.match(previousQuote, /previous-turn/);
+    assert.equal(await read(`window.__moorFixture.calls.includes('send')`), false);
+    await shot('snapshot-reference');
+    win.setContentSize(980, 768);
+    await wait('[role="dialog"] .project-panel-heading');
+    assert.equal(
+      await read(`!!document.querySelector('.project-content-docked')`),
+      false,
+      'compact windows use a dialog for file review',
+    );
+    assert.equal(await read('document.documentElement.scrollWidth > innerWidth'), false);
+    await shot('compact-changes');
+    await read(`document.querySelector('[aria-label="关闭文件与变更"]').click()`);
+    await until(`!document.querySelector('[role="dialog"] .project-panel-heading')`);
+    assert.equal(await read(`document.activeElement.getAttribute('aria-label')`), '查看文件变更');
+    await read(
+      `document.querySelector('.workspace-session-header [aria-label="项目文件"]').click()`,
+    );
+    await wait('[role="dialog"] [aria-label="打开目录：src"]');
+    await read(`document.querySelector('[aria-label="打开目录：src"]').click()`);
+    await read(`document.querySelector('[aria-label="查看文件：src/engine.ts"]').click()`);
+    await wait('[aria-label="选择本次读取第 7 行"]');
+    await selectLines('本次读取', 7);
+    await read(`document.querySelector('.project-quote-button').click()`);
+    await until(`!document.querySelector('[role="dialog"] .project-panel-heading')`);
+    await frames();
+    assert.equal(
+      await read(`document.activeElement.getAttribute('aria-label')`),
+      '消息',
+      'quoting from compact review returns to the draft: ' +
+        (await read(`document.activeElement.outerHTML`)),
+    );
+    assert.match(
+      await read(`document.querySelector('[aria-label="消息"]').value`),
+      /current working file line 7/,
+    );
+    const readsBeforeOffline = await read(`window.__moorFixture.contentReads.length`);
+    await read(`window.__moorFixture.offlineContent()`);
+    await frames();
+    await read(
+      `document.querySelector('.workspace-session-header [aria-label="项目文件"]').click()`,
+    );
+    await wait('[role="dialog"] [aria-label="打开目录：src"]');
+    await read(`document.querySelector('[aria-label="打开目录：src"]').click()`);
+    await read(`document.querySelector('[aria-label="查看文件：src/engine.ts"]').click()`);
+    await wait('[aria-label="选择本次读取第 1 行"]');
+    assert.equal(
+      await read(`document.querySelector('.project-source-badge').textContent`),
+      '离线缓存',
+    );
+    await selectLines('本次读取', 1);
+    await read(`document.querySelector('.project-quote-button').click()`);
+    await until(`!document.querySelector('[role="dialog"] .project-panel-heading')`);
+    assert.match(await read(`document.querySelector('[aria-label="消息"]').value`), /离线缓存/);
+    assert.equal(
+      await read(`window.__moorFixture.contentReads.length`),
+      readsBeforeOffline,
+      'offline reference reads only previously verified cache',
+    );
+    assert.equal(await read(`window.__moorFixture.calls.includes('send')`), false);
+    win.setContentSize(1200, 768);
+    await win.loadURL(url);
+    await wait('.workspace-history');
+    await read(
+      `document.querySelector('.workspace-session-header [aria-label="项目文件"]').click()`,
+    );
+    await wait('.project-content-docked');
+    await until(
+      `Math.abs(document.querySelector('.project-content-docked').getBoundingClientRect().width - ${savedReviewWidth}) < 2`,
+    );
+    await read(`document.querySelector('[aria-label="关闭文件与变更"]').click()`);
+    await read(
+      `window.__moorFixture.longModel(); document.querySelector('.workspace-session-header [aria-label="项目文件"]').focus(); document.activeElement.click()`,
+    );
+    await wait('.workspace-content-dock .project-content-docked');
+    win.setContentSize(1100, 768);
+    await read(
+      `document.querySelector('[aria-label="调整侧栏宽度"]').dispatchEvent(new KeyboardEvent('keydown', {key: 'End', bubbles: true}))`,
+    );
+    await wait('[aria-label="调整侧栏宽度"][aria-valuenow="400"]');
+    await frames();
+    const compactDock = await read(
+      `(() => { const box = document.querySelector('.workspace-input-box').getBoundingClientRect(); const controls = [...document.querySelectorAll('.workspace-input-box button, .workspace-input-box summary, .workspace-input-box select')].filter(node => { const style = getComputedStyle(node), rect = node.getBoundingClientRect(); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 1 && rect.height > 1; }).map(node => { const rect = node.getBoundingClientRect(); return {label: node.getAttribute('aria-label') || node.textContent, left: rect.left, right: rect.right}; }); return {box: {left: box.left, right: box.right}, controls, overflow: document.documentElement.scrollWidth > innerWidth}; })()`,
+    );
+    assert.equal(compactDock.overflow, false, JSON.stringify(compactDock));
+    await toolbarRow();
+    assert(
+      await read(
+        `document.querySelector('[aria-label="模型与推理强度"]').getBoundingClientRect().height <= 44`,
+      ),
+      'long model names stay on a compact toolbar row instead of consuming conversation space',
+    );
+    assert(
+      compactDock.controls.every(
+        (control) =>
+          control.left >= compactDock.box.left - 1 && control.right <= compactDock.box.right + 1,
+      ),
+      JSON.stringify(compactDock),
+    );
+    await shot('compact-dock');
+    await read(
+      `document.querySelector('[aria-label="关闭文件与变更"]').click(); localStorage.setItem('moor-workspace-layout-v1', JSON.stringify({width: 260, open: true}))`,
+    );
+    win.setContentSize(1200, 768);
+
     await win.loadURL(url + '/?grouped=1');
     await wait('.workspace-logical-project');
     const groupedSelection = await win.webContents.executeJavaScript(
@@ -289,6 +796,39 @@ app
       true,
     );
     await shot('new-conversation');
+    assert.deepEqual(
+      await read(
+        `[...document.querySelectorAll('.workspace-welcome-suggestions button')].map(button => button.textContent.trim())`,
+      ),
+      ['了解项目', '规划任务', '检查改动'],
+    );
+    let previousSuggestion = '';
+    for (const label of ['了解项目', '规划任务', '检查改动']) {
+      await input('[aria-label="消息"]', '');
+      await read(
+        `[...document.querySelectorAll('.workspace-welcome-suggestions button')].find(button => button.textContent.trim() === ${JSON.stringify(label)}).click()`,
+      );
+      await frames();
+      const suggestion = await read(`document.querySelector('[aria-label="消息"]').value`);
+      assert(
+        suggestion.trim() && suggestion !== previousSuggestion,
+        'suggestions populate a distinct editable draft',
+      );
+      assert.equal(await read(`document.activeElement.getAttribute('aria-label')`), '消息');
+      assert.equal(
+        await read(
+          `[...document.querySelectorAll('.workspace-welcome-suggestions button')].every(button => button.disabled)`,
+        ),
+        true,
+        'suggestions cannot overwrite an existing draft',
+      );
+      assert.equal(
+        await read(`window.__moorFixture.calls.includes('send')`),
+        false,
+        'suggestions never submit work',
+      );
+      previousSuggestion = suggestion;
+    }
     const composerLayout = await win.webContents.executeJavaScript(`(()=>{
       const toolbar=document.querySelector('.workspace-compose-actions');
       const items=[...toolbar.children].filter(node=>{const style=getComputedStyle(node),rect=node.getBoundingClientRect();return style.display!=='none'&&rect.width>0&&rect.height>0;}).map(node=>{const rect=node.getBoundingClientRect();return {name:node.className||node.tagName,left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom};});
@@ -312,10 +852,95 @@ app
       ),
       'saving the current model and effort reaches the scoped default action',
     );
+    await win.loadURL(url);
+    await wait('.workspace-history');
+    await input('[aria-label="消息"]', '中文输入确认测试');
+    await wait('.workspace-composer button[type="submit"]:not(:disabled)');
+    await read(
+      `(() => { const input = document.querySelector('[aria-label="消息"]'); input.dispatchEvent(new CompositionEvent('compositionstart', {data: '中文', bubbles: true})); input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', ctrlKey: true, bubbles: true})); input.dispatchEvent(new CompositionEvent('compositionend', {data: '中文', bubbles: true})); input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true})); input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', ctrlKey: true, keyCode: 229, bubbles: true})); })()`,
+    );
+    await frames();
+    assert.equal(
+      await read(`window.__moorFixture.calls.includes('send')`),
+      false,
+      'IME confirmation, Enter for a newline, and keyCode 229 never submit',
+    );
+    await shortcut('Enter', 'ctrlKey');
+    await until(`window.__moorFixture.calls.filter(call => call === 'send').length === 1`);
+    await input('[aria-label="消息"]', '');
+    const shortInputHeight = await read(
+      `document.querySelector('[aria-label="消息"]').getBoundingClientRect().height`,
+    );
+    await input(
+      '[aria-label="消息"]',
+      Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行：合成多行草稿`).join('\n'),
+    );
+    const expandedInput = await read(
+      `(() => { const input = document.querySelector('[aria-label="消息"]'); return {height: input.getBoundingClientRect().height, viewport: innerHeight, scroll: input.scrollHeight > input.clientHeight, overflow: getComputedStyle(input).overflowY}; })()`,
+    );
+    assert(
+      expandedInput.height > shortInputHeight,
+      JSON.stringify({ shortInputHeight, expandedInput }),
+    );
+    assert(
+      expandedInput.height <= Math.min(240, expandedInput.viewport * 0.32) + 1,
+      JSON.stringify(expandedInput),
+    );
+    assert.equal(expandedInput.scroll, true, 'long drafts scroll inside a bounded composer');
+    assert.notEqual(expandedInput.overflow, 'hidden');
+    await input('[aria-label="消息"]', '简短草稿');
+    assert(
+      (await read(`document.querySelector('[aria-label="消息"]').getBoundingClientRect().height`)) <
+        expandedInput.height,
+      'composer shrinks when text is removed',
+    );
+    await read('window.__moorFixture.longConversation()');
+    await until(
+      `document.querySelector('.workspace-history').scrollHeight > document.querySelector('.workspace-history').clientHeight`,
+    );
+    await frames();
+    await read(
+      `const history = document.querySelector('.workspace-history'); history.scrollTop = 0; history.dispatchEvent(new Event('scroll'));`,
+    );
+    await wait('.session-jump-latest');
+    const readingPosition = await read(`document.querySelector('.workspace-history').scrollTop`);
+    await read('window.__moorFixture.appendMessage()');
+    await frames();
+    assert.equal(
+      await read(`document.querySelector('.workspace-history').scrollTop`),
+      readingPosition,
+      'new messages preserve the user reading older history',
+    );
+    await shot('reading-history');
+    await read(`document.querySelector('.session-jump-latest').click()`);
+    await until(
+      `(() => { const history = document.querySelector('.workspace-history'); return history.scrollHeight - history.scrollTop - history.clientHeight < 2; })()`,
+    );
+    assert.equal(await read(`!!document.querySelector('.session-jump-latest')`), false);
+    assert.equal(await read(`document.querySelector('[aria-label="消息"]').value`), '简短草稿');
+    await read('window.__moorFixture.cachedRun()');
+    await wait('.session-timeline-shell[data-live="false"] .session-item-running');
+    assert.equal(
+      await read(`document.querySelector('.session-turn-progress').textContent.trim()`),
+      '缓存执行状态',
+    );
+    assert.equal(
+      await read(
+        `document.querySelector('.session-item-running .session-item-status').textContent.trim()`,
+      ),
+      '上次执行中',
+    );
+    assert.equal(
+      await read(`document.querySelector('.workspace-compose-submit').disabled`),
+      true,
+      'cached running state cannot authorize a stop or send',
+    );
+    await shot('cached-run');
     win.setContentSize(390, 760);
     await win.loadURL(url);
     await wait('.workspace-history');
     await shot('narrow');
+    await toolbarRow();
     const narrowOverflow = await win.webContents.executeJavaScript(
       'document.documentElement.scrollWidth>innerWidth',
     );
@@ -330,6 +955,15 @@ app
         await win.webContents.executeJavaScript("document.querySelector('.workspace-body').inert"),
         true,
       );
+      await shortcut('k', 'ctrlKey');
+      assert.equal(
+        await read(`document.activeElement.getAttribute('aria-label')`),
+        '筛选当前工作区会话',
+      );
+      await escape();
+      await escape();
+      await wait('.workspace-app[data-navigation="closed"]');
+      assert.equal(await read(`document.querySelector('.workspace-body').inert`), false);
 
       await win.webContents.executeJavaScript('window.__moorFixture.empty()');
       await wait('.workspace-empty .workspace-add-project');
@@ -344,7 +978,11 @@ app
     }
     fs.writeFileSync(
       path.join(output, 'metrics.json'),
-      JSON.stringify({ ...metrics, narrowOverflow, composerLayout, errors }, null, 2),
+      JSON.stringify(
+        { ...metrics, narrowOverflow, composerLayout, dockLayout, expandedInput, errors },
+        null,
+        2,
+      ),
     );
     console.log(JSON.stringify({ output, metrics, errors }));
     win.destroy();

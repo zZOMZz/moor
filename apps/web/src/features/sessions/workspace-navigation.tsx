@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import { Menu } from '@base-ui/react/menu';
 import { Dialog } from '@base-ui/react/dialog';
@@ -12,6 +12,10 @@ import {
   SquarePen,
   Ellipsis,
   RefreshCw,
+  LoaderCircle,
+  MessageSquare,
+  ShieldQuestion,
+  Search,
 } from 'lucide-react';
 import {
   isWorkspaceListOfflineFailure,
@@ -46,6 +50,8 @@ type RowAction = (
   done?: () => void,
   failed?: (message: string) => void,
 ) => void;
+type NavigationAttention = 'approval';
+
 export function NavigationSessionRow({
   session,
   selected,
@@ -53,6 +59,7 @@ export function NavigationSessionRow({
   online,
   title,
   context,
+  attention,
   onOpen,
   onAction,
 }: {
@@ -62,6 +69,7 @@ export function NavigationSessionRow({
   online: boolean;
   title?: string;
   context?: string;
+  attention?: NavigationAttention;
   onOpen(): void;
   onAction: RowAction;
 }) {
@@ -72,6 +80,22 @@ export function NavigationSessionRow({
   const trigger = useRef<HTMLButtonElement>(null);
   const label = session.title || '未命名会话';
   const working = session.status?.type === 'working';
+  const activity = session.isArchived
+    ? '已归档'
+    : attention === 'approval'
+      ? '等待审批'
+      : working
+        ? online
+          ? '进行中'
+          : '进行中（上次同步）'
+        : '';
+  const StatusIcon = session.isArchived
+    ? Archive
+    : attention === 'approval'
+      ? ShieldQuestion
+      : working
+        ? LoaderCircle
+        : MessageSquare;
   const manageDisabled = disabled || !online;
   const pin = session.isPinned ? '取消置顶' : '置顶';
   const archive = session.isArchived ? '恢复会话' : '归档';
@@ -89,6 +113,10 @@ export function NavigationSessionRow({
         <ContextMenu.Trigger
           className="workspace-session-row"
           data-selected={selected || undefined}
+          data-activity={
+            session.isArchived ? undefined : (attention ?? (working ? 'working' : undefined))
+          }
+          data-offline={!online || undefined}
           onKeyDown={(event) => {
             if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
               event.preventDefault();
@@ -103,15 +131,15 @@ export function NavigationSessionRow({
             className="workspace-session-open"
             disabled={disabled}
             aria-current={selected ? 'page' : undefined}
-            title={title ?? label}
+            title={[title ?? label, session.agentType, activity].filter(Boolean).join(' · ')}
+            aria-label={[label, context, activity].filter(Boolean).join('，')}
             aria-keyshortcuts="Shift+F10"
             onClick={onOpen}
           >
+            <StatusIcon size={14} className="workspace-session-status" aria-hidden="true" />
             <span className="workspace-session-title">{label}</span>
             {context && <span className="workspace-session-context">{context}</span>}
-            <small>{session.isArchived ? '已归档' : working ? '进行中' : session.agentType}</small>
           </button>
-          {working && <span className="session-working" aria-label="进行中" title="进行中" />}
           <div className="workspace-row-actions">
             {!session.isArchived && (
               <button
@@ -228,6 +256,8 @@ export function NavigationSessions({
   error = false,
   onLoadMore,
   onRefresh,
+  query = '',
+  selectedAttention,
 }: {
   entries: { project: NavigationProject; session: SessionMetadata }[];
   selected?: string;
@@ -242,13 +272,27 @@ export function NavigationSessions({
   error?: boolean;
   onLoadMore?(): void;
   onRefresh?(): void;
+  query?: string;
+  selectedAttention?: NavigationAttention;
 }) {
   return (
     <section
       className={'workspace-navigation-section workspace-' + kind}
       aria-label={kind === 'pinned' ? '置顶会话' : '最近会话'}
+      aria-busy={loading || undefined}
     >
-      <h2>{kind === 'pinned' ? '置顶' : '最近'}</h2>
+      <h2 className="workspace-navigation-heading">
+        <span>{kind === 'pinned' ? '置顶' : '最近'}</span>
+        {!!entries.length && (
+          <span
+            className="workspace-navigation-count"
+            title={`已加载 ${entries.length} 项${more ? '，还有更多会话' : ''}`}
+          >
+            {entries.length}
+            {more ? '+' : ''}
+          </span>
+        )}
+      </h2>
       {cached && (
         <p className="workspace-muted" role="status">
           仅显示本机已缓存的会话
@@ -270,17 +314,43 @@ export function NavigationSessions({
               selected={selected === key}
               disabled={disabled}
               online={project.online}
-              title={session.title + ' · ' + project.projectName + ' · ' + project.hostName}
+              title={
+                (session.title || '未命名会话') +
+                ' · ' +
+                project.projectName +
+                ' · ' +
+                project.hostName
+              }
               context={project.hostName}
+              attention={selected === key ? selectedAttention : undefined}
               onOpen={() => onOpen(project, session)}
               onAction={(...args) => onAction(project, ...args)}
             />
           );
         })}
       </ul>
-      {!entries.length && (
-        <p className="workspace-muted">
-          {kind === 'pinned' ? '置顶的会话会显示在这里' : '还没有最近会话'}
+      {loading && !entries.length && (
+        <p className="workspace-navigation-empty" role="status">
+          <LoaderCircle className="workspace-navigation-loading" size={14} aria-hidden="true" />
+          正在读取会话…
+        </p>
+      )}
+      {!entries.length && !loading && !error && (
+        <p className="workspace-navigation-empty">
+          {query.trim() ? (
+            <Search size={14} aria-hidden="true" />
+          ) : kind === 'pinned' ? (
+            <Pin size={14} aria-hidden="true" />
+          ) : (
+            <MessageSquare size={14} aria-hidden="true" />
+          )}
+          <span>
+            {query.trim()
+              ? `没有匹配的${kind === 'pinned' ? '置顶' : '最近'}会话`
+              : kind === 'pinned'
+                ? '置顶常用会话，方便继续'
+                : '新建对话，开始第一项任务'}
+          </span>
         </p>
       )}
       {more && (
@@ -307,6 +377,7 @@ export function NavigationProjectGroup({
   controller,
   revision = 0,
   grouped = false,
+  selectedAttention,
 }: {
   project: NavigationProject;
   sessions?: SessionMetadata[];
@@ -322,13 +393,25 @@ export function NavigationProjectGroup({
   controller?: WorkspaceController;
   revision?: number;
   grouped?: boolean;
+  selectedAttention?: NavigationAttention;
 }) {
   const [expanded, setExpanded] = useState(false),
     [all, setAll] = useState(false),
     [archived, setArchived] = useState(false);
+  const [searchExpansion, setSearchExpansion] = useState<{ query: string; open: boolean }>();
+  const listId = useId();
   const paged = typeof controller?.listProjectSessionPage === 'function';
   const effectiveQuery = navigationSessionQuery(project, query);
-  const open = expanded;
+  const searchQuery = query.trim();
+  const open = searchQuery
+    ? searchExpansion?.query === searchQuery
+      ? searchExpansion.open
+      : true
+    : expanded;
+  const setOpen = (value: boolean) => {
+    if (searchQuery) setSearchExpansion({ query: searchQuery, open: value });
+    else setExpanded(value);
+  };
   const [page, setPage] = useState<WorkspaceSessionPage>();
   const [pageError, setPageError] = useState<string>();
   const [pageLoading, setPageLoading] = useState(false);
@@ -396,14 +479,15 @@ export function NavigationProjectGroup({
         <button
           className="workspace-project"
           aria-expanded={open}
+          aria-controls={listId}
           title={`${project.projectName} · ${project.hostName}${project.online ? '' : ' · 离线'}`}
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => setOpen(!open)}
         >
           <span className="workspace-project-marker">
             <Folder size={15} />
             <ChevronRight size={15} data-expanded={open} />
           </span>
-          <span>
+          <span className="workspace-project-name">
             {grouped ? project.hostName : project.projectName}
             <small>
               {grouped
@@ -416,6 +500,15 @@ export function NavigationProjectGroup({
             </small>
           </span>
         </button>
+        {open && (paged ? page : sessions) && !!shown.length && (
+          <span
+            className="workspace-navigation-count workspace-project-count"
+            title={`已加载 ${shown.length} 项${page?.nextCursor ? '，还有更多会话' : ''}`}
+          >
+            {shown.length}
+            {page?.nextCursor ? '+' : ''}
+          </span>
+        )}
         <div className="workspace-row-actions">
           <Menu.Root>
             <Menu.Trigger aria-label={`项目菜单：${project.projectName}`} title="项目菜单">
@@ -428,7 +521,7 @@ export function NavigationProjectGroup({
                     className="menu-item"
                     onClick={() => {
                       setArchived(!archived);
-                      setExpanded(true);
+                      setOpen(true);
                     }}
                   >
                     <Archive />
@@ -456,75 +549,87 @@ export function NavigationProjectGroup({
           </button>
         </div>
       </div>
-      {open && (
-        <div className="workspace-session-list">
-          {archived && (
-            <div className="workspace-archived-label">
-              已归档<button onClick={() => setArchived(false)}>返回最近</button>
-            </div>
-          )}
-          {(paged ? pageError : unavailable) && (
-            <p className="workspace-muted" role="status">
-              {pageError ?? '暂时无法同步'}
-              <button disabled={disabled || pageLoading} onClick={() => onRefresh(project)}>
-                重新读取
+      <div
+        className="workspace-session-list"
+        id={listId}
+        hidden={!open}
+        aria-busy={pageLoading || undefined}
+      >
+        {open && (
+          <>
+            {archived && (
+              <div className="workspace-archived-label">
+                已归档<button onClick={() => setArchived(false)}>返回最近</button>
+              </div>
+            )}
+            {(paged ? pageError : unavailable) && (
+              <p className="workspace-muted" role="status">
+                {pageError ?? '暂时无法同步'}
+                <button disabled={disabled || pageLoading} onClick={() => onRefresh(project)}>
+                  重新读取
+                </button>
+              </p>
+            )}
+            {(paged ? pageLoading && !page : !sessions && !unavailable) && (
+              <p className="workspace-navigation-empty" role="status">
+                <LoaderCircle
+                  className="workspace-navigation-loading"
+                  size={14}
+                  aria-hidden="true"
+                />
+                正在读取会话…
+              </p>
+            )}
+            {page?.source === 'cache' && (
+              <p className="workspace-muted" role="status">
+                仅显示本机已缓存的 {shown.length} 项；未缓存页面不可读取。
+              </p>
+            )}
+            {page?.legacy && <p className="workspace-muted">旧主机兼容目录</p>}
+            <ul>
+              {visible.map((session) => (
+                <NavigationSessionRow
+                  key={session.id}
+                  session={session}
+                  selected={selected && selectedSession === session.id}
+                  disabled={disabled}
+                  online={listOnline}
+                  attention={
+                    selected && selectedSession === session.id ? selectedAttention : undefined
+                  }
+                  onOpen={() => onOpen(project, session)}
+                  onAction={(...args) => onAction(project, ...args)}
+                />
+              ))}
+            </ul>
+            {(paged ? page : sessions) && !shown.length && (
+              <p className="workspace-navigation-empty">
+                {page?.source === 'cache'
+                  ? '当前缓存没有匹配的会话'
+                  : query
+                    ? '没有匹配的会话'
+                    : archived
+                      ? '还没有归档会话'
+                      : '从新建对话开始'}
+              </p>
+            )}
+            {paged && page?.nextCursor && (
+              <button
+                className="workspace-show-more"
+                disabled={disabled || pageLoading}
+                onClick={() => void loadPage(true)}
+              >
+                {pageLoading ? '正在读取…' : '加载更多会话'}
               </button>
-            </p>
-          )}
-          {(paged ? pageLoading && !page : !sessions && !unavailable) && (
-            <p className="workspace-muted">正在读取会话…</p>
-          )}
-          {page?.source === 'cache' && (
-            <p className="workspace-muted" role="status">
-              仅显示本机已缓存的 {shown.length} 项；未缓存页面不可读取。
-            </p>
-          )}
-          {page?.legacy && <p className="workspace-muted">旧主机兼容目录</p>}
-          <ul>
-            {visible.map((session) => (
-              <NavigationSessionRow
-                key={session.id}
-                session={session}
-                selected={selected && selectedSession === session.id}
-                disabled={disabled}
-                online={listOnline}
-                onOpen={() => onOpen(project, session)}
-                onAction={(...args) => onAction(project, ...args)}
-              />
-            ))}
-          </ul>
-          {(paged ? page : sessions) && !shown.length && (
-            <p className="workspace-muted">
-              {page?.source === 'cache'
-                ? '当前缓存没有匹配的会话'
-                : query
-                  ? '没有匹配的会话'
-                  : archived
-                    ? '还没有归档会话'
-                    : '还没有会话'}
-            </p>
-          )}
-          {paged && page?.nextCursor && (
-            <button
-              className="workspace-show-more"
-              disabled={disabled || pageLoading}
-              onClick={() => void loadPage(true)}
-            >
-              {pageLoading ? '正在读取…' : '加载更多会话'}
-            </button>
-          )}
-          {paged && page && !page.legacy && (
-            <p className="workspace-muted">
-              已加载 {shown.length} 项{page.nextCursor ? '，还有更多会话' : ''}
-            </p>
-          )}
-          {(!paged || page?.legacy) && !query && !archived && shown.length > 5 && (
-            <button className="workspace-show-more" onClick={() => setAll(!all)}>
-              {all ? '收起' : '展开显示'}
-            </button>
-          )}
-        </div>
-      )}
+            )}
+            {(!paged || page?.legacy) && !query && !archived && shown.length > 5 && (
+              <button className="workspace-show-more" onClick={() => setAll(!all)}>
+                {all ? '收起' : '展开显示'}
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 }

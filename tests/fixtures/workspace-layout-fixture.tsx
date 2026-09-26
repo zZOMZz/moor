@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { applyAppearance } from '../../apps/web/src/components/appearance';
 applyAppearance(localStorage.getItem('moor-appearance') ?? 'system');
 import { WorkspaceApp } from '../../apps/web/src/app/workspace-app';
+import { ProjectContentController } from '../../apps/web/src/features/files/project-content-controller';
+import type { ProjectContentTarget } from '../../apps/web/src/features/files/project-content';
 import {
   SESSION_PAGE_FEATURE,
   compareSessionPageItems,
@@ -207,6 +209,8 @@ const emit = () => {
   listeners.forEach((fn) => fn());
 };
 const calls: string[] = [];
+let contentGate: Promise<void> | undefined;
+let releaseContent: (() => void) | undefined;
 const pageReads: {
   projectId: string;
   pinned: string;
@@ -214,6 +218,48 @@ const pageReads: {
   query: string;
   cursor?: string;
 }[] = [];
+const fileText = '# Synthetic project\n\nProject preview remains beside the conversation.\n';
+const sourceText = (version: string) =>
+  Array.from(
+    { length: 150 },
+    (_, index) =>
+      `export const item${String(index + 1).padStart(3, '0')} = '${version} line ${index + 1}';`,
+  ).join('\n') + '\n';
+const fixtureFiles = [
+  { path: 'README.md', before: null, after: fileText },
+  {
+    path: 'package.json',
+    before: '{ "name": "before" }\n',
+    after: '{ "name": "synthetic-project" }\n',
+  },
+  {
+    path: 'src/engine.ts',
+    before: sourceText('before snapshot'),
+    after: sourceText('after snapshot'),
+  },
+  ...Array.from({ length: 9 }, (_, index) => ({
+    path: `src/module-${index + 1}.ts`,
+    before: `export const value = ${index};\n`,
+    after: `export const value = ${index + 1};\n`,
+  })),
+];
+const contentCache = new Map<string, unknown>();
+const contentReads: { method: string; path?: string; turnId?: string }[] = [];
+const fileReference = {
+  contentVersion: 1 as const,
+  basis: 'project-snapshot' as const,
+  turnId: 'assistant-turn',
+  diffId: 'synthetic-diff',
+  state: 'ready' as const,
+  version: 'sha256:' + 'c'.repeat(64),
+  changeCount: fixtureFiles.length,
+};
+const previousFileReference = {
+  ...fileReference,
+  turnId: 'previous-turn',
+  diffId: 'previous-diff',
+  version: 'sha256:' + 'd'.repeat(64),
+};
 const controller: any = {
   get state() {
     return state;
@@ -252,6 +298,156 @@ const controller: any = {
   },
   async readGitContext() {
     return { execution: { branch: 'codex/ui' }, repository: { branch: 'main' } };
+  },
+  async openProjectContent(changed: () => void, mode: 'tree' | 'changes', turnId?: string) {
+    await contentGate;
+    const selected = state.scope.target;
+    const identity: ProjectContentTarget = {
+      owner: selected.owner,
+      deviceId: selected.deviceId,
+      catalogWorkspaceId: selected.catalogWorkspaceId,
+      replicaId: selected.replicaId,
+      workspaceId: selected.workspaceId,
+      localProjectId: selected.localProjectId,
+      sessionId: state.sessionId,
+    };
+    const snapshot = async (path: string, text: string) => {
+      const bytes = new TextEncoder().encode(text);
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      const version =
+        'sha256:' + [...digest].map((value) => value.toString(16).padStart(2, '0')).join('');
+      return {
+        path,
+        size: bytes.length,
+        state: 'text' as const,
+        version,
+        mediaType: 'text/plain' as const,
+        text,
+      };
+    };
+    const files = await Promise.all(
+      fixtureFiles.map(async (file) => ({
+        path: file.path,
+        before: file.before === null ? null : await snapshot(file.path, file.before),
+        after: await snapshot(file.path, file.after),
+        previous: await snapshot(
+          file.path,
+          file.after.replaceAll('after snapshot', 'previous snapshot'),
+        ),
+        current: await snapshot(
+          file.path,
+          file.after.replaceAll('after snapshot', 'current working file'),
+        ),
+      })),
+    );
+    const summary = (file: Awaited<ReturnType<typeof snapshot>> | null) => {
+      if (!file) return null;
+      const { text: _text, ...value } = file;
+      return value;
+    };
+    const entries = [
+      { path: 'src', type: 'directory', size: 0 },
+      ...files.map((file) => ({ path: file.path, type: 'file', size: file.current.size })),
+    ];
+    const panel = new ProjectContentController<ProjectContentTarget>({
+      context: () => ({
+        target: identity,
+        generation: controller.contextRevision,
+        online: !state.offline,
+      }),
+      parseTarget: (input) => input as ProjectContentTarget,
+      contentTarget: (value) => value,
+      cache: {
+        read: async (_target, key) => contentCache.get(key),
+        writeBatch: async (_target, values, current) => {
+          current();
+          for (const [key, value] of values) contentCache.set(key, value);
+        },
+      },
+      request: async (_target, method, input) => {
+        const params = input as { path?: string; turnId?: string };
+        contentReads.push({ method, path: params.path, turnId: params.turnId });
+        if (state.offline) throw Error('Synthetic offline content must use its cache');
+        const reference = params.turnId === 'previous-turn' ? previousFileReference : fileReference;
+        const scope = {
+          contentVersion: 1,
+          workspaceId: identity.workspaceId,
+          localProjectId: identity.localProjectId,
+          sessionId: identity.sessionId,
+          confirmed: true,
+        };
+        if (method === 'read-project-tree')
+          return {
+            ...scope,
+            version: 'sha256:' + 'e'.repeat(64),
+            source: 'git',
+            entries,
+            offset: 0,
+            total: entries.length,
+            partial: false,
+            enumerationComplete: true,
+            issues: [],
+          };
+        if (method === 'file-content') {
+          const file = files.find((file) => file.path === params.path)!.current;
+          return {
+            ...scope,
+            path: params.path,
+            content: { version: file.version, byteLength: file.size, mediaType: 'text/plain' },
+            status: 'content',
+            encoding: 'base64',
+            data: btoa(file.text),
+          };
+        }
+        if (method === 'read-turn-diff')
+          return {
+            ...scope,
+            turnId: params.turnId,
+            state: 'ready',
+            reference,
+            changes: files.map((file) => ({
+              path: file.path,
+              kind: file.before ? 'modified' : 'added',
+              before: summary(file.before),
+              after: summary(params.turnId === 'previous-turn' ? file.previous : file.after),
+            })),
+            partial: false,
+            issues: [],
+            attribution: 'shared-project',
+          };
+        if (method === 'read-diff-file') {
+          const file = files.find((file) => file.path === params.path)!;
+          return {
+            ...scope,
+            turnId: params.turnId,
+            path: params.path,
+            reference,
+            before: file.before,
+            after: params.turnId === 'previous-turn' ? file.previous : file.after,
+            partial: false,
+            issues: [],
+            attribution: 'shared-project',
+          };
+        }
+        throw Error('Unexpected synthetic content request: ' + method);
+      },
+    });
+    const unsubscribe = panel.subscribe(changed);
+    await panel.open(
+      mode,
+      [
+        { id: 'assistant-turn', label: '整理项目', reference: fileReference },
+        { id: 'previous-turn', label: '上一回合', reference: previousFileReference },
+      ],
+      project.projectName,
+      turnId,
+    );
+    return Object.assign(panel, {
+      dispose() {
+        unsubscribe();
+        panel.close();
+      },
+    });
   },
   async listProjectSessions(_source: string, target: any) {
     return sessions.filter((session) => session.project.localProjectId === target.localProjectId);
@@ -368,8 +564,129 @@ const controller: any = {
 };
 const fixture = {
   calls,
+  contentReads,
   pageReads,
   selection: () => ({ scope: state.scope, sessionId: state.sessionId }),
+  longModel() {
+    state.session = {
+      ...state.session,
+      agent: {
+        ...agent,
+        runConfig: {
+          ...agent.runConfig,
+          models: [
+            {
+              ...agent.runConfig.models[0],
+              name: 'Synthetic extended coding model with a deliberately long display name',
+            },
+          ],
+        },
+      },
+    };
+    state.draft = {
+      ...state.draft,
+      revision: state.draft.revision + 1,
+      selection: { modelId: 'fixture-model', reasoningEffort: 'high' },
+    };
+    emit();
+  },
+  holdContentReads() {
+    contentGate = new Promise((resolve) => {
+      releaseContent = resolve;
+    });
+  },
+  releaseContentReads() {
+    releaseContent?.();
+    contentGate = undefined;
+  },
+  fileChanges(changeCount: number) {
+    state.session = {
+      ...state.session,
+      history: history.map((turn) =>
+        turn.role === 'assistant'
+          ? {
+              ...turn,
+              fileDiff: {
+                ...fileReference,
+                changeCount: changeCount > 0 ? fileReference.changeCount : 0,
+              },
+            }
+          : turn,
+      ),
+    };
+    emit();
+  },
+  offlineContent() {
+    state = {
+      ...state,
+      offline: true,
+      sessionLoad: { status: 'ready', source: 'cache' },
+      session: { ...state.session, online: false },
+    };
+    controller.contextRevision++;
+    emit();
+  },
+  longConversation() {
+    state.session = {
+      ...state.session,
+      history: Array.from({ length: 30 }, (_, index) => ({
+        id: 'long-turn-' + index,
+        role: index % 2 ? 'assistant' : 'user',
+        finished: true,
+        timestamp: '2026-09-14T00:00:01.000Z',
+        items: [
+          {
+            type: 'text',
+            text: `合成对话 ${index}：检查布局、阅读已有消息并保持草稿。\n\n这是一段用于滚动阅读验证的项目讨论。`,
+          },
+        ],
+      })),
+    };
+    emit();
+  },
+  appendMessage() {
+    state.session = {
+      ...state.session,
+      history: [
+        ...state.session.history,
+        {
+          id: 'newest-turn',
+          role: 'assistant',
+          finished: true,
+          timestamp: '2026-09-14T00:01:00.000Z',
+          items: [{ type: 'text', text: '最新合成消息：阅读旧记录时保持当前位置。' }],
+        },
+      ],
+    };
+    emit();
+  },
+  cachedRun() {
+    state = {
+      ...state,
+      offline: true,
+      sessionLoad: { status: 'ready', source: 'cache' },
+      session: {
+        ...state.session,
+        online: false,
+        history: [
+          {
+            id: 'cached-turn',
+            role: 'assistant',
+            finished: false,
+            items: [
+              {
+                type: 'tool_call',
+                title: '读取项目目录',
+                status: 'in_progress',
+                content: 'Synthetic cached tool output',
+              },
+            ],
+          },
+        ],
+      },
+    };
+    emit();
+  },
   empty() {
     state = {
       catalogs: { local: { ...catalog, targets: [] } },
