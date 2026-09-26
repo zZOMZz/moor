@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { sessionReadResponseSchema, validateSessionBundle } from '@moor/protocol/session-responses';
-import { readClientSession, verifiedSessionDelta } from '@moor/client/session-client';
-import { decode, VersionVector } from '@moor/session/model';
+import { verifiedSessionDelta } from '@moor/client/session-client';
+import { decode, encode, LoroDoc, VersionVector } from '@moor/session/model';
 import type { StorageBackend, StorageChange } from '../../platform/indexed-storage';
 import type { WorkspaceScope } from './workspace-store';
 
@@ -52,6 +52,26 @@ function envelope(raw: unknown, scope: WorkspaceScope, sessionId: string) {
   if (value.persisted === false || value.persistenceError)
     throw Error('缓存会话尚未由主机持久确认。');
   return value;
+}
+
+/** Validate the complete CRDT checkpoint without projecting or cloning history,
+ * or exporting the same document again just to obtain its version. */
+function verifyCheckpoint(snapshot: Envelope, sessionId: string, expectedVersion: string) {
+  const doc = new LoroDoc();
+  try {
+    const imported = doc.import(decode(snapshot.update));
+    if (imported.pending?.size) throw Error('缓存检查点缺少前置版本。');
+    if (doc.getMap('session').get('id') !== sessionId) throw Error('缓存检查点文档身份不匹配。');
+    const version = doc.version();
+    try {
+      if (encode(version.encode()) !== expectedVersion)
+        throw Error('缓存检查点与已确认增量版本不匹配。');
+    } finally {
+      version.free();
+    }
+  } finally {
+    doc.free();
+  }
 }
 
 /** Read a consistent, bounded chain. CRDT replay and final version verification are
@@ -162,11 +182,10 @@ export async function cacheWorkspaceSessionDelta(
         bytes: head.bytes + bytes,
       };
     } else {
-      // Full materialization and verification are deliberately confined to this
-      // recovery boundary, never performed once per streaming delta.
+      // Validate envelope and complete CRDT bytes at the recovery boundary.
+      // The live replica already owns the UI history projection.
       const snapshot = envelope(checkpoint(), scope, sessionId);
-      if (readClientSession(snapshot, { ...scope.target, sessionId }).version !== version)
-        throw Error('缓存检查点与已确认增量版本不匹配。');
+      verifyCheckpoint(snapshot, sessionId, version);
       const count = head?.count ?? 0;
       const [before, ...previous] = await Promise.all([
         backend.read(key.checkpoint),

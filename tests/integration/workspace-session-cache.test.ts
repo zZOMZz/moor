@@ -258,12 +258,85 @@ test('count compaction atomically replaces the checkpoint and deletes every old 
   );
   assert.equal((await f.restored()).version, oldView.version);
   f.memory.failAfter = undefined;
-  await f.cache();
+  const subscribe = t.mock.method(LoroDoc.prototype, 'subscribe'),
+    exportDoc = t.mock.method(LoroDoc.prototype, 'export');
+  try {
+    await f.cache();
+    assert.equal(subscribe.mock.callCount(), 0, 'compaction does not materialize a history Mirror');
+    assert.equal(exportDoc.mock.callCount(), 1, 'only the checkpoint factory exports CRDT bytes');
+  } finally {
+    subscribe.mock.restore();
+    exportDoc.mock.restore();
+  }
   const saved = await f.store.loadSessionCache(scope, sessionId, current);
   assert.equal(saved?.deltas.length, 0);
   assert.equal(f.memory.values.size, 2, 'only the head and compacted checkpoint remain');
   assert.ok(f.memory.batches.at(-1)!.some((change) => change.delete === true));
   assert.deepEqual((await f.restored()).history, f.replica.view!.history);
+});
+
+test('checkpoint verification rejects incomplete, corrupt, wrong-scope or mismatched content before cache replacement', async (t) => {
+  const f = fixture(t, 2);
+  await f.cache();
+  for (let index = 0; index < 64; index++) {
+    f.advance('Before verified checkpoint ' + index);
+    await f.cache();
+  }
+  const previous = f.replica.exportSnapshot();
+  f.advance('Captured confirmed checkpoint');
+  const token = f.replica.lastRead!,
+    confirmed = f.replica.view!,
+    snapshot = f.replica.exportSnapshotAt(token),
+    before = structuredClone(f.memory.values),
+    batches = f.memory.batches.length;
+  const missing = new LoroDoc(),
+    wrong = new LoroDoc();
+  t.after(() => {
+    missing.free();
+    wrong.free();
+  });
+  wrong.getMap('session').set('id', 'different-session');
+  const invalid = [
+    { ...snapshot, update: Buffer.from('corrupt synthetic checkpoint').toString('base64') },
+    { ...snapshot, update: token.response.update },
+    { ...snapshot, update: delta(missing) },
+    { ...snapshot, update: delta(wrong) },
+    previous,
+    { ...snapshot, persisted: false },
+    { ...snapshot, persistenceError: 'Host did not persist this checkpoint' },
+    {
+      ...snapshot,
+      meta: { ...snapshot.meta, userId: 'different-user' },
+      metaBundle: { ...snapshot.metaBundle, entries: {} },
+    },
+    {
+      ...snapshot,
+      metaBundle: {
+        ...snapshot.metaBundle,
+        entries: {
+          ...snapshot.metaBundle.entries,
+          '["m","session-other","title"]': { c: '1', d: 'outside' },
+        },
+      },
+    },
+  ];
+  // A delayed checkpoint must still refer to the captured confirmed version,
+  // even after the live replica has advanced to unconfirmed content.
+  f.advance('Later unconfirmed text', false);
+  for (const value of [...invalid, f.replica.exportSnapshot()]) {
+    await assert.rejects(f.store.cacheSessionDelta(scope, sessionId, token, current, () => value));
+    assert.equal(f.memory.batches.length, batches);
+    assert.deepEqual(
+      f.memory.values,
+      before,
+      'rejection leaves the checkpoint and delta chain intact',
+    );
+  }
+  await f.store.cacheSessionDelta(scope, sessionId, token, current, () => snapshot);
+  const restored = await f.restored();
+  assert.equal(restored.version, token.version);
+  assert.deepEqual(restored.history, confirmed.history);
+  assert.equal((await f.store.loadSessionCache(scope, sessionId, current))?.deltas.length, 0);
 });
 
 test('unchanged reads do not consume cache segments while same-version metadata changes remain durable', async (t) => {
