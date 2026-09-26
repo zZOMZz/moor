@@ -1855,20 +1855,24 @@ export function WorkspaceApp({
                     onOpen={openNavigationSession}
                     onAction={manageNavigationSession}
                     onCreate={createProjectSession}
-                    onRefresh={(project) =>
-                      run(() =>
-                        typeof controller.refreshProjectSessions === 'function'
-                          ? controller.refreshProjectSessions(project.source, project.target)
-                          : controller.synchronize({
-                              source: project.source,
-                              connectionId: state.catalogs[project.source]!.connectionId,
-                              owner: project.target.owner,
-                              kind: 'connected',
-                              deviceId: project.target.deviceId,
-                              workspaceId: project.target.workspaceId,
-                            }),
-                      )
-                    }
+                    onRefresh={(project) => {
+                      let pending: Promise<void> | undefined;
+                      run(() => {
+                        pending =
+                          typeof controller.refreshProjectSessions === 'function'
+                            ? controller.refreshProjectSessions(project.source, project.target)
+                            : controller.synchronize({
+                                source: project.source,
+                                connectionId: state.catalogs[project.source]!.connectionId,
+                                owner: project.target.owner,
+                                kind: 'connected',
+                                deviceId: project.target.deviceId,
+                                workspaceId: project.target.workspaceId,
+                              });
+                        return pending;
+                      });
+                      return pending;
+                    }}
                   />
                 ))}
               </Fragment>

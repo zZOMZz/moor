@@ -389,7 +389,7 @@ export function NavigationProjectGroup({
   onOpen(project: NavigationProject, session: SessionMetadata): void;
   onAction: ProjectAction;
   onCreate(project: NavigationProject): void;
-  onRefresh(project: NavigationProject): void;
+  onRefresh(project: NavigationProject): void | Promise<void>;
   controller?: WorkspaceController;
   revision?: number;
   grouped?: boolean;
@@ -412,9 +412,18 @@ export function NavigationProjectGroup({
     if (searchQuery) setSearchExpansion({ query: searchQuery, open: value });
     else setExpanded(value);
   };
-  const [page, setPage] = useState<WorkspaceSessionPage>();
+  const pageScope = canonical([projectKey(project), effectiveQuery, archived]);
+  const [loaded, setLoaded] = useState<{
+    controller: WorkspaceController;
+    scope: string;
+    page: WorkspaceSessionPage;
+  }>();
+  const page =
+    loaded?.controller === controller && loaded?.scope === pageScope ? loaded.page : undefined;
   const [pageError, setPageError] = useState<string>();
   const [pageLoading, setPageLoading] = useState(false);
+  const [manualLoading, setManualLoading] = useState(false);
+  const visibleLoading = pageLoading || manualLoading;
   const readVersion = useRef(0);
   const pageIdentity = canonical([
     projectKey(project),
@@ -423,13 +432,15 @@ export function NavigationProjectGroup({
     effectiveQuery,
     archived,
   ]);
-  const loadPage = async (more = false, fresh = false) => {
+  const loadPage = async (more = false, fresh = false, background = false) => {
     if (!paged || !controller || (more && !page?.nextCursor)) return;
     const serial = ++readVersion.current,
       previous = page;
-    setPageLoading(true);
-    setPageError(undefined);
-    if (!more) setPage(undefined);
+    // Metadata notifications refresh the same list without removing its rows
+    // or announcing a new load. A different query/project has no reusable page.
+    const quiet = background && !!previous;
+    setPageLoading(!quiet);
+    if (!quiet) setPageError(undefined);
     try {
       const next = await controller.listProjectSessionPage(project.source, project.target, {
         archived: archived ? 'archived' : 'active',
@@ -439,20 +450,45 @@ export function NavigationProjectGroup({
         ...(more ? { cursor: previous!.nextCursor! } : {}),
         fresh: fresh || more,
       });
-      if (readVersion.current === serial)
-        setPage(more ? appendNavigationPage(previous!, next) : next);
+      if (readVersion.current === serial) {
+        setLoaded({
+          controller,
+          scope: pageScope,
+          page: more ? appendNavigationPage(previous!, next) : next,
+        });
+        setPageError(undefined);
+      }
     } catch (error) {
       if (readVersion.current === serial) {
         const cached = more && previous && isWorkspaceListOfflineFailure(error);
-        setPage(cached ? { ...previous, source: 'cache', partial: true } : undefined);
+        setLoaded(
+          cached
+            ? {
+                controller,
+                scope: pageScope,
+                page: { ...previous, source: 'cache', partial: true },
+              }
+            : undefined,
+        );
         setPageError(cached ? '下一页尚未缓存，请连接后再读取。' : sessionPageError(error));
       }
     } finally {
       if (readVersion.current === serial) setPageLoading(false);
     }
   };
+  const refreshProject = async () => {
+    const serial = readVersion.current;
+    setManualLoading(true);
+    try {
+      await onRefresh(project);
+    } catch (error) {
+      if (readVersion.current === serial) setPageError(sessionPageError(error));
+    } finally {
+      setManualLoading(false);
+    }
+  };
   useEffect(() => {
-    if (open && paged) void loadPage(false, true);
+    if (open && paged) void loadPage(false, true, true);
     return () => {
       readVersion.current++;
     };
@@ -530,7 +566,7 @@ export function NavigationProjectGroup({
                   <Menu.Item
                     className="menu-item"
                     disabled={disabled}
-                    onClick={() => onRefresh(project)}
+                    onClick={() => void refreshProject()}
                   >
                     <RefreshCw />
                     重新同步
@@ -553,7 +589,7 @@ export function NavigationProjectGroup({
         className="workspace-session-list"
         id={listId}
         hidden={!open}
-        aria-busy={pageLoading || undefined}
+        aria-busy={visibleLoading || undefined}
       >
         {open && (
           <>
@@ -565,12 +601,12 @@ export function NavigationProjectGroup({
             {(paged ? pageError : unavailable) && (
               <p className="workspace-muted" role="status">
                 {pageError ?? '暂时无法同步'}
-                <button disabled={disabled || pageLoading} onClick={() => onRefresh(project)}>
+                <button disabled={disabled || visibleLoading} onClick={() => void refreshProject()}>
                   重新读取
                 </button>
               </p>
             )}
-            {(paged ? pageLoading && !page : !sessions && !unavailable) && (
+            {(paged ? (pageLoading && !page) || manualLoading : !sessions && !unavailable) && (
               <p className="workspace-navigation-empty" role="status">
                 <LoaderCircle
                   className="workspace-navigation-loading"
@@ -616,10 +652,10 @@ export function NavigationProjectGroup({
             {paged && page?.nextCursor && (
               <button
                 className="workspace-show-more"
-                disabled={disabled || pageLoading}
+                disabled={disabled || visibleLoading}
                 onClick={() => void loadPage(true)}
               >
-                {pageLoading ? '正在读取…' : '加载更多会话'}
+                {visibleLoading ? '正在读取…' : '加载更多会话'}
               </button>
             )}
             {(!paged || page?.legacy) && !query && !archived && shown.length > 5 && (
