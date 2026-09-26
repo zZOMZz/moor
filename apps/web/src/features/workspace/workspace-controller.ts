@@ -649,12 +649,20 @@ export class WorkspaceController {
   #sessionViewKey(scope: WorkspaceScope, sessionId: string) {
     return productCanonicalJson(['workspace-session-view-v1', scope, sessionId]);
   }
+  #discardSessionCacheQueue(queue = this.#sessionCacheQueue) {
+    if (queue) {
+      queue.pending = [];
+      queue.bytes = 0;
+    }
+    if (this.#sessionCacheQueue === queue) {
+      this.#sessionCacheQueue = undefined;
+      delete this.#state.sessionCache;
+    }
+  }
   #discardSessionReplica(replica = this.#sessionReplica) {
     replica?.dispose();
     if (this.#sessionReplica === replica) {
-      if (this.#sessionCacheQueue) this.#sessionCacheQueue.pending = [];
-      this.#sessionCacheQueue = undefined;
-      delete this.#state.sessionCache;
+      this.#discardSessionCacheQueue();
       this.#sessionReplica = undefined;
       this.#sessionReplicaKey = undefined;
     }
@@ -713,6 +721,7 @@ export class WorkspaceController {
         try {
           captured.current();
         } catch {
+          this.#discardSessionCacheQueue(captured);
           return;
         }
         const next = captured.pending.shift()!;
@@ -736,6 +745,7 @@ export class WorkspaceController {
         try {
           captured.current();
         } catch {
+          this.#discardSessionCacheQueue(captured);
           return;
         }
         if (!captured.pending.length && replica.lastRead === next.read) {
@@ -904,6 +914,9 @@ export class WorkspaceController {
       this.#state.errors = { ...this.#state.errors, [source]: '暂时无法连接此电脑列表。' };
       if (this.#state.scope?.source === source) {
         this.#generation++;
+        // The visible replica can resume after reconnect, but its cache writer
+        // holds the old connection generation and must never be reused.
+        this.#discardSessionCacheQueue();
         this.#state.offline = true;
       }
       throw error;
