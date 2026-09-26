@@ -65,6 +65,7 @@ export default defineConfig(({ command }) => {
     preload: {
       envDir: false,
       envPrefix: '__MOOR_NO_CLIENT_ENV__',
+      define: { __MOOR_DESKTOP_DEVELOPMENT__: JSON.stringify(development) },
       // Preserve the finite, directly testable CJS sources while compiling ESM
       // imports to standalone CJS. Shared Rollup helpers cannot be required by
       // Electron's sandboxed preload loader.
@@ -109,6 +110,7 @@ export default defineConfig(({ command }) => {
       base: '/',
       envDir: false,
       envPrefix: '__MOOR_NO_CLIENT_ENV__',
+      define: { __MOOR_DEV_PERFORMANCE__: JSON.stringify(development) },
       resolve: {
         dedupe: ['react', 'react-dom'],
         alias: [

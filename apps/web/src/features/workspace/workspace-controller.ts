@@ -4,6 +4,7 @@ import {
   type TaskAction,
 } from '@moor/protocol/task-protocol';
 import { ProjectContentController } from '../files/project-content-controller';
+import { beginSessionPerformanceRead } from '../performance/performance-signals';
 import { workspaceContentCache } from '../files/workspace-content-cache';
 import { projectContentKey } from '../files/project-content';
 import {
@@ -57,6 +58,7 @@ import {
   type SessionPageRequest,
 } from '@moor/protocol/session-page';
 import {
+  ClientSessionReplica,
   readClientSession,
   type SessionPermissionReview,
   type SessionPermissionOutcome,
@@ -176,7 +178,7 @@ const projectListingIdentity = (project: Project) => ({
     })),
   },
 });
-type Session = ReturnType<typeof readClientSession>;
+type Session = Omit<ReturnType<typeof readClientSession>, 'update'>;
 type Context = {
   scope: WorkspaceScope;
   project: Project;
@@ -251,7 +253,55 @@ const DRAFT_SAVE_DELAY_MS = 300;
 const SESSION_LOADING_DELAY_MS = 120;
 const SESSION_VIEW_LIMIT = 30;
 const SESSION_VIEW_BYTES = 32 * 1024 * 1024;
-type SessionView = { session: Session; draft: WorkspaceDraft; bytes: number };
+type SessionView = {
+  session: Session;
+  draft: WorkspaceDraft;
+  sessionBytes: number;
+  draftBytes: number;
+  bytes: number;
+};
+const frozenSnapshots = new WeakSet<object>();
+const snapshotSizes = new WeakMap<object, number>();
+const snapshotEncoder = new TextEncoder();
+function immutableSnapshot<T>(value: T): T {
+  if (value === null || typeof value !== 'object' || frozenSnapshots.has(value)) return value;
+  frozenSnapshots.add(value);
+  for (const child of Object.values(value)) immutableSnapshot(child);
+  return Object.freeze(value);
+}
+// Session views contain JSON data. Count only changed immutable branches rather
+// than serializing the entire transcript again for every streaming cache update.
+function immutableJsonBytes(value: unknown): number {
+  if (value === null || typeof value !== 'object')
+    return snapshotEncoder.encode(JSON.stringify(value) ?? 'null').byteLength;
+  const previous = snapshotSizes.get(value);
+  if (previous !== undefined) return previous;
+  let bytes = 2,
+    count = 0;
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      bytes += immutableJsonBytes(child);
+      count++;
+    }
+  } else {
+    for (const [key, child] of Object.entries(value)) {
+      if (child === undefined) continue;
+      bytes += immutableJsonBytes(key) + 1 + immutableJsonBytes(child);
+      count++;
+    }
+  }
+  bytes += Math.max(0, count - 1);
+  snapshotSizes.set(value, bytes);
+  return bytes;
+}
+const withoutSource = <T>(
+  values: Partial<Record<DesktopWorkspaceSource, T>>,
+  source: DesktopWorkspaceSource,
+) => {
+  const result = { ...values };
+  delete result[source];
+  return result;
+};
 
 /** Shared browser/desktop controller over the finite local or relay transport. */
 export class WorkspaceController {
@@ -264,6 +314,7 @@ export class WorkspaceController {
     offline: true,
     sessionLoad: { status: 'idle' },
   };
+  #snapshot?: WorkspaceClientState;
   #generation = 0;
   #closed = false;
   #listeners = new Set<() => void>();
@@ -281,6 +332,8 @@ export class WorkspaceController {
   #cancelDraftSave?: () => void;
   #sessionViews = new Map<string, SessionView>();
   #sessionViewBytes = 0;
+  #sessionReplica?: ClientSessionReplica;
+  #sessionReplicaKey?: string;
   #catalogVersions = { local: 0, remote: 0 };
   #sessionReadVersion = 0;
   #sessionListReadVersion = 0;
@@ -320,8 +373,19 @@ export class WorkspaceController {
     this.store = options.store ?? new WorkspaceStore();
   }
   readonly store: WorkspaceStore;
+  /** An immutable view. Changed branches are replaced; retained snapshots never
+   * observe later edits, and reading a snapshot does not copy session history. */
   get state() {
-    return structuredClone(this.#state);
+    const keys = Object.keys(this.#state) as (keyof WorkspaceClientState)[];
+    if (
+      !this.#snapshot ||
+      keys.length !== Object.keys(this.#snapshot).length ||
+      keys.some(
+        (key) => !Object.hasOwn(this.#snapshot!, key) || this.#snapshot![key] !== this.#state[key],
+      )
+    )
+      this.#snapshot = immutableSnapshot({ ...this.#state });
+    return this.#snapshot;
   }
   subscribe(listener: () => void) {
     this.#listeners.add(listener);
@@ -330,6 +394,9 @@ export class WorkspaceController {
     };
   }
   #emit() {
+    // Navigation revisions also live outside #state. A notification publishes a
+    // new root while unchanged immutable session/ledger branches stay shared.
+    this.#snapshot = undefined;
     for (const listener of this.#listeners) listener();
   }
   get navigationRevision() {
@@ -377,8 +444,10 @@ export class WorkspaceController {
       )
     )
       return;
-    this.#state.syncDisconnected ??= {};
-    this.#state.syncDisconnected[notice.source] = notice.kind === 'disconnected';
+    this.#state.syncDisconnected = {
+      ...this.#state.syncDisconnected,
+      [notice.source]: notice.kind === 'disconnected',
+    };
     if (notice.kind === 'disconnected') {
       this.#emit();
       return;
@@ -492,26 +561,67 @@ export class WorkspaceController {
   #sessionViewKey(scope: WorkspaceScope, sessionId: string) {
     return productCanonicalJson(['workspace-session-view-v1', scope, sessionId]);
   }
+  #discardSessionReplica(replica = this.#sessionReplica) {
+    replica?.dispose();
+    if (this.#sessionReplica === replica) {
+      this.#sessionReplica = undefined;
+      this.#sessionReplicaKey = undefined;
+    }
+  }
+  #replica(scope: WorkspaceScope, sessionId: string) {
+    const key = this.#sessionViewKey(scope, sessionId);
+    if (!this.#sessionReplica || this.#sessionReplicaKey !== key) {
+      this.#discardSessionReplica();
+      this.#sessionReplica = new ClientSessionReplica({ ...scope.target, sessionId });
+      this.#sessionReplicaKey = key;
+    }
+    return this.#sessionReplica;
+  }
+  #exportSessionSnapshot(context: Context) {
+    context.current();
+    const replica = this.#sessionReplica;
+    if (
+      !context.sessionId ||
+      !replica ||
+      this.#sessionReplicaKey !== this.#sessionViewKey(context.scope, context.sessionId) ||
+      !replica.view ||
+      replica.view.version !== this.#state.session?.version
+    )
+      throw Error('当前会话副本已改变，请重新读取。');
+    return {
+      ...replica.exportSnapshot(),
+      agent: this.#state.session.agent,
+      accountUsage: this.#state.session.accountUsage,
+    };
+  }
   #sessionView(scope: WorkspaceScope, sessionId: string) {
     const key = this.#sessionViewKey(scope, sessionId),
       value = this.#sessionViews.get(key);
     if (!value) return;
     this.#sessionViews.delete(key);
     this.#sessionViews.set(key, value);
-    return structuredClone(value);
+    return value;
   }
   #rememberSessionView(scope: WorkspaceScope, sessionId: string) {
     const session = this.#state.session,
       draft = this.#state.draft;
     if (!session || !draft || session.meta.id !== sessionId) return;
+    immutableSnapshot(session);
+    immutableSnapshot(draft);
     const key = this.#sessionViewKey(scope, sessionId),
       previous = this.#sessionViews.get(key),
-      snapshot = structuredClone({ session, draft }),
-      bytes = new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+      sessionBytes =
+        previous?.session === session ? previous.sessionBytes : immutableJsonBytes(session),
+      draftBytes = previous?.draft === draft ? previous.draftBytes : immutableJsonBytes(draft),
+      // Exact JSON wrapper overhead for {"session":...,"draft":...}.
+      bytes = sessionBytes + draftBytes + 21;
     if (previous) this.#sessionViewBytes -= previous.bytes;
     this.#sessionViews.delete(key);
     if (bytes > SESSION_VIEW_BYTES) return;
-    this.#sessionViews.set(key, { ...snapshot, bytes });
+    this.#sessionViews.set(
+      key,
+      immutableSnapshot({ session, draft, sessionBytes, draftBytes, bytes }),
+    );
     this.#sessionViewBytes += bytes;
     this.#trimSessionViews();
   }
@@ -521,13 +631,10 @@ export class WorkspaceController {
       draft = this.#state.draft;
     if (!value || !draft || this.#state.sessionId !== sessionId) return;
     this.#sessionViewBytes -= value.bytes;
-    const snapshot = structuredClone(draft),
-      bytes =
-        value.bytes -
-        new TextEncoder().encode(JSON.stringify(value.draft)).byteLength +
-        new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+    const draftBytes = immutableJsonBytes(immutableSnapshot(draft)),
+      bytes = value.sessionBytes + draftBytes + 21;
     this.#sessionViews.delete(key);
-    this.#sessionViews.set(key, { ...value, draft: snapshot, bytes });
+    this.#sessionViews.set(key, immutableSnapshot({ ...value, draft, draftBytes, bytes }));
     this.#sessionViewBytes += bytes;
     this.#trimSessionViews();
   }
@@ -586,7 +693,7 @@ export class WorkspaceController {
           !catalog.targets.some((entry) => same(entry.target, this.#state.scope!.target)))
       )
         this.#clearSelection();
-      this.#state.catalogs[source] = catalog;
+      this.#state.catalogs = { ...this.#state.catalogs, [source]: catalog };
       const identityChanged =
         !previous ||
         previous.connectionId !== catalog.connectionId ||
@@ -612,12 +719,12 @@ export class WorkspaceController {
         this.#state.project = structuredClone(active);
         this.#state.offline = !active.online;
       }
-      delete this.#state.errors[source];
+      this.#state.errors = withoutSource(this.#state.errors, source);
       this.#catalogFailures.delete(source);
     } catch (error) {
       current();
       this.#catalogFailures.set(source, error);
-      this.#state.errors[source] = '暂时无法连接此电脑列表。';
+      this.#state.errors = { ...this.#state.errors, [source]: '暂时无法连接此电脑列表。' };
       if (this.#state.scope?.source === source) {
         this.#generation++;
         this.#state.offline = true;
@@ -636,16 +743,18 @@ export class WorkspaceController {
     }
     this.#catalogVersions[source]++;
     this.#syncPending.delete(source);
-    delete this.#state.catalogs[source];
+    this.#state.catalogs = withoutSource(this.#state.catalogs, source);
     this.#catalogFailures.delete(source);
-    delete this.#state.errors[source];
-    if (this.#state.syncDisconnected) delete this.#state.syncDisconnected[source];
+    this.#state.errors = withoutSource(this.#state.errors, source);
+    if (this.#state.syncDisconnected)
+      this.#state.syncDisconnected = withoutSource(this.#state.syncDisconnected, source);
     this.#emit();
   }
   #clearSelection() {
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;
+    this.#discardSessionReplica();
     this.#generation++;
     this.#state = {
       catalogs: this.#state.catalogs,
@@ -1000,6 +1109,8 @@ export class WorkspaceController {
     const scope = this.#context(sessionId).scope,
       view = this.#sessionView(scope, sessionId);
     this.#generation++;
+    this.#discardSessionReplica();
+    const replica = this.#replica(scope, sessionId);
     this.#state.sessionId = sessionId;
     delete this.#state.modelError;
     const current = this.#current();
@@ -1027,15 +1138,22 @@ export class WorkspaceController {
       await this.options.restoreLegacy?.(scope, sessionId, current);
       const [ledger, storedSession] = await Promise.all([
         this.store.read(scope, current, sessionId),
-        this.store.cachedSession(scope, sessionId, current),
+        this.store.loadSessionCache(scope, sessionId, current),
       ]);
       current();
       this.#state.ledger = ledger;
       this.#state.draft = await this.store.readDraft(scope, sessionId, current, ledger);
-      cached = storedSession;
+      cached = null;
+      if (storedSession) {
+        cached = replica.read(storedSession.checkpoint);
+        for (const delta of storedSession.deltas) cached = replica.read(delta);
+        if (storedSession.version && cached.version !== storedSession.version)
+          throw Error('缓存会话版本与增量链不匹配。');
+      }
     } catch (error) {
       cancelLoading();
       current();
+      this.#discardSessionReplica(replica);
       this.#state.sessionLoad = {
         status: 'failed',
         source: view ? 'cache' : 'none',
@@ -1096,7 +1214,8 @@ export class WorkspaceController {
     };
     if (!context.sessionId) throw Error('请先选择会话。');
     this.#sessionReads++;
-    const base = this.#state.session;
+    const replica = this.#replica(context.scope, context.sessionId),
+      base = replica.view;
     const source =
       this.#state.sessionLoad.status === 'ready'
         ? 'host'
@@ -1117,17 +1236,28 @@ export class WorkspaceController {
           ...(base?.version ? { version: base.version } : {}),
         }),
       );
-      const session = readClientSession(
-        raw,
-        {
-          ...context.scope.target,
-          sessionId: context.sessionId,
+      const markPerformance = beginSessionPerformanceRead();
+      let session: Session;
+      try {
+        session = replica.read(raw);
+      } catch (error) {
+        this.#discardSessionReplica(replica);
+        throw error;
+      }
+      await this.store.cacheSessionDelta(
+        context.scope,
+        context.sessionId,
+        replica.lastRead!,
+        context.current,
+        () => {
+          context.current();
+          return replica.exportSnapshot();
         },
-        base,
       );
-      await this.store.cacheSession(context.scope, context.sessionId, session, context.current);
       context.current();
       this.#state.session = session;
+      if (base?.version && session.version && base.version !== session.version)
+        markPerformance?.(this, context.sessionId, session.version);
       this.#state.offline = false;
       this.#state.sessionLoad = settle
         ? { status: 'ready', source: 'host' }
@@ -2915,7 +3045,7 @@ export class WorkspaceController {
     if (this.store.forkBlocked(ledger, sessionId)) throw Error('请先核查原 Fork，再发送新指令。');
     const value = buildSendTurn({
       scope: { ...context.scope.target, sessionId },
-      read: this.#state.session,
+      read: this.#exportSessionSnapshot(context),
       agent: this.#state.session!.agent!,
       prompt: draft.text,
       selection: draft.selection,
@@ -3073,7 +3203,7 @@ export class WorkspaceController {
     context.current();
     const value = buildRespondPermission({
       scope: { ...context.scope.target, sessionId: context.sessionId },
-      read: this.#state.session,
+      read: this.#exportSessionSnapshot(context),
       review,
       outcome,
       operationId: this.#uuid(),
@@ -3249,6 +3379,7 @@ export class WorkspaceController {
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;
     this.#closed = true;
+    this.#discardSessionReplica();
     this.#sessionViews.clear();
     this.#sessionViewBytes = 0;
     this.#sessionPages.clear();

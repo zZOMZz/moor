@@ -110,6 +110,12 @@ app.whenReady().then(async () => {
     assert.equal(await js('typeof window.moorWorkspace.request'), 'function');
     assert.equal(await js('typeof window.require'), 'undefined');
     if (development) {
+      await waitFor(`document.querySelector('#moor-performance')`);
+      assert.equal(
+        await js(`document.querySelector('[aria-label="开发性能面板"]').hidden`),
+        true,
+        'real development entry loads the panel with sampling initially closed',
+      );
       const probeUrl = '/@fs' + process.env.MOOR_TEST_VITE_MOUNT;
       await js(`(async () => {
         const { mount } = await import(${JSON.stringify(probeUrl)}); mount();
@@ -130,6 +136,8 @@ app.whenReady().then(async () => {
       assert.equal(operations.length, 0, 'HMR must not send an operation');
       console.log('PASS: Vite React/CSS HMR preserves state, document, controller and finite IPC.');
     } else {
+      assert.equal(await js(`document.querySelector('#moor-performance') === null`), true);
+      assert.equal(await js('typeof window.moorDevPerformance'), 'undefined');
       const wasm = fs
         .readdirSync(path.join(root, 'dist/desktop/runtime/public/assets'))
         .filter((file) => file.endsWith('.wasm'));

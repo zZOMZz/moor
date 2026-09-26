@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 import { workspaceInteractionSnapshot } from './workspace-interactions';
 import {
@@ -27,7 +27,7 @@ export function WorkspaceInteractionUI({
   const [error, setError] = useState('');
   const dirty = useRef(false),
     savingVersion = useRef(0);
-  const snapshot = workspaceInteractionSnapshot(state);
+  const snapshot = useMemo(() => workspaceInteractionSnapshot(state), [state.session?.history]);
   const saved =
     state.ledger?.interactions?.[state.sessionId ?? '']?.value ?? emptyInteractionSaved();
   const canDismiss =

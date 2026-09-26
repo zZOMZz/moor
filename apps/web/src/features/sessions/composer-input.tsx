@@ -1,4 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, type ComponentPropsWithRef } from 'react';
+import {
+  inputPerformanceChanged,
+  inputPerformanceCommitted,
+} from '../performance/performance-signals';
 
 /** Presentation only: the owner retains draft persistence and submit authorization. */
 export function ComposerInput({
@@ -8,6 +12,7 @@ export function ComposerInput({
   onKeyDown,
   onCompositionStart,
   onCompositionEnd,
+  onChange,
   ...props
 }: ComponentPropsWithRef<'textarea'>) {
   const input = useRef<HTMLTextAreaElement | null>(null);
@@ -32,6 +37,9 @@ export function ComposerInput({
   };
   useLayoutEffect(resize, [value]);
   useLayoutEffect(() => {
+    inputPerformanceCommitted(input.current);
+  }, [value]);
+  useLayoutEffect(() => {
     const node = input.current;
     if (!node || typeof ResizeObserver === 'undefined') return;
     let width = node.getBoundingClientRect().width;
@@ -54,6 +62,10 @@ export function ComposerInput({
       ref={setInput}
       className={['composer-input', className].filter(Boolean).join(' ')}
       value={value}
+      onChange={(event) => {
+        inputPerformanceChanged(event.currentTarget, event.timeStamp);
+        onChange?.(event);
+      }}
       onCompositionStart={(event) => {
         composing.current = true;
         onCompositionStart?.(event);

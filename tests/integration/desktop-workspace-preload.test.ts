@@ -80,6 +80,7 @@ test('the trusted preload exposes finite application entry points', async () => 
     },
   });
   assert.equal(exposed.has('moorSecure'), false);
+  assert.equal(exposed.has('moorDevPerformance'), false);
   await exposed.get('moorWorkspace').account({ action: 'status' });
   assert.deepEqual(Object.keys(exposed.get('moorWorkspace')).sort(), [
     'account',

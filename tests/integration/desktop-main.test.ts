@@ -674,6 +674,8 @@ test('actual desktop main limits IPC, acknowledges native events, keeps notifica
   ]);
   assert.equal(webBridge.has('personal'), false);
   assert.equal(webBridge.has('moorSecure'), false);
+  assert.equal(webBridge.has('moorDevPerformance'), false);
+  assert.equal(handlers.has('moor:dev-performance'), false);
   assert.equal(handlers.has('moor:secure-client'), false);
   assert.equal(handlers.has('moor:account'), true);
   await t.test(

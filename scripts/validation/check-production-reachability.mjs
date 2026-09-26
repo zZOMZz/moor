@@ -6,6 +6,14 @@ import { repository } from '../build/workspace-sources.mjs';
 import { productionGraphDirectory, requiredProductionGraphs } from './production-graph.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// Exact development consumers, never entry globs or test references. The desktop
+// bootstrap must remain in the actual graph and its guarded import chain intact;
+// these implementations must never emit into any production graph.
+const developmentBootstrap = 'apps/web/src/app/desktop-entry.ts';
+const developmentPanel = 'apps/web/src/features/performance/performance-panel.ts';
+const developmentMetrics = 'apps/web/src/features/performance/performance-metrics.ts';
+const developmentImplementations = new Set([developmentPanel, developmentMetrics]);
+const developmentFlag = '__MOOR_DEV_PERFORMANCE__';
 const retired = [
   'packages/e2ee/',
   'packages/host/src/transport/encrypted-host.ts',
@@ -56,8 +64,58 @@ function onlyModuleLinks(source, file) {
       ts.isExportDeclaration(node) ||
       ts.isInterfaceDeclaration(node) ||
       ts.isTypeAliasDeclaration(node) ||
-      ts.isEmptyStatement(node),
+      ts.isEmptyStatement(node) ||
+      (file === developmentBootstrap &&
+        (isDevelopmentDeclaration(node) || isDevelopmentGuard(node))),
   );
+}
+function isDevelopmentDeclaration(node) {
+  if (
+    !ts.isVariableStatement(node) ||
+    !node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword) ||
+    node.declarationList.declarations.length !== 1
+  )
+    return false;
+  const declaration = node.declarationList.declarations[0];
+  return (
+    ts.isIdentifier(declaration.name) &&
+    declaration.name.text === developmentFlag &&
+    declaration.type?.kind === ts.SyntaxKind.BooleanKeyword &&
+    !declaration.initializer
+  );
+}
+function isDevelopmentGuard(node) {
+  if (!ts.isIfStatement(node) || node.elseStatement || !ts.isBlock(node.thenStatement))
+    return false;
+  const expression = node.expression;
+  if (
+    !ts.isBinaryExpression(expression) ||
+    expression.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken ||
+    !ts.isIdentifier(expression.right) ||
+    expression.right.text !== developmentFlag
+  )
+    return false;
+  const check = expression.left;
+  return (
+    ts.isBinaryExpression(check) &&
+    check.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+    ts.isTypeOfExpression(check.left) &&
+    ts.isIdentifier(check.left.expression) &&
+    check.left.expression.text === developmentFlag &&
+    ts.isStringLiteral(check.right) &&
+    check.right.text === 'undefined'
+  );
+}
+function hasDynamicImport(node, specifier) {
+  if (
+    ts.isCallExpression(node) &&
+    node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    node.arguments.length === 1 &&
+    ts.isStringLiteral(node.arguments[0]) &&
+    node.arguments[0].text === specifier
+  )
+    return true;
+  return ts.forEachChild(node, (child) => hasDynamicImport(child, specifier)) === true;
 }
 function typeImports(source, file, includeValues) {
   const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -158,12 +216,48 @@ for (const file of emitted) if (/\.tsx?$/.test(file)) await followTypes(file, fa
 
 const unreferenced = [],
   linkage = [],
-  erased = [];
+  erased = [],
+  developmentOnly = [];
+const linkedDevelopment = new Set();
+if (loaded.has(developmentBootstrap)) {
+  const source = await readFile(resolve(repository, developmentBootstrap), 'utf8');
+  const ast = ts.createSourceFile(developmentBootstrap, source, ts.ScriptTarget.Latest, true);
+  if (
+    ast.statements.some(
+      (node) =>
+        isDevelopmentGuard(node) &&
+        hasDynamicImport(node.thenStatement, '../features/performance/performance-panel'),
+    )
+  ) {
+    linkedDevelopment.add(developmentPanel);
+    const panel = await readFile(resolve(repository, developmentPanel), 'utf8').catch(() => '');
+    const panelAst = ts.createSourceFile(developmentPanel, panel, ts.ScriptTarget.Latest, true);
+    if (
+      panelAst.statements.some(
+        (node) =>
+          ts.isImportDeclaration(node) &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text === './performance-metrics' &&
+          !node.importClause?.isTypeOnly &&
+          (!node.importClause ||
+            node.importClause.name ||
+            (node.importClause.namedBindings &&
+              (ts.isNamespaceImport(node.importClause.namedBindings) ||
+                node.importClause.namedBindings.elements.some((item) => !item.isTypeOnly)))),
+      )
+    )
+      linkedDevelopment.add(developmentMetrics);
+  }
+}
 for (const absolute of candidates) {
   const file = relative(repository, absolute);
   if (retired.some((name) => (name.endsWith('/') ? file.startsWith(name) : name === file)))
     errors.push(`Retired production source is present: ${file}`);
-  if (emitted.has(file)) continue;
+  if (emitted.has(file)) {
+    if (developmentImplementations.has(file))
+      errors.push(`Development-only implementation entered a production build: ${file}`);
+    continue;
+  }
   const source = await readFile(absolute, 'utf8');
   if (!hasRuntime(source, file)) {
     erased.push(file);
@@ -171,6 +265,10 @@ for (const absolute of candidates) {
   }
   if (loaded.has(file) && onlyModuleLinks(source, file)) {
     linkage.push(file);
+    continue;
+  }
+  if (linkedDevelopment.has(file)) {
+    developmentOnly.push(file);
     continue;
   }
   // Type consumers cannot keep an unused runtime implementation alive. Such a
@@ -186,6 +284,7 @@ const result = {
   typeOnly: [...typeOnly].filter((file) => !emitted.has(file)).sort(),
   linkage: linkage.sort(),
   erased: erased.sort(),
+  developmentOnly: developmentOnly.sort(),
   unreferenced: unreferenced.sort(),
   errors,
 };
