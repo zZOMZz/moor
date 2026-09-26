@@ -146,7 +146,7 @@ for (const transport of ['local', 'relay'] as const)
           transport === 'local'
             ? ['--local']
             : pairCode
-              ? ['--server', origin, '--pair', pairCode]
+              ? ['--server', origin, '--pair=' + pairCode]
               : [];
         pairCode = '';
         return child('bridge.mjs', [
