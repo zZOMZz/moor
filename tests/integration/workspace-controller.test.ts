@@ -839,6 +839,89 @@ test('opening a cached session models refresh separately from actual connectivit
   assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
 });
 
+test('large streamed text uses a conservative warm-view budget without changing durable cache content', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  let expected = '';
+  let serializedText = 0;
+  const stringify = JSON.stringify;
+  t.mock.method(JSON, 'stringify', (...args: Parameters<typeof JSON.stringify>) => {
+    if (typeof args[0] === 'string' && args[0] === expected) serializedText++;
+    return Reflect.apply(stringify, JSON, args);
+  });
+  const publishText = async (length: number) => {
+    expected = 'View budget: ' + 'x'.repeat(length - 13);
+    const doc = f.runtime.doc(id),
+      view = mirror(doc, id);
+    view.setState((state) => {
+      if (!state.history.length)
+        state.history.push({
+          id: 'budget-turn',
+          role: 'assistant',
+          timestamp: '2026-09-26T00:00:00.000Z',
+          userId: undefined,
+          userTurnId: undefined,
+          status: undefined,
+          read: undefined,
+          inputConfig: undefined,
+          fileDiff: null,
+          finished: true,
+          items: [],
+        });
+      state.history[0].items = [{ type: 'text', text: expected }];
+    });
+    view.dispose();
+    f.runtime.persist(id, doc);
+    doc.free();
+    serializedText = 0;
+    await f.controller.refreshSession();
+    await cacheSettled(f.controller);
+    assert.equal((f.controller.state.session!.history[0].items![0] as any).text, expected);
+  };
+  const reopen = async (warm: boolean) => {
+    const previous = f.controller.state.session,
+      entered = signal(),
+      release = signal(),
+      load = f.store.loadSessionCache.bind(f.store);
+    const held = t.mock.method(
+      f.store,
+      'loadSessionCache',
+      async (...args: Parameters<WorkspaceStore['loadSessionCache']>) => {
+        entered.resolve();
+        await release.promise;
+        return load(...args);
+      },
+    );
+    t.after(release.resolve);
+    const opening = f.controller.openSession(id);
+    await entered.promise;
+    assert.equal(
+      f.controller.state.session,
+      warm ? previous : undefined,
+      'only views admitted by the memory budget appear before the durable cache read',
+    );
+    release.resolve();
+    await opening;
+    held.mock.restore();
+    await cacheSettled(f.controller);
+    const cached = await f.store.cachedSession(f.controller.state.scope!, id, () => {});
+    assert.equal((cached!.history[0].items![0] as any).text, expected);
+    assert.equal((f.controller.state.session!.history[0].items![0] as any).text, expected);
+    assert.equal(f.controller.state.session!.version, cached!.version);
+  };
+  await publishText(4096);
+  assert.ok(serializedText > 0, 'small strings retain exact JSON byte accounting');
+  await publishText(4097);
+  assert.equal(serializedText, 0, 'growing text is not serialized just to budget the warm view');
+  await publishText(5 * 1024 * 1024);
+  assert.equal(serializedText, 0);
+  await reopen(true);
+  await publishText(6 * 1024 * 1024);
+  assert.equal(serializedText, 0);
+  await reopen(false);
+  assert.equal(f.prompts(), 0, 'cache admission and restoration never execute a draft');
+});
+
 test('a fast persisted snapshot avoids the loading screen after controller restart', async (t) => {
   const f = await fixture(t),
     sessionId = await f.create();

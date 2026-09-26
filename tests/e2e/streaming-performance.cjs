@@ -423,6 +423,76 @@ app
       'cache replay and draft flush',
     );
     report.renderer = renderer;
+    if (process.env.MOOR_STREAM_MEMORY_DIAGNOSTIC === '1') {
+      const debug = win.webContents.debugger;
+      const memory = {
+        scope:
+          'Diagnostic only, after producer completion and renderer measurement stop; explicit GC is outside performance windows.',
+        startedAt: now(),
+      };
+      report.memoryDiagnostic = memory;
+      debug.attach('1.3');
+      try {
+        memory.before = {
+          at: now(),
+          heap: await debug.sendCommand('Runtime.getHeapUsage'),
+          process: app.getAppMetrics().find((value) => value.type === 'Tab')?.memory,
+        };
+        save();
+        await bounded(debug.sendCommand('HeapProfiler.collectGarbage'), 30000, 'diagnostic GC');
+        memory.afterFirstGc = {
+          at: now(),
+          heap: await debug.sendCommand('Runtime.getHeapUsage'),
+          process: app.getAppMetrics().find((value) => value.type === 'Tab')?.memory,
+        };
+        save();
+        await bounded(
+          read('new Promise(resolve => requestAnimationFrame(() => resolve()))'),
+          5000,
+          'diagnostic frame task boundary',
+        );
+        await bounded(
+          debug.sendCommand('HeapProfiler.collectGarbage'),
+          30000,
+          'diagnostic GC after frame task boundary',
+        );
+        memory.after = {
+          at: now(),
+          scope:
+            'Second explicit GC after a renderer frame task boundary, allowing queued cleanup to run; does not prove every WASM finalizer has completed.',
+          heap: await debug.sendCommand('Runtime.getHeapUsage'),
+          process: app.getAppMetrics().find((value) => value.type === 'Tab')?.memory,
+        };
+        save();
+        // This threshold only decides whether a retaining-path artifact is useful;
+        // it is not a cross-machine performance acceptance threshold.
+        if (memory.after.heap.usedSize > 256 * 1024 * 1024) {
+          memory.snapshotPath = path.join(output, 'renderer-after-gc.heapsnapshot');
+          let bytes = 0;
+          const file = fs.openSync(memory.snapshotPath, 'w');
+          const chunk = (_event, method, parameters) => {
+            if (method === 'HeapProfiler.addHeapSnapshotChunk')
+              bytes += fs.writeSync(file, parameters.chunk);
+          };
+          debug.on('message', chunk);
+          try {
+            await bounded(
+              debug.sendCommand('HeapProfiler.takeHeapSnapshot', { reportProgress: false }),
+              120000,
+              'diagnostic heap snapshot',
+            );
+          } finally {
+            debug.removeListener('message', chunk);
+            fs.closeSync(file);
+            memory.snapshotBytes = bytes;
+          }
+        }
+      } finally {
+        if (debug.isAttached()) debug.detach();
+        memory.finishedAt = now();
+        save();
+      }
+    }
     host.send({ type: 'report' });
     report.host = await bounded(hostMessage('report'), 5000, 'Host report');
     assert.equal(renderer.visibility, 'visible');
@@ -566,7 +636,7 @@ app
         () => null,
       );
     }
-    if (win && !win.isDestroyed() && !report.rendererFailure)
+    if (win && !win.isDestroyed() && !report.rendererFailure && !report.renderer)
       report.renderer = await bounded(
         win.webContents.executeJavaScript('window.__streamFixture?.snapshot()'),
         5000,

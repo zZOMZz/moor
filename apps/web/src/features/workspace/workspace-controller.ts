@@ -265,6 +265,7 @@ type SessionView = {
 };
 const frozenSnapshots = new WeakSet<object>();
 const snapshotSizes = new WeakMap<object, number>();
+const viewBudgetSizes = new WeakMap<object, number>();
 const snapshotEncoder = new TextEncoder();
 function immutableSnapshot<T>(value: T): T {
   if (value === null || typeof value !== 'object' || frozenSnapshots.has(value)) return value;
@@ -274,29 +275,35 @@ function immutableSnapshot<T>(value: T): T {
 }
 // Session views contain JSON data. Count only changed immutable branches rather
 // than serializing the entire transcript again for every streaming cache update.
-function immutableJsonBytes(value: unknown): number {
+function immutableJsonBytes(value: unknown, viewBudget = false): number {
+  // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit (\uXXXX),
+  // plus quotes. Only the in-memory view LRU uses this conservative budget:
+  // large text may be evicted earlier, without serializing it on every chunk.
+  if (viewBudget && typeof value === 'string' && value.length > 4096) return 2 + 6 * value.length;
   if (value === null || typeof value !== 'object')
     return snapshotEncoder.encode(JSON.stringify(value) ?? 'null').byteLength;
-  const previous = snapshotSizes.get(value);
+  const sizes = viewBudget ? viewBudgetSizes : snapshotSizes;
+  const previous = sizes.get(value);
   if (previous !== undefined) return previous;
   let bytes = 2,
     count = 0;
   if (Array.isArray(value)) {
     for (const child of value) {
-      bytes += immutableJsonBytes(child);
+      bytes += immutableJsonBytes(child, viewBudget);
       count++;
     }
   } else {
     for (const [key, child] of Object.entries(value)) {
       if (child === undefined) continue;
-      bytes += immutableJsonBytes(key) + 1 + immutableJsonBytes(child);
+      bytes += immutableJsonBytes(key, viewBudget) + 1 + immutableJsonBytes(child, viewBudget);
       count++;
     }
   }
   bytes += Math.max(0, count - 1);
-  snapshotSizes.set(value, bytes);
+  sizes.set(value, bytes);
   return bytes;
 }
+const sessionViewBudget = (value: unknown) => immutableJsonBytes(value, true);
 const withoutSource = <T>(
   values: Partial<Record<DesktopWorkspaceSource, T>>,
   source: DesktopWorkspaceSource,
@@ -768,8 +775,8 @@ export class WorkspaceController {
     const key = this.#sessionViewKey(scope, sessionId),
       previous = this.#sessionViews.get(key),
       sessionBytes =
-        previous?.session === session ? previous.sessionBytes : immutableJsonBytes(session),
-      draftBytes = previous?.draft === draft ? previous.draftBytes : immutableJsonBytes(draft),
+        previous?.session === session ? previous.sessionBytes : sessionViewBudget(session),
+      draftBytes = previous?.draft === draft ? previous.draftBytes : sessionViewBudget(draft),
       // Exact JSON wrapper overhead for {"session":...,"draft":...}.
       bytes = sessionBytes + draftBytes + 21;
     if (previous) this.#sessionViewBytes -= previous.bytes;
@@ -788,7 +795,7 @@ export class WorkspaceController {
       draft = this.#state.draft;
     if (!value || !draft || this.#state.sessionId !== sessionId) return;
     this.#sessionViewBytes -= value.bytes;
-    const draftBytes = immutableJsonBytes(immutableSnapshot(draft)),
+    const draftBytes = sessionViewBudget(immutableSnapshot(draft)),
       bytes = value.sessionBytes + draftBytes + 21;
     this.#sessionViews.delete(key);
     this.#sessionViews.set(key, immutableSnapshot({ ...value, draft, draftBytes, bytes }));
