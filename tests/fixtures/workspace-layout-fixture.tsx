@@ -211,6 +211,7 @@ const emit = () => {
 const calls: string[] = [];
 let contentGate: Promise<void> | undefined;
 let releaseContent: (() => void) | undefined;
+let coldSessionState: typeof state | undefined;
 const pageReads: {
   projectId: string;
   pinned: string;
@@ -293,6 +294,7 @@ const controller: any = {
     emit();
   },
   async refreshAgentOptions() {},
+  async readUsage() {},
   async saveRunDefaults(selection: { modelId?: string; reasoningEffort?: string }) {
     calls.push(`defaults:${selection.modelId ?? ''}:${selection.reasoningEffort ?? ''}`);
   },
@@ -685,6 +687,61 @@ const fixture = {
         ],
       },
     };
+    emit();
+  },
+  activeSteer() {
+    state = {
+      ...state,
+      project: {
+        ...state.project,
+        runtime: { ...state.project.runtime, features: [...runtime.features, 'steer-v1'] },
+      },
+      session: {
+        ...state.session,
+        history: history.map((turn) =>
+          turn.role === 'assistant'
+            ? {
+                ...turn,
+                finished: false,
+                items: [
+                  ...turn.items,
+                  {
+                    type: 'agent_features',
+                    interactionCapabilities: { questions: false, steer: true },
+                  },
+                ],
+              }
+            : turn,
+        ),
+      },
+    };
+    emit();
+  },
+  beginColdSession() {
+    coldSessionState = state;
+    state = {
+      ...state,
+      sessionId: 'cold-session',
+      session: undefined,
+      draft: undefined,
+      sessionLoad: { status: 'loading-cache', showIndicator: false },
+    };
+    emit();
+  },
+  showColdSessionIndicator() {
+    state = { ...state, sessionLoad: { status: 'loading-cache', showIndicator: true } };
+    emit();
+  },
+  finishColdSession() {
+    const previous = coldSessionState!;
+    state = {
+      ...previous,
+      sessionId: 'cold-session',
+      session: { ...previous.session, meta: { ...previous.session.meta, id: 'cold-session' } },
+      draft: { revision: previous.draft.revision + 1, text: '新会话独立草稿', selection: {} },
+      sessionLoad: { status: 'ready', source: 'cache' },
+    };
+    coldSessionState = undefined;
     emit();
   },
   empty() {

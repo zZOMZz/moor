@@ -13,10 +13,12 @@ function InteractionDialog({
   title,
   onClose,
   children,
+  recovery,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  recovery?: ReactNode;
 }) {
   return (
     <Dialog.Root
@@ -35,6 +37,7 @@ function InteractionDialog({
             </Dialog.Close>
           </div>
           {children}
+          {recovery}
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
@@ -47,6 +50,7 @@ export type QuestionPanelProps = {
   busy: boolean;
   pending: boolean;
   reason: string;
+  recovery?: ReactNode;
   onClose: () => void;
   onDraft: (values: QuestionDraftValues) => Promise<void>;
   onAnswer: (answer: QuestionAnswer['answer']) => Promise<void>;
@@ -66,6 +70,7 @@ export function QuestionPanel(props: QuestionPanelProps) {
     void props.onDraft(next).catch((e) => setError(String(e instanceof Error ? e.message : e)));
   }
   async function answer(action: 'accept' | 'decline' | 'cancel') {
+    if (!editable || props.reason) return;
     setError('');
     try {
       await props.onAnswer(action === 'accept' ? answerFromDraft(request, values) : { action });
@@ -74,7 +79,11 @@ export function QuestionPanel(props: QuestionPanelProps) {
     }
   }
   return (
-    <InteractionDialog title={request.title ?? 'Agent 问题'} onClose={props.onClose}>
+    <InteractionDialog
+      title={request.title ?? 'Agent 问题'}
+      onClose={props.onClose}
+      recovery={props.recovery}
+    >
       <p className="interaction-message">{request.message}</p>
       {request.description && <p>{request.description}</p>}
       <p className="muted">
@@ -255,6 +264,7 @@ export type SteerPanelProps = {
   busy: boolean;
   pending?: PendingInteraction;
   closed: { operation: PendingInteraction; outcome: 'not-injected' | 'unknown'; message: string }[];
+  recovery?: ReactNode;
   onClose: () => void;
   onDraft: (value: string) => Promise<void>;
   onSubmit: (prompt: string) => Promise<void>;
@@ -263,13 +273,14 @@ export function SteerPanel(props: SteerPanelProps) {
   const [draft, setDraft] = useState(props.draft),
     [error, setError] = useState('');
   return (
-    <InteractionDialog title="追加到当前活动回合" onClose={props.onClose}>
+    <InteractionDialog title="追加到当前活动回合" onClose={props.onClose} recovery={props.recovery}>
       <p className="muted">
         追加仅面向提交时的活动回合。回合结束后，草稿不会转为新指令，也不会在重连后发送。
       </p>
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (props.reason || props.busy || props.pending || !draft.trim()) return;
           setError('');
           void props
             .onSubmit(draft)

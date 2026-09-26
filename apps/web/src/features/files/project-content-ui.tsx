@@ -579,7 +579,12 @@ function ContentFrame({
         data-expanded={!!expanded}
         aria-label="文件与变更"
         onKeyDown={(event) => {
-          if (event.key === 'Escape' && !event.defaultPrevented) {
+          if (
+            event.key === 'Escape' &&
+            !event.defaultPrevented &&
+            !event.nativeEvent.isComposing &&
+            event.keyCode !== 229
+          ) {
             event.stopPropagation();
             onClose();
           }

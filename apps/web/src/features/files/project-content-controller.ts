@@ -217,9 +217,10 @@ export class ProjectContentController<T> {
     const panel = this.state;
     if (panel) await this.open(mode, panel.turns, panel.title, panel.turnId);
   }
-  async #tree(more: boolean) {
+  async #tree(more: boolean, previewPath?: string) {
     if (!this.#state) return;
     if (more && this.#state.tree?.result.nextOffset === undefined) return;
+    const loaded = this.#state.tree?.result.entries.length ?? 0;
     if (!more)
       this.#state = {
         ...this.#state,
@@ -229,34 +230,76 @@ export class ProjectContentController<T> {
       };
     await this.#read(async (panel, online, dependencies) => {
       const old = more ? panel.tree : undefined;
-      const tree = await readProjectTree(
+      let tree = await readProjectTree(
         this.#target(panel.target),
         old ? { offset: old.result.nextOffset, knownVersion: old.result.version } : {},
         online,
         dependencies,
       );
-      if (!old) return { tree };
       const metadata = (value: typeof tree.result) => {
         const { offset: _offset, entries: _entries, nextOffset: _next, ...metadata } = value;
         return metadata;
       };
-      const previous = new Set(old.result.entries.map((entry) => entry.path));
-      if (
-        canonical(metadata(old.result)) !== canonical(metadata(tree.result)) ||
-        tree.result.entries.some((entry) => previous.has(entry.path))
-      )
-        throw Error('目录读取期间发生变化，请重新读取文件树。');
-      return {
-        tree: {
-          ...tree,
-          cacheSaved: old.cacheSaved && tree.cacheSaved,
+      const append = (previous: typeof tree, next: typeof tree): typeof tree => {
+        const paths = new Set(previous.result.entries.map((entry) => entry.path));
+        if (
+          canonical(metadata(previous.result)) !== canonical(metadata(next.result)) ||
+          next.result.entries.some((entry) => paths.has(entry.path))
+        )
+          throw Error('目录读取期间发生变化，请重新读取文件树。');
+        return {
+          ...next,
+          cacheSaved: previous.cacheSaved && next.cacheSaved,
           result: {
-            ...tree.result,
+            ...next.result,
             offset: 0,
-            entries: [...old.result.entries, ...tree.result.entries],
+            entries: [...previous.result.entries, ...next.result.entries],
           },
-        },
+        };
       };
+      if (old) tree = append(old, tree);
+      // Replay only the previously loaded directory range. A selected path may
+      // move beyond it; the scoped file reader still verifies that path on Host.
+      while (
+        previewPath &&
+        tree.result.nextOffset !== undefined &&
+        tree.result.entries.length < loaded
+      ) {
+        tree = append(
+          tree,
+          await readProjectTree(
+            this.#target(panel.target),
+            { offset: tree.result.nextOffset, knownVersion: tree.result.version },
+            online,
+            dependencies,
+          ),
+        );
+      }
+      if (!previewPath) return { tree };
+      const selected = tree.result.entries.find((entry) => entry.path === previewPath);
+      if (selected && (selected.type !== 'file' || selected.size > CONTENT_LIMITS.fileBytes))
+        return {
+          tree,
+          currentUnavailable: {
+            path: previewPath,
+            message:
+              selected.type !== 'file'
+                ? '所选路径已不是可预览的文件。'
+                : '文件超过 1 MiB，只显示目录信息，不提供文本预览。',
+          },
+        };
+      try {
+        const { bytes: _bytes, ...currentFile } = await readCurrentProjectFile(
+          this.#target(panel.target),
+          previewPath,
+          online,
+          dependencies,
+        );
+        return { tree, currentFile };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '所选文件重新读取失败。';
+        return { tree, error: message, currentUnavailable: { path: previewPath, message } };
+      }
     });
   }
   async treeMore() {
@@ -297,6 +340,9 @@ export class ProjectContentController<T> {
     });
   }
   async turn(turnId?: string) {
+    await this.#turn(turnId);
+  }
+  async #turn(turnId?: string, previewPath?: string) {
     const panel = this.state;
     if (!panel) return;
     if (turnId && !panel.turns.some((turn) => turn.id === turnId))
@@ -319,7 +365,19 @@ export class ProjectContentController<T> {
       );
       if (expected?.version && canonical(expected) !== canonical(diff.result.reference))
         throw Error('回合变更与已读取的完整基线引用不匹配。');
-      return { diff };
+      const selected =
+        previewPath && diff.result.changes.find((entry) => entry.path === previewPath);
+      const diffFile =
+        selected && diff.result.reference?.version
+          ? await readProjectDiffFile(
+              this.#target(value.target),
+              diff.result.reference,
+              selected,
+              online,
+              dependencies,
+            )
+          : undefined;
+      return { diff, diffFile };
     });
   }
   async diffFile(input: ProjectDiffChange) {
@@ -343,8 +401,9 @@ export class ProjectContentController<T> {
   async refresh() {
     const panel = this.state;
     if (!panel) return;
-    if (panel.mode === 'tree') await this.#tree(false);
-    else await this.turn(panel.turnId);
+    if (panel.mode === 'tree') {
+      await this.#tree(false, panel.currentFile?.result.path ?? panel.currentUnavailable?.path);
+    } else await this.#turn(panel.turnId, panel.diffFile?.result.path);
   }
   invalidate() {
     this.#generation++;

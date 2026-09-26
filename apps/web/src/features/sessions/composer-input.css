@@ -147,7 +147,7 @@
 
 .workspace-composer.workspace-composer-compact .workspace-compose-actions {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 32px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
   margin-top: 8px;
@@ -218,12 +218,28 @@
 
 .workspace-composer.workspace-composer-compact
   .workspace-compose-actions
-  > .workspace-compose-submit {
+  > .workspace-compose-primary {
   grid-column: 3;
   grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workspace-compose-primary > .workspace-compose-submit {
   width: 32px;
   height: 32px;
   margin: 0;
+}
+
+.workspace-compose-primary > .workspace-compose-steer {
+  width: auto;
+  height: 32px;
+  margin: 0;
+  padding: 0 9px;
+  white-space: nowrap;
+  font-size: 12px;
+  border-radius: 8px;
 }
 
 .workspace-composer-compact .workspace-composer-status {

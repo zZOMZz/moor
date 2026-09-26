@@ -4250,7 +4250,7 @@ dialog pre {
 .workspace-compose-actions > .usage-trigger span {
   display: none;
 }
-.workspace-compose-actions > button {
+.workspace-compose-primary > button {
   margin-left: auto;
   display: grid;
   place-items: center;
@@ -4262,7 +4262,7 @@ dialog pre {
   background: var(--ink);
   color: var(--surface);
 }
-.workspace-compose-actions > button:disabled {
+.workspace-compose-primary > button:disabled {
   background: var(--selected);
   color: var(--muted);
   opacity: 1;

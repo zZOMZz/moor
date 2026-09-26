@@ -50,6 +50,7 @@
 }
 
 .session-turn-progress,
+.session-turn-terminal,
 .session-item-status {
   display: inline-flex;
   align-items: center;

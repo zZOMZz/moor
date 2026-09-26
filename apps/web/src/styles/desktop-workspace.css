@@ -166,7 +166,7 @@
 .workspace-attachments:empty {
   display: none;
 }
-.workspace-compose-actions > button:last-child {
+.workspace-compose-primary > button:last-child {
   margin-left: 0;
 }
 .workspace-composer .model-menu-trigger > span {

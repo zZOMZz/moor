@@ -7,6 +7,10 @@ import {
   type QuestionDraftValues,
 } from '../../apps/web/src/features/interactions/interactions';
 import type { QuestionPanelProps } from '../../apps/web/src/features/interactions/interaction-ui';
+import type {
+  WorkspaceClientState,
+  WorkspaceController,
+} from '../../apps/web/src/features/workspace/workspace-controller';
 
 test('React question forms preserve all field types, save offline drafts and keep decline/cancel separate from Stop', async () => {
   const dom = new JSDOM('<!doctype html><div id="app"></div>', {
@@ -61,6 +65,8 @@ test('React question forms preserve all field types, save offline drafts and kee
   const { act, createElement } = await import('react');
   const { createRoot } = await import('react-dom/client');
   const { QuestionPanel } = await import('../../apps/web/src/features/interactions/interaction-ui');
+  const { WorkspaceInteractionUI } =
+    await import('../../apps/web/src/features/interactions/workspace-interaction-ui');
   const { SessionInformation } =
     await import('../../apps/web/src/features/sessions/session-timeline');
   const root = createRoot(document.getElementById('app')!);
@@ -207,6 +213,80 @@ test('React question forms preserve all field types, save offline drafts and kee
     assert.equal(button('提交回答').disabled, true);
     assert.equal(button('取消此问题').disabled, true);
     assert.match(document.querySelector('.interaction-dialog')!.textContent!, /已失效/);
+    await act(async () => closePanel());
+    const interactionState = {
+      offline: true,
+      sessionId: 'session',
+      sessionLoad: { status: 'failed', source: 'cache', reason: 'connection' },
+      session: {
+        meta: {},
+        persisted: true,
+        history: [{ id: 'turn', role: 'assistant', finished: false, items: [] }],
+      },
+    } as unknown as WorkspaceClientState;
+    let failReload = true,
+      reloads = 0,
+      submissions = 0;
+    const dirty: boolean[] = [];
+    await act(async () =>
+      root.render(
+        createElement(WorkspaceInteractionUI, {
+          state: interactionState,
+          busy: false,
+          controller: {
+            saveSteerDraft: async () => {
+              throw Error('Synthetic disk failure');
+            },
+            reloadDraft: async () => {
+              reloads++;
+              if (failReload) throw Error('Synthetic reload failure');
+            },
+            steer: async () => {
+              submissions++;
+            },
+          } as unknown as WorkspaceController,
+          run: (task) => {
+            void task();
+            return true;
+          },
+          onDirty: (value) => dirty.push(value),
+        }),
+      ),
+    );
+    await act(async () => button('回合内追加').click());
+    const steerDraft = document.querySelector<HTMLTextAreaElement>('#steer-draft')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        steerDraft,
+        'Keep this unsaved input',
+      );
+      steerDraft.dispatchEvent(new win.Event('input', { bubbles: true }));
+    });
+    assert.equal(steerDraft.disabled, false, 'local editing remains available offline');
+    assert.equal(button('追加到活动回合').disabled, true);
+    // A disabled button is not the only submission path: the form itself must
+    // also reject keyboard/programmatic submit while the Host is unavailable.
+    await act(async () =>
+      steerDraft.form!.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.equal(submissions, 0);
+    await act(async () => button('关闭').click());
+    assert.ok(document.querySelector('.interaction-dialog'), 'unsaved input cannot disappear');
+    assert.ok(
+      button('重新读取交互草稿').closest('.interaction-dialog'),
+      'recovery remains reachable inside the modal focus boundary',
+    );
+    await act(async () => button('重新读取交互草稿').click());
+    assert.equal(reloads, 1);
+    assert.equal(steerDraft.value, 'Keep this unsaved input');
+    assert.match(document.querySelector('.interaction-dialog')!.textContent!, /无法重新读取/);
+    assert.equal(dirty.at(-1), true);
+    failReload = false;
+    await act(async () => button('重新读取交互草稿').click());
+    assert.equal(reloads, 2);
+    assert.equal(dirty.at(-1), false);
+    assert.equal(document.querySelector('.interaction-dialog'), null);
+    assert.equal(submissions, 0, 'recovering a draft never submits an interaction');
     await act(async () => closePanel());
     await act(async () =>
       renderInformation({

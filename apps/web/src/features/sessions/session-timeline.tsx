@@ -19,6 +19,7 @@ export type TimelineTurn = {
   id: string;
   role: string;
   finished: boolean;
+  status?: string;
   items?: unknown[];
   fileDiff?: unknown;
   timestamp?: string;
@@ -58,7 +59,7 @@ type TimelineRenderers = {
   afterTurn?(turn: TimelineTurn): ReactNode;
   actions?(turn: TimelineTurn): ReactNode;
 };
-type TimelineEntry = { value: unknown; index: number };
+type TimelineEntry = { value: unknown; index: number; text?: string };
 type TimelineGroup = { detail: boolean; entries: TimelineEntry[] };
 
 const TimelineItem = memo(function TimelineItem({
@@ -66,12 +67,14 @@ const TimelineItem = memo(function TimelineItem({
   index,
   finished,
   live,
+  text,
   renderItem,
 }: {
   value: unknown;
   index: number;
   finished: boolean;
   live: boolean;
+  text?: string;
   renderItem: TimelineRenderers['renderItem'];
 }) {
   const item = itemObject(value);
@@ -93,11 +96,7 @@ const TimelineItem = memo(function TimelineItem({
       {['failed', 'error'].includes(String(item.status)) && (
         <span className="session-item-status session-item-error">执行失败</span>
       )}
-      {item.type === 'text' ? (
-        <StreamingMarkdown text={typeof item.text === 'string' ? item.text : ''} />
-      ) : (
-        renderItem(value, index)
-      )}
+      {item.type === 'text' ? <StreamingMarkdown text={text ?? ''} /> : renderItem(value, index)}
     </div>
   );
 });
@@ -130,20 +129,38 @@ const TimelineTurnRow = memo(function TimelineTurnRow({
   turn,
   focused,
   live,
+  confirmed,
   renderItem,
   afterTurn,
   actions,
-}: TimelineRenderers & { turn: TimelineTurn; focused: boolean; live: boolean }) {
+}: TimelineRenderers & {
+  turn: TimelineTurn;
+  focused: boolean;
+  live: boolean;
+  confirmed: boolean;
+}) {
   const groups = useMemo(() => {
-    const entries = (turn.items ?? [])
-      .map((value, index) => ({ value, index }))
-      .filter(({ value }) => {
-        const item = itemObject(value);
-        return (
-          item.type !== 'agent_features' &&
-          !(item.type === 'session_event' && sessionEventSchema.safeParse(item.event).success)
-        );
-      });
+    const entries: TimelineEntry[] = [];
+    let hidden = false;
+    for (const [index, value] of (turn.items ?? []).entries()) {
+      const item = itemObject(value);
+      if (
+        item.type === 'agent_features' ||
+        (item.type === 'session_event' && sessionEventSchema.safeParse(item.event).success)
+      ) {
+        hidden = true;
+        continue;
+      }
+      const text =
+        item.type === 'text' ? (typeof item.text === 'string' ? item.text : '') : undefined;
+      const previous = entries.at(-1);
+      // Telemetry can split one Host message into multiple stored text items.
+      // Join only across hidden observations, keeping the first item's key so
+      // completed Markdown blocks, selection and copy state stay mounted.
+      if (hidden && text !== undefined && previous?.text !== undefined) previous.text += text;
+      else entries.push({ value, index, text });
+      hidden = false;
+    }
     // Collapse only adjacent operational entries. Moving every tool to the end
     // changes the meaning of messages written before and after an operation.
     const result: TimelineGroup[] = [];
@@ -155,7 +172,7 @@ const TimelineTurnRow = memo(function TimelineTurnRow({
     }
     return result;
   }, [turn.items, turn.finished]);
-  const renderEntry = ({ value, index }: TimelineEntry) => {
+  const renderEntry = ({ value, index, text }: TimelineEntry) => {
     return (
       <TimelineItem
         key={index}
@@ -163,6 +180,7 @@ const TimelineTurnRow = memo(function TimelineTurnRow({
         index={index}
         finished={turn.finished}
         live={live}
+        text={text}
         renderItem={renderItem}
       />
     );
@@ -181,6 +199,17 @@ const TimelineTurnRow = memo(function TimelineTurnRow({
             {live ? '进行中' : '缓存执行状态'}
           </span>
         )}
+        {confirmed &&
+          turn.finished &&
+          turn.role === 'assistant' &&
+          (turn.status === 'canceled' || turn.status === 'failed') && (
+            <span
+              className={`session-turn-terminal${turn.status === 'failed' ? ' session-item-error' : ''}`}
+              data-terminal={turn.status}
+            >
+              {turn.status === 'canceled' ? '已停止' : '执行失败'}
+            </span>
+          )}
       </div>
       {groups.map((group) =>
         group.detail ? (
@@ -204,6 +233,7 @@ export const SessionTimeline = memo(function SessionTimeline({
   history,
   focusTurnId,
   live = true,
+  confirmed = true,
   renderItem,
   afterTurn,
   actions,
@@ -211,6 +241,7 @@ export const SessionTimeline = memo(function SessionTimeline({
   history: TimelineTurn[];
   focusTurnId?: string;
   live?: boolean;
+  confirmed?: boolean;
 }) {
   const container = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -293,6 +324,7 @@ export const SessionTimeline = memo(function SessionTimeline({
               turn={turn}
               focused={focusTurnId === turn.id}
               live={live}
+              confirmed={confirmed}
               renderItem={renderItem}
               afterTurn={afterTurn}
               actions={actions}

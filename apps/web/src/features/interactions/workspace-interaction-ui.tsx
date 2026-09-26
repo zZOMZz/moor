@@ -9,6 +9,7 @@ import {
   steerStatus,
 } from './interactions';
 import { QuestionPanel, SteerPanel } from './interaction-ui';
+import { STEER_FEATURE } from '@moor/protocol/interaction-protocol';
 
 export function WorkspaceInteractionUI({
   controller,
@@ -16,20 +17,27 @@ export function WorkspaceInteractionUI({
   busy,
   run,
   onDirty,
+  snapshot: suppliedSnapshot,
 }: {
   controller: WorkspaceController;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
   onDirty(value: boolean): void;
+  snapshot?: ReturnType<typeof workspaceInteractionSnapshot>;
 }) {
   const [panel, setPanel] = useState<{ question: string } | { steer: string } | null>(null);
   const [error, setError] = useState('');
   const dirty = useRef(false),
     savingVersion = useRef(0);
-  const snapshot = useMemo(() => workspaceInteractionSnapshot(state), [state.session?.history]);
+  const snapshot = useMemo(
+    () => suppliedSnapshot ?? workspaceInteractionSnapshot(state),
+    [suppliedSnapshot, state.session?.history],
+  );
   const saved =
     state.ledger?.interactions?.[state.sessionId ?? '']?.value ?? emptyInteractionSaved();
+  const composerSteering =
+    state.project?.runtime.features?.includes(STEER_FEATURE) && snapshot.capabilities?.steer;
   const canDismiss =
     saved.pending &&
     (snapshot.finished.includes(saved.pending.request.expectedTurnId) ||
@@ -40,7 +48,18 @@ export function WorkspaceInteractionUI({
             item.expectedTurnId === saved.pending!.request.expectedTurnId &&
             item.status === 'not-injected',
         )));
-  const reason = state.offline ? '执行电脑离线，草稿仍可编辑；重连不会自动提交。' : '';
+  // Local drafts remain usable while the Host is unreachable or refreshing.
+  // Only explicit submissions require a current, durable Host view; the
+  // controller still revalidates the exact scope and active request on click.
+  const reason = state.offline
+    ? '执行电脑离线，草稿仍可编辑；重连不会自动提交。'
+    : state.sessionLoad.status !== 'ready' || !state.session
+      ? '会话尚未同步，草稿仍可编辑；同步后请手动提交。'
+      : state.session.persisted === false || state.session.persistenceError
+        ? '主机尚未确认会话已保存，草稿仍可编辑；恢复后请手动提交。'
+        : state.session.meta.isArchived
+          ? '会话已归档，不能提交交互。'
+          : '';
   const draft = async (task: () => Promise<void>) => {
     const version = ++savingVersion.current;
     dirty.current = true;
@@ -76,10 +95,32 @@ export function WorkspaceInteractionUI({
     panel &&
     'question' in panel &&
     snapshot.questions.find((item) => questionDraftKey(item.request) === panel.question);
+  const recovery = error && (
+    <div role="alert">
+      <p>{error}</p>
+      <p>重新读取会用已保存的草稿替换当前未保存输入。</p>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() =>
+          void perform(async () => {
+            await controller.reloadDraft();
+            dirty.current = false;
+            savingVersion.current++;
+            onDirty(false);
+            setPanel(null);
+            setError('');
+          }).catch(() => setError('无法重新读取交互草稿。当前输入仍保留，请重试。'))
+        }
+      >
+        重新读取交互草稿
+      </button>
+    </div>
+  );
   return (
     <section className="workspace-interactions" aria-label="会话问答与追加">
       <button
-        hidden={!snapshot.activeId && !saved.steerDraft && !saved.pending}
+        hidden={(!snapshot.activeId || composerSteering) && !saved.steerDraft && !saved.pending}
         type="button"
         disabled={busy}
         onClick={() => setPanel({ steer: snapshot.activeId ?? '' })}
@@ -111,41 +152,21 @@ export function WorkspaceInteractionUI({
           <p>交互结果待确认。原请求已保存在本机，重连不会自动重发。</p>
           <button
             type="button"
-            disabled={busy || state.offline}
+            disabled={busy || !!reason}
             onClick={() => run(() => controller.retryInteraction())}
           >
             重试原交互
           </button>
           <button
             type="button"
-            disabled={busy || state.offline || !canDismiss}
+            disabled={busy || !!reason || !canDismiss}
             onClick={() => run(() => controller.dismissInteraction())}
           >
             关闭原交互记录
           </button>
         </div>
       )}
-      {error && (
-        <div role="alert">
-          <p>{error}</p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                await controller.reloadDraft();
-                dirty.current = false;
-                savingVersion.current++;
-                onDirty(false);
-                setPanel(null);
-                setError('');
-              })
-            }
-          >
-            重新读取交互草稿
-          </button>
-        </div>
-      )}
+      {!question && !(panel && 'steer' in panel) && recovery}
       {question && (
         <QuestionPanel
           key={questionDraftKey(question.request)}
@@ -157,6 +178,7 @@ export function WorkspaceInteractionUI({
           busy={busy}
           pending={!!saved.pending}
           reason={reason || (snapshot.capabilities?.questions ? '' : '当前运行时不能回答此问题。')}
+          recovery={recovery}
           onClose={close}
           onDraft={(values) => draft(() => controller.saveQuestionDraft(question.request, values))}
           onAnswer={(answer) => perform(() => controller.answerQuestion(question.request, answer))}
@@ -176,6 +198,7 @@ export function WorkspaceInteractionUI({
           busy={busy}
           pending={saved.pending}
           closed={saved.closed}
+          recovery={recovery}
           onClose={close}
           onDraft={(prompt) => draft(() => controller.saveSteerDraft(prompt))}
           onSubmit={(prompt) => perform(() => controller.steer(panel.steer, prompt))}

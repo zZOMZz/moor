@@ -199,10 +199,16 @@ export type WorkspaceClientState = {
   session?: Session;
   /** Host confirmation and an offline cache commit are independent facts. */
   sessionCache?: { status: 'saving' | 'saved' | 'failed' | 'unavailable'; version?: string };
+  sendProgress?: {
+    sessionId: string;
+    stage: 'preparing' | 'uploading' | 'sending';
+    uploaded?: number;
+    total?: number;
+  };
   offline: boolean;
   sessionLoad:
     | { status: 'idle' }
-    | { status: 'loading-cache' }
+    | { status: 'loading-cache'; showIndicator?: boolean }
     | { status: 'refreshing'; source: 'none' | 'cache' | 'host' }
     | { status: 'ready'; source: 'host' }
     | {
@@ -312,6 +318,16 @@ const withoutSource = <T>(
   delete result[source];
   return result;
 };
+type BufferedDraft = {
+  scope: WorkspaceScope;
+  sessionId: string;
+  text: string;
+  selection: RunSelection;
+  actor?: AttentionActor;
+  failed?: (error: unknown) => void;
+  saved?: () => void;
+  committed?: WorkspaceDraft;
+};
 
 /** Shared browser/desktop controller over the finite local or relay transport. */
 export class WorkspaceController {
@@ -330,15 +346,10 @@ export class WorkspaceController {
   #listeners = new Set<() => void>();
   #draftWrites: Promise<void> = Promise.resolve();
   #interactionWrites: Promise<void> = Promise.resolve();
-  #draftBuffer?: {
-    scope: WorkspaceScope;
-    sessionId: string;
-    text: string;
-    selection: RunSelection;
-    actor?: AttentionActor;
-    failed?: (error: unknown) => void;
-    saved?: () => void;
-  };
+  #draftBuffer?: BufferedDraft;
+  // Keep the latest input addressable while flushDraft has taken it out of the
+  // buffer but its write is still pending. Explicit actions freeze that input.
+  #draftInput?: BufferedDraft;
   #cancelDraftSave?: () => void;
   #sessionViews = new Map<string, SessionView>();
   #sessionViewBytes = 0;
@@ -353,12 +364,14 @@ export class WorkspaceController {
     running?: Promise<void>;
   };
   #sessionFlight?: { generation: number; again: boolean; promise: Promise<void> };
+  #sendFlight?: { generation: number };
   #sessionSyncPending = false;
   #sessionSyncing?: { generation: number; promise: Promise<void> };
   #catalogVersions = { local: 0, remote: 0 };
   #sessionReadVersion = 0;
   #sessionListReadVersion = 0;
   #modelReadVersion = 0;
+  #usageReadGeneration?: number;
   #projectRevisions = new Map<string, number>();
   #sessionPages = new Map<string, { page: WorkspaceSessionPage; scope: string; bytes: number }>();
   #sessionPageBytes = 0;
@@ -920,6 +933,7 @@ export class WorkspaceController {
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;
+    this.#draftInput = undefined;
     this.#discardSessionReplica();
     this.#generation++;
     this.#state = {
@@ -943,6 +957,7 @@ export class WorkspaceController {
     this.#state.project = structuredClone(project);
     this.#state.offline = !project.online;
     const current = this.#current();
+    this.#emit();
     this.#state.ledger = await this.store.read(this.#state.scope, current, []);
     this.#emit();
     await this.refreshSessions();
@@ -1267,7 +1282,6 @@ export class WorkspaceController {
     );
   }
   async openSession(sessionId: string, turnId?: string) {
-    this.#state.usageLoading = false;
     this.#state.modelLoading = false;
     this.#state.searchFocus = undefined;
     this.#state.focusedTurnId = undefined;
@@ -1280,7 +1294,9 @@ export class WorkspaceController {
     this.#discardSessionReplica();
     const replica = this.#replica(scope, sessionId);
     this.#state.sessionId = sessionId;
+    delete this.#state.usageLoading;
     delete this.#state.modelError;
+    delete this.#state.sendProgress;
     const current = this.#current();
     let cancelLoading = () => {};
     if (view) {
@@ -1291,10 +1307,15 @@ export class WorkspaceController {
     } else {
       delete this.#state.session;
       delete this.#state.draft;
-      this.#state.sessionLoad = { status: 'loading-cache' };
+      // Publish the new scope immediately so the previous composer can no
+      // longer accept input. Only the visual loading indicator is delayed.
+      this.#state.sessionLoad = { status: 'loading-cache', showIndicator: false };
+      this.#emit();
       cancelLoading = this.#schedule(SESSION_LOADING_DELAY_MS, () => {
         try {
           current();
+          if (this.#state.sessionLoad.status !== 'loading-cache') return;
+          this.#state.sessionLoad = { status: 'loading-cache', showIndicator: true };
           this.#emit();
         } catch {
           // A newer navigation owns the visible session.
@@ -1642,6 +1663,8 @@ export class WorkspaceController {
       !context.project.runtime.features?.includes(AGENT_CONTROLS_FEATURE)
     )
       return;
+    if (this.#state.usageLoading && this.#usageReadGeneration === this.#generation) return;
+    this.#usageReadGeneration = this.#generation;
     this.#state.usageLoading = true;
     this.#emit();
     try {
@@ -1672,7 +1695,7 @@ export class WorkspaceController {
     const scope = this.#state.scope,
       sessionId = this.#state.sessionId;
     if (!scope || !sessionId || !this.#state.draft) throw Error('请先打开会话。');
-    this.#draftBuffer = {
+    this.#draftInput = this.#draftBuffer = {
       scope: structuredClone(scope),
       sessionId,
       text,
@@ -1727,6 +1750,8 @@ export class WorkspaceController {
           current,
           pending.actor,
         );
+        pending.committed = this.#state.draft;
+        if (this.#draftInput === pending) this.#draftInput = undefined;
         this.#rememberSessionDraft(pending.scope, pending.sessionId);
         current();
       });
@@ -2914,6 +2939,7 @@ export class WorkspaceController {
     await this.flushDraft().catch(() => {});
     current();
     this.#draftBuffer = undefined;
+    this.#draftInput = undefined;
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#state.ledger = await this.store.read(scope, current, sessionId);
@@ -3108,8 +3134,92 @@ export class WorkspaceController {
         ...context.scope.target,
         sessionId: context.sessionId!,
       });
-      await this.refreshSession();
+      try {
+        await this.refreshSession();
+      } catch (cause) {
+        throw new Error('追加已送达，但会话尚未重新同步；请勿重复提交。', { cause });
+      }
     });
+  }
+  /** Explicit composer submission; a later edit is never part of this request. */
+  async steerDraft(expectedTurnId: string, reviewedPrompt: string) {
+    const context = this.#context(),
+      sessionId = context.sessionId,
+      input = this.#draftInput,
+      originalDraft = this.#state.draft;
+    if (!sessionId || !originalDraft) throw Error('请先打开会话。');
+    if (typeof reviewedPrompt !== 'string' || !reviewedPrompt.trim())
+      throw Error('请填写要追加的正文。');
+    if (reviewedPrompt.length > 16000) throw Error('追加正文最多 16000 个字符，请缩短后重试。');
+    if ((input?.text ?? originalDraft.text) !== reviewedPrompt)
+      throw Error('主输入草稿已改变，请重新确认要追加的正文。');
+    if (this.#state.offline || this.#state.sessionLoad.status !== 'ready')
+      throw Error('请先同步当前会话；草稿不会在重连后自动追加。');
+    if (this.#state.ledger?.attachments?.[sessionId]?.items.length)
+      throw Error('回合内追加不能携带附件；附件和正文均保留在草稿中。');
+
+    await this.flushDraft();
+    context.current();
+    // The input object carries the revision written for the click-time input,
+    // including a write already in flight. Never adopt a newer equal-text draft.
+    const revision = input ? input.committed?.revision : originalDraft.revision;
+    let delivered = false;
+    try {
+      await this.#withInteractions(context, async (controller) => {
+        if (controller.steerDraft) throw Error('“回合内追加”面板中还有独立草稿，请先处理该草稿。');
+        const snapshot = await this.#freshInteraction(context, 'steer');
+        if (snapshot.activeId !== expectedTurnId)
+          throw Error('原回合已结束或改变，主输入草稿不会转为新指令。');
+        const ledger = await this.store.read(context.scope, context.current, sessionId);
+        if (ledger.attachments?.[sessionId]?.items.length)
+          throw Error('附件草稿已改变，回合内追加不能携带附件；正文仍保留。');
+        await controller.steer(
+          expectedTurnId,
+          reviewedPrompt,
+          { ...context.scope.target, sessionId },
+          () => {
+            delivered = true;
+          },
+        );
+      });
+    } catch (error) {
+      if (!delivered) throw error;
+      return {
+        delivered: true as const,
+        draftCleared: false,
+        warning: '已追加到原活动回合，但本机确认状态未能更新；主输入草稿未清理，请核查原交互。',
+      };
+    }
+
+    let draftCleared = false,
+      warning: string | undefined;
+    try {
+      context.current();
+      // Persist subsequent typing before the revision CAS. It cannot replace
+      // the reviewed prompt, and the CAS cannot clear that later input.
+      await this.flushDraft();
+      context.current();
+      if (revision !== undefined) {
+        const draft = await this.store.clearDraft(
+          context.scope,
+          sessionId,
+          revision,
+          context.current,
+        );
+        draftCleared = draft.revision === revision + 1 && draft.text === '';
+      }
+      await this.#reloadLedger(context);
+    } catch {
+      warning = '已追加到原活动回合，但本机草稿状态未能更新；请勿重复追加同一正文。';
+    }
+    try {
+      context.current();
+      await this.refreshSession();
+      context.current();
+    } catch {
+      warning ??= '已追加到原活动回合，会话尚未重新同步；请勿重复追加同一正文。';
+    }
+    return { delivered: true as const, draftCleared, ...(warning ? { warning } : {}) };
   }
   async retryInteraction() {
     await this.flushDraft();
@@ -3201,59 +3311,144 @@ export class WorkspaceController {
     );
   }
   async send() {
-    await this.flushDraft();
     const context = this.#context(),
       sessionId = context.sessionId;
     if (!sessionId || !this.#state.draft) throw Error('请先打开会话。');
-    if (!context.project.runtime.features?.includes(SESSION_INTENTS_FEATURE))
-      throw Error('执行电脑不支持新的会话发送接口，请升级主机；草稿未发送。');
-    const draft = structuredClone(this.#state.draft);
+    if (this.#sendFlight?.generation === this.#generation)
+      throw Error('此会话正在准备或发送，请等待本次发送结果。');
+    // Freeze the click before flushDraft can await a write and receive later
+    // input. Only the captured write's committed revision is filled in later.
+    const input = this.#draftInput,
+      draft = structuredClone(
+        input
+          ? { text: input.text, selection: input.selection, revision: this.#state.draft.revision }
+          : this.#state.draft,
+      );
     const mcpRevision = this.#state.ledger?.mcp?.[sessionId]?.cacheRevision ?? 0;
     const taskRevision = this.#state.ledger?.tasks?.[sessionId]?.cacheRevision ?? 0;
     const annotationRevision = this.#state.ledger?.annotations?.[sessionId]?.cacheRevision ?? 0;
     const attachments = structuredClone(
       this.#state.ledger?.attachments?.[sessionId] ?? emptyWorkspaceAttachments(),
     );
-    await this.refreshSession();
-    await this.refreshAgentOptions();
-    context.current();
-    const ledger = await this.store.read(context.scope, context.current, context.sessionId ?? []);
-    if (sessionPendingOperations(ledger, sessionId).length)
-      throw Error('请先核查此会话尚未确认的原操作。');
-    if (this.store.attentionBlocked(ledger, sessionId)) throw Error('请先核查原待办指令或审批。');
-    if (this.store.githubBlocked(ledger, sessionId))
-      throw Error('请先确认 GitHub 原操作，再发送新指令。');
-    if (ledger.git?.[sessionId]?.pending) throw Error('请先确认原 Git 操作，再发送新指令。');
-    if (this.store.forkBlocked(ledger, sessionId)) throw Error('请先核查原 Fork，再发送新指令。');
-    const value = buildSendTurn({
-      scope: { ...context.scope.target, sessionId },
-      read: this.#exportSessionSnapshot(context),
-      agent: this.#state.session!.agent!,
-      prompt: draft.text,
-      selection: draft.selection,
-      operationId: this.#uuid(),
-      turnId: this.#uuid(),
-      attachments: attachments.items.map((item) => item.reference),
-    });
-    await this.store.stage(
-      context.scope,
-      { kind: 'send-turn', value },
-      {
-        sessionId,
-        revision: draft.revision,
-        attachmentRevision: attachments.revision,
-        mcpRevision,
-        taskRevision,
-        annotationRevision,
-      },
-      context.current,
-      undefined,
-      undefined,
-      undefined,
-      true,
-    );
-    await this.#reloadLedger(context);
-    await this.retry(value.operationId);
+    const flight = { generation: this.#generation };
+    this.#sendFlight = flight;
+    this.#state.sendProgress = { sessionId, stage: 'preparing' };
+    this.#emit();
+    try {
+      await this.flushDraft();
+      context.current();
+      if (input) {
+        if (!input.committed) throw Error('发送时的草稿已改变，请确认当前内容后再次发送。');
+        draft.revision = input.committed.revision;
+      }
+      if (!context.project.runtime.features?.includes(SESSION_INTENTS_FEATURE))
+        throw Error('执行电脑不支持新的会话发送接口，请升级主机；草稿未发送。');
+      // This explicit send authorizes only these bytes and options. Later edits
+      // remain a separate draft, including while uploads wait for their receipts.
+      const readAttachments = async () => {
+        const ledger = await this.store.read(context.scope, context.current, sessionId);
+        const current = ledger.attachments?.[sessionId] ?? emptyWorkspaceAttachments();
+        if (
+          current.items.length !== attachments.items.length ||
+          current.items.some((item, index) => {
+            const expected = attachments.items[index]!;
+            return (
+              !same(item.reference, expected.reference) ||
+              item.data !== expected.data ||
+              item.uploaded !== expected.uploaded ||
+              !!item.pending ||
+              !!expected.pending
+            );
+          })
+        )
+          throw Error('附件草稿已改变或原上传尚未确认，请重新读取后继续。');
+        return { ledger, attachments: current };
+      };
+      await this.refreshSession();
+      await this.refreshAgentOptions();
+      context.current();
+      const { ledger } = await readAttachments();
+      if (sessionPendingOperations(ledger, sessionId).length)
+        throw Error('请先核查此会话尚未确认的原操作。');
+      if (this.store.attentionBlocked(ledger, sessionId)) throw Error('请先核查原待办指令或审批。');
+      if (this.store.githubBlocked(ledger, sessionId))
+        throw Error('请先确认 GitHub 原操作，再发送新指令。');
+      if (ledger.git?.[sessionId]?.pending) throw Error('请先确认原 Git 操作，再发送新指令。');
+      if (this.store.forkBlocked(ledger, sessionId)) throw Error('请先核查原 Fork，再发送新指令。');
+      // Validate the fixed prompt, Agent capabilities and idle turn before any upload.
+      const value = buildSendTurn({
+        scope: { ...context.scope.target, sessionId },
+        read: this.#exportSessionSnapshot(context),
+        agent: this.#state.session!.agent!,
+        prompt: draft.text,
+        selection: draft.selection,
+        operationId: this.#uuid(),
+        turnId: this.#uuid(),
+        attachments: attachments.items.map((item) => item.reference),
+      });
+      const uploads = attachments.items.filter((item) => !item.uploaded);
+      if (uploads.length && !context.project.runtime.features?.includes(ATTACHMENTS_FEATURE))
+        throw Error('执行电脑暂不支持附件，请更新主机。');
+      for (const [index, item] of uploads.entries()) {
+        await readAttachments();
+        this.#state.sendProgress = {
+          sessionId,
+          stage: 'uploading',
+          uploaded: index,
+          total: uploads.length,
+        };
+        this.#emit();
+        await this.#performAttachmentAction(
+          context,
+          attachmentActionSchema.parse({
+            contentVersion: 1,
+            operationId: this.#uuid(),
+            workspaceId: context.scope.target.workspaceId,
+            localProjectId: context.scope.target.localProjectId,
+            sessionId,
+            action: 'upload',
+            attachment: item.reference,
+            data: item.data,
+          }),
+        );
+        item.uploaded = true;
+      }
+      // Saving new input never expands the submitted prompt. A failed upload
+      // exits before creating a send operation; reconnect/retry cannot resume it.
+      await this.flushDraft();
+      context.current();
+      const confirmed = await readAttachments();
+      this.#state.sendProgress = { sessionId, stage: 'sending' };
+      this.#emit();
+      await this.store.stage(
+        context.scope,
+        { kind: 'send-turn', value },
+        {
+          sessionId,
+          revision: draft.revision,
+          attachmentRevision: confirmed.attachments.revision,
+          mcpRevision,
+          taskRevision,
+          annotationRevision,
+        },
+        context.current,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+      await this.#reloadLedger(context);
+      await this.#deliverOperation(context, value.operationId);
+      await this.#reloadLedger(context);
+    } finally {
+      if (this.#sendFlight === flight) {
+        this.#sendFlight = undefined;
+        if (!this.#closed && this.#state.sendProgress) {
+          delete this.#state.sendProgress;
+          this.#emit();
+        }
+      }
+    }
   }
   async addAttachments(files: readonly File[], expectedCurrent: () => void = () => {}) {
     await this.flushDraft();
@@ -3367,6 +3562,9 @@ export class WorkspaceController {
       action,
       ...(action === 'upload' ? { attachment: item.reference, data: item.data } : { attachmentId }),
     });
+    return this.#performAttachmentAction(context, value);
+  }
+  async #performAttachmentAction(context: Context, value: z.infer<typeof attachmentActionSchema>) {
     await this.store.stage(
       context.scope,
       { kind: 'attachment', value },
@@ -3374,7 +3572,8 @@ export class WorkspaceController {
       context.current,
     );
     await this.#reloadLedger(context);
-    await this.retry(value.operationId);
+    await this.#deliverOperation(context, value.operationId);
+    await this.#reloadLedger(context);
   }
   async respondPermission(review: SessionPermissionReview, outcome: SessionPermissionOutcome) {
     const context = this.#context();
@@ -3561,6 +3760,7 @@ export class WorkspaceController {
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;
+    this.#draftInput = undefined;
     this.#closed = true;
     this.#discardSessionReplica();
     this.#sessionViews.clear();
