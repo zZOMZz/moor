@@ -72,6 +72,7 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
   } = await import('../../apps/web/src/features/sessions/workspace-navigation');
   const root = createRoot(dom.window.document.getElementById('app')!);
   let refreshing: Promise<void> | undefined;
+  let beforeRefresh = async () => {};
   let more: Promise<boolean> | undefined;
   const openings: { replicaId: string; projectId: string; sessionId: string }[] = [];
   function View({ query = '' }: { query?: string }) {
@@ -128,9 +129,11 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
           },
           onAction() {},
           onCreate() {},
-          onRefresh: (item) => {
-            refreshing = f.controller.refreshProjectSessions(item.source, item.target);
-          },
+          onRefresh: (item) =>
+            (refreshing = (async () => {
+              await beforeRefresh();
+              await f.controller.refreshProjectSessions(item.source, item.target);
+            })()),
         }),
       ),
     );
@@ -215,13 +218,64 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
     assert.equal(reads('project-b').length, 4);
 
     const a = group('project-a');
+    const firstRead = signal(),
+      releaseFirst = signal();
+    t.after(releaseFirst.resolve);
+    f.controls.after = async (request) => {
+      if (request.action === 'execute' && request.target.localProjectId === 'project-a') {
+        firstRead.resolve();
+        await releaseFirst.promise;
+      }
+    };
     await React.act(async () => a.querySelector<HTMLButtonElement>('.workspace-project')!.click());
+    await firstRead.promise;
+    assert.match(a.textContent!, /正在读取会话/);
+    assert.ok(a.querySelector('.workspace-navigation-loading'));
+    await React.act(async () => releaseFirst.resolve());
+    f.controls.after = undefined;
     assert.equal(a.querySelectorAll('ul > li').length, 30);
     assert.deepEqual(
       f.rows,
       originalRows,
       'navigation summaries never sort or mutate shared metadata in place',
     );
+    const backgroundRead = signal(),
+      releaseBackground = signal(),
+      stableRow = a.querySelector('.workspace-session-open'),
+      readCount = reads('project-a').length;
+    t.after(releaseBackground.resolve);
+    f.controls.after = async (request) => {
+      if (request.action === 'execute' && request.target.localProjectId === 'project-a') {
+        backgroundRead.resolve();
+        await releaseBackground.promise;
+      }
+    };
+    f.rows.find((row) => row.id === 'project-a-session-094')!.title = 'Background title update';
+    await React.act(async () =>
+      f.controller.synchronize({
+        source: 'local',
+        connectionId: f.catalog.connectionId,
+        owner: f.catalog.owner,
+        kind: 'changed',
+        deviceId: targets[0]!.target.deviceId,
+        workspaceId: targets[0]!.target.workspaceId,
+      }),
+    );
+    await backgroundRead.promise;
+    await React.act(async () => root.render(React.createElement(View)));
+    assert.equal(a.querySelectorAll('ul > li').length, 30);
+    assert.equal(a.querySelector('.workspace-session-open'), stableRow);
+    assert.equal(a.querySelector('.workspace-session-list')!.getAttribute('aria-busy'), null);
+    assert.equal(a.querySelector('.workspace-navigation-loading'), null);
+    assert.doesNotMatch(a.textContent!, /正在读取|正在刷新/);
+    assert.ok(
+      reads('project-a').length > readCount,
+      'background notifications still read metadata',
+    );
+    await React.act(async () => releaseBackground.resolve());
+    f.controls.after = undefined;
+    assert.equal(a.querySelector('.workspace-session-open'), stableRow);
+    assert.match(a.textContent!, /Background title update/);
     await React.act(async () =>
       a.querySelector<HTMLButtonElement>('.workspace-session-open')!.click(),
     );
@@ -273,10 +327,24 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
     assert.equal(button(a, '在 project-a 中新建对话').disabled, true);
     f.failures.clear();
     const bReads = reads('project-b').length;
+    const manualRefresh = signal(),
+      releaseManual = signal();
+    t.after(releaseManual.resolve);
+    beforeRefresh = async () => {
+      manualRefresh.resolve();
+      await releaseManual.promise;
+    };
     await React.act(async () => {
       button(a, '重新读取').click();
+      await manualRefresh.promise;
+    });
+    assert.match(a.textContent!, /正在读取会话/);
+    assert.equal(a.querySelectorAll('ul > li').length, 60, 'manual refresh also retains its rows');
+    await React.act(async () => {
+      releaseManual.resolve();
       await refreshing;
     });
+    beforeRefresh = async () => {};
     assert.equal(a.querySelectorAll('ul > li').length, 30);
     assert.equal(
       reads('project-b').length,
