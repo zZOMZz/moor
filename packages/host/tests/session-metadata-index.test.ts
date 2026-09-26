@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Flock, mirror, putMeta } from '@moor/session/model';
+import { Flock, metas, mirror, putMeta, vv } from '@moor/session/model';
 import { appendSessionText } from '@moor/session/session-output';
 import { sessionPageRequestSchema } from '@moor/protocol/session-page';
 import { RuntimeStore } from '../src/persistence/store';
@@ -320,4 +320,77 @@ test('text deltas, compaction and unchanged metadata checkpoints retain the proj
   f.store.persist('a', doc);
   doc.free();
   assert.notEqual(f.page().revision, before.revision);
+});
+
+test('session reads inspect only their own metadata and root identity, preserving raw clocks and tombstones', async (t) => {
+  const f = fixture(t);
+  await f.create('a');
+  const selected = 'session-a';
+  putMeta(f.store.meta, selected, { title: 'removed title' });
+  f.store.meta.delete(['m', selected, 'title']);
+  f.store.meta.putWithMeta(['m', selected, 'custom'], 'kept', {
+    metadata: { provenance: 'synthetic' },
+  });
+  f.store.meta.commit();
+  for (let index = 0; index < 1000; index++)
+    putMeta(f.store.meta, `session-a-other-${index}`, { id: `other-${index}`, title: 'unrelated' });
+  const expectedMeta = metas(f.store.meta)[selected];
+  const fullBundle = f.store.meta.exportJson();
+  const expectedBundle = {
+    ...fullBundle,
+    entries: Object.fromEntries(
+      Object.entries(fullBundle.entries).filter(([key]) => {
+        const parts = JSON.parse(key);
+        return parts[1] === selected && ['e', 'm'].includes(parts[0]);
+      }),
+    ),
+  };
+  const doc = f.store.doc('a');
+  f.host.active.set('a', { doc } as never);
+  const base = vv(doc);
+  const rows: number[] = [];
+  let broadScans = 0;
+  const scan = f.store.meta.scan.bind(f.store.meta);
+  t.mock.method(f.store.meta, 'scan', (options: Parameters<Flock['scan']>[0]) => {
+    if (options?.prefix?.[1] !== selected) broadScans++;
+    assert.deepEqual(options?.prefix?.slice(0, 2), [options?.prefix?.[0], selected]);
+    assert.ok(['e', 'm'].includes(String(options?.prefix?.[0])));
+    const result = scan(options);
+    rows.push(result.length);
+    return result;
+  });
+  t.mock.method(f.store.meta, 'exportJson', () => {
+    assert.fail('single-session reads must not export every session');
+  });
+  t.mock.method(doc, 'getList', () => {
+    assert.fail('identity validation must not decode history through a Mirror');
+  });
+  try {
+    const result = await f.host.read('a', base, f.project);
+    assert.deepEqual(result.meta, expectedMeta);
+    assert.deepEqual(
+      result.metaBundle,
+      expectedBundle,
+      'raw export matches the previous complete-export filter',
+    );
+    assert.equal(result.persisted, true);
+    assert.equal(
+      broadScans,
+      0,
+      'optional capability reads must not hide broad scans behind fallback',
+    );
+    assert.ok(rows.every((count) => count <= Object.keys(expectedBundle.entries).length));
+    await assert.rejects(f.host.read('a', base, 'other-project'), /会话不属于该项目副本/);
+    doc.getMap('session').set('id', 'other-session');
+    await assert.rejects(f.host.read('a', base, f.project), /会话文档身份与主机记录不匹配/);
+    doc.getMap('session').delete('id');
+    await assert.rejects(f.host.read('a', base, f.project), /会话文档身份尚未迁移/);
+    doc.getMap('session').set('id', 'a');
+    f.store.meta.delete(['m', selected, 'userId']);
+    f.store.meta.commit();
+    await assert.rejects(f.host.read('a', base, f.project), /会话不属于这台电脑/);
+  } finally {
+    f.host.active.delete('a');
+    doc.free();
+  }
 });
