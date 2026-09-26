@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Flock, LoroDoc, delta, decode, mirror, putMeta } from '@moor/session/model';
+import { Flock, LoroDoc, delta, decode, mirror, putMeta, vv } from '@moor/session/model';
+import { appendSessionText } from '@moor/session/session-output';
 import {
   buildSessionPermission,
+  ClientSessionReplica,
   readClientSession,
   sessionPermissionReviews,
 } from '@moor/client/session-client';
@@ -287,6 +289,78 @@ test('extraction uses the already decoded history and requires no further CRDT i
   const doc = new LoroDoc();
   doc.import(decode(f.raw.update));
   doc.free();
+});
+
+test('shared frozen approval contents serialize once across text snapshots while current authorization facts remain checked', (t) => {
+  const f = fixture((state) => {
+    state.history[1].items[0].rawInput.content = 'x'.repeat(128 * 1024);
+  });
+  t.after(f.close);
+  const replica = new ClientSessionReplica(scope);
+  t.after(() => replica.dispose());
+  let view = replica.read(f.raw);
+  const item = view.history[1].items![0] as Record<string, unknown>;
+  assert.equal(Object.isFrozen(item), true);
+  const stringify = JSON.stringify;
+  let serializations = 0;
+  let counting = false;
+  JSON.stringify = function (value: unknown, ...args: unknown[]) {
+    if (counting && value && typeof value === 'object' && 'toolCallId' in value) serializations++;
+    return Reflect.apply(stringify, JSON, [value, ...args]);
+  } as typeof stringify;
+  try {
+    for (let index = 0; index < 10; index++) {
+      const before = vv(f.doc);
+      appendSessionText(f.doc, scope.sessionId, 'assistant-turn', 'text', `chunk ${index}`);
+      view = replica.read({ ...f.raw, update: delta(f.doc, before) });
+      assert.equal(view.history[1].items![0], item);
+      counting = true;
+      // Navigation and conversation independently request this same review.
+      assert.equal(sessionPermissionReviews(view, scope).length, 1);
+      assert.equal(sessionPermissionReviews(view, scope).length, 1);
+      counting = false;
+    }
+  } finally {
+    JSON.stringify = stringify;
+  }
+  assert.equal(serializations, 1, 'twenty review extractions serialize the unchanged tool once');
+
+  for (const changed of [
+    { ...view, persisted: false },
+    { ...view, persistenceError: 'not confirmed' },
+    { ...view, meta: { ...view.meta, isArchived: true } },
+    { ...view, meta: { ...view.meta, latestUserMsgId: 'different-user-turn' } },
+    { ...view, history: [view.history[0], { ...view.history[1], finished: true }] },
+    { ...view, history: [...view.history, { ...view.history[1], id: 'another-active-turn' }] },
+    { ...view, history: [{ ...view.history[0], items: [item] }, view.history[1]] },
+  ])
+    assert.deepEqual(sessionPermissionReviews(changed, scope), []);
+  for (const key of ['userId', 'machineId', 'localProjectId', 'sessionId'] as const)
+    assert.deepEqual(sessionPermissionReviews(view, { ...scope, [key]: 'different' }), []);
+  assert.equal(
+    sessionPermissionReviews(view, { ...scope, workspaceId: 'another-workspace' })[0].scope
+      .workspaceId,
+    'another-workspace',
+    'cached content never captures an earlier execution scope',
+  );
+  const request = item.permissionRequest as Record<string, unknown>;
+  const answered = Object.freeze({
+    ...item,
+    permissionRequest: Object.freeze({
+      ...request,
+      outcome: Object.freeze({ outcome: 'cancelled' }),
+    }),
+  });
+  assert.deepEqual(
+    sessionPermissionReviews(
+      {
+        ...view,
+        history: [view.history[0], { ...view.history[1], items: [answered] }],
+      },
+      scope,
+    ),
+    [],
+  );
 });
 
 test('review extraction refuses accessor-bearing tool details without evaluating them', (t) => {

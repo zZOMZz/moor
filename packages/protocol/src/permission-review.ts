@@ -12,10 +12,17 @@ export const permissionOutcomeSchema = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('cancelled') }).strict(),
 ]);
 
+// Cache serialization, never an approval decision. Only a fully validated,
+// deeply frozen input can retain the same reviewed contents across snapshots.
+const immutableItemJson = new WeakMap<object, string>();
+
 /** Bound complete tool input before exposing it as review material. No Agent getters/hooks execute. */
 export function permissionItemJson(input: unknown): string {
+  const cached = input && typeof input === 'object' ? immutableItemJson.get(input) : undefined;
+  if (cached !== undefined) return cached;
   let nodes = 0,
-    characters = 0;
+    characters = 0,
+    immutable = true;
   const visit = (value: unknown, depth: number): unknown => {
     if (++nodes > 10000 || depth > 32) throw Error('审批内容超出审阅限制。');
     if (value === null || typeof value === 'boolean') return value;
@@ -26,6 +33,7 @@ export function permissionItemJson(input: unknown): string {
       return value;
     }
     if (!value || typeof value !== 'object') throw Error('审批内容格式不受支持。');
+    if (!Object.isFrozen(value)) immutable = false;
     if (Array.isArray(value)) {
       if (value.length > 10000) throw Error('审批内容超出审阅限制。');
       const array: unknown[] = [];
@@ -53,5 +61,6 @@ export function permissionItemJson(input: unknown): string {
   const result = JSON.stringify(visit(input, 0));
   if (new TextEncoder().encode(result).byteLength > PERMISSION_REVIEW_MAX_BYTES)
     throw Error('审批内容超出审阅限制。');
+  if (immutable && input && typeof input === 'object') immutableItemJson.set(input, result);
   return result;
 }
