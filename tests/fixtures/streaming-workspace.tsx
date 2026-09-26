@@ -194,7 +194,33 @@ const geometry = () => {
       ?.getBoundingClientRect().height,
   };
 };
+const diagnostic = new URLSearchParams(location.search).has('diagnostic');
+const diagnosticGeometry = () => {
+  const viewport = document.querySelector<HTMLElement>('.workspace-history');
+  const input = document.querySelector<HTMLTextAreaElement>('[aria-label="消息"]');
+  if (!viewport) return null;
+  const rect = viewport.getBoundingClientRect();
+  const range = document.caretRangeFromPoint(rect.left + 100, rect.top + rect.height / 2);
+  const preceding = range?.startContainer.textContent?.slice(0, range.startOffset);
+  return {
+    top: viewport.scrollTop,
+    height: viewport.scrollHeight,
+    client: viewport.clientHeight,
+    inputHeight: input?.getBoundingClientRect().height,
+    inputLength: input?.value.length,
+    nearestSequence: [...(preceding?.matchAll(/SEQ:(\d+)/g) ?? [])].at(-1)?.[1],
+    jump: !!document.querySelector('.session-jump-latest'),
+    latestSequence,
+  };
+};
+const describeTarget = (target: EventTarget | null) =>
+  target instanceof Element
+    ? `${target.tagName}.${target.className}[${target.getAttribute('aria-label') ?? ''}]`
+    : String(target);
 Object.assign(window, {
+  __streamDiagnostic(kind: string, value: Record<string, unknown>) {
+    if (diagnostic) record('diagnostic-' + kind, { ...value, ...diagnosticGeometry() });
+  },
   __streamDecoded(version: string) {
     record('decoded', { version, sequence: versionSequence.get(version) });
   },
@@ -236,14 +262,50 @@ Object.assign(window, {
         dpr: devicePixelRatio,
       });
       document.querySelector<HTMLTextAreaElement>('[aria-label="消息"]')?.focus();
-      if (new URLSearchParams(location.search).has('diagnostic'))
-        document
-          .querySelector('.workspace-history')
-          ?.addEventListener(
-            'scroll',
-            (event) => record('diagnostic-scroll', { trusted: event.isTrusted, ...geometry() }),
-            { passive: true },
+      if (diagnostic) {
+        const viewport = document.querySelector('.workspace-history');
+        viewport?.addEventListener(
+          'scroll',
+          (event) =>
+            record('diagnostic-scroll', { trusted: event.isTrusted, ...diagnosticGeometry() }),
+          { passive: true },
+        );
+        for (const type of [
+          'wheel',
+          'touchstart',
+          'touchend',
+          'pointerdown',
+          'pointerup',
+          'keydown',
+          'focusin',
+        ])
+          document.addEventListener(
+            type,
+            (event) =>
+              record('diagnostic-interaction', {
+                type,
+                trusted: event.isTrusted,
+                target: describeTarget(event.target),
+                ...(event instanceof KeyboardEvent ? { key: event.key } : {}),
+                ...(event instanceof WheelEvent ? { deltaY: event.deltaY } : {}),
+                ...(event instanceof PointerEvent ? { x: event.clientX, y: event.clientY } : {}),
+                ...diagnosticGeometry(),
+              }),
+            { capture: true, passive: true },
           );
+        const observer = new ResizeObserver((entries) =>
+          record('diagnostic-resize', {
+            targets: entries.map((entry) => describeTarget(entry.target)),
+            ...diagnosticGeometry(),
+          }),
+        );
+        for (const node of [
+          viewport,
+          document.querySelector('.session-timeline-content'),
+          document.querySelector('[aria-label="消息"]'),
+        ])
+          if (node) observer.observe(node);
+      }
     },
     waitForFinal(version: string) {
       return new Promise<void>((resolve) => {

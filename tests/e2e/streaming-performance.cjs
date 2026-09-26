@@ -151,7 +151,10 @@ app
       name: 'benchmark-commit-signals',
       setup(builder) {
         builder.onLoad(
-          { filter: /\/(?:workspace-app\.tsx|composer-input\.tsx|client-session-replica\.ts)$/ },
+          {
+            filter:
+              /\/(?:workspace-app\.tsx|composer-input\.tsx|client-session-replica\.ts|session-timeline\.tsx)$/,
+          },
           ({ path: file }) => {
             let contents = fs.readFileSync(file, 'utf8');
             const inject = (needle, value) => {
@@ -176,6 +179,32 @@ app
                 'this.#view = view;',
                 'globalThis.__streamDecoded?.(version);this.#view = view;',
               );
+            if (process.env.MOOR_STREAM_DIAGNOSTIC === '1') {
+              if (file.endsWith('/session-timeline.tsx')) {
+                inject(
+                  'node.scrollTop = node.scrollHeight;',
+                  'window.__streamDiagnostic?.("follow-before", {following:following.current,previousTop:lastScrollTop.current});node.scrollTop = node.scrollHeight;window.__streamDiagnostic?.("follow-after", {following:following.current,previousTop:lastScrollTop.current});',
+                );
+                inject(
+                  'const movedUp = node.scrollTop < lastScrollTop.current;',
+                  'const movedUp = node.scrollTop < lastScrollTop.current;window.__streamDiagnostic?.("decision-before", {following:following.current,previousTop:lastScrollTop.current,movedUp,nearBottom});',
+                );
+                inject(
+                  'setAwayFromLatest(!following.current);',
+                  'window.__streamDiagnostic?.("decision-after", {following:following.current,movedUp,nearBottom});setAwayFromLatest(!following.current);',
+                );
+              }
+              if (file.endsWith('/composer-input.tsx')) {
+                inject(
+                  "node.style.height = 'auto';",
+                  'window.__streamDiagnostic?.("composer-before-auto", {});node.style.height = "auto";window.__streamDiagnostic?.("composer-after-auto", {});',
+                );
+                inject(
+                  "node.style.height = node.scrollHeight + 'px';",
+                  'node.style.height = node.scrollHeight + "px";window.__streamDiagnostic?.("composer-after-height", {});',
+                );
+              }
+            }
             return { contents, loader: file.endsWith('.tsx') ? 'tsx' : 'ts' };
           },
         );
