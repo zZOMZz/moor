@@ -139,6 +139,32 @@ test('question outbox restores without sending, validates full receipt and expli
   assert.equal(restored.pending, undefined);
   assert.deepEqual(restored.questionDraft(request), questionDefaults(request));
 });
+test('delivery callbacks require an exact receipt and confirmed cleanup failure never looks like an unsubmitted interaction', async () => {
+  for (const mode of ['wrong', 'success']) {
+    const f = fixture();
+    f.setMode(mode);
+    const controller = new InteractionController(target, {
+      ...f.deps,
+      request: async (path, body) => {
+        const result = await f.deps.request(path, body);
+        if (mode === 'success') f.setFailWrite(true);
+        return result;
+      },
+    });
+    await controller.load();
+    await controller.saveSteerDraft('Reviewed steer');
+    let confirmed = 0;
+    await assert.rejects(
+      controller.steer('turn', 'Reviewed steer', target, () => confirmed++),
+      mode === 'success' ? /交互已送达.*不要重新提交/ : /有效的主机确认/,
+    );
+    assert.equal(confirmed, mode === 'success' ? 1 : 0);
+    assert.equal(controller.steerDraft, 'Reviewed steer');
+    assert.equal(controller.pending?.kind, 'steer');
+    assert.equal(f.calls.length, 1);
+  }
+});
+
 test('no network request without durable original operation, rejected request retains editable draft', async () => {
   const f = fixture(),
     c = f.controller();
@@ -186,7 +212,13 @@ test('receipt cleanup failure retains pending so original delivered operation ca
     },
   });
   f.setMode('success');
-  await assert.rejects(guarded.steer('turn', 'Text', target), /Cleanup failed/);
+  await assert.rejects(guarded.steer('turn', 'Text', target), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /交互已送达.*不要重新提交/);
+    assert.ok(error.cause instanceof Error);
+    assert.equal(error.cause.message, 'Cleanup failed');
+    return true;
+  });
   assert.ok(guarded.pending);
   const original = guarded.pending!.request;
   await guarded.retry(target);

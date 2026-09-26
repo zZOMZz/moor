@@ -147,7 +147,11 @@ export function WorkspaceContentUI({
           await previewFirstChange(current);
         }),
       onDiffFile: (change) => withPanel((current) => current.diffFile(change)),
-      onRefresh: () => withPanel((current) => current.refresh()),
+      onRefresh: () =>
+        withPanel(async (current) => {
+          await current.refresh();
+          await previewFirstChange(current);
+        }),
       onClose: () => {
         panel.current?.close();
         if (opener.current?.isConnected) opener.current.focus();

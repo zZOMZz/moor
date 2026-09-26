@@ -109,6 +109,8 @@ import { attachmentReferenceSchema } from '@moor/protocol/content-protocol';
 import { WorkspaceAttachmentView } from '../features/attachments/workspace-attachment-view';
 import { ATTACHMENTS_FEATURE } from '@moor/protocol/attachment-protocol';
 import { WorkspaceInteractionUI } from '../features/interactions/workspace-interaction-ui';
+import { workspaceInteractionSnapshot } from '../features/interactions/workspace-interactions';
+import { STEER_FEATURE, QUESTION_LIMITS } from '@moor/protocol/interaction-protocol';
 import { WorkspaceSkillsUI } from '../features/skills/workspace-skills-ui';
 import { WorkspaceGitUI } from '../features/git/workspace-git-ui';
 import { WorkspaceForkUI, type WorkspaceForkHandle } from '../features/fork/workspace-fork-ui';
@@ -156,6 +158,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
   controller,
   busy,
   live,
+  confirmed,
   run,
   reviews,
   focusTurnId,
@@ -170,6 +173,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
   controller: WorkspaceController;
   busy: boolean;
   live: boolean;
+  confirmed: boolean;
   run: Run;
   reviews: SessionPermissionReview[];
   focusTurnId?: string;
@@ -284,6 +288,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
     <SessionTimeline
       history={history}
       live={live}
+      confirmed={confirmed}
       focusTurnId={focusTurnId}
       renderItem={renderItem}
       afterTurn={reviews.length ? afterTurn : undefined}
@@ -318,6 +323,10 @@ function WorkspaceConversation({
   const [text, setText] = useState(state.draft?.text ?? ''),
     [selection, setSelection] = useState<RunSelection>(state.draft?.selection ?? {});
   const [saveError, setSaveError] = useState('');
+  const [submissionNotice, setSubmissionNotice] = useState<{
+    message: string;
+    warning: boolean;
+  }>();
   const latestComposer = useRef({ text, selection });
   latestComposer.current = { text, selection };
   const contentPanel = useRef<WorkspaceContentHandle>(null),
@@ -375,6 +384,7 @@ function WorkspaceConversation({
     setText(nextText);
     setSelection(nextSelection);
     setSaveError('');
+    setSubmissionNotice(undefined);
     draftDirty.current = true;
     const version = ++draftVersion.current;
     controller.queueDraft(
@@ -409,6 +419,7 @@ function WorkspaceConversation({
     () => session?.history.filter((turn) => turn.role === 'assistant' && !turn.finished) ?? [],
     [session?.history],
   );
+  const interactions = useMemo(() => workspaceInteractionSnapshot(state), [session?.history]);
   const contextUsage = useMemo(
     () => (session ? latestContextUsage(session.history) : undefined),
     [session?.history],
@@ -432,7 +443,10 @@ function WorkspaceConversation({
           aria-label="正在打开会话"
           aria-busy="true"
         >
-          <img className="moor-logo" src="/moor-logo.png" alt="Moor" width={96} height={32} />
+          {(state.sessionLoad.status !== 'loading-cache' ||
+            state.sessionLoad.showIndicator !== false) && (
+            <img className="moor-logo" src="/moor-logo.png" alt="Moor" width={96} height={32} />
+          )}
         </section>
       );
     return (
@@ -486,25 +500,53 @@ function WorkspaceConversation({
       ? Math.min(100, Math.max(0, (contextUsage.used / contextUsage.size) * 100))
       : undefined;
   const sessionRefreshing = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
-  const sessionWritable = state.sessionLoad.status === 'ready' && !state.offline;
-  const attachmentBlocked = attachments.some(
-    (item) =>
-      !item.uploaded ||
-      item.pending ||
-      attachmentInputReason(item.reference, session.agent?.inputCapabilities),
-  );
+  const sessionWritable =
+    state.sessionLoad.status === 'ready' &&
+    !state.offline &&
+    session.persisted !== false &&
+    !session.persistenceError &&
+    !session.meta.isArchived;
+  const attachmentReason = attachments.length
+    ? !attachmentSupported
+      ? '此执行电脑尚未提供附件能力，请更新主机。'
+      : attachments.some((item) => item.pending)
+        ? '附件结果待确认，请先核查或重试原操作。'
+        : attachments
+            .map((item) => attachmentInputReason(item.reference, session.agent?.inputCapabilities))
+            .find(Boolean)
+    : undefined;
+  const uploadCount = attachments.filter((item) => !item.uploaded).length;
+  const sendProgress =
+    state.sendProgress?.sessionId === state.sessionId ? state.sendProgress : undefined;
+  const savedInteraction = state.ledger?.interactions?.[state.sessionId]?.value;
+  const steerSupported =
+    !!interactions.activeId &&
+    state.project?.runtime.features?.includes(STEER_FEATURE) &&
+    interactions.capabilities?.steer === true;
+  const steerReason = !steerSupported
+    ? `${interactions.capabilities?.steerUnavailableReason || '当前 Agent 不支持运行中追加'}；草稿保留，任务结束后手动发送`
+    : attachments.length
+      ? '运行中追加仅支持文字；附件可保留，任务结束后发送'
+      : text.length > QUESTION_LIMITS.text
+        ? `追加内容最多 ${QUESTION_LIMITS.text} 个字符`
+        : savedInteraction?.steerDraft
+          ? '请先处理“回合内追加”面板中保存的草稿'
+          : pending.length || savedInteraction?.pending || retiredTask
+            ? '上一条操作等待确认'
+            : '';
+  const canSteer = !busy && !saveError && sessionWritable && !!text.trim() && !steerReason;
   const canSend =
     !busy &&
     !saveError &&
     !state.modelError &&
     !validation &&
     (text.trim() || attachments.length) &&
-    !attachmentBlocked &&
+    !attachmentReason &&
     sessionWritable &&
     !pending.length &&
     !retiredTask &&
     !activeTurns.length &&
-    !state.ledger?.interactions?.[state.sessionId]?.value.pending;
+    !savedInteraction?.pending;
   const activityLabel = state.offline
     ? '离线'
     : sessionRefreshing
@@ -518,19 +560,27 @@ function WorkspaceConversation({
             : '';
   const composerStatus = saveError
     ? '草稿保存失败'
-    : state.offline
-      ? '离线草稿 · 连接后手动发送'
-      : sessionRefreshing
-        ? '正在同步会话'
-        : !sessionWritable
-          ? '会话尚未就绪'
-          : reviews.length
-            ? '确认操作后继续'
-            : activeTurns.length
-              ? 'Agent 正在执行，你可以先写下下一条指令'
-              : pending.length
-                ? '上一条操作等待确认'
-                : '';
+    : sendProgress
+      ? sendProgress.stage === 'uploading'
+        ? `正在上传附件 ${sendProgress.uploaded ?? 0}/${sendProgress.total ?? uploadCount}，后续编辑会保留`
+        : sendProgress.stage === 'sending'
+          ? '正在发送，后续编辑会保留'
+          : '正在准备发送'
+      : state.offline
+        ? '离线草稿 · 连接后手动发送'
+        : sessionRefreshing
+          ? '正在同步会话'
+          : !sessionWritable
+            ? '会话尚未就绪'
+            : pending.length || savedInteraction?.pending || retiredTask
+              ? '上一条操作等待确认'
+              : reviews.length
+                ? '确认操作后继续'
+                : submissionNotice && !submissionNotice.warning
+                  ? submissionNotice.message
+                  : activeTurns.length
+                    ? steerReason || '追加到当前任务；模型与权限选择用于下一回合'
+                    : attachmentReason || (uploadCount ? `发送时将上传 ${uploadCount} 个附件` : '');
   return (
     <div
       className="workspace-session-layout"
@@ -767,6 +817,7 @@ function WorkspaceConversation({
           controller={controller}
           busy={busy}
           live={sessionWritable}
+          confirmed={session.persisted !== false && !session.persistenceError}
           run={run}
           reviews={reviews}
           focusTurnId={state.focusedTurnId ?? state.searchFocus?.turnId}
@@ -833,16 +884,31 @@ function WorkspaceConversation({
         <WorkspaceInteractionUI
           controller={controller}
           state={state}
-          busy={busy || !sessionWritable}
+          busy={busy}
           run={run}
           onDirty={onDirty}
+          snapshot={interactions}
         />
         <form
           className="workspace-composer workspace-composer-compact"
           data-empty={!session.history.length}
           onSubmit={(event) => {
             event.preventDefault();
-            if (canSend) run(() => controller.send());
+            if (interactions.activeId) {
+              if (canSteer) {
+                const turnId = interactions.activeId;
+                const prompt = text;
+                const contextRevision = controller.contextRevision;
+                run(async () => {
+                  const result = await controller.steerDraft(turnId, prompt);
+                  if (active.current && controller.contextRevision === contextRevision)
+                    setSubmissionNotice({
+                      message: result.warning ?? '已追加到当前任务',
+                      warning: !!result.warning,
+                    });
+                });
+              }
+            } else if (canSend) run(() => controller.send());
           }}
         >
           <div className="workspace-composer-context" aria-label="执行上下文">
@@ -1139,7 +1205,9 @@ function WorkspaceConversation({
                     context={contextUsage}
                     usage={session.accountUsage}
                     loading={state.usageLoading}
-                    onRead={() => run(() => controller.readUsage())}
+                    onRead={() => {
+                      if (sessionWritable) void controller.readUsage().catch(() => {});
+                    }}
                     triggerLabel="上下文与账号额度"
                   />
                 </div>
@@ -1173,33 +1241,53 @@ function WorkspaceConversation({
                     : undefined
                 }
               />
-              {activeTurns.length === 1 ? (
-                <button
-                  type="button"
-                  className="workspace-compose-submit"
-                  title="停止当前执行"
-                  disabled={busy || !sessionWritable}
-                  onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
-                >
-                  <Square size={14} fill="currentColor" />
-                  <span className="sr-only">停止</span>
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  className="workspace-compose-submit"
-                  title="发送（⌘ / Ctrl + Enter）"
-                  disabled={!canSend}
-                >
-                  <ArrowUp size={18} />
-                  <span className="sr-only">发送</span>
-                </button>
-              )}
+              <div className="workspace-compose-primary">
+                {activeTurns.length === 1 && (
+                  <button
+                    type="button"
+                    className="workspace-compose-submit"
+                    title="停止当前执行"
+                    disabled={busy || !sessionWritable}
+                    onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
+                  >
+                    <Square size={14} fill="currentColor" />
+                    <span className="sr-only">停止</span>
+                  </button>
+                )}
+                {steerSupported && (
+                  <button
+                    type="submit"
+                    className="workspace-compose-steer"
+                    title={steerReason || '追加到当前任务（⌘ / Ctrl + Enter）'}
+                    disabled={!canSteer}
+                  >
+                    追加
+                  </button>
+                )}
+                {!activeTurns.length && (
+                  <button
+                    type="submit"
+                    className="workspace-compose-submit"
+                    title="发送（⌘ / Ctrl + Enter）"
+                    disabled={!canSend}
+                  >
+                    {sendProgress ? (
+                      <RefreshCw className="spin" size={18} aria-hidden="true" />
+                    ) : (
+                      <ArrowUp size={18} />
+                    )}
+                    <span className="sr-only">发送</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
-          {(composerStatus || (contextPercent !== undefined && contextPercent >= 85)) && (
+          {(composerStatus ||
+            submissionNotice?.warning ||
+            (contextPercent !== undefined && contextPercent >= 85)) && (
             <div className="workspace-composer-status" role="status">
               {composerStatus && <span>{composerStatus}</span>}
+              {submissionNotice?.warning && <span>{submissionNotice.message}</span>}
               {contextPercent !== undefined && contextPercent >= 85 && (
                 <span>上下文已使用 {Math.round(contextPercent)}%</span>
               )}
@@ -1328,7 +1416,10 @@ export function WorkspaceApp({
       body = root?.querySelector<HTMLElement>('.workspace-body');
     if (!body) return;
     body.inert = true;
-    root?.querySelector<HTMLButtonElement>('.workspace-sidebar button')?.focus();
+    const target =
+      root?.querySelector<HTMLInputElement>('.workspace-sidebar-search input') ??
+      root?.querySelector<HTMLButtonElement>('.workspace-sidebar button');
+    target?.focus();
     return () => {
       body.inert = false;
       root?.querySelector<HTMLButtonElement>('.workspace-navigation-bar button')?.focus();
@@ -1412,7 +1503,7 @@ export function WorkspaceApp({
     action.current = true;
     setBusy(true);
     setError('');
-    void task()
+    void (async () => task())()
       .catch((reason: unknown) => {
         if (mounted.current) setError(message(reason));
       })
@@ -1426,7 +1517,7 @@ export function WorkspaceApp({
     if (action.current || plainDirty) return false;
     const version = ++navigationAction.current;
     setError('');
-    void task().catch((reason: unknown) => {
+    void (async () => task())().catch((reason: unknown) => {
       if (mounted.current && version === navigationAction.current) setError(message(reason));
     });
     return true;
@@ -1607,6 +1698,8 @@ export function WorkspaceApp({
       style={layout.style}
       data-navigation={navigationOpen ? 'open' : 'closed'}
       onKeyDown={(event) => {
+        if (event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229)
+          return;
         if (
           event.key === 'Escape' &&
           (!(event.target as HTMLElement).closest('[role="dialog"]') ||

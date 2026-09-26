@@ -41,7 +41,7 @@ import {
 import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
 import type { AgentCallbacks, AgentOpenOptions } from '@moor/host/agents/driver';
 import { workspaceInteractionSnapshot } from '../../apps/web/src/features/interactions/workspace-interactions';
-import type { QuestionRequest } from '@moor/protocol/interaction-protocol';
+import { STEER_FEATURE, type QuestionRequest } from '@moor/protocol/interaction-protocol';
 import type { AgentForkInput } from '@moor/host/agents/fork';
 import { syntheticTaskPlan, syntheticTaskGrant } from '../fixtures/task-plan';
 import { workspaceFeatureTarget } from '../../apps/web/src/features/mcp/workspace-mcp';
@@ -839,6 +839,72 @@ test('opening a cached session models refresh separately from actual connectivit
   assert.deepEqual(f.controller.state.sessionLoad, { status: 'ready', source: 'host' });
 });
 
+test('usage refresh deduplicates focus reads and keeps loading scoped across navigation and reconnection', async (t) => {
+  const f = await fixture(t),
+    first = await f.create(),
+    second = await f.create();
+  await f.controller.openSession(first);
+  const firstEntered = signal(),
+    firstRelease = signal(),
+    secondEntered = signal(),
+    secondRelease = signal();
+  let reads = 0;
+  f.fault.after = async (request) => {
+    if (request.action !== 'execute' || request.command.method !== 'agent-usage') return;
+    reads++;
+    if (request.command.params.sessionId === first) {
+      firstEntered.resolve();
+      await firstRelease.promise;
+    } else {
+      secondEntered.resolve();
+      await secondRelease.promise;
+    }
+  };
+  const oldRead = f.controller.readUsage();
+  await firstEntered.promise;
+  await f.controller.readUsage();
+  await f.controller.readUsage(true);
+  assert.equal(reads, 1, 'repeated focus and refresh events share the current scope read');
+  assert.equal(f.controller.state.usageLoading, true);
+
+  await f.controller.openSession(second);
+  assert.equal(f.controller.state.sessionId, second);
+  assert.equal(f.controller.state.usageLoading, undefined);
+  const newRead = f.controller.readUsage();
+  await secondEntered.promise;
+  firstRelease.resolve();
+  await assert.rejects(oldRead, /选择|会话|过期|改变/);
+  assert.equal(f.controller.state.usageLoading, true, 'the old finally cannot clear a new read');
+  secondRelease.resolve();
+  await newRead;
+  assert.equal(f.controller.state.usageLoading, false);
+
+  const retryEntered = signal(),
+    retryRelease = signal();
+  f.fault.after = async (request) => {
+    if (request.action !== 'execute' || request.command.method !== 'agent-usage') return;
+    reads++;
+    if (reads === 3) {
+      retryEntered.resolve();
+      await retryRelease.promise;
+    }
+  };
+  const disconnectedRead = f.controller.readUsage();
+  await retryEntered.promise;
+  f.fault.unavailable = true;
+  await assert.rejects(f.controller.refreshCatalog('local'));
+  f.fault.unavailable = false;
+  await f.controller.refreshCatalog('local');
+  await f.controller.readUsage();
+  assert.equal(reads, 4, 'a replaced connection generation must not inherit the old read lock');
+  assert.equal(f.controller.state.usageLoading, false);
+  const usage = f.controller.state.session!.accountUsage;
+  retryRelease.resolve();
+  await assert.rejects(disconnectedRead, /选择|会话|过期|改变/);
+  assert.equal(f.controller.state.usageLoading, false);
+  assert.deepEqual(f.controller.state.session!.accountUsage, usage);
+});
+
 test('large streamed text uses a conservative warm-view budget without changing durable cache content', async (t) => {
   const f = await fixture(t),
     id = await f.create();
@@ -946,10 +1012,109 @@ test('a fast persisted snapshot avoids the loading screen after controller resta
   unsubscribe();
   assert.deepEqual(scheduled, [{ milliseconds: 120, canceled: true }]);
   assert.equal(
-    observed.some((state) => state.sessionLoad.status === 'loading-cache'),
+    observed.some(
+      (state) => state.sessionLoad.status === 'loading-cache' && state.sessionLoad.showIndicator,
+    ),
     false,
+    'only the visual indicator waits; old editable content is invalidated immediately',
   );
+  assert(observed.some((state) => state.sessionLoad.status === 'loading-cache' && !state.session));
   assert(observed.some((state) => state.sessionLoad.status === 'refreshing' && !!state.session));
+});
+
+test('cold navigation retires the previous editor before cache reads and ignores superseded loading work', async (t) => {
+  const f = await fixture(t),
+    first = await f.create(),
+    second = await f.create(),
+    third = await f.create(),
+    store = new WorkspaceStore(f.memory);
+  const scheduled: Array<{ milliseconds: number; work: () => void; canceled: boolean }> = [];
+  const restored = new WorkspaceController({
+    request: f.request,
+    store,
+    schedule: (milliseconds, work) => {
+      const entry = { milliseconds, work, canceled: false };
+      scheduled.push(entry);
+      return () => {
+        entry.canceled = true;
+      };
+    },
+  });
+  t.after(() => restored.close());
+  await restored.refreshCatalog('local');
+  await restored.selectProject('local', f.catalog.targets[0]!.target);
+  await restored.openSession(first);
+  await restored.saveDraft('Saved first draft', {});
+  let published = restored.state;
+  const unsubscribe = restored.subscribe(() => {
+    published = restored.state;
+  });
+  t.after(unsubscribe);
+
+  restored.queueDraft('Latest first draft', {});
+  f.memory.failWrite = true;
+  await assert.rejects(restored.openSession(second), /storage failure/);
+  assert.equal(published.sessionId, first, 'failed draft persistence keeps the existing editor');
+  assert.equal(restored.state.sessionId, first);
+  f.memory.failWrite = false;
+
+  const entered = signal(),
+    release = signal(),
+    load = store.loadSessionCache.bind(store);
+  store.loadSessionCache = async (...args) => {
+    if (args[1] === second) {
+      entered.resolve();
+      await release.promise;
+    }
+    return load(...args);
+  };
+  const opening = restored.openSession(second);
+  const superseded = assert.rejects(opening, /已改变/);
+  await entered.promise;
+  assert.equal(published.sessionId, second);
+  assert.equal(published.session, undefined, 'the old conversation is no longer published');
+  assert.equal(published.draft, undefined, 'the old draft is no longer presented as editable');
+  assert.deepEqual(published.sessionLoad, { status: 'loading-cache', showIndicator: false });
+  const loading = scheduled.findLast((entry) => entry.milliseconds === 120)!;
+  loading.work();
+  assert.deepEqual(published.sessionLoad, { status: 'loading-cache', showIndicator: true });
+
+  await restored.openSession(third);
+  const thirdView = published;
+  loading.work();
+  assert.equal(published, thirdView, 'an old loading callback cannot change the new selection');
+  release.resolve();
+  await superseded;
+  assert.equal(published.sessionId, third);
+  assert.equal(restored.state.session?.meta.id, third);
+  assert.equal(
+    (await store.readDraft(published.scope!, first, () => {})).text,
+    'Latest first draft',
+  );
+  assert.equal((await store.readDraft(published.scope!, second, () => {})).text, '');
+  assert.equal((await store.readDraft(published.scope!, third, () => {})).text, '');
+  assert.equal(f.prompts(), 0);
+
+  restored.queueDraft('Latest third draft', {});
+  const projectEntered = signal(),
+    projectRelease = signal(),
+    read = store.read.bind(store),
+    originalScope = published.scope!;
+  store.read = async (...args) => {
+    if (Array.isArray(args[2]) && args[2].length === 0) {
+      projectEntered.resolve();
+      await projectRelease.promise;
+    }
+    return read(...args);
+  };
+  const selecting = restored.selectProject('local', f.catalog.targets[0]!.target);
+  await projectEntered.promise;
+  assert.equal(published.sessionId, undefined, 'a project transition also retires its old editor');
+  assert.equal(published.session, undefined);
+  assert.equal(published.draft, undefined);
+  projectRelease.resolve();
+  await selecting;
+  assert.equal((await store.readDraft(originalScope, third, () => {})).text, 'Latest third draft');
 });
 
 test('local recovery failure is distinct from an offline execution computer', async (t) => {
@@ -1045,33 +1210,41 @@ test('embedded version-one drafts migrate out of the reliable Ledger without dat
   });
 });
 
-test('send drains an edit queued while an earlier Draft State commit is in flight', async (t) => {
-  const f = await fixture(t),
-    sessionId = await f.create(),
-    entered = signal(),
-    release = signal();
-  const compareAndSet = f.memory.compareAndSet.bind(f.memory);
-  let delayed = false;
-  f.memory.compareAndSet = async (key, expected, value, current) => {
-    if (!delayed && key.includes('moor-desktop-draft-v1')) {
-      delayed = true;
-      entered.resolve();
-      await release.promise;
-    }
-    return compareAndSet(key, expected, value, current);
-  };
-  f.controller.queueDraft('Earlier UI snapshot', {});
-  const first = f.controller.flushDraft();
-  await entered.promise;
-  const sending = f.controller.send();
-  f.controller.queueDraft('Latest UI snapshot', {});
-  release.resolve();
-  await first;
-  await sending;
-  await f.started.promise;
-  assert.match(JSON.stringify(f.inputs[0]), /Latest UI snapshot/);
-  assert.doesNotMatch(JSON.stringify(f.inputs[0]), /Earlier UI snapshot/);
-  assert.equal((await f.store.readDraft(f.controller.state.scope!, sessionId, () => {})).text, '');
+test('send freezes the clicked draft before buffered or in-flight writes finish and preserves later edits', async (t) => {
+  for (const inFlight of [false, true]) {
+    await t.test(inFlight ? 'write already in flight' : 'input still buffered', async (t) => {
+      const f = await fixture(t),
+        sessionId = await f.create(),
+        entered = signal(),
+        release = signal();
+      const compareAndSet = f.memory.compareAndSet.bind(f.memory);
+      let delayed = false;
+      f.memory.compareAndSet = async (key, expected, value, current) => {
+        if (!delayed && key.includes('moor-desktop-draft-v1')) {
+          delayed = true;
+          entered.resolve();
+          await release.promise;
+        }
+        return compareAndSet(key, expected, value, current);
+      };
+      f.controller.queueDraft('Reviewed at click', {});
+      const first = inFlight ? f.controller.flushDraft() : undefined;
+      if (inFlight) await entered.promise;
+      const sending = f.controller.send();
+      await entered.promise;
+      f.controller.queueDraft('Keep for the next send', {});
+      release.resolve();
+      await first;
+      await sending;
+      await f.started.promise;
+      assert.match(JSON.stringify(f.inputs[0]), /Reviewed at click/);
+      assert.doesNotMatch(JSON.stringify(f.inputs[0]), /Keep for the next send/);
+      assert.equal(
+        (await f.store.readDraft(f.controller.state.scope!, sessionId, () => {})).text,
+        'Keep for the next send',
+      );
+    });
+  }
 });
 
 test('removed composer tools have no callable entry points and plain turns carry no optional authorization', async (t) => {
@@ -1731,6 +1904,264 @@ test('workspace steering is bound to the displayed turn and a restored pending s
   assert.equal(f.prompts(), 1);
 });
 
+test('main composer steering freezes click-time input across queued and in-flight draft writes', async (t) => {
+  for (const phase of ['queued', 'in-flight', 'equal-later-input'] as const) {
+    await t.test(phase, async (t) => {
+      const f = await fixture(t),
+        question = await interactive(f),
+        entered = signal(),
+        release = signal(),
+        save = f.store.saveDraft.bind(f.store),
+        prompt = 'Reviewed composer follow-up';
+      let hold = true;
+      f.store.saveDraft = async (...args) => {
+        if (hold) {
+          hold = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return save(...args);
+      };
+      f.controller.queueDraft(prompt, {});
+      const writing = phase === 'in-flight' ? f.controller.flushDraft() : undefined;
+      if (writing) await entered.promise;
+      const sending = f.controller.steerDraft(question.expectedTurnId, prompt);
+      await entered.promise;
+      const later = phase === 'equal-later-input' ? prompt : 'Keep this subsequent draft';
+      f.controller.queueDraft(later, {});
+      release.resolve();
+      await writing;
+      const result = await sending;
+      assert.deepEqual(result, { delivered: true, draftCleared: false });
+      const sent = f.calls.filter(
+        (input) => input.action === 'execute' && input.command.method === 'steer',
+      );
+      assert.equal(sent.length, 1);
+      assert.equal((sent[0] as any).command.params.prompt, prompt);
+      assert.equal(f.controller.state.draft?.text, later);
+      assert.equal(
+        (await f.store.readDraft(f.controller.state.scope!, question.sessionId, () => {})).text,
+        later,
+      );
+      assert.equal(f.steerCalls(), 1);
+      assert.equal(f.prompts(), 1, 'a composer follow-up never creates another turn');
+    });
+  }
+});
+
+test('main composer steering clears the confirmed original and preserves another page draft revision', async (t) => {
+  const f = await fixture(t),
+    question = await interactive(f);
+  await f.controller.saveDraft('First reviewed follow-up', {});
+  assert.deepEqual(
+    await f.controller.steerDraft(question.expectedTurnId, 'First reviewed follow-up'),
+    {
+      delivered: true,
+      draftCleared: true,
+    },
+  );
+  assert.equal(f.controller.state.draft?.text, '');
+  await f.controller.saveDraft('Second reviewed follow-up', {});
+  const entered = signal(),
+    release = signal();
+  f.fault.after = async (input) => {
+    if (input.action === 'execute' && input.command.method === 'steer') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const sending = f.controller.steerDraft(question.expectedTurnId, 'Second reviewed follow-up');
+  await entered.promise;
+  const scope = f.controller.state.scope!,
+    draft = await f.store.readDraft(scope, question.sessionId, () => {});
+  await f.store.saveDraft(
+    scope,
+    question.sessionId,
+    draft.revision,
+    'Another page draft',
+    {},
+    () => {},
+  );
+  release.resolve();
+  assert.deepEqual(await sending, { delivered: true, draftCleared: false });
+  assert.equal(f.controller.state.draft?.text, 'Another page draft');
+  assert.equal(f.steerCalls(), 2);
+  assert.equal(f.prompts(), 1);
+});
+
+test('main composer steering rejects attachments, independent drafts, stale turns and oversized input', async (t) => {
+  const f = await fixture(t),
+    question = await interactive(f);
+  await f.controller.saveDraft('Main draft', {});
+  await assert.rejects(
+    f.controller.steerDraft(question.expectedTurnId, 'Changed text'),
+    /草稿已改变/,
+  );
+  await assert.rejects(f.controller.steerDraft('another-turn', 'Main draft'), /原回合/);
+  await f.controller.saveSteerDraft('Independent panel draft');
+  await assert.rejects(f.controller.steerDraft(question.expectedTurnId, 'Main draft'), /独立草稿/);
+  assert.equal(
+    f.controller.state.ledger!.interactions![question.sessionId]!.value.steerDraft,
+    'Independent panel draft',
+  );
+  await f.controller.saveSteerDraft('');
+  await f.controller.addAttachments([
+    new File(['Keep the file'], 'kept.txt', { type: 'text/plain' }),
+  ]);
+  await assert.rejects(
+    f.controller.steerDraft(question.expectedTurnId, 'Main draft'),
+    /不能携带附件/,
+  );
+  assert.equal(f.controller.state.ledger!.attachments![question.sessionId]!.items.length, 1);
+  assert.equal(f.controller.state.draft?.text, 'Main draft');
+  const attachment = f.controller.state.ledger!.attachments![question.sessionId]!.items[0]!;
+  await f.controller.removeAttachment(attachment.reference.attachmentId);
+  const long = 'x'.repeat(16001);
+  await f.controller.saveDraft(long, {});
+  await assert.rejects(f.controller.steerDraft(question.expectedTurnId, long), /16000/);
+  assert.equal(f.controller.state.draft?.text, long);
+  await f.controller.stop(question.expectedTurnId);
+  await f.controller.saveDraft('Ended turn stays a draft', {});
+  await assert.rejects(
+    f.controller.steerDraft(question.expectedTurnId, 'Ended turn stays a draft'),
+    /原活动回合已结束/,
+  );
+  assert.equal(f.steerCalls(), 0);
+  assert.equal(f.prompts(), 1);
+});
+
+test('a delivered composer steer remains delivered when local confirmation, draft cleanup or refresh fails', async (t) => {
+  for (const phase of ['confirmation', 'draft-cleanup', 'refresh'] as const) {
+    await t.test(phase, async (t) => {
+      const f = await fixture(t),
+        question = await interactive(f),
+        prompt = 'One delivered follow-up';
+      await f.controller.saveDraft(prompt, {});
+      let delivered = false;
+      f.fault.after = async (input) => {
+        if (input.action === 'execute' && input.command.method === 'steer') {
+          delivered = true;
+          if (phase === 'confirmation') f.memory.failWrite = true;
+        }
+      };
+      if (phase === 'draft-cleanup')
+        f.store.clearDraft = async () => {
+          throw Error('Synthetic draft cleanup failure');
+        };
+      if (phase === 'refresh')
+        f.fault.before = async (input) => {
+          if (delivered && input.action === 'execute' && input.command.method === 'session')
+            throw Error('Synthetic refresh failure');
+        };
+      const result = await f.controller.steerDraft(question.expectedTurnId, prompt);
+      assert.equal(result.delivered, true);
+      assert.match(result.warning!, /已追加到原活动回合/);
+      assert.equal(result.draftCleared, phase === 'refresh');
+      assert.equal(f.controller.state.draft?.text, phase === 'refresh' ? '' : prompt);
+      assert.equal(f.steerCalls(), 1);
+      assert.equal(f.prompts(), 1);
+      if (phase === 'confirmation') {
+        f.memory.failWrite = false;
+        const pending =
+          f.controller.state.ledger!.interactions![question.sessionId]!.value.pending!;
+        assert.equal(pending.kind, 'steer');
+        f.fault.after = undefined;
+        await f.controller.retryInteraction();
+        const sent = f.calls.filter(
+          (input) => input.action === 'execute' && input.command.method === 'steer',
+        );
+        assert.deepEqual(sent[0], sent[1], 'local recovery uses the original confirmed operation');
+        assert.equal(f.steerCalls(), 1);
+        assert.equal(f.controller.state.draft?.text, prompt);
+      }
+    });
+  }
+});
+
+test('an unknown composer steer preserves its exact pending request and is never resent on reopen', async (t) => {
+  const f = await fixture(t),
+    question = await interactive(f),
+    prompt = 'Keep the unknown follow-up';
+  await f.controller.saveDraft(prompt, {});
+  f.fault.after = async (input) => {
+    if (input.action === 'execute' && input.command.method === 'steer')
+      throw Error('Synthetic lost composer steer receipt');
+  };
+  await assert.rejects(f.controller.steerDraft(question.expectedTurnId, prompt), /lost composer/);
+  assert.equal(f.controller.state.draft?.text, prompt);
+  const pending = f.controller.state.ledger!.interactions![question.sessionId]!.value.pending!;
+  assert.equal(pending.kind, 'steer');
+  await f.controller.openSession(question.sessionId);
+  assert.equal(f.steerCalls(), 1);
+  f.fault.after = undefined;
+  await assert.rejects(f.controller.steerDraft(question.expectedTurnId, prompt), /原交互/);
+  await f.controller.retryInteraction();
+  const sent = f.calls.filter(
+    (input) => input.action === 'execute' && input.command.method === 'steer',
+  );
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[0], sent[1]);
+  assert.equal(f.controller.state.draft?.text, prompt);
+  assert.equal(f.steerCalls(), 1);
+});
+
+test('main composer steering cannot follow an asynchronous session switch or an unconfirmed Host view', async (t) => {
+  const f = await fixture(t),
+    other = await f.create(),
+    question = await interactive(f),
+    prompt = 'Bound to the original session';
+  await f.controller.saveDraft(prompt, {});
+  const entered = signal(),
+    release = signal();
+  let hold = true;
+  f.fault.before = async (input) => {
+    if (hold && input.action === 'execute' && input.command.method === 'session') {
+      hold = false;
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const sending = f.controller.steerDraft(question.expectedTurnId, prompt);
+  const rejected = assert.rejects(sending, /已改变/);
+  await entered.promise;
+  await f.controller.openSession(other);
+  release.resolve();
+  await rejected;
+  assert.equal(f.steerCalls(), 0);
+  assert.equal(f.controller.state.sessionId, other);
+  f.fault.before = undefined;
+  let persisted = false,
+    supportsSteer = true;
+  const unconfirmed = new WorkspaceController({
+    request: async (input) => {
+      const response: any = await f.request(input);
+      if (input.action === 'execute' && input.command.method === 'session' && response.ok)
+        return { ...response, value: { ...response.value, persisted } };
+      if (input.action === 'catalog' && response.ok && !supportsSteer)
+        response.value.targets[0].runtime.features =
+          response.value.targets[0].runtime.features.filter(
+            (feature: string) => feature !== STEER_FEATURE,
+          );
+      return response;
+    },
+    store: new WorkspaceStore(f.memory),
+    schedule: () => () => {},
+  });
+  t.after(() => unconfirmed.close());
+  await unconfirmed.refreshCatalog('local');
+  await unconfirmed.selectProject('local', f.catalog.targets[0]!.target);
+  await unconfirmed.openSession(question.sessionId);
+  await assert.rejects(unconfirmed.steerDraft(question.expectedTurnId, prompt), /持久化确认/);
+  assert.equal(unconfirmed.state.draft?.text, prompt);
+  persisted = true;
+  supportsSteer = false;
+  await unconfirmed.refreshCatalog('local');
+  await unconfirmed.openSession(question.sessionId);
+  await assert.rejects(unconfirmed.steerDraft(question.expectedTurnId, prompt), /不支持回合内追加/);
+  assert.equal(unconfirmed.state.draft?.text, prompt);
+  assert.equal(f.steerCalls(), 0);
+});
+
 test('closing an ended interaction preserves its unknown result without starting another turn', async (t) => {
   const f = await fixture(t),
     question = await interactive(f);
@@ -1815,9 +2246,11 @@ test('failed interaction draft persistence blocks submission until the user expl
   assert.equal(f.steerCalls(), 1);
 });
 
-test('workspace attachments remain local until upload, then send their exact bytes without requiring text', async (t) => {
+test('workspace attachments remain local until explicit send uploads their exact bytes without requiring text', async (t) => {
   const f = await fixture(t),
     id = await f.create();
+  f.fault.unavailable = true;
+  await assert.rejects(f.controller.refreshCatalog('local'));
   await f.controller.addAttachments([
     new File(['Synthetic attachment'], 'notes.txt', { type: 'text/plain' }),
   ]);
@@ -1837,15 +2270,244 @@ test('workspace attachments remain local until upload, then send their exact byt
     ).length,
     0,
   );
-  await assert.rejects(f.controller.send(), /附件草稿/);
-  await f.controller.uploadAttachment(item.reference.attachmentId);
-  assert.equal(f.controller.state.ledger!.attachments![id]!.items[0]!.uploaded, true);
+  await assert.rejects(f.controller.send(), /重新连接/);
+  f.fault.unavailable = false;
+  await f.controller.refreshCatalog('local');
+  await f.controller.openSession(id);
+  assert.equal(
+    f.calls.filter(
+      (call) => call.action === 'execute' && call.command.method === 'attachment-action',
+    ).length,
+    0,
+    'reconnection and restoration never upload local attachments',
+  );
   await f.controller.send();
   await f.started.promise;
   assert.equal(f.prompts(), 1);
   assert.equal(f.controller.state.ledger!.attachments![id]!.items.length, 0);
   assert.deepEqual(f.inputs[0].attachments, [item.reference]);
   assert.deepEqual(f.inputs[0].attachmentData, [{ reference: item.reference, data: item.data }]);
+});
+
+test('sending uploads the reviewed files in order, preserves later input and rejects duplicate sends', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  await f.controller.saveDraft('Send this reviewed prompt', { modelId: 'model-a' });
+  await f.controller.addAttachments([
+    new File(['first bytes'], 'first.txt', { type: 'text/plain' }),
+    new File(['second bytes'], 'second.txt', { type: 'text/plain' }),
+  ]);
+  const reviewed = f.controller.state.ledger!.attachments![id]!.items;
+  const entered = signal(),
+    release = signal();
+  f.fault.after = async (request) => {
+    if (
+      request.action === 'execute' &&
+      request.command.method === 'attachment-action' &&
+      request.command.params.action === 'upload' &&
+      request.command.params.attachment.attachmentId === reviewed[0]!.reference.attachmentId
+    ) {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const progress: WorkspaceClientState['sendProgress'][] = [];
+  const unsubscribe = f.controller.subscribe(() => {
+    progress.push(f.controller.state.sendProgress);
+  });
+  t.after(unsubscribe);
+  const sending = f.controller.send();
+  await entered.promise;
+  assert.deepEqual(f.controller.state.sendProgress, {
+    sessionId: id,
+    stage: 'uploading',
+    uploaded: 0,
+    total: 2,
+  });
+  await assert.rejects(f.controller.send(), /正在准备或发送/);
+  f.controller.queueDraft('Keep this next prompt', {});
+  release.resolve();
+  await sending;
+  await f.started.promise;
+  assert.equal(f.prompts(), 1);
+  assert.deepEqual(
+    f.inputs[0].attachments,
+    reviewed.map((item) => item.reference),
+  );
+  assert.deepEqual(
+    f.inputs[0].attachmentData,
+    reviewed.map((item) => ({ reference: item.reference, data: item.data })),
+  );
+  const sent = f.calls.find(
+    (request) => request.action === 'execute' && request.command.method === 'send-turn',
+  )!;
+  assert(sent.action === 'execute' && sent.command.method === 'send-turn');
+  assert.equal(sent.command.params.prompt, 'Send this reviewed prompt');
+  assert.equal(sent.command.params.selection.modelId, 'model-a');
+  assert.equal(f.controller.state.draft?.text, 'Keep this next prompt');
+  assert.equal(
+    (await f.store.readDraft(f.controller.state.scope!, id, () => {})).text,
+    'Keep this next prompt',
+  );
+  assert(progress.some((item) => item?.stage === 'uploading' && item.uploaded === 1));
+  assert(progress.some((item) => item?.stage === 'sending'));
+  assert.equal(f.controller.state.sendProgress, undefined);
+});
+
+test('an unknown upload interrupts send; reopen and original retry never submit its prompt', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  await f.controller.saveDraft('Only send after explicit recovery', {});
+  await f.controller.addAttachments([new File(['unknown'], 'unknown.txt', { type: 'text/plain' })]);
+  f.fault.after = async (request) => {
+    if (request.action === 'execute' && request.command.method === 'attachment-action')
+      throw Error('Synthetic lost upload receipt');
+  };
+  await assert.rejects(f.controller.send(), /lost upload receipt/);
+  assert.equal(f.controller.state.sendProgress, undefined);
+  const pending = f.controller.state.ledger!.operations.find(
+    (entry) => entry.status === 'pending',
+  )!;
+  assert.equal(pending.original.kind, 'attachment');
+  assert.equal(
+    f.controller.state.ledger!.operations.some((entry) => entry.original.kind === 'send-turn'),
+    false,
+  );
+  await f.controller.openSession(id);
+  assert.equal(f.prompts(), 0);
+  f.fault.after = undefined;
+  await f.controller.retry(pending.original.value.operationId);
+  const uploads = f.calls.filter(
+    (request) => request.action === 'execute' && request.command.method === 'attachment-action',
+  );
+  assert.equal(uploads.length, 2);
+  assert.deepEqual(uploads[0], uploads[1], 'manual recovery reuses the exact upload operation');
+  assert.equal(f.prompts(), 0, 'recovering an upload cannot resume an earlier send');
+  assert.equal(f.controller.state.draft?.text, 'Only send after explicit recovery');
+  await f.controller.send();
+  await f.started.promise;
+  assert.equal(f.prompts(), 1);
+  assert.equal(
+    f.calls.filter(
+      (request) => request.action === 'execute' && request.command.method === 'attachment-action',
+    ).length,
+    2,
+  );
+});
+
+test('changes to another page attachment selection during upload do not expand the send authorization', async (t) => {
+  for (const change of ['add', 'remove', 'replace', 'reorder'] as const) {
+    await t.test(change, async (t) => {
+      const f = await fixture(t),
+        id = await f.create();
+      await f.controller.saveDraft('Reviewed prompt', {});
+      await f.controller.addAttachments([
+        new File(['first'], 'first.txt', { type: 'text/plain' }),
+        new File(['second'], 'second.txt', { type: 'text/plain' }),
+      ]);
+      const entered = signal(),
+        release = signal();
+      f.fault.after = async (request) => {
+        if (request.action === 'execute' && request.command.method === 'attachment-action') {
+          entered.resolve();
+          await release.promise;
+        }
+      };
+      const sending = f.controller.send();
+      const rejected = assert.rejects(sending, /附件草稿/);
+      await entered.promise;
+      const scope = f.controller.state.scope!,
+        current = (await f.store.read(scope, () => {}, id)).attachments![id]!,
+        extra = await createAttachmentDraftItem(
+          new File(['other page'], 'other.txt', { type: 'text/plain' }),
+          'other-page-attachment',
+        );
+      const items =
+        change === 'add'
+          ? [...current.items, extra]
+          : change === 'remove'
+            ? current.items.slice(0, 1)
+            : change === 'replace'
+              ? [current.items[0]!, extra]
+              : [...current.items].reverse();
+      await f.store.saveAttachments(scope, id, current.revision, items, () => {});
+      release.resolve();
+      await rejected;
+      assert.equal(f.prompts(), 0);
+      assert.equal(
+        f.calls.filter(
+          (request) => request.action === 'execute' && request.command.method === 'send-turn',
+        ).length,
+        0,
+      );
+      assert.equal(f.controller.state.draft?.text, 'Reviewed prompt');
+      assert.equal(f.controller.state.sendProgress, undefined);
+    });
+  }
+});
+
+test('a late upload from a previous selection cannot block or clear the new session send', async (t) => {
+  const f = await fixture(t),
+    first = await f.create(),
+    second = await f.create();
+  await f.controller.openSession(first);
+  await f.controller.addAttachments([new File(['first'], 'first.txt', { type: 'text/plain' })]);
+  const uploadEntered = signal(),
+    uploadRelease = signal(),
+    sendEntered = signal(),
+    sendRelease = signal();
+  f.fault.after = async (request) => {
+    if (request.action !== 'execute') return;
+    if (request.command.method === 'attachment-action') {
+      uploadEntered.resolve();
+      await uploadRelease.promise;
+    } else if (request.command.method === 'send-turn') {
+      sendEntered.resolve();
+      await sendRelease.promise;
+    }
+  };
+  const oldSend = f.controller.send();
+  const rejected = assert.rejects(oldSend, /已改变/);
+  await uploadEntered.promise;
+  await f.controller.openSession(second);
+  assert.equal(f.controller.state.sendProgress, undefined);
+  await f.controller.saveDraft('New session prompt', {});
+  const newSend = f.controller.send();
+  await sendEntered.promise;
+  uploadRelease.resolve();
+  await rejected;
+  assert.deepEqual(f.controller.state.sendProgress, { sessionId: second, stage: 'sending' });
+  sendRelease.resolve();
+  await newSend;
+  await f.started.promise;
+  assert.equal(f.prompts(), 1);
+  assert.equal(f.controller.state.sendProgress, undefined);
+});
+
+test('an invalidated upload clears its own progress after a connection failure', async (t) => {
+  const f = await fixture(t),
+    id = await f.create(),
+    entered = signal(),
+    release = signal();
+  await f.controller.addAttachments([new File(['first'], 'first.txt', { type: 'text/plain' })]);
+  f.fault.after = async (request) => {
+    if (request.action === 'execute' && request.command.method === 'attachment-action') {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const sending = f.controller.send();
+  const rejected = assert.rejects(sending, /已改变/);
+  await entered.promise;
+  assert.equal(f.controller.state.sendProgress?.stage, 'uploading');
+  f.fault.unavailable = true;
+  await assert.rejects(f.controller.refreshCatalog('local'));
+  assert.equal(f.controller.state.sessionId, id);
+  assert.equal(f.controller.state.offline, true);
+  release.resolve();
+  await rejected;
+  assert.equal(f.controller.state.sendProgress, undefined);
+  assert.equal(f.prompts(), 0);
 });
 
 test('lost attachment receipts retain an immutable original; reopening never uploads, and manual inspect confirms it', async (t) => {

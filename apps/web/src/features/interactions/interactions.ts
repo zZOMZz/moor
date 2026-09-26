@@ -236,7 +236,12 @@ export class InteractionController {
       false,
     );
   }
-  steer(expectedTurnId: string, prompt: string, target: InteractionTarget) {
+  steer(
+    expectedTurnId: string,
+    prompt: string,
+    target: InteractionTarget,
+    onDelivered?: () => void,
+  ) {
     const payload = steerRequestSchema.parse({
       workspaceId: this.scope.workspaceId,
       localProjectId: this.scope.localProjectId,
@@ -256,13 +261,19 @@ export class InteractionController {
       },
       target,
       false,
+      onDelivered,
     );
   }
   retry(target: InteractionTarget) {
     if (!this.pending) throw new Error('没有待确认交互。');
     return this.deliver(this.pending, target, true);
   }
-  private async deliver(operation: PendingInteraction, target: InteractionTarget, retry: boolean) {
+  private async deliver(
+    operation: PendingInteraction,
+    target: InteractionTarget,
+    retry: boolean,
+    onDelivered?: () => void,
+  ) {
     if (this.busy || (!retry && this.pending)) throw new Error('请先确认或关闭原交互记录。');
     const original = pendingInteractionSchema.parse(routeInteraction(operation, target));
     if (interactionKey(interactionScope(original)) !== interactionKey(this.scope))
@@ -300,16 +311,23 @@ export class InteractionController {
           (!('requestId' in parsed.data) || parsed.data.requestId !== original.request.requestId))
       )
         throw new Error('交互尚未获得有效的主机确认，请手动重试原请求。');
-      await this.save((previous) => {
-        const drafts = { ...previous.drafts };
-        if (original.kind === 'question') delete drafts[questionDraftKey(original.request)];
-        return {
-          ...previous,
-          pending: undefined,
-          drafts,
-          steerDraft: original.kind === 'steer' ? '' : previous.steerDraft,
-        };
-      });
+      onDelivered?.();
+      try {
+        await this.save((previous) => {
+          const drafts = { ...previous.drafts };
+          if (original.kind === 'question') delete drafts[questionDraftKey(original.request)];
+          return {
+            ...previous,
+            pending: undefined,
+            drafts,
+            steerDraft: original.kind === 'steer' ? '' : previous.steerDraft,
+          };
+        });
+      } catch (cause) {
+        throw new Error('交互已送达，但本机确认状态未能更新；请核查原交互，不要重新提交。', {
+          cause,
+        });
+      }
       return parsed.data;
     } finally {
       this.busy = false;

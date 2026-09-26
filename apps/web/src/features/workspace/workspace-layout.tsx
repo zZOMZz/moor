@@ -109,6 +109,9 @@ export function WorkspaceToolMenu({
     };
     const escape = (event: KeyboardEvent) => {
       if (
+        !event.defaultPrevented &&
+        !event.isComposing &&
+        event.keyCode !== 229 &&
         event.key === 'Escape' &&
         element.current?.open &&
         element.current.contains(document.activeElement)

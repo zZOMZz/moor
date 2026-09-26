@@ -399,3 +399,196 @@ test('content snapshots stay immutable and shared while updates and lost binding
   panel.close();
   assert.equal(notifications.length, count);
 });
+
+test('refresh verifies new current bytes and cannot publish a late file into a different content view', async () => {
+  let text: string | null = 'old';
+  let entries: ProjectTreeResult['entries'] = [
+    { path: 'folder', type: 'directory', size: 0 },
+    { path: 'a.txt', type: 'file', size: 3 },
+  ];
+  let release: (() => void) | undefined;
+  let fileStarted: (() => void) | undefined;
+  let gate: Promise<void> | undefined;
+  const reads: string[] = [];
+  const panel = new ProjectContentController<ProjectContentTarget>({
+    context: () => ({ target, online: true, generation: 0 }),
+    parseTarget: (input) => input as ProjectContentTarget,
+    contentTarget: (value) => value,
+    cache: { read: async () => undefined, writeBatch: async () => {} },
+    request: async (_target, method, params) => {
+      reads.push(method);
+      if (method === 'read-project-tree') {
+        const offset = (params as { offset?: number }).offset ?? 0;
+        return {
+          ...firstTree,
+          version: hash(JSON.stringify(entries)),
+          offset,
+          entries: entries.slice(offset, offset + 1),
+          nextOffset: offset + 1 < entries.length ? offset + 1 : undefined,
+          total: entries.length,
+        };
+      }
+      if (method === 'read-turn-diff') return summary;
+      assert.equal(method, 'file-content');
+      fileStarted?.();
+      await gate;
+      if (text === null) throw Error('所选文件已被删除。');
+      return {
+        ...scope,
+        confirmed: true,
+        path: 'a.txt',
+        content: {
+          version: hash(text),
+          byteLength: Buffer.byteLength(text),
+          mediaType: 'text/plain',
+        },
+        status: 'content',
+        encoding: 'base64',
+        data: Buffer.from(text).toString('base64'),
+      };
+    },
+  });
+  await panel.open('tree', [{ id: 'turn', label: 'turn', reference }]);
+  await panel.treeMore();
+  await panel.file('a.txt', 3);
+  const tree = panel.state!.tree;
+  text = 'fresh current file';
+  entries = [{ path: 'new.txt', type: 'file', size: 3 }, entries[1]!];
+  await panel.refresh();
+  assert.equal(panel.state!.currentFile!.text, text);
+  assert.equal(panel.state!.currentFile!.result.content.version, hash(text));
+  assert.notStrictEqual(panel.state!.tree, tree);
+  assert.deepEqual(
+    panel.state!.tree!.result.entries.map((entry) => entry.path),
+    ['new.txt', 'a.txt'],
+  );
+  assert.equal(
+    reads.filter((method) => method === 'read-project-tree').length,
+    4,
+    'refresh replays loaded pages with the new tree version',
+  );
+  entries = [entries[0]!, { path: 'newer.txt', type: 'file', size: 3 }, entries[1]!];
+  await panel.refresh();
+  assert.equal(
+    panel.state!.tree!.result.entries.length,
+    2,
+    'refresh does not enumerate beyond the loaded range',
+  );
+  assert.equal(
+    panel.state!.currentFile!.result.path,
+    'a.txt',
+    'a path shifted to a later page is still reverified by Host',
+  );
+  entries = entries.slice(0, 2);
+  text = null;
+  await panel.refresh();
+  assert.equal(panel.state!.currentFile, undefined);
+  assert.equal(panel.state!.currentUnavailable!.path, 'a.txt');
+  assert.match(panel.state!.error!, /删除/);
+  assert.deepEqual(
+    panel.state!.tree!.result.entries.map((entry) => entry.path),
+    ['new.txt', 'newer.txt'],
+  );
+  entries = [{ path: 'a.txt', type: 'file', size: 1024 * 1024 + 1 }];
+  const fileReads = reads.filter((method) => method === 'file-content').length;
+  await panel.refresh();
+  assert.match(panel.state!.currentUnavailable!.message, /1 MiB/);
+  assert.equal(panel.state!.currentFile, undefined);
+  assert.equal(
+    reads.filter((method) => method === 'file-content').length,
+    fileReads,
+    'known oversized files are not downloaded',
+  );
+
+  entries = [{ path: 'a.txt', type: 'file', size: 3 }];
+  text = 'new';
+  await panel.open('tree', [{ id: 'turn', label: 'turn', reference }]);
+  await panel.file('a.txt', 3);
+
+  gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    fileStarted = resolve;
+  });
+  const pending = panel.refresh();
+  assert.equal(
+    panel.state!.currentFile,
+    undefined,
+    'unverified old bytes are not available to quote',
+  );
+  await started;
+  await panel.setMode('changes');
+  release!();
+  await pending;
+  assert.equal(panel.state!.mode, 'changes');
+  assert.equal(panel.state!.currentFile, undefined);
+  assert.equal(panel.state!.diff!.result.reference!.version, reference.version);
+});
+
+test('refresh keeps the selected frozen diff and rejects replacement versions or a changed scope', async () => {
+  let generation = 0;
+  let replaceVersion = false;
+  let gate: Promise<void> | undefined;
+  let release: (() => void) | undefined;
+  const secondChange = {
+    ...change,
+    path: 'b.txt',
+    before: { ...before, path: 'b.txt' },
+    after: { ...after, path: 'b.txt' },
+  };
+  const selectedReference = { ...reference, changeCount: 2 };
+  const panel = new ProjectContentController<ProjectContentTarget>({
+    context: () => ({ target, online: true, generation }),
+    parseTarget: (input) => input as ProjectContentTarget,
+    contentTarget: (value) => value,
+    cache: { read: async () => undefined, writeBatch: async () => {} },
+    request: async (_target, method, params) => {
+      if (method === 'read-turn-diff') {
+        await gate;
+        return {
+          ...summary,
+          reference: replaceVersion
+            ? { ...selectedReference, version: hash('replacement') }
+            : selectedReference,
+          changes: [change, secondChange],
+        };
+      }
+      assert.equal(method, 'read-diff-file');
+      assert.equal((params as { path: string }).path, 'b.txt');
+      return {
+        ...diffFile,
+        path: 'b.txt',
+        reference: selectedReference,
+        before: { ...diffFile.before!, path: 'b.txt' },
+        after: { ...diffFile.after!, path: 'b.txt' },
+      };
+    },
+  });
+  await panel.open('changes', [{ id: 'turn', label: 'turn', reference: selectedReference }]);
+  await panel.diffFile(secondChange);
+  await panel.refresh();
+  assert.equal(panel.state!.diffFile!.result.path, 'b.txt');
+  assert.equal(panel.state!.diffFile!.result.reference.version, selectedReference.version);
+
+  replaceVersion = true;
+  await panel.refresh();
+  assert.match(panel.state!.error!, /版本不匹配/);
+  assert.equal(
+    panel.state!.diffFile,
+    undefined,
+    'failed refresh exposes no old or replacement quote',
+  );
+  replaceVersion = false;
+  await panel.open('changes', [{ id: 'turn', label: 'turn', reference: selectedReference }]);
+  await panel.diffFile(secondChange);
+  gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const pending = panel.refresh();
+  generation++;
+  panel.sync();
+  release!();
+  await pending;
+  assert.equal(panel.state, null, 'a refresh cannot resurrect content after navigation');
+});

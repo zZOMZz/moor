@@ -145,6 +145,7 @@ test('packaged workspace opens local projects without an account and preserves d
             'session-mcp-v1',
             'git-worktree-v1',
             'session-fork-v1',
+            'steer-v1',
           ],
         },
       },
@@ -182,6 +183,7 @@ test('packaged workspace opens local projects without an account and preserves d
   let contextRevision = 0;
   let hold: Promise<void> | undefined;
   let sessionRefresh: Promise<void> | undefined;
+  let usageRead: Promise<void> | undefined;
   let bufferedDraft: { text: string; selection: object; saved?: () => void } | undefined;
   let attachmentsSaved!: () => void;
   const attachmentSaved = new Promise<void>((resolve) => {
@@ -335,6 +337,14 @@ test('packaged workspace opens local projects without an account and preserves d
     },
     async refreshAgentOptions() {
       calls.push('models');
+    },
+    async readUsage() {
+      calls.push('usage:read');
+      state.usageLoading = true;
+      emit();
+      await usageRead;
+      state.usageLoading = false;
+      emit();
     },
     async openFork(changed: () => void) {
       const value = {
@@ -685,6 +695,13 @@ test('packaged workspace opens local projects without an account and preserves d
     },
     async steer(turnId: string, prompt: string) {
       calls.push('steer:' + turnId + ':' + prompt);
+    },
+    async steerDraft(turnId: string, prompt: string) {
+      calls.push('composer-steer:' + turnId + ':' + prompt);
+      await flushBufferedDraft();
+      state.draft = { ...state.draft!, revision: state.draft!.revision + 1, text: '' };
+      emit();
+      return { delivered: true, draftCleared: true };
     },
     async addAttachments(files: File[]) {
       calls.push('attachments:add');
@@ -1277,7 +1294,34 @@ test('packaged workspace opens local projects without an account and preserves d
       await attachmentSaved;
     });
     assert.equal(calls.filter((value) => value.startsWith('attachment:upload')).length, 0);
-    assert.equal(visibleButton('发送').disabled, true);
+    assert.equal(visibleButton('发送').disabled, false, 'explicit Send prepares local attachments');
+    assert.match(
+      dom.window.document.querySelector('.workspace-composer-status')!.textContent!,
+      /发送时将上传 1 个附件/,
+    );
+    await act(async () => {
+      state.sendProgress = {
+        sessionId: state.sessionId!,
+        stage: 'uploading',
+        uploaded: 0,
+        total: 1,
+      };
+      emit();
+    });
+    assert(visibleButton('发送').querySelector('svg.spin'));
+    assert.match(
+      dom.window.document.querySelector('.workspace-composer-status')!.textContent!,
+      /正在上传附件 0\/1/,
+    );
+    assert.equal(
+      dom.window.document.querySelector<HTMLTextAreaElement>('.workspace-composer textarea')!
+        .disabled,
+      false,
+    );
+    await act(async () => {
+      delete state.sendProgress;
+      emit();
+    });
     const attachmentPanel = dom.window.document.querySelector('.workspace-attachments')!;
     assert.match(attachmentPanel.textContent!, /draft.txt/);
     assert.equal(attachmentPanel.querySelector('script'), null);
@@ -1364,7 +1408,14 @@ test('packaged workspace opens local projects without an account and preserves d
       emit();
     });
     await act(async () => visibleButton('等待回答 · Agent 问题').click());
+    await act(async () => {
+      state.offline = true;
+      state.sessionLoad = { status: 'failed', source: 'cache', reason: 'connection' };
+      emit();
+    });
     const answerInput = dom.window.document.getElementById('agent-question-0')!;
+    assert.equal((answerInput as HTMLTextAreaElement).disabled, false);
+    assert.equal(visibleButton('提交回答').disabled, true);
     await act(async () => {
       Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, 'value')!.set!.call(
         answerInput,
@@ -1373,6 +1424,33 @@ test('packaged workspace opens local projects without an account and preserves d
       answerInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     });
     assert(calls.includes('question:draft'));
+    await act(async () => visibleButton('关闭').click());
+    assert.equal(dom.window.document.querySelector('.interaction-dialog'), null);
+    assert.equal(calls.filter((value) => value === 'question:answer').length, 0);
+    await act(async () => visibleButton('等待回答 · Agent 问题').click());
+    assert.equal(
+      (dom.window.document.getElementById('agent-question-0') as HTMLTextAreaElement).value,
+      'green',
+      'offline drafts survive closing and reopening the actual workspace panel',
+    );
+    await act(async () => {
+      state.offline = false;
+      state.sessionLoad = { status: 'refreshing', source: 'cache' };
+      emit();
+    });
+    assert.equal(visibleButton('提交回答').disabled, true, 'a cached view cannot submit');
+    const persisted = state.session!.persisted;
+    await act(async () => {
+      state.sessionLoad = { status: 'ready', source: 'host' };
+      state.session!.persisted = false;
+      emit();
+    });
+    assert.equal(visibleButton('提交回答').disabled, true, 'unconfirmed Host state cannot submit');
+    await act(async () => {
+      state.session!.persisted = persisted;
+      emit();
+    });
+    assert.equal(calls.filter((value) => value === 'question:answer').length, 0);
     await act(async () => visibleButton('提交回答').click());
     assert.equal(calls.filter((value) => value === 'question:answer').length, 1);
     assert.equal(
@@ -1381,6 +1459,143 @@ test('packaged workspace opens local projects without an account and preserves d
       'portal answer submission cannot submit the main composer',
     );
     await act(async () => visibleButton('关闭').click());
+    const mainInput = dom.window.document.querySelector<HTMLTextAreaElement>(
+      '.workspace-composer textarea',
+    )!;
+    const editMain = async (text: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(
+          dom.window.HTMLTextAreaElement.prototype,
+          'value',
+        )!.set!.call(mainInput, text);
+        mainInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      });
+    };
+    await editMain('先不要修改数据库');
+    assert.equal(
+      Array.from(
+        dom.window.document.querySelectorAll<HTMLButtonElement>('.workspace-interactions > button'),
+      ).find((button) => button.textContent === '回合内追加')!.hidden,
+      true,
+      'supported composer steering does not add a duplicate permanent action',
+    );
+    let finishUsageRead!: () => void;
+    usageRead = new Promise<void>((resolve) => {
+      finishUsageRead = resolve;
+    });
+    await act(async () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+    assert.equal(state.usageLoading, true);
+    assert.equal(visibleButton('停止').disabled, false);
+    assert.equal(visibleButton('追加').disabled, false);
+    assert.equal(
+      visibleButton('Local session，My Mac').disabled,
+      false,
+      'background quota refresh must not lock navigation, stopping or explicit submission',
+    );
+    const capabilities = (state.session!.history[0]!.items as any[]).find(
+      (item) => item.type === 'agent_features',
+    ).interactionCapabilities;
+    await act(async () => {
+      capabilities.steer = false;
+      emit();
+    });
+    await act(async () => {
+      mainInput.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', {
+          key: 'Enter',
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    assert.equal(
+      calls.some((call) => call.startsWith('composer-steer:')),
+      false,
+    );
+    assert.equal(calls.filter((value) => value === 'send').length, 1);
+    assert.equal(
+      mainInput.value,
+      '先不要修改数据库',
+      'unsupported steering remains an editable draft',
+    );
+    await act(async () => {
+      capabilities.steer = true;
+      state.ledger!.attachments![state.sessionId!]!.items = [attachment];
+      emit();
+    });
+    assert.equal(
+      visibleButton('追加').disabled,
+      true,
+      'steering must not silently omit attachments',
+    );
+    await act(async () => {
+      state.ledger!.attachments![state.sessionId!]!.items = [];
+      state.ledger!.interactions![state.sessionId!]!.value.steerDraft = 'separate draft';
+      emit();
+    });
+    assert.equal(visibleButton('追加').disabled, true, 'the separate steering draft is protected');
+    await act(async () => {
+      state.ledger!.interactions![state.sessionId!]!.value.steerDraft = '';
+      emit();
+      mainInput.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', {
+          key: 'Enter',
+          ctrlKey: true,
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    assert.equal(
+      calls.some((call) => call.startsWith('composer-steer:')),
+      false,
+    );
+    await act(async () => {
+      mainInput.dispatchEvent(
+        new dom.window.KeyboardEvent('keydown', {
+          key: 'Enter',
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    assert.deepEqual(
+      calls.filter((call) => call.startsWith('composer-steer:')),
+      ['composer-steer:assistant:先不要修改数据库'],
+    );
+    assert.equal(calls.filter((value) => value === 'send').length, 1);
+    assert.equal(mainInput.value, '');
+    assert.equal(visibleButton('停止').disabled, false);
+    await act(async () => {
+      state.offline = true;
+      emit();
+    });
+    assert.match(
+      dom.window.document.querySelector('.workspace-composer-status')!.textContent!,
+      /离线草稿/,
+    );
+    assert.doesNotMatch(
+      dom.window.document.querySelector('.workspace-composer-status')!.textContent!,
+      /已追加到当前任务/,
+    );
+    await act(async () => {
+      state.offline = false;
+      emit();
+    });
+    await act(async () => {
+      finishUsageRead();
+      await usageRead;
+    });
+    usageRead = undefined;
+    await act(async () => controller.saveSteerDraft('Keep working'));
+    assert.equal(
+      visibleButton('回合内追加').hidden,
+      false,
+      'saved separate drafts remain discoverable',
+    );
     await act(async () => visibleButton('回合内追加').click());
     const steerInput = dom.window.document.getElementById('steer-draft')!;
     await act(async () => {
@@ -1390,6 +1605,29 @@ test('packaged workspace opens local projects without an account and preserves d
       );
       steerInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     });
+    await act(async () => {
+      state.offline = true;
+      state.sessionLoad = { status: 'failed', source: 'cache', reason: 'connection' };
+      emit();
+    });
+    assert.equal((steerInput as HTMLTextAreaElement).disabled, false);
+    assert.equal(visibleButton('追加到活动回合').disabled, true);
+    await act(async () => visibleButton('关闭').click());
+    assert.equal(dom.window.document.querySelector('.interaction-dialog'), null);
+    await act(async () => visibleButton('回合内追加').click());
+    assert.equal(
+      (dom.window.document.getElementById('steer-draft') as HTMLTextAreaElement).value,
+      'Keep working',
+    );
+    await act(async () => {
+      state.offline = false;
+      state.sessionLoad = { status: 'ready', source: 'host' };
+      emit();
+    });
+    assert.equal(
+      calls.some((call) => call.startsWith('steer:')),
+      false,
+    );
     await act(async () => visibleButton('追加到活动回合').click());
     assert(calls.includes('steer:assistant:Keep working'));
     assert.equal(calls.filter((value) => value === 'send').length, 1);
