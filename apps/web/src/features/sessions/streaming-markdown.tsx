@@ -24,10 +24,15 @@ const previewLimit = 120_000;
 const segmentSize = 4096;
 const boundary = (line: string) => /^(?:\s*$|```|#{1,6} |[-*] |\d+\. |> )/.test(line);
 
+// A substring can retain its entire old source in V8. Persistent parts must
+// own their text; joining characters also preserves unpaired UTF-16 surrogates.
+const copyText = (value: string) => Array.from(value).join('');
+
 // A bounded mutable tail inside otherwise stable parts. Code is split by visible
 // characters; paragraph segments are joined only at complete inline/line boundaries.
 function appendParts(parts: readonly string[], value: string, code = false): readonly string[] {
   if (!value) return parts.length ? parts : [''];
+  value = copyText(value);
   const next = [...parts];
   if (code) {
     let offset = 0;
@@ -84,6 +89,7 @@ function line(state: Cursor, text: string): Cursor {
     return appendCode(state, value);
   }
   if (!text.trim()) return { blocks: state.blocks };
+  text = copyText(text);
   if (state.active === 'paragraph' && last && !boundary(text))
     return replace(
       { ...last, parts: appendParts(last.parts, '<br>' + markdownInline(text)) },

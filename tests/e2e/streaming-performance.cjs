@@ -17,6 +17,9 @@ const output = path.join(directory, 'output');
 const assets = path.join(output, 'assets');
 fs.mkdirSync(assets, { recursive: true });
 app.setPath('userData', path.join(directory, 'profile'));
+// Cleanup closes the only window before awaiting Host shutdown; app.exit below
+// owns the final status after every child has exited.
+app.on('window-all-closed', () => {});
 const plan = {
   durationMs: Number(process.env.MOOR_STREAM_DURATION_MS ?? 3000),
   rate: Number(process.env.MOOR_STREAM_RATE ?? 60),
@@ -72,10 +75,18 @@ let win,
   inputTimer,
   watchdogTimer,
   tracing = false;
-const bounded = async (promise, milliseconds, label) => {
+let rejectRendererFailure;
+const rendererFailure = new Promise((_, reject) => {
+  rejectRendererFailure = reject;
+});
+// A crash can occur between bounded stages; keep the failure handled until the
+// next stage observes it, while preserving its original rejection.
+void rendererFailure.catch(() => {});
+const bounded = async (promise, milliseconds, label, observeRenderer = true) => {
   let timer;
   return Promise.race([
     promise,
+    ...(observeRenderer ? [rendererFailure] : []),
     new Promise((_, reject) => {
       timer = setTimeout(() => {
         report.timeouts.push({ label, at: now(), milliseconds });
@@ -298,6 +309,19 @@ app
     win.webContents.on('console-message', (event) => {
       if (event.level === 'error') report.errors.push(event.message);
     });
+    win.webContents.once('render-process-gone', (_event, details) => {
+      clearInterval(inputTimer);
+      clearInterval(cpuTimer);
+      clearInterval(watchdogTimer);
+      report.rendererFailure = { at: now(), ...details };
+      report.status = 'failed';
+      report.failure = 'Renderer process gone: ' + details.reason;
+      process.exitCode = 1;
+      // Retain main-process observations even when the renderer cannot answer a
+      // final snapshot. Abort production promptly instead of waiting for its plan.
+      save();
+      rejectRendererFailure(Error(report.failure));
+    });
     const read = (expression) => win.webContents.executeJavaScript(expression);
     const until = (expression) =>
       bounded(
@@ -373,6 +397,10 @@ app
       );
     }, 100);
     host.send({ type: 'start' });
+    if (process.env.MOOR_STREAM_FORCE_RENDERER_CRASH === '1') {
+      await until('window.__streamFixture.snapshot().latestSequence >= 60');
+      win.webContents.forcefullyCrashRenderer();
+    }
     const produced = await bounded(
       hostMessage('produced'),
       plan.durationMs + 15000,
@@ -516,14 +544,14 @@ app
     ];
     fs.writeFileSync(
       path.join(output, 'streaming-final.png'),
-      (await win.webContents.capturePage()).toPNG(),
+      (await bounded(win.webContents.capturePage(), 5000, 'final screenshot')).toPNG(),
     );
+    assert(!report.rendererFailure, 'renderer remains alive through final evidence capture');
     report.status = 'passed';
     report.producer = JSON.parse(
       fs.readFileSync(path.join(output, 'producer-report.json'), 'utf8'),
     );
     save();
-    console.log(JSON.stringify({ output, summary: report.summary, status: report.status }));
   })
   .catch(async (error) => {
     clearInterval(inputTimer);
@@ -534,17 +562,18 @@ app
       report.producer = JSON.parse(fs.readFileSync(producerReport, 'utf8'));
     if (host?.connected) {
       host.send({ type: 'report' });
-      report.host = await bounded(hostMessage('report'), 5000, 'failure Host report').catch(
+      report.host = await bounded(hostMessage('report'), 5000, 'failure Host report', false).catch(
         () => null,
       );
     }
-    if (win && !win.isDestroyed())
+    if (win && !win.isDestroyed() && !report.rendererFailure)
       report.renderer = await bounded(
         win.webContents.executeJavaScript('window.__streamFixture?.snapshot()'),
         5000,
         'failure renderer report',
+        false,
       ).catch(() => null);
-    if (win && !win.isDestroyed())
+    if (win && !win.isDestroyed() && !report.rendererFailure)
       await win.webContents
         .capturePage()
         .then((image) =>
@@ -561,11 +590,26 @@ app
     clearInterval(watchdogTimer);
     if (tracing)
       await contentTracing.stopRecording(path.join(output, 'chromium-trace.json')).catch(() => {});
+    if (win && !win.isDestroyed()) {
+      win.webContents.removeAllListeners('render-process-gone');
+      // The page owns the notification WebSocket. Close it before waiting for
+      // the synthetic Host server to finish its graceful shutdown.
+      win.destroy();
+    }
     if (host?.connected) {
+      const exited = new Promise((resolve) => host.once('exit', resolve));
       host.send({ type: 'close' });
-      host.disconnect();
+      await bounded(exited, 5000, 'Host shutdown', false).catch((error) => {
+        report.status = 'failed';
+        report.failure = String(error?.stack ?? error);
+        process.exitCode = 1;
+        console.error('Synthetic Host shutdown failed:', error);
+        host.kill();
+      });
+      if (host.connected) host.disconnect();
     }
     host?.kill();
-    win?.destroy();
+    if (report.status) save();
+    console.log(JSON.stringify({ output, summary: report.summary, status: report.status }));
     app.exit(process.exitCode ?? 0);
   });
