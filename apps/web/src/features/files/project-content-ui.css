@@ -1,0 +1,377 @@
+/* File browsing keeps the preview dominant in both a dock and a dialog. */
+.project-content-focused {
+  padding: 14px;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.project-content-focused.project-content-docked {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  font-size: 12px;
+}
+.project-content-focused .project-focused-heading {
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.project-content-focused .project-panel-tabs {
+  gap: 3px;
+  flex-wrap: nowrap;
+}
+.project-content-focused .project-panel-tabs > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  padding: 6px 9px;
+  background: transparent;
+  border-radius: 7px;
+}
+.project-content-focused .project-panel-tabs > button[aria-pressed='true'] {
+  background: var(--selected);
+}
+.project-panel-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+}
+.project-panel-actions > button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.project-snapshot-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.project-snapshot-context > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.project-snapshot-context > label > span {
+  white-space: nowrap;
+}
+.project-snapshot-context select {
+  flex: 1;
+  width: 0;
+  min-width: 70px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  font: inherit;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-source-badge {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+}
+.project-content-focused .project-panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+  grid-template-columns: none;
+  grid-template-rows: none;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+.project-compact-files {
+  flex: none;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+.project-compact-files > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.project-compact-files > summary::-webkit-details-marker {
+  display: none;
+}
+.project-compact-files > summary > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-compact-files > summary > small {
+  margin-left: auto;
+  font-size: 10px;
+}
+.project-compact-files:not([open]) > summary > svg {
+  transform: rotate(-90deg);
+}
+.project-content-focused .project-file-list {
+  max-height: 140px;
+  overflow: auto;
+  scrollbar-width: thin;
+  padding: 0 0 6px;
+  border: 0;
+}
+.project-content-focused .project-file-list li > button {
+  align-items: center;
+  padding: 5px 7px;
+  min-height: 28px;
+  font-size: 11px;
+  gap: 7px;
+}
+.project-content-focused .project-file-list li > button > span:not(.project-change-kind) {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.project-content-focused .project-file-list li > button > .project-change-kind {
+  flex: none;
+  font-size: 10px;
+}
+.project-content-focused .project-file-list svg {
+  width: 13px;
+  height: 13px;
+}
+.project-content-focused .project-file-list small {
+  flex: none;
+  white-space: nowrap;
+}
+.project-content-focused .project-breadcrumb {
+  margin: 0 0 4px;
+}
+.project-content-focused .project-breadcrumb > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  font-size: 10px;
+}
+.project-content-focused .project-load-more {
+  margin: 4px 0 0;
+}
+.project-content-focused .project-file-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 10px 0 0;
+  scrollbar-width: thin;
+  overflow: auto;
+}
+.project-content-focused .project-diff-preview {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.project-preview-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding-bottom: 8px;
+  background: var(--surface);
+}
+.project-content-focused .project-preview-heading > h3 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  flex: 1 1 160px;
+  overflow-wrap: anywhere;
+}
+.project-quote-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.project-quote-control > button {
+  padding: 4px 6px;
+  min-height: 25px;
+  border: 0;
+  font-size: 10px;
+  background: var(--surface-muted);
+}
+.project-quote-control > .project-quote-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.project-quote-control > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.project-content-focused .project-file-format {
+  margin: 0 0 8px;
+}
+.project-content-focused .project-file-format > button {
+  padding: 3px 7px;
+  font-size: 10px;
+}
+.project-content-focused .project-lines,
+.project-source-lines {
+  overflow: auto;
+  scrollbar-width: thin;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.65;
+}
+.project-content-focused .project-diff-line,
+.project-diff-column-labels {
+  display: grid;
+  grid-template-columns: 34px 34px 18px minmax(max-content, 1fr);
+  width: max-content;
+  min-width: 100%;
+}
+.project-source-line {
+  display: grid;
+  grid-template-columns: 40px minmax(max-content, 1fr);
+  width: max-content;
+  min-width: 100%;
+}
+.project-diff-column-labels {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  text-align: center;
+}
+.project-diff-column-labels > :last-child {
+  text-align: left;
+}
+.project-content-focused .project-diff-line > code,
+.project-source-line > code {
+  white-space: pre;
+  overflow-wrap: normal;
+  padding: 0 8px;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: transparent;
+}
+.project-select-line {
+  border: 0;
+  border-radius: 0;
+  padding: 0 3px;
+  margin: 0;
+  min-width: 0;
+  font: inherit;
+  text-align: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.project-select-line:hover,
+.project-select-line[aria-pressed='true'] {
+  background: var(--selected);
+  color: var(--ink);
+}
+.project-source-line[data-selected='true'],
+.project-content-focused .project-diff-line[data-selected='true'] {
+  box-shadow: inset 3px 0 var(--ink);
+  background: color-mix(in srgb, var(--selected) 80%, var(--surface));
+}
+.project-content-focused .project-diff-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+.project-content-focused .project-diff-sides[data-side-by-side='true'] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.project-content-focused .project-frozen-file > h4 {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 7px;
+  font-size: 11px;
+}
+.project-frozen-file > h4 > span {
+  min-width: 0;
+  color: var(--muted);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-source-details {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.project-source-details > summary {
+  cursor: pointer;
+}
+.project-source-details dl {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 6px 8px;
+}
+.project-source-details dt {
+  color: var(--muted);
+}
+.project-source-details dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+}
+.project-source-version {
+  display: contents;
+}
+.project-source-details code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+.project-content-focused > .project-partial,
+.project-content-focused > .project-loading,
+.project-content-focused > .list-error {
+  flex: none;
+  margin: 0;
+  font-size: 11px;
+}
+.project-content-focused .project-file-view > .empty {
+  margin: 20px 0;
+  padding: 10px;
+  font-size: 12px;
+}
+.project-preview-more {
+  margin-top: 8px;
+  font-size: 11px;
+}
+@media (max-width: 700px) {
+  .project-content-focused {
+    padding: 12px;
+  }
+  .project-content-focused .project-diff-sides[data-side-by-side='true'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .project-select-line {
+    min-height: 25px;
+  }
+}

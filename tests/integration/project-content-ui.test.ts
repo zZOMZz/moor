@@ -124,7 +124,7 @@ test('mobile project panel distinguishes current files, cached history and incom
     await act(async () => {
       renderPanel(props);
     });
-    assert.match(panel().textContent!, /上次读取的目录缓存/);
+    assert.equal(panel().querySelector('.project-source-badge')!.textContent, '离线缓存');
     assert.match(panel().textContent!, /未列出不表示文件不存在/);
     assert.match(panel().textContent!, /外部编辑器或其他会话/);
     await act(async () => button('打开目录：docs').click());
@@ -154,12 +154,57 @@ test('mobile project panel distinguishes current files, cached history and incom
       },
     };
     await act(async () => renderPanel(props));
-    assert.match(panel().textContent!, /已缓存文件版本 · 不代表当前主机内容/);
+    assert.match(
+      panel().querySelector('.project-source-details')!.textContent!,
+      /缓存不代表主机当前内容/,
+    );
     assert.equal(panel().querySelector('script'), null);
     assert.equal(panel().querySelector('a[href^="javascript:"]'), null);
     assert.ok(panel().querySelector('.project-markdown h2'));
-    await act(async () => button('源文本').click());
-    assert.equal(panel().querySelector('.project-file-text')!.textContent, text);
+    await act(async () => button('源文本 / 选行').click());
+    assert.equal(
+      [...panel().querySelectorAll('.project-source-line code')]
+        .map((node) => node.textContent)
+        .join('\n'),
+      text,
+    );
+    const quotes: string[] = [];
+    const largeText = Array.from(
+      { length: 24 },
+      (_, index) => `line ${index + 1} ${'x'.repeat(900)}${index === 0 ? ' ``````' : ''}`,
+    ).join('\n');
+    props = {
+      ...props,
+      onQuote: (quote) => quotes.push(quote),
+      currentFile: {
+        ...props.currentFile!,
+        text: largeText,
+        bytes: new TextEncoder().encode(largeText),
+        result: {
+          ...props.currentFile!.result,
+          path: 'quote-boundary.ts',
+          content: { version, byteLength: largeText.length, mediaType: 'text/plain' },
+        },
+      },
+    };
+    await act(async () => renderPanel(props));
+    await act(async () => button('选择本次读取第 1 行').click());
+    await act(async () =>
+      button('选择本次读取第 24 行').dispatchEvent(
+        new win.MouseEvent('click', { bubbles: true, shiftKey: true }),
+      ),
+    );
+    await act(async () => button('引用选中行').click());
+    assert.equal(quotes.length, 0, 'oversize references never invoke the draft callback');
+    assert.match(panel().querySelector('[role="alert"]')!.textContent!, /超过 16 KiB/);
+    await act(async () => button('选择本次读取第 1 行').click());
+    await act(async () => button('引用选中行').click());
+    assert.equal(quotes.length, 1);
+    assert.match(quotes[0]!, /\n```````text\n/);
+    assert(
+      quotes[0]!.includes(largeText.split('\n')[0]!),
+      'embedded backticks preserve the exact selected source',
+    );
     const file = {
       path: 'a.txt',
       size: 3,
@@ -202,9 +247,15 @@ test('mobile project panel distinguishes current files, cached history and incom
       },
     };
     await act(async () => renderPanel(props));
-    assert.match(panel().textContent!, /已保存的回合前后版本 · 离线缓存/);
+    assert.equal(panel().querySelector('.project-source-badge')!.textContent, '离线缓存');
+    assert.match(
+      panel().querySelector('.project-source-details')!.textContent!,
+      /所选回合保存的历史快照/,
+    );
     assert.equal(panel().querySelector('.project-diff-line.removed code')!.textContent, 'old');
     assert.equal(panel().querySelector('.project-diff-line.added code')!.textContent, 'new');
+    props = { ...props, expanded: true };
+    await act(async () => renderPanel(props));
     await act(async () => button('前后版本').click());
     assert.equal(panel().querySelectorAll('.project-frozen-file').length, 2);
     for (const state of [

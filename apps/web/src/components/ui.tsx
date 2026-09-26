@@ -136,6 +136,7 @@ type RunControlsProps = {
   onRefresh: () => void;
   onOpenModels?: () => void;
   onSaveDefaults?: (selection: RunSelection) => Promise<unknown>;
+  compact?: boolean;
 };
 
 export function RunControls(p: RunControlsProps) {
@@ -153,39 +154,52 @@ export function RunControls(p: RunControlsProps) {
     'moor-auto-review': '读写工作区，需要时由 Codex 自动审查。',
     'moor-full-access': '访问文件与网络，不请求审批。',
   };
+  const compactLabels: Record<string, string> = {
+    'moor-read-only': '只读',
+    'moor-agent': '工作区',
+    'moor-auto-review': '自动审查',
+    'moor-full-access': '完全访问',
+  };
   const mode = modes.find((m) => m.id === modeId);
+  const approval = (
+    <div className="run-approval" title={mode?.description}>
+      <Picker
+        id={(p.idPrefix ?? '') + 'approval-mode'}
+        label="权限"
+        icon={<ShieldCheck />}
+        value={modeId}
+        items={modes.map((m) => ({
+          ...m,
+          name: (p.compact ? compactLabels[m.id] : labels[m.id]) || m.name,
+          description: descriptions[m.id] || m.description,
+        }))}
+        disabled={p.disabled}
+        allowEmpty={false}
+        placeholder={p.compact ? '权限未获取' : '选择权限'}
+        onChange={(v) => p.onChange('modeId', v)}
+      />
+    </div>
+  );
+  const model = (
+    <div className="run-model-options">
+      <ModelMenu
+        id={(p.idPrefix ?? '') + 'model'}
+        capabilities={p.capabilities}
+        selection={p.selection}
+        existing={p.existing}
+        disabled={p.disabled}
+        loading={p.loading}
+        onChange={p.onChange}
+        onSaveDefault={p.onSaveDefaults}
+        compact={p.compact}
+      />
+    </div>
+  );
   return (
     <>
       <div className="run-controls">
-        <div className="run-approval" title={mode?.description}>
-          <Picker
-            id={(p.idPrefix ?? '') + 'approval-mode'}
-            label="权限"
-            icon={<ShieldCheck />}
-            value={modeId}
-            items={modes.map((m) => ({
-              ...m,
-              name: labels[m.id] || m.name,
-              description: descriptions[m.id] || m.description,
-            }))}
-            disabled={p.disabled}
-            allowEmpty={false}
-            placeholder="选择权限"
-            onChange={(v) => p.onChange('modeId', v)}
-          />
-        </div>
-        <div className="run-model-options">
-          <ModelMenu
-            id={(p.idPrefix ?? '') + 'model'}
-            capabilities={p.capabilities}
-            selection={p.selection}
-            existing={p.existing}
-            disabled={p.disabled}
-            loading={p.loading}
-            onChange={p.onChange}
-            onSaveDefault={p.onSaveDefaults}
-          />
-        </div>
+        {p.compact ? model : approval}
+        {p.compact ? approval : model}
       </div>
       {(p.validation || p.status || p.loading || !p.capabilities) && (
         <p

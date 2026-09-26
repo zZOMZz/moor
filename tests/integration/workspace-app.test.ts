@@ -817,7 +817,7 @@ test('packaged workspace opens local projects without an account and preserves d
     assert.equal(calls.includes('settings'), false);
     assert.match(dom.window.document.body.textContent!, /项目已添加/);
     await act(async () => project.click());
-    await act(async () => visibleButton('Local sessionMy Macsynthetic').click());
+    await act(async () => visibleButton('Local session，My Mac').click());
     assert.match(
       dom.window.document.querySelector('.workspace-history')!.textContent!,
       /Hello <script>unsafe\(\)<\/script>/,
@@ -831,11 +831,11 @@ test('packaged workspace opens local projects without an account and preserves d
     sessionRefresh = new Promise<void>((resolve) => {
       finishSessionRefresh = resolve;
     });
-    await act(async () => visibleButton('Local sessionMy Macsynthetic').click());
+    await act(async () => visibleButton('Local session，My Mac').click());
     assert.equal(state.offline, false);
     assert.deepEqual(state.sessionLoad, { status: 'refreshing', source: 'cache' });
     assert.equal(project.disabled, false);
-    assert.equal(visibleButton('Local sessionMy Macsynthetic').disabled, false);
+    assert.equal(visibleButton('Local session，My Mac').disabled, false);
     assert.equal(visibleButton('连接其他电脑').disabled, false);
     const sync = dom.window.document.querySelector<HTMLElement>('.workspace-session-sync');
     assert(sync);
@@ -906,8 +906,10 @@ test('packaged workspace opens local projects without an account and preserves d
       'permission and model controls stay inside the input toolbar',
     );
     assert(
-      composerSurface.querySelector('.workspace-compose-actions > .usage-trigger'),
-      'context usage stays inside the input toolbar',
+      composerSurface.querySelector(
+        '.workspace-menu-composer .workspace-composer-extras .usage-trigger',
+      ),
+      'context usage remains available inside the composer add menu',
     );
     let release!: () => void;
     hold = new Promise<void>((resolve) => {
@@ -1088,9 +1090,10 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.workspace-menu-environment:not([hidden])'),
       null,
     );
+    await act(async () => visibleButton('执行环境').click());
     await act(async () =>
       dom.window.document
-        .querySelector<HTMLButtonElement>('.workspace-composer-context > button')!
+        .querySelector<HTMLButtonElement>('[aria-label="选择 Git 分支与工作目录"]')!
         .click(),
     );
     assert(calls.includes('git:read'));
@@ -1207,7 +1210,7 @@ test('packaged workspace opens local projects without an account and preserves d
       dom.window.document.querySelector('.workspace-conversation')!.hasAttribute('hidden'),
       true,
     );
-    await act(async () => visibleButton('Local sessionMy Macsynthetic').click());
+    await act(async () => visibleButton('Local session，My Mac').click());
     assert.equal(
       dom.window.document.querySelector('.workspace-conversation')!.hasAttribute('hidden'),
       false,
@@ -1229,6 +1232,7 @@ test('packaged workspace opens local projects without an account and preserves d
     const attachmentPanel = dom.window.document.querySelector('.workspace-attachments')!;
     assert.match(attachmentPanel.textContent!, /draft.txt/);
     assert.equal(attachmentPanel.querySelector('script'), null);
+    await act(async () => attachmentPanel.querySelector('summary')!.click());
     await act(async () => visibleButton('上传附件').click());
     assert.equal(
       visibleButton('发送').disabled,
@@ -1283,7 +1287,7 @@ test('packaged workspace opens local projects without an account and preserves d
       false,
       'expanding a project does not navigate during an attachment save',
     );
-    assert.equal(visibleButton('Local sessionMy Macsynthetic').disabled, true);
+    assert.equal(visibleButton('Local session，My Mac').disabled, true);
     await act(async () => {
       state.session!.history[0]!.items!.pop();
       emit();
@@ -1353,11 +1357,15 @@ test('packaged workspace opens local projects without an account and preserves d
     await act(async () => visibleButton('项目文件').click());
     assert(dom.window.document.querySelector('.project-content-panel'));
     assert.equal(calls.filter((call) => call === 'content:open:tree').length, 1);
+    assert.equal(
+      dom.window.document.querySelector('.workspace-session-header [aria-label="查看文件变更"]'),
+      null,
+      'sessions without recorded changes have no change action in the header',
+    );
+    await act(async () => visibleButton('历史变更').click());
+    assert.equal(calls.filter((call) => call === 'content:mode:changes').length, 1);
     await act(async () => visibleButton('关闭文件与变更').click());
     assert.equal(dom.window.document.querySelector('.project-content-panel'), null);
-    await act(async () => visibleButton('历史文件变更').click());
-    assert.equal(calls.filter((call) => call === 'content:open:changes').length, 1);
-    await act(async () => visibleButton('关闭文件与变更').click());
     assert.equal(calls.filter((call) => call === 'send').length, 1);
     assert.equal(dom.window.document.querySelector('.workspace-legacy-recovery'), null);
     assert.equal(dom.window.document.querySelector('[aria-label="恢复旧客户端草稿"]'), null);
@@ -1387,7 +1395,7 @@ test('packaged workspace opens local projects without an account and preserves d
         bubbles: true,
         cancelable: true,
       });
-    await act(async () => visibleButton('Sidebar 0My Macsynthetic').dispatchEvent(contextKey()));
+    await act(async () => visibleButton('Sidebar 0，My Mac').dispatchEvent(contextKey()));
     assert.match(
       dom.window.document.querySelector('[role="menu"]')!.textContent!,
       /重命名.*置顶.*归档/s,
@@ -1402,7 +1410,7 @@ test('packaged workspace opens local projects without an account and preserves d
     assert(
       dom.window.document.querySelector('.workspace-pinned')!.textContent!.includes('Sidebar 0'),
     );
-    await act(async () => visibleButton('Sidebar 0My Macsynthetic').dispatchEvent(contextKey()));
+    await act(async () => visibleButton('Sidebar 0，My Mac').dispatchEvent(contextKey()));
     await act(async () =>
       Array.from(dom.window.document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
         .find((item) => item.textContent === '重命名')!
@@ -1452,6 +1460,56 @@ test('packaged workspace opens local projects without an account and preserves d
       'true',
       'projects expand independently',
     );
+    const beforeSearch = calls.length,
+      searchScope = structuredClone(state.scope),
+      searchDraft = structuredClone(state.draft);
+    assert.equal(project.getAttribute('aria-expanded'), 'false');
+    const controlledList = dom.window.document.getElementById(
+      project.getAttribute('aria-controls')!,
+    );
+    assert(controlledList?.hidden, 'a collapsed project retains its accessible controlled panel');
+    await act(async () => visibleButton('搜索会话').click());
+    const sidebarSearch = dom.window.document.querySelector<HTMLInputElement>(
+      '[aria-label="筛选当前工作区会话"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+        sidebarSearch,
+        'Sidebar 1',
+      );
+      sidebarSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    assert.equal(project.getAttribute('aria-expanded'), 'true', 'search exposes matching sessions');
+    assert.equal(controlledList.hidden, false);
+    assert.equal(group.querySelectorAll('.workspace-session-row').length, 1);
+    assert.match(group.textContent!, /Sidebar 1/);
+    await act(async () => secondHeading.click());
+    assert.equal(
+      secondHeading.getAttribute('aria-expanded'),
+      'false',
+      'search groups remain collapsible',
+    );
+    await act(async () => visibleButton('清空搜索').click());
+    assert.equal(sidebarSearch.value, '');
+    assert.equal(
+      project.getAttribute('aria-expanded'),
+      'false',
+      'clearing search restores closed projects',
+    );
+    assert.equal(
+      secondHeading.getAttribute('aria-expanded'),
+      'true',
+      'clearing search restores open projects',
+    );
+    assert.equal(state.sessionId, selectedBeforeExpand);
+    assert.deepEqual(state.scope, searchScope);
+    assert.deepEqual(state.draft, searchDraft);
+    assert.equal(
+      calls.length,
+      beforeSearch,
+      'search and expansion never mutate execution or drafts',
+    );
+    await act(async () => visibleButton('搜索会话').click());
     await act(async () => visibleButton('在 Second project 中新建对话').click());
     assert.equal(state.scope!.target.localProjectId, 'project-two');
     assert(

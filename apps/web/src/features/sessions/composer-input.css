@@ -1,0 +1,330 @@
+.workspace-composer textarea.composer-input {
+  min-height: 64px;
+  max-height: min(240px, 32vh);
+  field-sizing: fixed;
+  resize: none;
+  scrollbar-width: thin;
+  padding: 0 3px;
+  line-height: 1.65;
+}
+
+.workspace-composer textarea.composer-input::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.workspace-composer.workspace-composer-compact {
+  container: composer / inline-size;
+}
+
+.workspace-composer-compact .workspace-composer-context {
+  min-height: 28px;
+  gap: 8px;
+  margin: 0 0 6px;
+  overflow: visible;
+}
+
+.workspace-composer-compact .workspace-composer-context > .workspace-environment-trigger {
+  min-width: 0;
+  flex-shrink: 1;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 3px 5px;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.workspace-environment-trigger svg {
+  flex: none;
+}
+
+.workspace-composer-compact .workspace-environment-trigger .workspace-environment-project {
+  max-width: 240px;
+  min-width: 0;
+}
+
+.workspace-composer-compact .workspace-environment-trigger .workspace-environment-branch {
+  max-width: 160px;
+  min-width: 0;
+  flex-shrink: 2;
+}
+
+.workspace-environment-divider {
+  color: var(--border);
+  flex: none;
+}
+
+.workspace-environment-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-environment-popup {
+  width: min(340px, calc(100vw - 24px));
+  padding: 14px;
+}
+
+.workspace-environment-popup > h2 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.workspace-environment-popup > label {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  font-size: 12px;
+}
+
+.workspace-environment-popup > label > span,
+.workspace-environment-popup > button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.workspace-environment-popup select {
+  min-width: 0;
+  width: 100%;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  padding: 7px;
+}
+
+.workspace-environment-popup > button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 9px;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  font-size: 12px;
+}
+
+.workspace-environment-popup > button span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.workspace-environment-popup > p,
+.workspace-environment-popup > small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.workspace-environment-popup > p {
+  margin: 12px 0 4px;
+}
+
+.workspace-composer.workspace-composer-compact .workspace-input-box {
+  display: flex;
+  flex-direction: column;
+  padding: 13px 12px 9px;
+  border-radius: 14px;
+}
+
+.workspace-composer.workspace-composer-compact textarea.composer-input {
+  min-height: 58px;
+  max-height: min(220px, 30vh);
+}
+
+.workspace-composer.workspace-composer-compact .workspace-compose-actions {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.workspace-composer.workspace-composer-compact
+  .workspace-compose-actions
+  > .workspace-menu-composer {
+  grid-row: 1;
+  grid-column: 1;
+  margin: 0;
+}
+
+.workspace-composer.workspace-composer-compact .workspace-compose-actions > .run-controls {
+  grid-row: 1;
+  grid-column: 2;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  order: 0;
+  min-width: 0;
+  margin: 0;
+}
+
+.workspace-composer.workspace-composer-compact
+  .workspace-compose-actions
+  > .run-controls
+  > .run-model-options {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+}
+
+.workspace-composer.workspace-composer-compact
+  .workspace-compose-actions
+  > .run-controls
+  > .run-approval {
+  flex: 0 0 auto;
+  min-width: 72px;
+  max-width: 45%;
+}
+
+.workspace-composer.workspace-composer-compact
+  .workspace-compose-actions
+  > .run-controls
+  .picker-trigger {
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
+  font-size: 11px;
+  border-radius: 7px;
+}
+
+.workspace-composer-compact .model-menu-trigger > svg:first-child {
+  display: none;
+}
+
+.workspace-composer-compact .model-menu-trigger > svg:last-child {
+  flex: none;
+}
+
+.workspace-composer.workspace-composer-compact .workspace-compose-actions > .run-description {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 2px 3px 0;
+}
+
+.workspace-composer.workspace-composer-compact
+  .workspace-compose-actions
+  > .workspace-compose-submit {
+  grid-column: 3;
+  grid-row: 1;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+}
+
+.workspace-composer-compact .workspace-composer-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 7px 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.workspace-composer-extras {
+  border-top: 1px solid var(--border);
+  margin-top: 5px;
+  padding-top: 5px;
+}
+
+.workspace-composer-extras > .usage-trigger {
+  width: 100%;
+  padding: 8px;
+  color: inherit;
+}
+
+.workspace-composer.workspace-composer-compact .workspace-attachments {
+  order: -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 10px;
+  max-height: min(240px, 30vh);
+  overflow: auto;
+}
+
+.workspace-composer.workspace-composer-compact .workspace-attachments:empty {
+  display: none;
+}
+
+.workspace-attachments > .workspace-attachment-chip {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-muted);
+}
+
+.workspace-attachment-chip > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  font-size: 11px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.workspace-attachment-chip > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-attachment-chip > summary > span {
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-attachment-chip > summary > svg,
+.workspace-attachment-chip > summary > small {
+  flex: none;
+}
+
+.workspace-attachment-preview {
+  border-top: 1px solid var(--border);
+  padding: 10px;
+}
+
+.workspace-attachment-preview > button {
+  margin: 6px 6px 0 0;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+
+@container composer (max-width: 380px) {
+  .workspace-composer-compact .workspace-environment-trigger .workspace-environment-project {
+    max-width: 160px;
+  }
+  .workspace-composer-compact .workspace-environment-trigger .workspace-environment-branch {
+    max-width: 100px;
+  }
+  .workspace-composer-compact .run-approval .picker-trigger > svg {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace-composer textarea.composer-input {
+    min-height: 58px;
+    font-size: 16px;
+  }
+}

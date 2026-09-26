@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Info, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowDown, ChevronRight, Info, Terminal, X } from 'lucide-react';
 import { markdown } from '../../components/content';
 import { informationHtml, sessionInformation } from '../interactions/interactions';
 import { sessionEventSchema } from '@moor/protocol/session-events';
@@ -25,11 +25,21 @@ export function hasTurnFileChanges(turn: TimelineTurn) {
   const reference = turnFileChanges(turn);
   return !!reference && ['ready', 'partial'].includes(reference.state) && reference.changeCount > 0;
 }
-function secondary(value: unknown) {
+function runningItem(value: unknown, finished: boolean) {
+  const item = itemObject(value);
+  return (
+    !finished &&
+    item.type === 'tool_call' &&
+    !item.permissionRequest &&
+    ['pending', 'in_progress', 'running'].includes(String(item.status))
+  );
+}
+function secondary(value: unknown, finished: boolean) {
   const item = itemObject(value);
   return (
     !['text', 'attachment', 'system_notice', 'question', 'steer'].includes(String(item.type)) &&
     !item.permissionRequest &&
+    !runningItem(value, finished) &&
     !['failed', 'error'].includes(String(item.status))
   );
 }
@@ -38,86 +48,184 @@ function secondary(value: unknown) {
 export function SessionTimeline({
   history,
   focusTurnId,
+  live = true,
   renderItem,
   afterTurn,
   actions,
 }: {
   history: TimelineTurn[];
   focusTurnId?: string;
+  live?: boolean;
   renderItem(value: unknown, turn: TimelineTurn, index: number): ReactNode;
   afterTurn?(turn: TimelineTurn): ReactNode;
   actions?(turn: TimelineTurn): ReactNode;
 }) {
   const variant = 'workspace';
   const container = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const following = useRef(!focusTurnId);
+  const focused = useRef<string | undefined>(undefined);
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
+  const scrollToLatest = () => {
+    const node = container.current;
+    if (!node) return;
+    following.current = true;
+    node.scrollTop = node.scrollHeight;
+    setAwayFromLatest(false);
+  };
+  useLayoutEffect(() => {
+    if (!focusTurnId) focused.current = undefined;
+    else if (focused.current !== focusTurnId) {
+      const node = [
+        ...(container.current?.querySelectorAll<HTMLElement>('[data-turn-id]') ?? []),
+      ].find((node) => node.dataset.turnId === focusTurnId);
+      if (node) {
+        focused.current = focusTurnId;
+        following.current = false;
+        node.scrollIntoView?.({ block: 'center' });
+        node.focus({ preventScroll: true });
+      }
+    }
+    if (following.current) scrollToLatest();
+  });
   useEffect(() => {
-    const node = [
-      ...(container.current?.querySelectorAll<HTMLElement>('[data-turn-id]') ?? []),
-    ].find((node) => node.dataset.turnId === focusTurnId);
-    node?.scrollIntoView?.({ block: 'center' });
-    node?.focus({ preventScroll: true });
-  }, [focusTurnId, history.length]);
+    if (!content.current || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (following.current) scrollToLatest();
+    });
+    observer.observe(content.current);
+    // Composer growth and window resizing also change the scroll viewport.
+    if (container.current) observer.observe(container.current);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <section
-      ref={container}
-      className={variant + '-history session-timeline'}
-      aria-label="会话内容"
-    >
-      {!history.length && <p className="workspace-empty-message">写下第一条指令开始。</p>}
-      {history.map((turn) => {
-        const entries = (turn.items ?? [])
-          .map((value, index) => ({ value, index }))
-          .filter(({ value }) => {
-            const item = itemObject(value);
-            return (
-              item.type !== 'agent_features' &&
-              !(item.type === 'session_event' && sessionEventSchema.safeParse(item.event).success)
-            );
-          });
-        const render = ({ value, index }: (typeof entries)[number]) => {
-          const item = itemObject(value);
-          return (
-            <div key={index} className="session-item">
-              {item.type === 'text' ? (
+    <div className="session-timeline-shell" data-live={live}>
+      <section
+        ref={container}
+        className={variant + '-history session-timeline'}
+        aria-label="会话内容"
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 72;
+          following.current = nearBottom;
+          setAwayFromLatest(!nearBottom);
+        }}
+      >
+        <div ref={content} className="session-timeline-content">
+          {!history.length && <p className="workspace-empty-message">写下第一条指令开始。</p>}
+          {history.map((turn) => {
+            const entries = (turn.items ?? [])
+              .map((value, index) => ({ value, index }))
+              .filter(({ value }) => {
+                const item = itemObject(value);
+                return (
+                  item.type !== 'agent_features' &&
+                  !(
+                    item.type === 'session_event' &&
+                    sessionEventSchema.safeParse(item.event).success
+                  )
+                );
+              });
+            const render = ({ value, index }: (typeof entries)[number]) => {
+              const item = itemObject(value);
+              return (
                 <div
-                  className="session-message-text"
-                  dangerouslySetInnerHTML={{
-                    __html: markdown(typeof item.text === 'string' ? item.text : ''),
-                  }}
-                />
-              ) : (
-                renderItem(value, turn, index)
-              )}
-            </div>
-          );
-        };
-        const details = entries.filter(({ value }) => secondary(value));
-        return (
-          <article
-            key={turn.id}
-            data-turn-id={turn.id}
-            tabIndex={-1}
-            className={`${variant}-turn ${variant}-turn-${turn.role}${focusTurnId === turn.id ? ' workspace-search-focus' : ''}`}
-          >
-            <small className="session-turn-label">
-              {turn.role === 'user' ? '你' : 'Agent'}
-              {!turn.finished ? ' · 进行中' : ''}
-            </small>
-            {entries.filter(({ value }) => !secondary(value)).map(render)}
-            {!!details.length && (
-              <details className="session-tool-details">
-                <summary>工具与思考 · {details.length}</summary>
-                {details.map(render)}
-              </details>
-            )}
-            {afterTurn?.(turn)}
-            {turn.role === 'assistant' && (
-              <div className="session-turn-actions">{actions?.(turn)}</div>
-            )}
-          </article>
-        );
-      })}
-    </section>
+                  key={index}
+                  className={
+                    'session-item' +
+                    (runningItem(value, turn.finished) ? ' session-item-running' : '')
+                  }
+                >
+                  {runningItem(value, turn.finished) && (
+                    <span className="session-item-status">
+                      <span className="session-running-dot" />
+                      {item.status === 'pending'
+                        ? live
+                          ? '等待执行'
+                          : '上次等待执行'
+                        : live
+                          ? '正在执行'
+                          : '上次执行中'}
+                    </span>
+                  )}
+                  {['failed', 'error'].includes(String(item.status)) && (
+                    <span className="session-item-status session-item-error">执行失败</span>
+                  )}
+                  {item.type === 'text' ? (
+                    <div
+                      className="session-message-text"
+                      dangerouslySetInnerHTML={{
+                        __html: markdown(typeof item.text === 'string' ? item.text : ''),
+                      }}
+                    />
+                  ) : (
+                    renderItem(value, turn, index)
+                  )}
+                </div>
+              );
+            };
+            // Collapse only adjacent operational entries. Moving every tool to the end
+            // changes the meaning of messages written before and after an operation.
+            const groups: { detail: boolean; entries: typeof entries }[] = [];
+            for (const entry of entries) {
+              const detail = secondary(entry.value, turn.finished);
+              const previous = groups.at(-1);
+              if (detail && previous?.detail) previous.entries.push(entry);
+              else groups.push({ detail, entries: [entry] });
+            }
+            return (
+              <article
+                key={turn.id}
+                data-turn-id={turn.id}
+                tabIndex={-1}
+                className={`${variant}-turn ${variant}-turn-${turn.role}${focusTurnId === turn.id ? ' workspace-search-focus' : ''}`}
+              >
+                <div className="session-turn-heading">
+                  <small className="session-turn-label">
+                    {turn.role === 'user' ? '你' : 'Agent'}
+                  </small>
+                  {!turn.finished && turn.role === 'assistant' && (
+                    <span className="session-turn-progress">
+                      <span className="session-running-dot" />
+                      {live ? '进行中' : '缓存执行状态'}
+                    </span>
+                  )}
+                </div>
+                {groups.map((group) =>
+                  group.detail ? (
+                    <details key={group.entries[0]!.index} className="session-tool-details">
+                      <summary>
+                        <ChevronRight
+                          size={14}
+                          className="session-tool-chevron"
+                          aria-hidden="true"
+                        />
+                        <Terminal size={14} aria-hidden="true" />
+                        <span>工具与思考</span>
+                        <span className="session-tool-count">{group.entries.length}</span>
+                      </summary>
+                      <div className="session-tool-content">{group.entries.map(render)}</div>
+                    </details>
+                  ) : (
+                    group.entries.map(render)
+                  ),
+                )}
+                {afterTurn?.(turn)}
+                {turn.role === 'assistant' && (
+                  <div className="session-turn-actions">{actions?.(turn)}</div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+      {awayFromLatest && (
+        <button type="button" className="session-jump-latest" onClick={scrollToLatest}>
+          <ArrowDown size={14} aria-hidden="true" />
+          回到最新消息
+        </button>
+      )}
+    </div>
   );
 }
 
