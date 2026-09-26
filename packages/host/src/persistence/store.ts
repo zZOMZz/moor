@@ -536,9 +536,28 @@ export class RuntimeStore {
           .run(id, Number(previous?.sequence ?? 0) + 1, update, candidate.version().encode());
       }
       this.rememberDocument(id, candidate);
+      return update;
     };
-    if (this.journal.db.isTransaction) write();
-    else this.transaction(write);
+    return this.journal.db.isTransaction ? write() : this.transaction(write);
+  }
+  /** Advance the read document only after this exact output reached durable storage. */
+  confirmOutput(
+    id: string,
+    doc: LoroDoc,
+    from: VersionVector,
+    update: Uint8Array,
+    version: Uint8Array,
+  ) {
+    assert(!this.journal.db.isTransaction, 409, '输出事务尚未提交');
+    assert(this.matchesBase(this.documentVersion(doc), from.encode()), 409, '输出发布基线已变化');
+    assert(this.matchesBase(this.durableVersion(id), version), 409, '输出持久版本已变化');
+    const imported = doc.import(update);
+    assert(
+      !imported.pending?.size && this.matchesBase(this.documentVersion(doc), version),
+      503,
+      '已保存输出无法发布到当前文档',
+    );
+    this.rememberDocument(id, doc);
   }
   searchSource(id: string) {
     const row = this.journal.db

@@ -229,6 +229,83 @@ test('new-session catalogue excludes legacy builtin Claude while retaining custo
   );
 });
 
+test('a committed output publication failure remains failed when prompt returns and terminal reads recover', async (t) => {
+  const f = fixture(t),
+    prompting = signal(),
+    release = signal(),
+    closed = signal();
+  let promptReturned = false;
+  f.prompting(async () => {
+    prompting.resolve();
+    await release.promise;
+    promptReturned = true;
+  });
+  f.closing(async () => closed.resolve());
+  t.after(release.resolve);
+  await f.host.mutate(f.request(), f.project);
+  await prompting.promise;
+  const run = f.host.active.get('session')!;
+  const confirm = f.store.confirmOutput.bind(f.store);
+  const confirmation = t.mock.method(
+    f.store,
+    'confirmOutput',
+    (...args: Parameters<RuntimeStore['confirmOutput']>) => {
+      confirm(...args);
+      throw Error('synthetic failure after confirmed import');
+    },
+  );
+  const reload = t.mock.method(f.store, 'doc', () => {
+    throw Error('synthetic durable reload failure');
+  });
+  assert.throws(
+    () =>
+      f.callbacks().update({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'durable output before publication failure' },
+      }),
+    /已保存输出无法重新读取/,
+  );
+  assert.equal(run.stopped, true);
+  assert.equal(run.terminal?.status, 'failed');
+  assert.equal(f.host.settlementFailures.get('session'), run.doc);
+  assert.equal((await f.host.read('session', undefined, f.project)).persisted, false);
+  await closed.promise;
+  assert.equal(promptReturned, false, 'publication failure closes the still-running Agent');
+  confirmation.mock.restore();
+  reload.mock.restore();
+  release.resolve();
+  await run.done;
+  assert.equal(promptReturned, true, 'the synthetic Agent returns normally after close');
+  assert.ok(f.closes() > 0);
+  assert.equal(run.terminal?.status, 'failed');
+  assert.equal(f.host.active.has('session'), false);
+  assert.equal(f.host.settlementFailures.has('session'), false);
+  const response = await f.host.read('session', undefined, f.project);
+  assert.equal(response.persisted, true);
+  assert.equal(response.persistenceError, undefined);
+  const doc = f.store.doc('session'),
+    view = mirror(doc, 'session');
+  try {
+    const terminal = view.getState().history.find((turn) => turn.id === run.turnId)!;
+    assert.equal(terminal.finished, true);
+    assert.equal(terminal.status, 'failed');
+    assert.ok(
+      terminal.items?.some(
+        (item) =>
+          typeof item === 'object' &&
+          item !== null &&
+          'type' in item &&
+          item.type === 'text' &&
+          'text' in item &&
+          item.text === 'durable output before publication failure',
+      ),
+    );
+  } finally {
+    view.dispose();
+    doc.free();
+  }
+});
+
 test('accepted Agent snapshot survives catalogue replacement while before-capture waits', async (t) => {
   const f = fixture(t),
     held = signal(),
