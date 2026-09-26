@@ -1,5 +1,5 @@
 import { sessionReadResponseSchema, validateSessionBundle } from '@moor/protocol/session-responses';
-import { decode, delta, LoroDoc, mirror, vv } from './model';
+import { decode, delta, LoroDoc, mirror, VersionVector, vv } from './model';
 import type { readClientSession, SessionClientScope } from './session-operations';
 
 /** Frozen UI projection. A full CRDT export is available only at an explicit snapshot boundary. */
@@ -42,6 +42,7 @@ export class ClientSessionReplica {
   #view?: ClientSessionView;
   #lastRead?: ClientSessionDelta;
   #projections = new WeakMap<object, unknown>();
+  #accepted = new WeakSet<object>();
   #disposed = false;
 
   constructor(scope: SessionClientScope) {
@@ -120,6 +121,7 @@ export class ClientSessionReplica {
         version,
       });
       verifiedDeltas.set(accepted, this.scope);
+      this.#accepted.add(accepted);
       this.#view = view;
       this.#lastRead = accepted;
       return view;
@@ -136,6 +138,25 @@ export class ClientSessionReplica {
     return { ...this.#view, update: delta(this.#doc) };
   }
 
+  /** Export a captured, confirmed read after later imports without changing the
+   * live Mirror. Only checkpoint boundaries create this temporary history fork. */
+  exportSnapshotAt(read: ClientSessionDelta): ClientSessionDelta['response'] {
+    this.#assertOpen();
+    if (!this.#doc || !this.#accepted.has(read)) throw Error('检查点不属于当前会话副本');
+    if (read.response.persisted === false || read.response.persistenceError)
+      throw Error('主机尚未持久确认此检查点');
+    const version = VersionVector.decode(decode(read.version));
+    let fork: LoroDoc | undefined;
+    try {
+      fork = this.#doc.forkAt(this.#doc.vvToFrontiers(version));
+      if (vv(fork) !== read.version) throw Error('检查点版本不可达');
+      return { ...read.response, update: delta(fork) };
+    } finally {
+      fork?.free();
+      version.free();
+    }
+  }
+
   #release() {
     this.#mirror?.dispose();
     this.#mirror = undefined;
@@ -144,6 +165,7 @@ export class ClientSessionReplica {
     this.#view = undefined;
     this.#lastRead = undefined;
     this.#projections = new WeakMap();
+    this.#accepted = new WeakSet();
   }
 
   /** Discard the current document before hydrating another checkpoint for the same scope. */

@@ -72,14 +72,17 @@ export async function loadWorkspaceSessionCache(
       return legacy == null ? null : { checkpoint: envelope(legacy, scope, sessionId), deltas: [] };
     }
     const head = headSchema.parse(raw);
-    const checkpoint = envelope(await backend.read(key.checkpoint), scope, sessionId);
+    const [savedCheckpoint, ...savedDeltas] = await Promise.all([
+      backend.read(key.checkpoint),
+      ...Array.from({ length: head.count }, (_, index) => backend.read(key.delta(index + 1))),
+    ]);
     current();
+    const checkpoint = envelope(savedCheckpoint, scope, sessionId);
     let version = head.checkpointVersion;
     let storedBytes = 0;
     const deltas: Envelope[] = [];
     for (let index = 1; index <= head.count; index++) {
-      const segment = segmentSchema.parse(await backend.read(key.delta(index)));
-      current();
+      const segment = segmentSchema.parse(savedDeltas[index - 1]);
       if (segment.baseVersion !== version) throw Error('缓存会话增量缺少前置版本。');
       deltas.push(envelope(segment.response, scope, sessionId));
       storedBytes += new TextEncoder().encode(JSON.stringify(segment.response)).byteLength;
@@ -108,7 +111,7 @@ export async function cacheWorkspaceSessionDelta(
   if (!backend.compareAndSetMany) throw Error('当前本机存储不能原子保存会话增量。');
   const key = keys(scope, sessionId);
   const bytes = new TextEncoder().encode(JSON.stringify(accepted.response)).byteLength;
-  await backend.exclusive(key.head, current, async () => {
+  return backend.exclusive(key.head, current, async () => {
     const original = await backend.read(key.head);
     current();
     const head = original == null ? undefined : headSchema.parse(original);
@@ -118,11 +121,22 @@ export async function cacheWorkspaceSessionDelta(
       try {
         const order = existing.compare(incoming);
         // A slower window cannot roll a confirmed cache back or discard a branch.
-        if (order === undefined || order > 0) return;
+        if (order === undefined || order > 0) return head.version;
       } finally {
         existing.free();
         incoming.free();
       }
+    }
+    if (head?.version === version) {
+      const latest = head.count
+        ? segmentSchema.parse(await backend.read(key.delta(head.count))).response
+        : envelope(await backend.read(key.checkpoint), scope, sessionId);
+      current();
+      const { update: _before, ...before } = latest;
+      const { update: _after, ...after } = response;
+      // A no-op read may carry different update bytes (full versus empty delta).
+      // Metadata-only changes still need a durable envelope at this same version.
+      if (canonical(before) === canonical(after)) return head.version;
     }
     const append =
       head &&
@@ -153,14 +167,16 @@ export async function cacheWorkspaceSessionDelta(
       const snapshot = envelope(checkpoint(), scope, sessionId);
       if (readClientSession(snapshot, { ...scope.target, sessionId }).version !== version)
         throw Error('缓存检查点与已确认增量版本不匹配。');
-      const before = await backend.read(key.checkpoint);
+      const count = head?.count ?? 0;
+      const [before, ...previous] = await Promise.all([
+        backend.read(key.checkpoint),
+        ...Array.from({ length: count }, (_, index) => backend.read(key.delta(index + 1))),
+      ]);
       current();
       changes.push({ key: key.checkpoint, expected: before, value: snapshot });
-      for (let index = 1; index <= (head?.count ?? 0); index++) {
+      for (let index = 1; index <= count; index++) {
         const segmentKey = key.delta(index);
-        const previous = await backend.read(segmentKey);
-        current();
-        changes.push({ key: segmentKey, expected: previous, delete: true });
+        changes.push({ key: segmentKey, expected: previous[index - 1], delete: true });
       }
       next = {
         cacheVersion: 2,
@@ -174,5 +190,6 @@ export async function cacheWorkspaceSessionDelta(
     changes.push({ key: key.head, expected: original, value: headSchema.parse(next) });
     current();
     await backend.compareAndSetMany!(changes, current);
+    return version;
   });
 }

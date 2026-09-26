@@ -151,6 +151,48 @@ test('envelope and bundle rejection cannot change a previously accepted document
   );
 });
 
+test('deferred checkpoints retain the captured confirmed version across later imports and reject foreign tokens', (t) => {
+  const f = fixture(),
+    replica = new ClientSessionReplica(scope),
+    other = new ClientSessionReplica(scope);
+  t.after(() => {
+    replica.dispose();
+    other.dispose();
+    f.close();
+  });
+  replica.read(f.response());
+  f.append(' confirmed');
+  const confirmed = replica.read(f.response(replica.view!.version)),
+    token = replica.lastRead!;
+  other.read(f.response());
+  assert.throws(() => replica.exportSnapshotAt(other.lastRead!), /当前会话副本/);
+  assert.throws(() => replica.exportSnapshotAt({ ...token }), /当前会话副本/);
+  f.append(' unpersisted');
+  const live = replica.read({ ...f.response(confirmed.version), persisted: false });
+  const exported = replica.exportSnapshotAt(token),
+    restored = readClientSession(exported, scope);
+  assert.equal(exported.persisted, true);
+  assert.equal(restored.version, token.version);
+  assert.deepEqual(restored.history, confirmed.history);
+  assert.equal(
+    replica.view,
+    live,
+    'historical export never checks out or rebuilds the live Mirror',
+  );
+  assert.throws(() => replica.exportSnapshotAt(replica.lastRead!), /持久确认/);
+  f.append(' resumed');
+  const resumed = replica.read(f.response(live.version));
+  assert.equal(
+    (resumed.history[1]!.items![0] as { text: string }).text,
+    'active confirmed unpersisted resumed',
+  );
+  replica.reset();
+  replica.read(f.response());
+  assert.throws(() => replica.exportSnapshotAt(token), /当前会话副本/);
+  replica.dispose();
+  assert.throws(() => replica.exportSnapshotAt(token), /已释放/);
+});
+
 test('missing predecessor deltas dispose the replica instead of applying pending bytes later', (t) => {
   const f = fixture();
   const replica = new ClientSessionReplica(scope);
