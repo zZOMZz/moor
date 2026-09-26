@@ -215,6 +215,7 @@ export const SessionTimeline = memo(function SessionTimeline({
   const container = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(!focusTurnId);
+  const lastScrollTop = useRef(0);
   const focused = useRef<string | undefined>(undefined);
   const scrollFrame = useRef<number | undefined>(undefined);
   const [awayFromLatest, setAwayFromLatest] = useState(false);
@@ -223,7 +224,10 @@ export const SessionTimeline = memo(function SessionTimeline({
     scrollFrame.current = requestAnimationFrame(() => {
       scrollFrame.current = undefined;
       const node = container.current;
-      if (node && following.current) node.scrollTop = node.scrollHeight;
+      if (node && following.current) {
+        node.scrollTop = node.scrollHeight;
+        lastScrollTop.current = node.scrollTop;
+      }
     });
   }, []);
   const scrollToLatest = useCallback(() => {
@@ -272,8 +276,13 @@ export const SessionTimeline = memo(function SessionTimeline({
         onScroll={(event) => {
           const node = event.currentTarget;
           const nearBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 72;
-          following.current = nearBottom;
-          setAwayFromLatest(!nearBottom);
+          const movedUp = node.scrollTop < lastScrollTop.current;
+          lastScrollTop.current = node.scrollTop;
+          // A delayed event from our last scroll may arrive after more output
+          // increased the height. Content growth alone must not stop following.
+          if (nearBottom) following.current = true;
+          else if (movedUp) following.current = false;
+          setAwayFromLatest(!following.current);
         }}
       >
         <div ref={content} className="session-timeline-content">

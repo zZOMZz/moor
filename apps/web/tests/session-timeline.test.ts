@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { JSDOM } from 'jsdom';
 import {
   SessionTimeline,
   SessionInformation,
@@ -102,4 +103,147 @@ test('turn changes need a matching saved reference and positive count; unknown o
     { ...fileDiff, state: 'pending', version: undefined, changeCount: 0 },
   ])
     assert.equal(hasTurnFileChanges({ ...turn, fileDiff: value }), false);
+});
+
+test('following survives delayed programmatic scroll events and preserves deliberate reading positions', async () => {
+  const dom = new JSDOM('<!doctype html><div id="app"></div>', {
+    url: 'https://synthetic.invalid',
+  });
+  const win = dom.window;
+  const globals = new Map<string, PropertyDescriptor | undefined>();
+  const install = (name: string, value: unknown) => {
+    globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+  };
+  for (const name of ['window', 'document', 'HTMLElement', 'Element', 'Node', 'Event', 'navigator'])
+    install(name, name === 'window' ? win : (win as any)[name]);
+  install('IS_REACT_ACT_ENVIRONMENT', true);
+  const frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 0;
+  install('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  });
+  install('cancelAnimationFrame', (id: number) => frames.delete(id));
+  const observers = new Set<ResizeObserverCallback>();
+  install(
+    'ResizeObserver',
+    class {
+      constructor(private callback: ResizeObserverCallback) {
+        observers.add(callback);
+      }
+      observe() {}
+      disconnect() {
+        observers.delete(this.callback);
+      }
+    },
+  );
+  const { act } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const root = createRoot(document.getElementById('app')!);
+  let revision = 0;
+  const render = (focusTurnId?: string) =>
+    root.render(
+      createElement(SessionTimeline, {
+        history: [{ ...turn, items: [{ type: 'text', text: String(++revision) }] }],
+        focusTurnId,
+        renderItem: () => null,
+      }),
+    );
+  const flushFrame = () => {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    for (const callback of callbacks) callback(16);
+  };
+  const resize = () => {
+    for (const callback of observers) callback([], {} as ResizeObserver);
+  };
+  try {
+    await act(async () => render());
+    const viewport = document.querySelector<HTMLElement>('.workspace-history')!;
+    let height = 1000;
+    let clientHeight = 400;
+    let top = 0;
+    Object.defineProperties(viewport, {
+      scrollHeight: { get: () => height },
+      clientHeight: { get: () => clientHeight },
+      scrollTop: {
+        get: () => top,
+        set: (value: number) => {
+          top = Math.max(0, Math.min(value, height - clientHeight));
+        },
+      },
+    });
+    const scroll = () => viewport.dispatchEvent(new win.Event('scroll'));
+    const jump = () => document.querySelector<HTMLButtonElement>('.session-jump-latest');
+    await act(async () => flushFrame());
+    assert.equal(top, 600);
+
+    // A React commit grows the content before the browser delivers the event
+    // queued by the prior programmatic scroll. No user has moved the viewport.
+    height += 300;
+    await act(async () => render());
+    await act(async () => scroll());
+    assert.equal(!!jump(), false);
+    await act(async () => flushFrame());
+    assert.equal(top, 900, 'the delayed event must not disable the queued follow');
+
+    // A genuine upward move must cancel even an already queued follow frame.
+    height += 200;
+    await act(async () => render());
+    await act(async () => {
+      viewport.scrollTop = 700;
+      scroll();
+    });
+    assert.ok(jump());
+    await act(async () => flushFrame());
+    assert.equal(top, 700);
+    await act(async () => resize());
+    assert.equal(frames.size, 0, 'resizing does not disturb someone reading history');
+
+    await act(async () => jump()!.click());
+    await act(async () => flushFrame());
+    assert.equal(top, 1100);
+    assert.equal(!!jump(), false);
+    clientHeight = 300;
+    await act(async () => resize());
+    await act(async () => scroll());
+    await act(async () => flushFrame());
+    assert.equal(top, 1200, 'viewport shrink preserves following');
+
+    const article = document.querySelector<HTMLElement>('[data-turn-id="turn"]')!;
+    let searchScrolls = 0;
+    article.scrollIntoView = () => {
+      searchScrolls++;
+      viewport.scrollTop = 200;
+      scroll();
+    };
+    await act(async () => render('turn'));
+    assert.equal(searchScrolls, 1);
+    assert.equal(document.activeElement, article);
+    assert.ok(jump());
+    height += 400;
+    await act(async () => render('turn'));
+    await act(async () => resize());
+    assert.equal(frames.size, 0);
+    assert.equal(top, 200, 'later output retains the search result position');
+
+    await act(async () => {
+      viewport.scrollTop = height - clientHeight;
+      scroll();
+    });
+    assert.equal(!!jump(), false, 'manually returning to the bottom resumes following');
+    height += 100;
+    await act(async () => resize());
+    assert.equal(frames.size, 1);
+    await act(async () => root.unmount());
+    assert.equal(frames.size, 0);
+    assert.equal(observers.size, 0);
+  } finally {
+    await act(async () => root.unmount());
+    win.close();
+    for (const [name, descriptor] of globals)
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+  }
 });

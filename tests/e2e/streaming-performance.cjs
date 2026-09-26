@@ -278,7 +278,9 @@ app
         15000,
         expression,
       );
-    await win.loadURL(ready.origin);
+    await win.loadURL(
+      ready.origin + (process.env.MOOR_STREAM_DIAGNOSTIC === '1' ? '/?diagnostic' : ''),
+    );
     win.show();
     win.focus();
     await until(`document.querySelector('.workspace-project')`);
@@ -513,6 +515,13 @@ app
         5000,
         'failure renderer report',
       ).catch(() => null);
+    if (win && !win.isDestroyed())
+      await win.webContents
+        .capturePage()
+        .then((image) =>
+          fs.writeFileSync(path.join(output, 'streaming-failure.png'), image.toPNG()),
+        )
+        .catch(() => {});
     save();
     console.error(error);
     process.exitCode = 1;
