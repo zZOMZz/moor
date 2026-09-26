@@ -36,6 +36,7 @@ test('shared timeline retains actionable records and share plain text, collapsed
     assert.doesNotMatch(html, /context-usage|用量/);
     assert.match(html, /<details class="session-tool-details">/);
     assert.match(html, /<span>工具与思考<\/span><span class="session-tool-count">1<\/span>/);
+    assert.doesNotMatch(html, /ordinary tool|session-tool-content/);
     assert.match(html, /approval required/);
     assert.match(html, /failed tool/);
     const tools = html.slice(html.indexOf('<details'), html.indexOf('</details>'));
@@ -69,11 +70,13 @@ test('tool disclosures preserve transcript order and keep active work outside co
       renderItem: (item: any) => createElement('p', null, item.title),
     }),
   );
-  assert.ok(html.indexOf('before operation') < html.indexOf('read synthetic file'));
-  assert.ok(html.indexOf('read synthetic file') < html.indexOf('after operation'));
-  assert.ok(html.indexOf('after operation') < html.indexOf('check synthetic file'));
   const disclosures = [...html.matchAll(/<details class="session-tool-details">.*?<\/details>/g)];
   assert.equal(disclosures.length, 2);
+  assert.doesNotMatch(html, /read synthetic file|check synthetic file|session-tool-content/);
+  assert.ok(html.indexOf('before operation') < disclosures[0]!.index!);
+  assert.ok(disclosures[0]!.index! < html.indexOf('after operation'));
+  assert.ok(html.indexOf('after operation') < disclosures[1]!.index!);
+  assert.ok(disclosures[1]!.index! < html.indexOf('running synthetic check'));
   for (const [details] of disclosures)
     assert.doesNotMatch(details, /running synthetic|waiting synthetic|failed synthetic/);
   assert.match(html, /正在执行/);

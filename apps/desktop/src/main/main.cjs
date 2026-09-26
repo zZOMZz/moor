@@ -38,6 +38,7 @@ const { DesktopWorkspaceBridge } = require('./workspace-bridge.cjs');
 const { createAppearance } = require('./appearance.cjs');
 const { DesktopAccount } = require('./account.cjs');
 const { snapshotJsonInput } = require('./json-input.cjs');
+const { registerDevPerformance } = require('./dev-performance.cjs');
 const { CLIENT_SCHEME, CLIENT_PRIVILEGES } = require('./client-assets.cjs');
 const {
   CLIENT_PARTITION,
@@ -785,6 +786,13 @@ ipcMain.handle('moor:google-auth-complete', (event, value) =>
 );
 ipcMain.handle('moor:google-auth-cancel', (event, value) => googleFor(event).cancel(event, value));
 ipcMain.handle('moor:workspace-client', (event, value) => workspaceClient.request(event, value));
+registerDevPerformance({
+  app,
+  ipcMain,
+  clientPolicy,
+  registry: contentWindows,
+  currentWindow: () => clientWindow,
+});
 function trustedWorkspaceDocument(event, value) {
   const registered = contentWindows.get(event.sender);
   if (

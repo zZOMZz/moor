@@ -31,6 +31,14 @@ pnpm production:check
 
 图保存在 `dist/validation/production-graphs`，属于本机验证结果，不进入 Relay、Host 或 Desktop 分发包。
 
+## 开发性能入口
+
+开发性能面板有两个精确的非生产实现：[performance-panel.ts](../apps/web/src/features/performance/performance-panel.ts) 和 [performance-metrics.ts](../apps/web/src/features/performance/performance-metrics.ts)。门禁将它们单列为 `developmentOnly`，并反向检查所有生产构建图：任意一个实现写入生产产物都会失败。此分类不覆盖整个目录，新模块仍须提供真实消费者。
+
+[desktop-entry.ts](../apps/web/src/app/desktop-entry.ts) 仍是生产样式与启动脚本的连接模块。它只有在真实生产图已加载、顶层除模块连接与类型声明外仅保留精确的 `__MOOR_DEV_PERFORMANCE__` 声明和开发条件块时，才能以零输出字节归入 `linkage`。开发例外还要求该条件块实际动态导入面板，且面板通过运行值导入指标实现；删除这条源码链后，两个实现恢复为无消费者错误。测试引用不参与分类。
+
+[Electron Vite 配置](../electron.vite.config.mjs) 在开发时启用该编译标记，生产时设为 `false`；[实际 Electron 检查](../scripts/validation/check-desktop-vite.mjs) 通过 Vite 开发入口等待面板 DOM 安装，并检查它初始关闭，同时验证生产入口没有面板和开发桥。运行 `pnpm check:desktop:electron` 验证真实开发消费者，运行完整构建和 `pnpm production:check` 验证发行产物未包含开发实现。这些检查使用隔离数据；不代表真实 Agent 账户或用户负载下的性能基准。
+
 ## 有限动态入口
 
 Desktop 主进程通过固定的 `workspace-client.mjs` 动态加载三个导出：`DesktopWorkspaceClient`、`accountManagementPlan` 和 `validateAccountManagementResult`。源码中的 `@nativeEntry` 注解说明具体调用方；生产门禁同时核对这个 bundle 的导出集合，避免把任意未使用导出都视为原生入口。

@@ -15,12 +15,16 @@ export function workspaceInteractionSnapshot(state: WorkspaceClientState) {
     .at(-1);
   const questions = turns.flatMap((turn) =>
     (turn.items ?? []).flatMap((item) => {
+      if (!item || typeof item !== 'object' || (item as { type?: unknown }).type !== 'question')
+        return [];
       const value = questionItemSchema.safeParse(item);
       return value.success && value.data.request.expectedTurnId === turn.id ? [value.data] : [];
     }),
   );
   const steers = turns.flatMap((turn) =>
     (turn.items ?? []).flatMap((item) => {
+      if (!item || typeof item !== 'object' || (item as { type?: unknown }).type !== 'steer')
+        return [];
       const value = steerItemSchema.safeParse(item);
       return value.success && value.data.expectedTurnId === turn.id ? [value.data] : [];
     }),

@@ -252,7 +252,6 @@ test('packaged workspace opens local projects without an account and preserves d
       state.session = {
         meta,
         metaBundle: { version: 1, entries: {} },
-        update: '',
         online: true,
         synced: true,
         persisted: true,
@@ -263,6 +262,10 @@ test('packaged workspace opens local projects without an account and preserves d
             role: 'assistant',
             timestamp: '2026-01-01T00:00:00.000Z',
             finished: true,
+            userId: undefined,
+            userTurnId: undefined,
+            read: undefined,
+            inputConfig: undefined,
             items: [
               { type: 'text', text: 'Hello <script>unsafe()</script>' },
               {
@@ -1131,6 +1134,29 @@ test('packaged workspace opens local projects without an account and preserves d
       state.session!.history = originalHistory;
       emit();
     });
+    const finishedTurn = state.session!.history[0]!,
+      turnFork = visibleButton('从此回合创建副本');
+    assert.equal(finishedTurn.finished, true);
+    assert.equal(turnFork.disabled, false);
+    await act(async () => {
+      state.offline = true;
+      emit();
+    });
+    assert.equal(state.session!.history[0], finishedTurn);
+    assert.equal(visibleButton('从此回合创建副本'), turnFork);
+    assert.equal(turnFork.disabled, true, 'the existing finished turn cannot fork while offline');
+    await act(async () => turnFork.click());
+    assert.equal(calls.includes('fork:read'), false, 'a disabled turn action cannot open Fork');
+    await act(async () => {
+      state.offline = false;
+      emit();
+    });
+    assert.equal(visibleButton('从此回合创建副本'), turnFork);
+    assert.equal(
+      turnFork.disabled,
+      false,
+      'the same turn action becomes available after reconnect',
+    );
     await act(async () => visibleButton('创建会话副本').click());
     assert.equal(calls.filter((value) => value === 'fork:read').length, 1);
     const forkSelects = dom.window.document.querySelectorAll<HTMLSelectElement>(

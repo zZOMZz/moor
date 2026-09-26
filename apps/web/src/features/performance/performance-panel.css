@@ -1,0 +1,124 @@
+.dev-performance {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10000;
+  font:
+    12px/1.5 system-ui,
+    sans-serif;
+  color: #e8e8e8;
+  color-scheme: dark;
+}
+.dev-performance [hidden] {
+  display: none !important;
+}
+.dev-performance button {
+  font: inherit;
+  cursor: pointer;
+  color: inherit;
+}
+.dev-performance button:focus-visible,
+.dev-performance summary:focus-visible {
+  outline: 2px solid #b8c6ff;
+  outline-offset: 3px;
+}
+.dev-performance-launcher {
+  padding: 7px 12px;
+  border: 1px solid #545454;
+  border-radius: 8px;
+  background: #252525;
+  box-shadow: 0 3px 14px #0004;
+}
+.dev-performance-launcher span {
+  color: #b7b7b7;
+  margin-left: 5px;
+  font-size: 10px;
+}
+.dev-performance-panel {
+  position: fixed;
+  top: 72px;
+  right: 16px;
+  width: min(320px, calc(100vw - 32px));
+  max-height: calc(100dvh - 88px);
+  overflow: auto;
+  padding: 14px;
+  box-sizing: border-box;
+  border: 1px solid #505050;
+  border-radius: 12px;
+  background: #202020;
+  box-shadow: 0 8px 32px #0006;
+}
+.dev-performance-panel header,
+.dev-performance-panel footer,
+.dev-performance-panel dl > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.dev-performance-panel header strong {
+  font-size: 13px;
+}
+.dev-performance-state {
+  margin-left: 8px;
+  font-size: 10px;
+  color: #a6d8b9;
+}
+.dev-performance-panel header button {
+  border: 0;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  padding: 3px 5px;
+}
+.dev-performance-caption {
+  color: #aaa;
+  font-size: 10px;
+  margin: 8px 0 12px;
+}
+.dev-performance-panel dl {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.dev-performance-panel dl > div {
+  min-height: 28px;
+}
+.dev-performance-panel dt {
+  color: #ccc;
+}
+.dev-performance-panel dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+}
+.dev-performance-panel small {
+  color: #999;
+  font-size: 10px;
+  margin-left: 4px;
+}
+.dev-performance-panel details {
+  border-top: 1px solid #414141;
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.dev-performance-panel summary {
+  cursor: pointer;
+  color: #b7b7b7;
+}
+.dev-performance-notes {
+  font-size: 11px;
+  color: #b7b7b7;
+}
+.dev-performance-notes p {
+  margin: 8px 0;
+}
+.dev-performance-panel footer {
+  margin-top: 12px;
+  color: #aaa;
+  font-size: 10px;
+}
+.dev-performance-panel footer button {
+  border: 1px solid #555;
+  border-radius: 6px;
+  background: #303030;
+  padding: 4px 9px;
+}

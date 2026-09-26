@@ -1,4 +1,4 @@
-import { mirror } from '@moor/session/model';
+import { mirror, vv } from '@moor/session/model';
 import { createGitHubClient } from '@moor/host/integrations/github/client';
 import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
 import type { SessionGithubOptions } from '@moor/host/sessions/github';
@@ -386,6 +386,174 @@ async function fixture(
     openOptions: () => openOptions,
   };
 }
+
+test('controller snapshots isolate mutations, share unchanged history and retain old scope and draft values', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  const doc = f.runtime.doc(id),
+    view = mirror(doc, id);
+  view.setState((state) => {
+    for (const index of [0, 1])
+      state.history.push({
+        id: 'snapshot-turn-' + index,
+        role: 'assistant',
+        timestamp: '2026-09-26T00:00:00.000Z',
+        userId: undefined,
+        userTurnId: undefined,
+        status: undefined,
+        read: undefined,
+        inputConfig: undefined,
+        fileDiff: null,
+        finished: true,
+        items: [{ type: 'text', text: 'Original ' + index }],
+      });
+  });
+  view.dispose();
+  f.runtime.persist(id, doc);
+  doc.free();
+  await f.controller.refreshSession();
+  const before = f.controller.state;
+  assert.equal(f.controller.state, before, 'unchanged reads reuse their immutable snapshot');
+  assert.throws(() => {
+    (before.session!.history[0].items![0] as any).text = 'Unexpected outside mutation';
+  }, TypeError);
+  assert.throws(() => {
+    before.catalogs.local!.targets[0].target.owner = 'another-account';
+  }, TypeError);
+  assert.throws(() => {
+    before.draft!.text = 'Unexpected draft';
+  }, TypeError);
+  assert.throws(() => before.ledger!.operations.push({} as never), TypeError);
+  await f.controller.saveDraft('New draft', {});
+  const afterDraft = f.controller.state;
+  assert.notEqual(afterDraft, before);
+  assert.equal(afterDraft.session, before.session, 'a draft write never copies the transcript');
+  assert.equal(before.draft!.text, '');
+  assert.equal(afterDraft.draft!.text, 'New draft');
+  assert.equal((await f.store.readDraft(before.scope!, id, () => {})).text, 'New draft');
+
+  const nextDoc = f.runtime.doc(id),
+    nextView = mirror(nextDoc, id);
+  nextView.setState((state) => {
+    (state.history[1].items![0] as any).text = 'Updated second turn';
+  });
+  nextView.dispose();
+  f.runtime.persist(id, nextDoc);
+  nextDoc.free();
+  await f.controller.refreshSession();
+  const streamed = f.controller.state;
+  assert.equal('update' in streamed.session!, false, 'UI snapshots contain no full CRDT export');
+  assert.equal(streamed.session!.history[0], before.session!.history[0]);
+  assert.notEqual(streamed.session!.history[1], before.session!.history[1]);
+  assert.equal((before.session!.history[1].items![0] as any).text, 'Original 1');
+  assert.equal((streamed.session!.history[1].items![0] as any).text, 'Updated second turn');
+
+  const second = await f.create();
+  assert.notEqual(second, id);
+  const entered = signal(),
+    release = signal();
+  f.fault.before = async (request) => {
+    if (
+      request.action === 'execute' &&
+      request.command.method === 'session' &&
+      request.command.params.sessionId === id
+    ) {
+      entered.resolve();
+      await release.promise;
+    }
+  };
+  const reopening = f.controller.openSession(id);
+  await entered.promise;
+  assert.equal(
+    f.controller.state.session,
+    streamed.session,
+    'warm navigation shares its frozen view',
+  );
+  release.resolve();
+  await reopening;
+  f.fault.before = undefined;
+  assert.equal((before.session!.history[1].items![0] as any).text, 'Original 1');
+  const reopened = f.controller.state;
+
+  f.controller.scheduleSync({
+    source: 'local',
+    connectionId: f.catalog.connectionId,
+    owner: f.catalog.owner,
+    kind: 'disconnected',
+  });
+  const disconnected = f.controller.state;
+  assert.equal(disconnected.syncDisconnected!.local, true);
+  assert.notEqual(before.syncDisconnected?.local, true);
+  assert.equal(disconnected.session, reopened.session);
+  await f.controller.disconnectSource('local');
+  const cleared = f.controller.state;
+  assert.equal(cleared.scope, undefined);
+  assert.equal(cleared.session, undefined);
+  assert.equal(cleared.catalogs.local, undefined);
+  assert.equal(before.session!.meta.id, id);
+  assert.equal(before.catalogs.local!.owner, f.catalog.owner);
+  assert.equal(before.scope!.target.owner, f.catalog.owner);
+  assert.equal(disconnected.syncDisconnected!.local, true);
+});
+
+test('a failed cache commit retains the imported delta for the next sync and checkpoints the recovered view', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  const before = f.controller.state;
+  const append = (text: string) => {
+    const doc = f.runtime.doc(id),
+      view = mirror(doc, id);
+    view.setState((state) => {
+      if (!state.history.length)
+        state.history.push({
+          id: 'cached-turn',
+          role: 'assistant',
+          timestamp: '2026-09-26T00:00:00.000Z',
+          userId: undefined,
+          userTurnId: undefined,
+          status: undefined,
+          read: undefined,
+          inputConfig: undefined,
+          fileDiff: null,
+          finished: true,
+          items: [{ type: 'text', text: '' }],
+        });
+      (state.history[0].items![0] as any).text += text;
+    });
+    view.dispose();
+    f.runtime.persist(id, doc);
+    const version = vv(doc);
+    doc.free();
+    return version;
+  };
+  const importedVersion = append('First ');
+  f.memory.failWrite = true;
+  await assert.rejects(f.controller.refreshSession(), /storage failure/);
+  assert.equal(
+    f.controller.state.session,
+    before.session,
+    'failed cache writes do not publish a saved view',
+  );
+  f.memory.failWrite = false;
+  append('second');
+  const requestsBefore = f.calls.length;
+  await f.controller.refreshSession();
+  const request = f.calls
+    .slice(requestsBefore)
+    .find((value) => value.action === 'execute' && value.command.method === 'session');
+  assert(request?.action === 'execute' && request.command.method === 'session');
+  assert.equal(
+    request.command.params.version,
+    importedVersion,
+    'the next request continues from the imported delta',
+  );
+  const current = f.controller.state;
+  assert.equal((current.session!.history[0].items![0] as any).text, 'First second');
+  assert.equal(before.session!.history.length, 0);
+  const cached = await f.store.cachedSession(current.scope!, id, () => {});
+  assert.deepEqual(cached!.history, current.session!.history);
+  assert.equal(cached!.version, current.session!.version);
+});
 
 test('sidebar reads preserve drafts across unchanged catalogs and reject replaced connections', async (t) => {
   const f = await fixture(t),
@@ -902,7 +1070,7 @@ test('a turn staged by another page during the Git read prevents the new directo
     const state = f.controller.state;
     const pending = buildSessionTurn({
       scope: { ...state.scope!.target, sessionId: state.sessionId! },
-      read: state.session,
+      read: await f.host.read(state.sessionId!),
       agent: state.session!.agent!,
       prompt: 'Concurrent draft',
       operationId: 'concurrent-turn',
@@ -2998,7 +3166,7 @@ test('a legacy Mutation already stored in the workspace remains byte-for-byte or
     scope = f.controller.state.scope!;
   const value = buildSessionTurn({
     scope: { ...scope.target, sessionId },
-    read: f.controller.state.session,
+    read: await f.host.read(sessionId),
     agent: f.controller.state.session!.agent!,
     prompt: 'Original legacy request',
     selection: {},

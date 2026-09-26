@@ -29,7 +29,8 @@ import {
 import { sessionReadResponseSchema, sessionListSchema } from '@moor/protocol/session-responses';
 import type { SessionPageRequest } from '@moor/protocol/session-page';
 import { workspaceSessionPage } from './workspace-session-pages';
-import { readClientSession } from '@moor/client/session-client';
+import { ClientSessionReplica } from '@moor/client/session-client';
+import { cacheWorkspaceSessionDelta, loadWorkspaceSessionCache } from './workspace-session-cache';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { IndexedStorage, type StorageBackend } from '../../platform/indexed-storage';
 import {
@@ -1294,16 +1295,34 @@ export class WorkspaceStore {
     );
   }
   async cacheSession(scope: WorkspaceScope, sessionId: string, raw: unknown, current: () => void) {
-    readClientSession(raw, { ...scope.target, sessionId });
-    const value = sessionReadResponseSchema.parse(raw);
-    // An unpersisted host view must never replace a confirmed offline snapshot.
-    if (value.persisted === false || value.persistenceError) return;
-    const key = canonical(['moor-desktop-session-v1', scopeSchema.parse(scope), sessionId]);
-    await this.backend.exclusive(key, current, async () => {
-      const before = await this.backend.read(key);
-      current();
-      await this.backend.compareAndSet(key, before, value, current);
-    });
+    const replica = new ClientSessionReplica({ ...scopeSchema.parse(scope).target, sessionId });
+    try {
+      replica.read(raw);
+      await this.cacheSessionDelta(scope, sessionId, replica.lastRead, current, () =>
+        replica.exportSnapshot(),
+      );
+    } finally {
+      replica.dispose();
+    }
+  }
+  loadSessionCache(scope: WorkspaceScope, sessionId: string, current: () => void) {
+    return loadWorkspaceSessionCache(this.backend, scopeSchema.parse(scope), sessionId, current);
+  }
+  cacheSessionDelta(
+    scope: WorkspaceScope,
+    sessionId: string,
+    verifiedDelta: unknown,
+    current: () => void,
+    checkpoint: () => z.infer<typeof sessionReadResponseSchema>,
+  ) {
+    return cacheWorkspaceSessionDelta(
+      this.backend,
+      scopeSchema.parse(scope),
+      sessionId,
+      verifiedDelta,
+      current,
+      checkpoint,
+    );
   }
   async sessionList(scope: WorkspaceScope, current: () => void, input?: unknown) {
     const normalized = scopeSchema.parse(scope);
@@ -1373,13 +1392,19 @@ export class WorkspaceStore {
     return value;
   }
   async cachedSession(scope: WorkspaceScope, sessionId: string, current: () => void) {
-    current();
-    const raw = await this.backend.read(
-      canonical(['moor-desktop-session-v1', scopeSchema.parse(scope), sessionId]),
-    );
-    current();
-    if (raw != null) return readClientSession(raw, { ...scope.target, sessionId });
-    return null;
+    const chain = await this.loadSessionCache(scope, sessionId, current);
+    if (!chain) return null;
+    const replica = new ClientSessionReplica({ ...scope.target, sessionId });
+    try {
+      replica.read(chain.checkpoint);
+      for (const response of chain.deltas) replica.read(response);
+      current();
+      const read = replica.view!;
+      if (chain.version && read.version !== chain.version) throw Error('缓存会话增量版本不匹配。');
+      return read;
+    } finally {
+      replica.dispose();
+    }
   }
   close() {
     this.backend.close?.();

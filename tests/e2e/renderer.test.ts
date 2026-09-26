@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-for (const scenario of ['browser-workspace', 'workspace-layout']) {
+for (const scenario of ['browser-workspace', 'workspace-layout', 'performance-panel']) {
   test(`Chromium: ${scenario}`, { timeout: 60000 }, async (t) => {
     assert(
       process.platform !== 'linux' || process.env.DISPLAY,

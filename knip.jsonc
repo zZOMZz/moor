@@ -13,6 +13,7 @@
         "tests/fixtures/synthetic-*.mjs",
         "tests/fixtures/vite-desktop.cjs",
         "tests/fixtures/workspace-layout-fixture.tsx",
+        "tests/fixtures/performance-panel-fixture.ts",
       ],
       "project": ["scripts/**/*.{ts,tsx,js,cjs,mjs}", "tests/**/*.{ts,tsx,js,cjs,mjs}"],
       // Node test bundles resolve one external CRDT/WASM runtime from the root.

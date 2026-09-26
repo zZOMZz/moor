@@ -1,6 +1,7 @@
 import { changeRunSelection } from '@moor/protocol/run-config';
 import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import { ComposerInput } from '../features/sessions/composer-input';
+import { sessionPerformanceCommitted } from '../features/performance/performance-signals';
 import { Popover } from '@base-ui/react/popover';
 import { useContentDockLayout } from '../features/files/workspace-content-layout';
 import { UsagePanel, latestContextUsage } from '../components/usage-panel';
@@ -26,6 +27,7 @@ import {
   SessionInformation,
   hasTurnFileChanges,
   turnFileChanges,
+  type TimelineTurn,
 } from '../features/sessions/session-timeline';
 import { SESSION_FORK_FEATURE } from '@moor/protocol/fork-protocol';
 import { PROJECT_DIFF_FEATURE } from '@moor/protocol/project-content-protocol';
@@ -36,7 +38,18 @@ import {
 import { WorkspaceAttentionUI } from '../features/attention/workspace-attention-ui';
 import { WorkspaceSessionTools } from '../features/workspace/workspace-session-tools';
 import { WorkspaceGithubUI } from '../features/github/workspace-github-ui';
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  memo,
+  useMemo,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Folder,
@@ -81,7 +94,10 @@ import type { z } from 'zod';
 import { RunControls } from '../components/ui';
 import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
 import { markdown } from '../components/content';
-import { sessionPermissionReviews } from '@moor/client/session-client';
+import {
+  sessionPermissionReviews,
+  type SessionPermissionReview,
+} from '@moor/client/session-client';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import {
   attachmentInputReason,
@@ -103,6 +119,163 @@ const message = (error: unknown) =>
 function readable(value: unknown) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
+
+const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory({
+  history,
+  scope,
+  sessionId,
+  controller,
+  busy,
+  live,
+  run,
+  reviews,
+  focusTurnId,
+  canReadChanges,
+  canFork,
+  contentPanel,
+  forkPanel,
+}: {
+  history: NonNullable<WorkspaceClientState['session']>['history'];
+  scope: NonNullable<WorkspaceClientState['scope']>;
+  sessionId: string;
+  controller: WorkspaceController;
+  busy: boolean;
+  live: boolean;
+  run: Run;
+  reviews: SessionPermissionReview[];
+  focusTurnId?: string;
+  canReadChanges: boolean;
+  canFork: boolean;
+  contentPanel: RefObject<WorkspaceContentHandle | null>;
+  forkPanel: RefObject<WorkspaceForkHandle | null>;
+}) {
+  const renderItem = useCallback(
+    (item: unknown, _turn: TimelineTurn, index: number) => {
+      if (!item || typeof item !== 'object') return null;
+      const entry = item as Record<string, unknown>;
+      if (entry.type === 'attachment') {
+        const reference = attachmentReferenceSchema.safeParse(entry.attachment);
+        if (reference.success)
+          return (
+            <WorkspaceAttachmentView
+              key={index}
+              controller={controller}
+              scope={scope}
+              sessionId={sessionId}
+              reference={reference.data}
+              busy={busy}
+              run={run}
+            />
+          );
+      }
+      if (entry.type === 'text')
+        return (
+          <div
+            key={index}
+            dangerouslySetInnerHTML={{
+              __html: markdown(typeof entry.text === 'string' ? entry.text : ''),
+            }}
+          />
+        );
+      if (entry.type === 'system_notice')
+        return (
+          <p key={index} role="status">
+            {readable(entry.text ?? entry.message ?? entry.meta ?? entry.name)}
+          </p>
+        );
+      return (
+        <details key={index}>
+          <summary>
+            {readable(
+              entry.title ??
+                (entry.type === 'thought'
+                  ? '思考过程'
+                  : entry.type === 'tool_call'
+                    ? '工具调用'
+                    : '回合详情'),
+            )}
+          </summary>
+          <pre>{readable(entry)}</pre>
+        </details>
+      );
+    },
+    [controller, scope, sessionId, busy, run],
+  );
+  const afterTurn = useCallback(
+    (turn: TimelineTurn) =>
+      reviews
+        .filter((review) => review.assistantTurnId === turn.id)
+        .map((review) => (
+          <section className="workspace-permission" key={review.requestId} aria-label="待审批操作">
+            <strong>需要你的确认</strong>
+            <pre>{readable(JSON.parse(review.itemJson))}</pre>
+            {review.options.map((option) => (
+              <button
+                key={option.optionId}
+                disabled={busy || !live}
+                onClick={() =>
+                  run(() =>
+                    controller.respondPermission(review, {
+                      outcome: 'selected',
+                      optionId: option.optionId,
+                    }),
+                  )
+                }
+              >
+                {option.name}
+              </button>
+            ))}
+            <button
+              disabled={busy || !live}
+              onClick={() =>
+                run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
+              }
+            >
+              取消操作
+            </button>
+          </section>
+        )),
+    [reviews, busy, live, run, controller],
+  );
+  const actions = useCallback(
+    (turn: TimelineTurn) => (
+      <>
+        {hasTurnFileChanges(turn) && canReadChanges && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => contentPanel.current?.open('changes', turn.id)}
+          >
+            查看回合文件变更 · {turnFileChanges(turn)!.changeCount}
+          </button>
+        )}
+        {turn.finished && canFork && (
+          <button
+            type="button"
+            className="session-fork-action"
+            aria-label="从此回合创建副本"
+            title="从此回合创建副本"
+            disabled={busy || !live}
+            onClick={() => forkPanel.current?.open(turn.id)}
+          >
+            <GitFork size={15} />
+          </button>
+        )}
+      </>
+    ),
+    [canReadChanges, canFork, busy, live, contentPanel, forkPanel],
+  );
+  return (
+    <SessionTimeline
+      history={history}
+      live={live}
+      focusTurnId={focusTurnId}
+      renderItem={renderItem}
+      afterTurn={reviews.length ? afterTurn : undefined}
+      actions={actions}
+    />
+  );
+});
 
 function WorkspaceConversation({
   controller,
@@ -141,6 +314,14 @@ function WorkspaceConversation({
   const [contentDocked, setContentDocked] = useState(false);
   const contentLayout = useContentDockLayout(contentDocked);
   const composerInput = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    sessionPerformanceCommitted(
+      controller,
+      state.sessionId,
+      state.session?.version,
+      composerInput.current,
+    );
+  }, [controller, state.sessionId, state.session?.version]);
   const [environmentOpen, setEnvironmentOpen] = useState(false);
   const readBranch = useCallback(() => {
     let active = true;
@@ -202,6 +383,21 @@ function WorkspaceConversation({
     node?.focus({ preventScroll: true });
   }, [state.searchFocus?.turnId, state.searchFocus?.sessionId, state.sessionId]);
   const session = state.session;
+  const reviews = useMemo(
+    () =>
+      session && state.scope && state.sessionId
+        ? sessionPermissionReviews(session, { ...state.scope.target, sessionId: state.sessionId })
+        : [],
+    [session, state.scope, state.sessionId],
+  );
+  const activeTurns = useMemo(
+    () => session?.history.filter((turn) => turn.role === 'assistant' && !turn.finished) ?? [],
+    [session?.history],
+  );
+  const contextUsage = useMemo(
+    () => (session ? latestContextUsage(session.history) : undefined),
+    [session?.history],
+  );
   if (!session || !state.sessionId || !state.scope) {
     const loading = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
     if (loading)
@@ -251,11 +447,6 @@ function WorkspaceConversation({
       </section>
     );
   }
-  const reviews = sessionPermissionReviews(session, {
-    ...state.scope.target,
-    sessionId: state.sessionId,
-  });
-  const activeTurns = session.history.filter((turn) => turn.role === 'assistant' && !turn.finished);
   let validation = '';
   try {
     resolveRunSelection(selection, session.agent?.runConfig);
@@ -266,7 +457,6 @@ function WorkspaceConversation({
   const retiredTask = state.ledger?.tasks?.[state.sessionId]?.pending;
   const attachments = state.ledger?.attachments?.[state.sessionId]?.items ?? [];
   const attachmentSupported = state.project?.runtime.features?.includes(ATTACHMENTS_FEATURE);
-  const contextUsage = latestContextUsage(session.history);
   const contextPercent =
     contextUsage && contextUsage.size > 0
       ? Math.min(100, Math.max(0, (contextUsage.used / contextUsage.size) * 100))
@@ -545,123 +735,20 @@ function WorkspaceConversation({
                 : '连接已恢复，当前会话尚未重新同步，正在显示本机缓存。'}
           </p>
         )}
-        <SessionTimeline
+        <WorkspaceConversationHistory
           history={session.history}
+          scope={state.scope}
+          sessionId={state.sessionId}
+          controller={controller}
+          busy={busy}
           live={sessionWritable}
+          run={run}
+          reviews={reviews}
           focusTurnId={state.focusedTurnId ?? state.searchFocus?.turnId}
-          renderItem={(item, turn, index) => {
-            if (!item || typeof item !== 'object') return null;
-            const entry = item as Record<string, unknown>;
-            if (entry.type === 'attachment') {
-              const reference = attachmentReferenceSchema.safeParse(entry.attachment);
-              if (reference.success)
-                return (
-                  <WorkspaceAttachmentView
-                    key={index}
-                    controller={controller}
-                    scope={state.scope!}
-                    sessionId={state.sessionId!}
-                    reference={reference.data}
-                    busy={busy}
-                    run={run}
-                  />
-                );
-            }
-            if (entry.type === 'text')
-              return (
-                <div
-                  key={index}
-                  dangerouslySetInnerHTML={{
-                    __html: markdown(typeof entry.text === 'string' ? entry.text : ''),
-                  }}
-                />
-              );
-            if (entry.type === 'system_notice')
-              return (
-                <p key={index} role="status">
-                  {readable(entry.text ?? entry.message ?? entry.meta ?? entry.name)}
-                </p>
-              );
-            return (
-              <details key={index}>
-                <summary>
-                  {readable(
-                    entry.title ??
-                      (entry.type === 'thought'
-                        ? '思考过程'
-                        : entry.type === 'tool_call'
-                          ? '工具调用'
-                          : '回合详情'),
-                  )}
-                </summary>
-                <pre>{readable(entry)}</pre>
-              </details>
-            );
-          }}
-          afterTurn={(turn) =>
-            reviews
-              .filter((review) => review.assistantTurnId === turn.id)
-              .map((review) => (
-                <section
-                  className="workspace-permission"
-                  key={review.requestId}
-                  aria-label="待审批操作"
-                >
-                  <strong>需要你的确认</strong>
-                  <pre>{readable(JSON.parse(review.itemJson))}</pre>
-                  {review.options.map((option) => (
-                    <button
-                      key={option.optionId}
-                      disabled={busy || !sessionWritable}
-                      onClick={() =>
-                        run(() =>
-                          controller.respondPermission(review, {
-                            outcome: 'selected',
-                            optionId: option.optionId,
-                          }),
-                        )
-                      }
-                    >
-                      {option.name}
-                    </button>
-                  ))}
-                  <button
-                    disabled={busy || !sessionWritable}
-                    onClick={() =>
-                      run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
-                    }
-                  >
-                    取消操作
-                  </button>
-                </section>
-              ))
-          }
-          actions={(turn) => (
-            <>
-              {hasTurnFileChanges(turn) &&
-                state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE) && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => contentPanel.current?.open('changes', turn.id)}
-                  >
-                    查看回合文件变更 · {turnFileChanges(turn)!.changeCount}
-                  </button>
-                )}
-              {turn.finished && state.project?.runtime.features?.includes(SESSION_FORK_FEATURE) && (
-                <button
-                  type="button"
-                  className="session-fork-action"
-                  aria-label="从此回合创建副本"
-                  title="从此回合创建副本"
-                  disabled={busy || !sessionWritable}
-                  onClick={() => forkPanel.current?.open(turn.id)}
-                >
-                  <GitFork size={15} />
-                </button>
-              )}
-            </>
-          )}
+          canReadChanges={!!state.project?.runtime.features?.includes(PROJECT_DIFF_FEATURE)}
+          canFork={!!state.project?.runtime.features?.includes(SESSION_FORK_FEATURE)}
+          contentPanel={contentPanel}
+          forkPanel={forkPanel}
         />
         {!!pending.length && (
           <details className="workspace-pending">
@@ -1124,7 +1211,7 @@ export function WorkspaceApp({
   localAvailable?: boolean;
   accountExtras?: ReactNode;
 }) {
-  const [state, setState] = useState(controller.state);
+  const [state, setState] = useState(() => controller.state);
   const [view, setView] = useState<'plain' | 'connections'>('plain');
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
@@ -1295,7 +1382,7 @@ export function WorkspaceApp({
     },
     [controller, onAccountVerified, localAvailable],
   );
-  const run: Run = (task) => {
+  const run = useCallback<Run>((task) => {
     if (action.current) return false;
     action.current = true;
     setBusy(true);
@@ -1309,7 +1396,7 @@ export function WorkspaceApp({
         if (mounted.current) setBusy(false);
       });
     return true;
-  };
+  }, []);
   const navigate: Run = (task) => {
     if (action.current || plainDirty) return false;
     const version = ++navigationAction.current;

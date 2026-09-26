@@ -1,4 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
+if (typeof __MOOR_DESKTOP_DEVELOPMENT__ !== 'undefined' && __MOOR_DESKTOP_DEVELOPMENT__ === true)
+  contextBridge.exposeInMainWorld('moorDevPerformance', {
+    version: 1,
+    sample: () => ipcRenderer.invoke('moor:dev-performance'),
+  });
 contextBridge.exposeInMainWorld('moorWorkspace', {
   version: 1,
   request: (value) => ipcRenderer.invoke('moor:workspace-client', value),
