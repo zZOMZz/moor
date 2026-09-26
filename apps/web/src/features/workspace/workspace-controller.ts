@@ -179,6 +179,7 @@ const projectListingIdentity = (project: Project) => ({
   },
 });
 type Session = Omit<ReturnType<typeof readClientSession>, 'update'>;
+type ClientSessionDelta = NonNullable<ClientSessionReplica['lastRead']>;
 type Context = {
   scope: WorkspaceScope;
   project: Project;
@@ -196,6 +197,8 @@ export type WorkspaceClientState = {
   sessionListError?: string;
   sessionId?: string;
   session?: Session;
+  /** Host confirmation and an offline cache commit are independent facts. */
+  sessionCache?: { status: 'saving' | 'saved' | 'failed' | 'unavailable'; version?: string };
   offline: boolean;
   sessionLoad:
     | { status: 'idle' }
@@ -334,6 +337,17 @@ export class WorkspaceController {
   #sessionViewBytes = 0;
   #sessionReplica?: ClientSessionReplica;
   #sessionReplicaKey?: string;
+  #sessionCacheQueue?: {
+    replica: ClientSessionReplica;
+    pending: { read: ClientSessionDelta; bytes: number }[];
+    bytes: number;
+    current: () => void;
+    context: Context;
+    running?: Promise<void>;
+  };
+  #sessionFlight?: { generation: number; again: boolean; promise: Promise<void> };
+  #sessionSyncPending = false;
+  #sessionSyncing?: { generation: number; promise: Promise<void> };
   #catalogVersions = { local: 0, remote: 0 };
   #sessionReadVersion = 0;
   #sessionListReadVersion = 0;
@@ -350,7 +364,6 @@ export class WorkspaceController {
   >();
   #syncing?: Promise<void>;
   #cancelSync?: () => void;
-  #sessionReads = 0;
   #sessionListReads = 0;
   #syncAfterRead = false;
   #syncAfterList = false;
@@ -363,6 +376,8 @@ export class WorkspaceController {
       uuid?: () => string;
       now?: () => string;
       schedule?: (ms: number, work: () => void) => () => void;
+      /** Yield low-priority cache work; tests inject deterministic barriers. */
+      yieldCache?: () => Promise<void>;
       restoreLegacy?: (
         scope: WorkspaceScope,
         sessionId: string,
@@ -452,6 +467,16 @@ export class WorkspaceController {
       this.#emit();
       return;
     }
+    const scope = this.#state.scope;
+    if (
+      this.#state.sessionId &&
+      scope?.source === notice.source &&
+      (!notice.deviceId || scope.target.deviceId === notice.deviceId) &&
+      (!notice.workspaceId || scope.target.workspaceId === notice.workspaceId) &&
+      (!notice.sessionId || notice.sessionId === this.#state.sessionId) &&
+      (notice.kind === 'connected' || notice.workspaceId || notice.sessionId)
+    )
+      this.#sessionSyncPending = true;
     const prior = this.#syncPending.get(notice.source),
       catalogOnly = notice.kind === 'changed' && !notice.workspaceId && !notice.sessionId;
     this.#syncPending.set(
@@ -471,22 +496,65 @@ export class WorkspaceController {
   /** Read-only catch-up. Never retries a draft, approval or pending operation. */
   scheduleSync(raw?: unknown) {
     this.#enqueueSync(raw);
+    void this.#drainSessionSync();
+    this.#scheduleSidebarSync();
+  }
+  #scheduleSidebarSync() {
     if (this.#closed || this.#cancelSync || !this.#syncPending.size) return;
-    this.#cancelSync = this.#schedule(150, () => {
+    this.#cancelSync = this.#schedule(500, () => {
       this.#cancelSync = undefined;
       void this.#drainSync();
     });
   }
-  synchronize(raw?: unknown) {
+  async synchronize(raw?: unknown) {
     this.#enqueueSync(raw);
     this.#cancelSync?.();
     this.#cancelSync = undefined;
-    return this.#drainSync();
+    await Promise.all([this.#drainSessionSync(), this.#drainSync()]);
+    await this.#drainSessionSync();
+  }
+  #drainSessionSync(): Promise<void> {
+    if (this.#sessionSyncing?.generation === this.#generation) return this.#sessionSyncing.promise;
+    if (this.#closed || !this.#sessionSyncPending) return Promise.resolve();
+    const drain = { generation: this.#generation, promise: Promise.resolve() };
+    this.#sessionSyncing = drain;
+    // A microtask joins a synchronous notification burst without adding a timer
+    // to the active transcript. Subsequent reads only chase notices received in flight.
+    drain.promise = Promise.resolve()
+      .then(async () => {
+        while (
+          !this.#closed &&
+          this.#generation === drain.generation &&
+          this.#sessionSyncing === drain &&
+          this.#sessionSyncPending
+        ) {
+          this.#sessionSyncPending = false;
+          if (!this.#state.sessionId) continue;
+          if (['loading-cache', 'refreshing'].includes(this.#state.sessionLoad.status)) {
+            this.#syncAfterRead = true;
+            break;
+          }
+          try {
+            await this.refreshSession({ announce: false, background: true });
+          } catch {
+            // The read retains the confirmed transcript and reports connectivity.
+          }
+        }
+      })
+      .finally(() => {
+        // A response from a previous selection cannot consume its successor's
+        // pending notice or clear the new selection's in-flight drain.
+        if (this.#sessionSyncing !== drain) return;
+        this.#sessionSyncing = undefined;
+        if (drain.generation === this.#generation && this.#sessionSyncPending && !this.#closed)
+          void this.#drainSessionSync();
+      });
+    return drain.promise;
   }
   #drainSync(): Promise<void> {
     if (this.#syncing) return this.#syncing;
     this.#syncing = (async () => {
-      while (!this.#closed && this.#syncPending.size) {
+      if (!this.#closed && this.#syncPending.size) {
         const pending = [...this.#syncPending.values()];
         this.#syncPending.clear();
         for (const notice of pending) {
@@ -530,11 +598,10 @@ export class WorkspaceController {
             const current = this.#current();
             await this.refreshSessions({ background: true });
             current();
-            if (
-              this.#state.sessionId &&
-              (!notice.sessionId || notice.sessionId === this.#state.sessionId)
-            )
-              await this.refreshSession({ announce: false, background: true });
+            if (notice.kind === 'connected' && this.#state.sessionId) {
+              this.#sessionSyncPending = true;
+              void this.#drainSessionSync();
+            }
           } catch {
             // Read methods retain the last confirmed view and expose their connection state.
           }
@@ -542,6 +609,7 @@ export class WorkspaceController {
       }
     })().finally(() => {
       this.#syncing = undefined;
+      this.#scheduleSidebarSync();
     });
     return this.#syncing;
   }
@@ -564,6 +632,9 @@ export class WorkspaceController {
   #discardSessionReplica(replica = this.#sessionReplica) {
     replica?.dispose();
     if (this.#sessionReplica === replica) {
+      if (this.#sessionCacheQueue) this.#sessionCacheQueue.pending = [];
+      this.#sessionCacheQueue = undefined;
+      delete this.#state.sessionCache;
       this.#sessionReplica = undefined;
       this.#sessionReplicaKey = undefined;
     }
@@ -576,6 +647,92 @@ export class WorkspaceController {
       this.#sessionReplicaKey = key;
     }
     return this.#sessionReplica;
+  }
+  #queueSessionCache(replica: ClientSessionReplica, read: ClientSessionDelta) {
+    if (read.response.persisted === false || read.response.persistenceError) {
+      this.#state.sessionCache = { status: 'unavailable' };
+      return;
+    }
+    let queue = this.#sessionCacheQueue;
+    if (!queue || queue.replica !== replica) {
+      const context = this.#context();
+      queue = { replica, context, pending: [], bytes: 0, current: () => {} };
+      const captured = queue;
+      queue.current = () => {
+        context.current();
+        const catalog = this.#state.catalogs[context.scope.source];
+        if (
+          this.#sessionCacheQueue !== captured ||
+          this.#sessionReplica !== replica ||
+          catalog?.connectionId !== context.connectionId ||
+          catalog.owner !== context.scope.target.owner
+        )
+          throw Error('缓存保存范围已改变');
+      };
+      this.#sessionCacheQueue = queue;
+    }
+    // Retain small normal deltas, not one full export per response. A stalled
+    // writer holds at most one active write plus 32 / 1MiB pending envelopes
+    // (or one protocol-bounded oversized envelope). A skipped base checkpoints
+    // the captured final confirmed version when the writer catches up.
+    const bytes = immutableJsonBytes(read.response);
+    if (queue.pending.length >= 32 || queue.bytes + bytes > 1024 * 1024) {
+      queue.pending = [];
+      queue.bytes = 0;
+    }
+    queue.pending.push({ read, bytes });
+    queue.bytes += bytes;
+    this.#state.sessionCache = { status: 'saving', version: this.#state.sessionCache?.version };
+    if (queue.running) return;
+    const captured = queue;
+    const drain = async () => {
+      while (captured.pending.length) {
+        // Publishing the Host view never waits for storage or compaction. Yield
+        // between commits so a cache backlog cannot occupy one continuous task.
+        await (this.options.yieldCache?.() ?? new Promise<void>((done) => setTimeout(done, 0)));
+        try {
+          captured.current();
+        } catch {
+          return;
+        }
+        const next = captured.pending.shift()!;
+        captured.bytes -= next.bytes;
+        let savedVersion: string | undefined;
+        let failed = false;
+        try {
+          savedVersion = await this.store.cacheSessionDelta(
+            captured.context.scope,
+            captured.context.sessionId!,
+            next.read,
+            captured.current,
+            () => {
+              captured.current();
+              return replica.exportSnapshotAt(next.read);
+            },
+          );
+        } catch {
+          failed = true;
+        }
+        try {
+          captured.current();
+        } catch {
+          return;
+        }
+        if (!captured.pending.length && replica.lastRead === next.read) {
+          this.#state.sessionCache = failed
+            ? { status: 'failed', version: this.#state.sessionCache?.version }
+            : { status: 'saved', version: savedVersion };
+          this.#emit();
+        }
+      }
+    };
+    const start = () => {
+      captured.running = drain().finally(() => {
+        captured.running = undefined;
+        if (captured.pending.length && this.#sessionCacheQueue === captured) start();
+      });
+    };
+    start();
   }
   #exportSessionSnapshot(context: Context) {
     context.current();
@@ -751,6 +908,8 @@ export class WorkspaceController {
     this.#emit();
   }
   #clearSelection() {
+    this.#sessionSyncPending = false;
+    this.#syncAfterRead = false;
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;
@@ -1109,6 +1268,8 @@ export class WorkspaceController {
     const scope = this.#context(sessionId).scope,
       view = this.#sessionView(scope, sessionId);
     this.#generation++;
+    this.#sessionSyncPending = false;
+    this.#syncAfterRead = false;
     this.#discardSessionReplica();
     const replica = this.#replica(scope, sessionId);
     this.#state.sessionId = sessionId;
@@ -1183,7 +1344,8 @@ export class WorkspaceController {
       this.#emit();
       if (this.#syncAfterRead) {
         this.#syncAfterRead = false;
-        this.scheduleSync();
+        this.#sessionSyncPending = true;
+        void this.#drainSessionSync();
       }
     }
     current();
@@ -1192,20 +1354,41 @@ export class WorkspaceController {
       this.#emit();
     }
   }
-  async refreshSession({
+  refreshSession({
     announce = true,
     settle = true,
     background = false,
-  }: { announce?: boolean; settle?: boolean; background?: boolean } = {}) {
-    if (
-      background &&
-      (this.#sessionReads ||
-        ['loading-cache', 'refreshing'].includes(this.#state.sessionLoad.status))
-    ) {
+  }: { announce?: boolean; settle?: boolean; background?: boolean } = {}): Promise<void> {
+    if (background && ['loading-cache', 'refreshing'].includes(this.#state.sessionLoad.status)) {
       this.#syncAfterRead = true;
-      return;
+      return Promise.resolve();
     }
-    const context = this.#context();
+    const previous = this.#sessionFlight;
+    if (previous?.generation === this.#generation) {
+      previous.again = true;
+      return previous.promise;
+    }
+    const flight = { generation: this.#generation, again: false, promise: Promise.resolve() };
+    this.#sessionFlight = flight;
+    flight.promise = Promise.resolve().then(async () => {
+      try {
+        do {
+          flight.again = false;
+          if (flight.generation !== this.#generation || this.#closed) return;
+          await this.#readSessionOnce({ announce, settle });
+          announce = false;
+        } while (flight.again);
+      } finally {
+        // Clear the flight before its promise resolves: a request arriving in a
+        // following microtask must start a read, not join an already-drained one.
+        if (this.#sessionFlight === flight) this.#sessionFlight = undefined;
+      }
+    });
+    return flight.promise;
+  }
+  async #readSessionOnce({ announce, settle }: { announce: boolean; settle: boolean }) {
+    const context = this.#context(),
+      generation = this.#generation;
     const version = ++this.#sessionReadVersion,
       selected = context.current;
     context.current = () => {
@@ -1213,7 +1396,6 @@ export class WorkspaceController {
       if (version !== this.#sessionReadVersion) throw Error('会话读取已由较新的请求替代。');
     };
     if (!context.sessionId) throw Error('请先选择会话。');
-    this.#sessionReads++;
     const replica = this.#replica(context.scope, context.sessionId),
       base = replica.view;
     const source =
@@ -1244,16 +1426,7 @@ export class WorkspaceController {
         this.#discardSessionReplica(replica);
         throw error;
       }
-      await this.store.cacheSessionDelta(
-        context.scope,
-        context.sessionId,
-        replica.lastRead!,
-        context.current,
-        () => {
-          context.current();
-          return replica.exportSnapshot();
-        },
-      );
+      this.#queueSessionCache(replica, replica.lastRead!);
       context.current();
       this.#state.session = session;
       if (base?.version && session.version && base.version !== session.version)
@@ -1269,10 +1442,12 @@ export class WorkspaceController {
       this.#state.sessionLoad = { status: 'failed', source, reason: 'connection' };
       throw error;
     } finally {
-      this.#sessionReads--;
-      if (!this.#sessionReads && this.#syncAfterRead) {
+      // Single-flight already serializes reads within this selection. Older
+      // selections may still be waiting, but must not delay its pending notice.
+      if (generation === this.#generation && this.#syncAfterRead) {
         this.#syncAfterRead = false;
-        this.scheduleSync();
+        this.#sessionSyncPending = true;
+        void this.#drainSessionSync();
       }
       context.current();
       this.#emit();
@@ -3375,6 +3550,7 @@ export class WorkspaceController {
   close() {
     this.#cancelSync?.();
     this.#syncPending.clear();
+    this.#sessionSyncPending = false;
     this.#cancelDraftSave?.();
     this.#cancelDraftSave = undefined;
     this.#draftBuffer = undefined;

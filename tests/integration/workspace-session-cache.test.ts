@@ -266,6 +266,28 @@ test('count compaction atomically replaces the checkpoint and deletes every old 
   assert.deepEqual((await f.restored()).history, f.replica.view!.history);
 });
 
+test('unchanged reads do not consume cache segments while same-version metadata changes remain durable', async (t) => {
+  const f = fixture(t, 1);
+  await f.cache();
+  const version = f.replica.view!.version;
+  for (let index = 0; index < 70; index++) {
+    f.replica.read(f.envelope(delta(f.doc, version)));
+    assert.equal(await f.cache(), version);
+  }
+  assert.equal(f.memory.batches.length, 1, 'empty reads never force a checkpoint');
+  assert.equal(f.checkpoints(), 1);
+  const metadata = f.envelope(delta(f.doc, version));
+  f.replica.read({
+    ...metadata,
+    meta: { ...metadata.meta, title: 'Updated title at the same document version' },
+  });
+  await f.cache();
+  assert.equal(f.memory.batches.length, 2);
+  const cached = await f.restored();
+  assert.equal(cached.version, version);
+  assert.equal(cached.meta.title, 'Updated title at the same document version');
+});
+
 test('cumulative envelope bytes compact before the segment count limit', async (t) => {
   const f = fixture(t, 1);
   await f.cache();

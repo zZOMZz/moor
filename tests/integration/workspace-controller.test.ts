@@ -60,6 +60,33 @@ function signal() {
   });
   return { promise, resolve };
 }
+async function cacheSettled(controller: WorkspaceController) {
+  if (controller.state.sessionCache?.status !== 'saving') return;
+  const done = signal();
+  const unsubscribe = controller.subscribe(() => {
+    if (controller.state.sessionCache?.status !== 'saving') done.resolve();
+  });
+  try {
+    await done.promise;
+  } finally {
+    unsubscribe();
+  }
+}
+async function observeState(
+  controller: WorkspaceController,
+  match: (state: WorkspaceClientState) => boolean,
+) {
+  if (match(controller.state)) return;
+  const done = signal();
+  const unsubscribe = controller.subscribe(() => {
+    if (match(controller.state)) done.resolve();
+  });
+  try {
+    await done.promise;
+  } finally {
+    unsubscribe();
+  }
+}
 class Memory implements StorageBackend {
   values = new Map<string, unknown>();
   locks = new Map<string, Promise<void>>();
@@ -348,6 +375,7 @@ async function fixture(
     request,
     store,
     schedule: config.schedule ?? (() => () => {}),
+    yieldCache: () => Promise.resolve(),
   });
   t.after(() => {
     completion.resolve();
@@ -362,6 +390,7 @@ async function fixture(
     const id = await controller.createSession('agent');
     await controller.refreshSessions();
     await controller.openSession(id);
+    await cacheSettled(controller);
     return id;
   }
   return {
@@ -448,7 +477,12 @@ test('controller snapshots isolate mutations, share unchanged history and retain
   assert.equal((before.session!.history[1].items![0] as any).text, 'Original 1');
   assert.equal((streamed.session!.history[1].items![0] as any).text, 'Updated second turn');
 
+  let lastFirst = streamed.session;
+  const rememberFirst = f.controller.subscribe(() => {
+    if (f.controller.state.session?.meta.id === id) lastFirst = f.controller.state.session;
+  });
   const second = await f.create();
+  rememberFirst();
   assert.notEqual(second, id);
   const entered = signal(),
     release = signal();
@@ -466,8 +500,8 @@ test('controller snapshots isolate mutations, share unchanged history and retain
   await entered.promise;
   assert.equal(
     f.controller.state.session,
-    streamed.session,
-    'warm navigation shares its frozen view',
+    lastFirst,
+    'warm navigation shares its last published frozen view',
   );
   release.resolve();
   await reopening;
@@ -528,12 +562,11 @@ test('a failed cache commit retains the imported delta for the next sync and che
   };
   const importedVersion = append('First ');
   f.memory.failWrite = true;
-  await assert.rejects(f.controller.refreshSession(), /storage failure/);
-  assert.equal(
-    f.controller.state.session,
-    before.session,
-    'failed cache writes do not publish a saved view',
-  );
+  await f.controller.refreshSession();
+  await cacheSettled(f.controller);
+  assert.equal((f.controller.state.session!.history[0].items![0] as any).text, 'First ');
+  assert.equal(f.controller.state.sessionCache?.status, 'failed');
+  assert.equal(f.controller.state.offline, false, 'cache failure does not disconnect the Host');
   f.memory.failWrite = false;
   append('second');
   const requestsBefore = f.calls.length;
@@ -550,9 +583,174 @@ test('a failed cache commit retains the imported delta for the next sync and che
   const current = f.controller.state;
   assert.equal((current.session!.history[0].items![0] as any).text, 'First second');
   assert.equal(before.session!.history.length, 0);
+  await cacheSettled(f.controller);
   const cached = await f.store.cachedSession(current.scope!, id, () => {});
   assert.deepEqual(cached!.history, current.session!.history);
   assert.equal(cached!.version, current.session!.version);
+});
+
+test('active text and permission notifications publish while the sidebar list and cache commits are blocked', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  await f.controller.saveDraft('Start synthetic work', {});
+  await f.controller.send();
+  await f.started.promise;
+  await f.controller.synchronize();
+  await cacheSettled(f.controller);
+  const listEntered = signal(),
+    listRelease = signal(),
+    cacheEntered = signal(),
+    cacheRelease = signal();
+  f.fault.before = async (request) => {
+    if (
+      request.action === 'execute' &&
+      ['sessions', 'sessions-page'].includes(request.command.method)
+    ) {
+      listEntered.resolve();
+      await listRelease.promise;
+    }
+  };
+  const commit = f.memory.compareAndSetMany.bind(f.memory);
+  f.memory.compareAndSetMany = async (changes, current) => {
+    if (changes.some((change) => change.key.includes('moor-workspace-session-cache-v2'))) {
+      cacheEntered.resolve();
+      await cacheRelease.promise;
+    }
+    return commit(changes, current);
+  };
+  f.callbacks().update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Visible despite slow storage' },
+  });
+  const permission = f.callbacks().permission({
+    toolCall: { toolCallId: 'delayed-cache-review', title: 'Review synthetic write' },
+    options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+  });
+  const target = f.catalog.targets[0]!.target;
+  const syncing = f.controller.synchronize({
+    source: 'local',
+    owner: f.catalog.owner,
+    connectionId: f.catalog.connectionId,
+    kind: 'changed',
+    deviceId: target.deviceId,
+    workspaceId: target.workspaceId,
+    sessionId: id,
+  });
+  await listEntered.promise;
+  await cacheEntered.promise;
+  await observeState(f.controller, (state) =>
+    JSON.stringify(state.session?.history).includes('delayed-cache-review'),
+  );
+  assert.match(JSON.stringify(f.controller.state.session!.history), /Visible despite slow storage/);
+  assert.equal(f.controller.state.offline, false);
+  assert.equal(f.controller.state.sessionCache?.status, 'saving');
+  assert.equal(f.controller.state.sessionLoad.status, 'ready');
+  listRelease.resolve();
+  cacheRelease.resolve();
+  await syncing;
+  await cacheSettled(f.controller);
+  assert.equal(f.controller.state.sessionCache?.version, f.controller.state.session?.version);
+  await f.host.cancel(id, f.host.active.get(id)!.turnId);
+  await permission;
+  assert.equal(f.prompts(), 1);
+});
+
+test('bounded cache backlog catches up to the final Host version without blocking new content', async (t) => {
+  const f = await fixture(t),
+    id = await f.create();
+  await f.controller.saveDraft('Stream under slow storage', {});
+  await f.controller.send();
+  await f.started.promise;
+  await f.controller.synchronize();
+  await cacheSettled(f.controller);
+  const entered = signal(),
+    release = signal();
+  let commits = 0;
+  const commit = f.memory.compareAndSetMany.bind(f.memory);
+  f.memory.compareAndSetMany = async (changes, current) => {
+    if (changes.some((change) => change.key.includes('moor-workspace-session-cache-v2'))) {
+      if (++commits === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+    }
+    return commit(changes, current);
+  };
+  for (let index = 0; index < 80; index++) {
+    f.callbacks().update({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: `chunk-${index};` },
+    });
+    await f.controller.refreshSession({ announce: false });
+    if (index === 0) await entered.promise;
+  }
+  assert.match(JSON.stringify(f.controller.state.session!.history), /chunk-79;/);
+  assert.equal(commits, 1, 'Host reads never wait for the blocked cache commit');
+  assert.equal(f.controller.state.sessionCache?.status, 'saving');
+  release.resolve();
+  await cacheSettled(f.controller);
+  assert.ok(commits <= 33, 'one in-flight write plus a bounded pending tail');
+  const cached = await f.store.cachedSession(f.controller.state.scope!, id, () => {});
+  assert.equal(cached?.version, f.controller.state.session!.version);
+  assert.deepEqual(cached?.history, f.controller.state.session!.history);
+  assert.equal(f.controller.state.sessionCache?.version, cached?.version);
+});
+
+test('navigation cancels queued cache work without changing another session or its saved status', async (t) => {
+  const f = await fixture(t),
+    first = await f.create(),
+    second = await f.create();
+  await f.controller.openSession(first);
+  await cacheSettled(f.controller);
+  await f.controller.saveDraft('Scope-bound stream', {});
+  await f.controller.send();
+  await f.started.promise;
+  await f.controller.synchronize();
+  await cacheSettled(f.controller);
+  const entered = signal(),
+    release = signal(),
+    finished = signal();
+  const commit = f.memory.compareAndSetMany.bind(f.memory);
+  let blocked = false;
+  f.memory.compareAndSetMany = async (changes, current) => {
+    if (
+      !blocked &&
+      changes.some((change) => change.key.includes('moor-workspace-session-cache-v2'))
+    ) {
+      blocked = true;
+      entered.resolve();
+      await release.promise;
+      try {
+        return await commit(changes, current);
+      } finally {
+        finished.resolve();
+      }
+    }
+    return commit(changes, current);
+  };
+  f.callbacks().update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'First session only' },
+  });
+  await f.controller.refreshSession();
+  await entered.promise;
+  await f.controller.openSession(second);
+  await cacheSettled(f.controller);
+  const selected = f.controller.state;
+  release.resolve();
+  await finished.promise;
+  assert.equal(f.controller.state.sessionId, second);
+  assert.equal(f.controller.state.session, selected.session);
+  assert.equal(f.controller.state.sessionCache, selected.sessionCache);
+  assert.doesNotMatch(JSON.stringify(f.controller.state.session!.history), /First session only/);
+  await f.controller.openSession(first);
+  await cacheSettled(f.controller);
+  assert.match(JSON.stringify(f.controller.state.session!.history), /First session only/);
+  assert.equal(
+    f.controller.state.sessionCache?.status,
+    'saved',
+    'reopening catches up the canceled cache tail from Host',
+  );
 });
 
 test('sidebar reads preserve drafts across unchanged catalogs and reject replaced connections', async (t) => {
@@ -1918,9 +2116,13 @@ test('offline cache remains readable and editable without permitting execution',
   assert.equal(f.prompts(), 0);
 });
 
-test('out-of-order reads on the same session never roll back the timeline', async (t) => {
+test('same-session reads stay single-flight and chase the last update received in flight', async (t) => {
   const f = await fixture(t);
   await f.create();
+  await f.controller.saveDraft('Start streaming', {});
+  await f.controller.send();
+  await f.started.promise;
+  await f.controller.synchronize();
   const entered = signal(),
     release = signal();
   let reads = 0;
@@ -1930,18 +2132,120 @@ test('out-of-order reads on the same session never roll back the timeline', asyn
       await release.promise;
     }
   };
-  const older = f.controller.refreshSession(),
-    rejected = assert.rejects(older, /较新的请求/);
+  const older = f.controller.refreshSession();
   await entered.promise;
-  await f.controller.saveDraft('New timeline', {});
-  await f.controller.send();
-  await f.started.promise;
-  await f.controller.refreshSession();
-  const latest = f.controller.state.session!;
-  assert(latest.history.length > 0);
+  f.callbacks().update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Latest streamed text' },
+  });
+  const newer = f.controller.refreshSession();
+  assert.equal(reads, 1, 'the second request cannot overtake the first');
   release.resolve();
-  await rejected;
-  assert.deepEqual(f.controller.state.session, latest);
+  await Promise.all([older, newer]);
+  assert.equal(reads, 2, 'one trailing read catches up after the in-flight response');
+  assert.match(JSON.stringify(f.controller.state.session!.history), /Latest streamed text/);
+  assert.equal(f.prompts(), 1);
+});
+
+test('new-session background catch-up advances while an older selection read remains blocked', async (t) => {
+  const f = await fixture(t),
+    first = await f.create(),
+    second = await f.create();
+  await f.controller.openSession(first);
+  const oldEntered = signal(),
+    oldRelease = signal(),
+    newRelease = signal(),
+    manualRelease = signal(),
+    tailRelease = signal();
+  const target = f.catalog.targets[0]!.target;
+  const notice = (sessionId: string) => ({
+    source: 'local',
+    owner: f.catalog.owner,
+    connectionId: f.catalog.connectionId,
+    kind: 'changed',
+    deviceId: target.deviceId,
+    workspaceId: target.workspaceId,
+    sessionId,
+  });
+  let watchNew = false,
+    newReads = 0;
+  f.fault.after = async (request) => {
+    if (request.action !== 'execute' || request.command.method !== 'session') return;
+    if (request.command.params.sessionId === first) {
+      oldEntered.resolve();
+      await oldRelease.promise;
+    } else if (watchNew && request.command.params.sessionId === second) {
+      if (++newReads === 1) await newRelease.promise;
+      else if (newReads === 2) await manualRelease.promise;
+      else if (newReads === 3) await tailRelease.promise;
+    }
+  };
+  try {
+    f.controller.scheduleSync(notice(first));
+    await oldEntered.promise;
+    await f.controller.openSession(second);
+    await f.controller.saveDraft('New session stream', {});
+    await f.controller.send();
+    await f.started.promise;
+    watchNew = true;
+    f.callbacks().update({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'New selection first chunk' },
+    });
+    f.controller.scheduleSync(notice(second));
+    // The fixture's requests and storage use synchronous data plus microtasks.
+    // One event-loop turn drains that work without releasing either response gate.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(newReads, 1, 'the old generation cannot block the new selection read');
+
+    const firstVisible = observeState(f.controller, (state) =>
+      JSON.stringify(state.session?.history).includes('New selection first chunk'),
+    );
+    newRelease.resolve();
+    await firstVisible;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const manual = f.controller.refreshSession();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(newReads, 2);
+    f.callbacks().update({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: '; Notice during manual refresh' },
+    });
+    f.controller.scheduleSync(notice(second));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    manualRelease.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      newReads,
+      3,
+      'old reads cannot delay notices received during the new foreground read',
+    );
+
+    oldRelease.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    f.callbacks().update({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: '; New selection trailing chunk' },
+    });
+    f.controller.scheduleSync(notice(second));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(newReads, 3, 'the old finalizer must not clear the current single-flight drain');
+    const caughtUp = observeState(f.controller, (state) =>
+      JSON.stringify(state.session?.history).includes('New selection trailing chunk'),
+    );
+    tailRelease.resolve();
+    await caughtUp;
+    await manual;
+    assert.equal(newReads, 4, 'the new selection drains its own trailing notification');
+    assert.equal(f.controller.state.sessionId, second);
+    assert.equal(f.controller.state.offline, false);
+    assert.equal(f.prompts(), 1);
+  } finally {
+    oldRelease.resolve();
+    newRelease.resolve();
+    manualRelease.resolve();
+    tailRelease.resolve();
+  }
 });
 
 test('two pages cannot replay the same pending operation concurrently', async (t) => {
@@ -3043,7 +3347,7 @@ test('sync notices reject stale connections and foreign scopes, and coalesce bur
     await f.controller.synchronize({ ...notice, ...patch });
   assert.equal(f.calls.length, count);
   for (let i = 0; i < 20; i++) f.controller.scheduleSync(notice);
-  assert.equal([...timers.values()].filter((ms) => ms === 150).length, 1);
+  assert.equal([...timers.values()].filter((ms) => ms === 500).length, 1);
   await f.controller.synchronize(notice);
   assert.equal(
     f.calls
@@ -3055,7 +3359,7 @@ test('sync notices reject stale connections and foreign scopes, and coalesce bur
   assert.equal(f.prompts(), 0);
   f.controller.scheduleSync(notice);
   f.controller.close();
-  assert.equal([...timers.values()].filter((ms) => ms === 150).length, 0);
+  assert.equal([...timers.values()].filter((ms) => ms === 500).length, 0);
 });
 
 test('ordinary sends require semantic Host support and never fall back to client-generated document edits', async (t) => {
