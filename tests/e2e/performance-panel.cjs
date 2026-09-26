@@ -110,7 +110,8 @@ app
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const win = new BrowserWindow({
-      show: false,
+      // Disabling throttling alone does not map a hidden native window on Linux.
+      show: true,
       width: 1200,
       height: 800,
       webPreferences: {
@@ -163,6 +164,10 @@ app
     };
     try {
       await win.loadURL('http://127.0.0.1:' + server.address().port);
+      win.show();
+      win.focus();
+      win.webContents.focus();
+      assert.equal(win.isVisible(), true, 'performance checks require a visible native window');
       await until(
         `window.__moorPerformanceFixture && document.querySelector('[aria-label="消息"]') && document.querySelector('[aria-label="打开性能面板"]')`,
       );

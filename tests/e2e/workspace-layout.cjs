@@ -76,10 +76,16 @@ app
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const win = new BrowserWindow({
-      show: false,
+      // Layout, transitions and frame waits need a mapped native window on Linux.
+      show: true,
       width: 1200,
       height: 800,
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        backgroundThrottling: false,
+      },
     });
     const errors = [];
     win.webContents.on('console-message', (_event, ...args) => {
@@ -218,6 +224,11 @@ app
       );
     };
     await win.loadURL(url);
+    win.show();
+    win.focus();
+    win.webContents.focus();
+    assert.equal(win.isVisible(), true, 'layout checks require a visible native window');
+    assert.equal(await read('document.hidden'), false, 'layout checks require foreground frames');
     await wait('.workspace-pinned li');
     await wait('.workspace-recent li');
     const pageReads = await win.webContents.executeJavaScript('window.__moorFixture.pageReads');
