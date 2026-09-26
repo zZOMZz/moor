@@ -57,11 +57,19 @@ test('streaming Markdown preserves safe formatting across arbitrary chunk bounda
       await render(changed);
     for (const code of [
       'x'.repeat(4095) + '😀' + 'y'.repeat(4097),
+      'isolated high \ud800 and low \udc00 remain code units',
       'x'.repeat(120_010),
       '\u001b[31m'.repeat(100) + 'safe',
     ]) {
       await render('```\n' + code);
       await render('```\n' + code + '\n```\nfinished');
+    }
+    for (const source of [
+      'paragraph \ud800 with an isolated low \udc00\ncontinued',
+      '# heading \ud800\n\n> quote \udc00\n- list \ud800\n- next \udc00',
+    ]) {
+      await render(source);
+      await render(source + '\nmore');
     }
     // The plain-code fast path must return to the conservative parser as soon
     // as ANSI/CR can reinterpret a provisional suffix. Compare every character.
@@ -143,6 +151,10 @@ test('streaming Markdown preserves safe formatting across arbitrary chunk bounda
     });
     await act(async () => current.querySelector<HTMLButtonElement>('[data-copy]')!.click());
     assert.deepEqual(copied, [code.textContent]);
+    const unpairedText = 'high \ud800 low \udc00';
+    const unpaired = await render('```\n' + unpairedText + '\n```');
+    await act(async () => unpaired.querySelector<HTMLButtonElement>('[data-copy]')!.click());
+    assert.equal(copied.at(-1), unpairedText, 'copying preserves every original UTF-16 code unit');
     const capped = await render('```\n' + 'z'.repeat(120_010));
     await act(async () => capped.querySelector<HTMLButtonElement>('[data-copy]')!.click());
     assert.equal(copied.at(-1), 'z'.repeat(120_000));

@@ -273,8 +273,11 @@ process.on('message', (message) => {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
     producer.stderr?.on('data', (chunk) => process.stderr.write(chunk));
-    producer.on('exit', (code, signal) =>
-      process.send?.({ type: 'producer-exit', at: now(), code, signal, sequence }),
+    producer.on(
+      'exit',
+      (code, signal) =>
+        process.connected &&
+        process.send?.({ type: 'producer-exit', at: now(), code, signal, sequence }),
     );
     producer.on('message', (raw) => {
       const event = raw as {
@@ -321,8 +324,10 @@ process.on('message', (message) => {
   } else if (command.type === 'close') {
     clearInterval(cpuTimer);
     producer?.kill();
+    for (const socket of sockets.clients) socket.terminate();
     sockets.close();
     server.close();
+    server.closeAllConnections();
     host.active.clear();
     host.close();
     store.close();
