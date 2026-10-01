@@ -54,7 +54,7 @@ UI 仍可以使用 DOM、响应式布局和 React。执行主机仍需要知道�
 | Web 工作区与 CLI 分别编排原操作送达和恢复                                   | [工作区控制器](../apps/web/src/features/workspace/workspace-controller.ts)、[CLI 客户端](../apps/cli/src/client.ts)                                                                                                                                                                                      | 共享兼容的原操作规则，各入口保留展示与交互         |
 | Host 业务直接使用具体 RuntimeStore；协作服务通过其数据库连接创建状态存储    | [HostWorkspace](../packages/host/src/sessions/workspace.ts)、[协作服务](../packages/host/src/sessions/collaboration-service.ts)、[RuntimeStore](../packages/host/src/persistence/store.ts)                                                                                                               | 明确提交与存储能力接口，继续由同一主机事务实现     |
 | 外观组件直接读取桌面桥接；统一启动入口探测桌面环境                          | [外观组件](../apps/web/src/components/appearance.tsx)、[启动入口](../apps/web/src/app/entry.ts)、[桌面构建入口](../electron.vite.config.mjs)                                                                                                                                                             | 外观通过明确能力提供；Web 与桌面入口由构建明确选择 |
-| Node 私有文件、进程锁和路径校验位于协议包中，并被不同运行入口使用           | [CLI 私有连接](../packages/protocol/src/node/local-cli-connection.ts)、[进程锁](../packages/protocol/src/node/exclusive-lock.ts)、[私有路径](../packages/protocol/src/node/private-project-path.ts)                                                                                                      | 移出协议包，迁移所有 Host、CLI、Relay 及测试消费者 |
+| Node 私有文件、进程锁和路径校验位于协议包中，并被不同运行入口使用           | [CLI 私有连接](../packages/local-state/src/private-connection.ts)、[进程锁](../packages/local-state/src/exclusive-lock.ts)、[私有路径](../packages/local-state/src/private-project-path.ts)                                                                                                              | 移出协议包，迁移所有 Host、CLI、Relay 及测试消费者 |
 | Gateway 的账号、目录和登录编排直接依赖 SQL、Node HTTP 或加密实现            | [账号存储](../packages/gateway/src/accounts.ts)、[目录](../packages/gateway/src/catalog.ts)、[Google 登录](../packages/gateway/src/google-auth.ts)                                                                                                                                                       | 在包内分离业务、受限存储与传输实现，入口统一组装   |
 
 例如，Git 首次拒绝分支识别 `ApiError`，共享工作区请求使用 `WorkspaceRequestError`。从调用链可见，两种错误类没有统一为相同的业务证据；首阶段需要补充当前组装路径的行为回归，再修复此差异。不能把“源码看到分支不一致”写成已经完成真机复现。
@@ -149,7 +149,7 @@ Host 与 Gateway 的具体存储可继续复用现有可靠实现，但只作为
 
 成功响应仍经过[主机响应验证](../packages/protocol/src/host-response.ts)。HTTP 200、IPC Promise 成功和本地写入完成，都不能替代匹配的主机确认。
 
-错误适配提供统一证据，业务不再检查 `ApiError`、`CliHttpError` 或 `BrowserHttpError` 的具体类型：
+错误适配提供统一证据，业务不再检查 `ApiError`、`NodeHttpError` 或 `BrowserHttpError` 的具体类型：
 
 | 证据           | 含义                                         | 业务处理                                       |
 | -------------- | -------------------------------------------- | ---------------------------------------------- |
@@ -239,7 +239,7 @@ Host 的提交接口以业务事务为单位，而不是为每张表各写一个
 | `WorkspaceController` 中集中的全部业务编排                     | 分解到工作区、会话、操作、协作等功能；删除旧类与导出，不保留委托门面 | UI、CLI、Worker 和测试都使用规范功能接口                     |
 | `WorkspaceStore` 同时承载大量功能模型、记录与平台默认值        | 分离各功能持久模型和受限存储能力；移除旧聚合入口                     | 旧记录可读取，业务不存在 IndexedDB 默认构造                  |
 | Web、CLI、各面板分别维护的送达与恢复判断                       | 全部接入唯一证据与共享原操作规则；各功能政策显式保留                 | 对相同合成故障进行跨入口行为验证                             |
-| 业务中的 `instanceof ApiError/CliHttpError/BrowserHttpError`   | 移到所属适配器，业务只使用统一证据                                   | 全部共享业务目录无具体传输错误类依赖                         |
+| 业务中的 `instanceof ApiError/NodeHttpError/BrowserHttpError`  | 移到所属适配器，业务只使用统一证据                                   | 全部共享业务目录无具体传输错误类依赖                         |
 | 功能中的 `request(path, body)` 与 HTTP 路径拼接                | 使用有限业务命令与范围；真实路径仅在传输映射存在                     | 全部功能消费者不再提供任意 URL 调用能力                      |
 | UI 与功能中的桌面桥接探测，包括外观、附件、登录                | 改为显式能力接口；原生桥接只在桌面适配和入口访问                     | 同一 UI 可使用浏览器或桌面能力而无需分支                     |
 | 共用 `entry.ts` 自动探测环境，或桌面失败回退到浏览器           | 独立 Web、桌面与 Worker 入口；开发和正式构建同时切换                 | 构建图确认入口，缺失桌面能力按原生入口明确失败               |

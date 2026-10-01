@@ -6,9 +6,9 @@ import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
 import { readSessionPage } from '@moor/host/sessions/page';
 import { syntheticSessionPageIndex } from './session-page-index';
 import {
-  desktopWorkspaceCatalogSchema,
-  type DesktopWorkspaceRequest,
-} from '@moor/client/workspace-protocol';
+  workspaceCatalogSchema,
+  type WorkspaceRequest,
+} from '@moor/protocol/workspace-client-protocol';
 import { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
 import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
 import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
@@ -72,7 +72,7 @@ export async function paginationFixture(
     projects: projectIds.map((id) => ({ id, name: id, rootPath: '/synthetic/' + id })),
     agents: [{ id: 'agent', name: 'Synthetic', cliType: 'fixture', agentType: 'fixture' }],
   };
-  const catalog = desktopWorkspaceCatalogSchema.parse({
+  const catalog = workspaceCatalogSchema.parse({
     source: 'local',
     connectionId: '00000000-0000-4000-8000-000000000001',
     origin: 'http://127.0.0.1:12345',
@@ -114,7 +114,7 @@ export async function paginationFixture(
       metadataRevision: 0,
     })),
   );
-  const calls: DesktopWorkspaceRequest[] = [],
+  const calls: WorkspaceRequest[] = [],
     memory = new Memory(),
     store = new WorkspaceStore(memory);
   const projection = syntheticSessionPageIndex(rows);
@@ -123,7 +123,7 @@ export async function paginationFixture(
     string,
     { code: string; status: number | null; rejected: boolean; message: string }
   >();
-  const controls: { after?: (request: DesktopWorkspaceRequest) => Promise<void> } = {};
+  const controls: { after?: (request: WorkspaceRequest) => Promise<void> } = {};
   const controller = new WorkspaceController({
     store,
     schedule: () => () => {},

@@ -1,4 +1,8 @@
 import { actorSchema, type AttentionActor } from '@moor/protocol/attention';
+import {
+  matchesFreshRequestRejection,
+  type FreshRequestRejection,
+} from '@moor/client/operations/request-rejection';
 import { WorkspaceRecords, workspaceRecordHeadSchema } from './workspace-records';
 import {
   attentionScopeKey,
@@ -18,9 +22,9 @@ import { validateWorkspaceGithub, validateWorkspaceGithubWrite } from '../github
 import { z } from 'zod';
 import { mutationSchema, type Mutation } from '@moor/protocol/protocol';
 import {
-  desktopWorkspaceSourceSchema,
-  desktopWorkspaceTargetSchema,
-} from '@moor/client/workspace-protocol';
+  workspaceSourceSchema,
+  workspaceProjectTargetSchema,
+} from '@moor/protocol/workspace-client-protocol';
 import { runSelectionSchema, type RunSelection } from '@moor/protocol/run-config';
 import {
   sessionOriginalOperationSchema,
@@ -87,8 +91,8 @@ const interactionDocumentSchema = z
 
 const scopeSchema = z
   .object({
-    source: desktopWorkspaceSourceSchema,
-    target: desktopWorkspaceTargetSchema.omit({ sessionId: true }).strict(),
+    source: workspaceSourceSchema,
+    target: workspaceProjectTargetSchema.omit({ sessionId: true }).strict(),
   })
   .strict();
 export type WorkspaceScope = z.infer<typeof scopeSchema>;
@@ -175,7 +179,7 @@ const draftKeyFor = (scope: WorkspaceScope, sessionId: string) =>
   canonical([
     'moor-desktop-draft-v1',
     scopeSchema.parse(scope),
-    desktopWorkspaceTargetSchema.parse({ ...scope.target, sessionId }).sessionId,
+    workspaceProjectTargetSchema.parse({ ...scope.target, sessionId }).sessionId,
   ]);
 const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 
@@ -558,7 +562,7 @@ export class WorkspaceStore {
         (input.userId !== target.userId || input.machineId !== target.machineId))
     )
       throw Error('原操作与电脑、项目范围不匹配。');
-    desktopWorkspaceTargetSchema.parse({ ...target, sessionId: input.sessionId });
+    workspaceProjectTargetSchema.parse({ ...target, sessionId: input.sessionId });
   }
   async stage(
     scope: WorkspaceScope,
@@ -773,7 +777,7 @@ export class WorkspaceStore {
   #validateInteraction(scope: WorkspaceScope, sessionId: string, input: InteractionSaved) {
     const value = interactionSavedSchema.parse(input),
       target = { ...scope.target, sessionId };
-    desktopWorkspaceTargetSchema.parse(target);
+    workspaceProjectTargetSchema.parse(target);
     for (const operation of [value.pending, ...value.closed.map((item) => item.operation)])
       if (
         operation &&
@@ -986,6 +990,7 @@ export class WorkspaceStore {
     expectedRevision: number,
     input: GitSaved,
     current: () => void,
+    freshRejection?: FreshRequestRejection,
   ) {
     const value = validateWorkspaceGit(input, { ...scope.target, sessionId });
     return this.#change(scope, current, [sessionId], (state) => {
@@ -1010,7 +1015,10 @@ export class WorkspaceStore {
         throw conflict();
       if (previous?.pending) {
         if (value.pending && !same(previous.pending, value.pending)) throw conflict();
-        if (!value.pending) {
+        if (
+          !value.pending &&
+          !matchesFreshRequestRejection(previous.pending.request, freshRejection)
+        ) {
           const receipt = validateGitActionReceipt(value.receipt, previous.pending.request);
           if (receipt.phase === 'unknown') throw conflict();
         }
@@ -1170,7 +1178,7 @@ export class WorkspaceStore {
     input: WorkspaceAttachmentDraft['items'],
     current: () => void,
   ) {
-    desktopWorkspaceTargetSchema.parse({ ...scope.target, sessionId });
+    workspaceProjectTargetSchema.parse({ ...scope.target, sessionId });
     const next = await validateWorkspaceAttachments(
       { revision: expectedRevision + 1, items: input },
       { ...scope.target, sessionId },
@@ -1366,7 +1374,7 @@ export class WorkspaceStore {
     input?: unknown,
   ) {
     const target = scopeSchema.parse(scope).target;
-    desktopWorkspaceTargetSchema.parse({ ...target, sessionId });
+    workspaceProjectTargetSchema.parse({ ...target, sessionId });
     const key = canonical(['moor-desktop-attachment-cache-v1', scope, sessionId, reference]);
     current();
     const raw = input === undefined ? await this.backend.read(key) : input;

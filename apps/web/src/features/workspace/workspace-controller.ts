@@ -1,3 +1,4 @@
+import { RequestFailure } from '@moor/protocol/request-failure';
 import {
   taskActionSchema,
   validateTaskActionResult,
@@ -23,7 +24,7 @@ import {
   type AttentionDependencies,
 } from '../attention/attention';
 import { workspaceAttentionKey, workspaceAttentionRequest } from '../attention/workspace-attention';
-import { validateWorkspaceAttentionResponse } from '@moor/client/workspace-attention';
+import { validateWorkspaceAttentionResponse } from '@moor/protocol/workspace-attention';
 import { searchSessionContent, type SessionSearchView } from '../sessions/session-search';
 import { SESSION_SEARCH_FEATURE, type SearchHit } from '@moor/protocol/search-protocol';
 import { GithubSessionController, type GithubSessionMode } from '../github/github-session';
@@ -33,14 +34,14 @@ import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
 import { GITHUB_WRITE_FEATURE } from '@moor/protocol/github-write-protocol';
 import { z } from 'zod';
 import {
-  desktopWorkspaceCatalogSchema,
-  desktopWorkspaceTargetSchema,
-  desktopWorkspaceChangeSchema,
-  type DesktopWorkspaceChange,
-  type DesktopWorkspaceCatalog,
-  type DesktopWorkspaceRequest,
-  type DesktopWorkspaceSource,
-} from '@moor/client/workspace-protocol';
+  workspaceCatalogSchema,
+  workspaceProjectTargetSchema,
+  workspaceChangeSchema,
+  type WorkspaceChange,
+  type WorkspaceCatalog,
+  type WorkspaceRequest,
+  type WorkspaceSource,
+} from '@moor/protocol/workspace-client-protocol';
 import {
   agentSchema,
   AGENT_MODEL_OPTIONS_FEATURE,
@@ -150,7 +151,7 @@ import {
   validateGitOperationResult,
 } from '@moor/protocol/git-protocol';
 
-type Project = DesktopWorkspaceCatalog['targets'][number];
+type Project = WorkspaceCatalog['targets'][number];
 export type WorkspaceSessionPageOptions = Partial<
   Pick<SessionPageRequest, 'archived' | 'pinned' | 'query' | 'limit' | 'cursor'>
 > & { fresh?: boolean };
@@ -188,8 +189,8 @@ type Context = {
   current: () => void;
 };
 export type WorkspaceClientState = {
-  catalogs: Partial<Record<DesktopWorkspaceSource, DesktopWorkspaceCatalog>>;
-  errors: Partial<Record<DesktopWorkspaceSource, string>>;
+  catalogs: Partial<Record<WorkspaceSource, WorkspaceCatalog>>;
+  errors: Partial<Record<WorkspaceSource, string>>;
   scope?: WorkspaceScope;
   project?: Project;
   sessions: SessionMetadata[];
@@ -223,7 +224,7 @@ export type WorkspaceClientState = {
   modelLoading?: boolean;
   searchFocus?: SearchHit;
   focusedTurnId?: string;
-  syncDisconnected?: Partial<Record<DesktopWorkspaceSource, boolean>>;
+  syncDisconnected?: Partial<Record<WorkspaceSource, boolean>>;
 };
 const resultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), value: z.unknown() }).strict(),
@@ -242,22 +243,14 @@ const resultSchema = z.discriminatedUnion('ok', [
     .strict(),
 ]);
 const same = (a: unknown, b: unknown) => productCanonicalJson(a) === productCanonicalJson(b);
-export class WorkspaceRequestError extends Error {
-  constructor(
-    message: string,
-    readonly code: string,
-    readonly status: number | null,
-    readonly rejected: boolean,
-  ) {
-    super(message);
-  }
-}
 const offlineFailure = (error: unknown) =>
-  error instanceof WorkspaceRequestError &&
-  (error.code === 'network' || (!error.rejected && [502, 503, 504].includes(error.status ?? 0)));
+  error instanceof RequestFailure &&
+  (error.code === 'network' ||
+    (error.delivery !== 'not-dispatched' && [502, 503, 504].includes(error.status ?? 0)));
 export const isWorkspaceListOfflineFailure = (error: unknown) =>
-  error instanceof WorkspaceRequestError &&
-  (error.code === 'network' || (!error.rejected && [503, 504].includes(error.status ?? 0)));
+  error instanceof RequestFailure &&
+  (error.code === 'network' ||
+    (error.delivery !== 'not-dispatched' && [503, 504].includes(error.status ?? 0)));
 const DRAFT_SAVE_DELAY_MS = 300;
 const SESSION_LOADING_DELAY_MS = 120;
 const SESSION_VIEW_LIMIT = 30;
@@ -310,10 +303,7 @@ function immutableJsonBytes(value: unknown, viewBudget = false): number {
   return bytes;
 }
 const sessionViewBudget = (value: unknown) => immutableJsonBytes(value, true);
-const withoutSource = <T>(
-  values: Partial<Record<DesktopWorkspaceSource, T>>,
-  source: DesktopWorkspaceSource,
-) => {
+const withoutSource = <T>(values: Partial<Record<WorkspaceSource, T>>, source: WorkspaceSource) => {
   const result = { ...values };
   delete result[source];
   return result;
@@ -377,21 +367,18 @@ export class WorkspaceController {
   #sessionPageBytes = 0;
   #sessionPagesReading = new Map<string, Promise<WorkspaceSessionPage>>();
   #legacyListsReading = new Map<string, Promise<SessionMetadata[]>>();
-  #catalogFailures = new Map<DesktopWorkspaceSource, unknown>();
-  #syncPending = new Map<
-    DesktopWorkspaceSource,
-    DesktopWorkspaceChange & { catalogOnly: boolean }
-  >();
+  #catalogFailures = new Map<WorkspaceSource, unknown>();
+  #syncPending = new Map<WorkspaceSource, WorkspaceChange & { catalogOnly: boolean }>();
   #syncing?: Promise<void>;
   #cancelSync?: () => void;
   #sessionListReads = 0;
   #syncAfterRead = false;
   #syncAfterList = false;
   #catalogReads = { local: 0, remote: 0 };
-  #syncAfterCatalog = new Set<DesktopWorkspaceSource>();
+  #syncAfterCatalog = new Set<WorkspaceSource>();
   constructor(
     private readonly options: {
-      request: (request: DesktopWorkspaceRequest) => Promise<unknown>;
+      request: (request: WorkspaceRequest) => Promise<unknown>;
       store?: WorkspaceStore;
       uuid?: () => string;
       now?: () => string;
@@ -437,10 +424,10 @@ export class WorkspaceController {
   get navigationRevision() {
     return this.#catalogVersions.local + this.#catalogVersions.remote;
   }
-  projectRevision(source: DesktopWorkspaceSource, target: Project['target']) {
+  projectRevision(source: WorkspaceSource, target: Project['target']) {
     return this.#projectRevisions.get(productCanonicalJson([source, target])) ?? 0;
   }
-  #invalidateProject(source: DesktopWorkspaceSource, target: Project['target']) {
+  #invalidateProject(source: WorkspaceSource, target: Project['target']) {
     const key = productCanonicalJson([source, target]);
     this.#projectRevisions.set(key, this.projectRevision(source, target) + 1);
     this.#forgetSessionPages(key);
@@ -464,7 +451,7 @@ export class WorkspaceController {
         });
       return;
     }
-    const parsed = desktopWorkspaceChangeSchema.safeParse(raw);
+    const parsed = workspaceChangeSchema.safeParse(raw);
     if (!parsed.success) return;
     const notice = parsed.data,
       catalog = this.#state.catalogs[notice.source];
@@ -841,23 +828,23 @@ export class WorkspaceController {
     const timer = setTimeout(work, milliseconds);
     return () => clearTimeout(timer);
   }
-  async #request(request: DesktopWorkspaceRequest, current: () => void) {
+  async #request(request: WorkspaceRequest, current: () => void) {
     current();
     const result = resultSchema.parse(await this.options.request(structuredClone(request)));
     current();
     if (!result.ok)
-      throw new WorkspaceRequestError(
+      throw new RequestFailure(
         publicAgentFailure(
           Error(result.error.message),
           '执行电脑暂不可用，原草稿和待确认操作已保留。',
         ),
         result.error.code,
         result.error.status,
-        result.error.rejected,
+        result.error.rejected ? 'not-dispatched' : 'unconfirmed',
       );
     return result.value;
   }
-  async refreshCatalog(source: DesktopWorkspaceSource) {
+  async refreshCatalog(source: WorkspaceSource) {
     if (this.#state.scope?.source === source) await this.flushDraft();
     const version = ++this.#catalogVersions[source];
     this.#catalogReads[source]++;
@@ -866,7 +853,7 @@ export class WorkspaceController {
         throw Error('电脑列表读取已过期。');
     };
     try {
-      const catalog = desktopWorkspaceCatalogSchema.parse(
+      const catalog = workspaceCatalogSchema.parse(
         await this.#request({ action: 'catalog', source }, current),
       );
       if (catalog.source !== source) throw Error('电脑列表来源不匹配。');
@@ -926,7 +913,7 @@ export class WorkspaceController {
       if (!this.#closed && this.#catalogVersions[source] === version) this.#emit();
     }
   }
-  async disconnectSource(source: DesktopWorkspaceSource) {
+  async disconnectSource(source: WorkspaceSource) {
     if (this.#state.scope?.source === source) {
       await this.flushDraft();
       this.#clearSelection();
@@ -959,7 +946,7 @@ export class WorkspaceController {
     this.#draftWrites = Promise.resolve();
     this.#interactionWrites = Promise.resolve();
   }
-  async selectProject(source: DesktopWorkspaceSource, target: Project['target']) {
+  async selectProject(source: WorkspaceSource, target: Project['target']) {
     await this.flushDraft();
     const project = this.#state.catalogs[source]?.targets.find((entry) =>
       same(entry.target, target),
@@ -1075,10 +1062,10 @@ export class WorkspaceController {
       this.#emit();
     }
   }
-  async listProjectSessions(source: DesktopWorkspaceSource, target: Project['target']) {
+  async listProjectSessions(source: WorkspaceSource, target: Project['target']) {
     return (await this.listProjectSessionPage(source, target, { fresh: true })).items;
   }
-  async refreshProjectSessions(source: DesktopWorkspaceSource, target: Project['target']) {
+  async refreshProjectSessions(source: WorkspaceSource, target: Project['target']) {
     await this.refreshCatalog(source);
     const context = this.#projectContext(source, target);
     context.current();
@@ -1087,7 +1074,7 @@ export class WorkspaceController {
     if (same(this.#state.scope, context.scope)) await this.refreshSessions();
   }
   async listProjectSessionPage(
-    source: DesktopWorkspaceSource,
+    source: WorkspaceSource,
     target: Project['target'],
     options: WorkspaceSessionPageOptions = {},
   ): Promise<WorkspaceSessionPage> {
@@ -1147,7 +1134,7 @@ export class WorkspaceController {
         try {
           if (this.#state.errors[source])
             throw this.#catalogFailures.get(source) ?? Error('请重新连接原电脑。');
-          if (!online) throw new WorkspaceRequestError('执行电脑离线。', 'network', null, false);
+          if (!online) throw new RequestFailure('执行电脑离线。', 'network', null, 'unconfirmed');
           page = validateSessionPageResult(
             request,
             await this.#execute(context, this.#command(context.scope, 'sessions-page', request)),
@@ -1180,7 +1167,7 @@ export class WorkspaceController {
       try {
         if (this.#state.errors[source])
           throw this.#catalogFailures.get(source) ?? Error('请重新连接原电脑。');
-        if (!online) throw new WorkspaceRequestError('执行电脑离线。', 'network', null, false);
+        if (!online) throw new RequestFailure('执行电脑离线。', 'network', null, 'unconfirmed');
         const legacyKey = productCanonicalJson([
           context.scope,
           context.connectionId,
@@ -1250,11 +1237,7 @@ export class WorkspaceController {
     this.#sessionPagesReading.set(key, read);
     return structuredClone(await read);
   }
-  #projectContext(
-    source: DesktopWorkspaceSource,
-    target: Project['target'],
-    sessionId?: string,
-  ): Context {
+  #projectContext(source: WorkspaceSource, target: Project['target'], sessionId?: string): Context {
     const catalog = this.#state.catalogs[source];
     const project = catalog?.targets.find((entry) => same(entry.target, target));
     if (!catalog || !project) throw Error('项目不属于当前电脑列表。');
@@ -2256,7 +2239,7 @@ export class WorkspaceController {
     await this.refreshSessions();
   }
   async projectMetadata(
-    source: DesktopWorkspaceSource,
+    source: WorkspaceSource,
     target: Project['target'],
     reviewed: SessionMetadata,
     action: SessionAction['action'],
@@ -2474,7 +2457,7 @@ export class WorkspaceController {
     const identity = { ...context.scope.target, sessionId };
     type Target = typeof identity;
     const parseTarget = (input: unknown): Target => {
-      const target = desktopWorkspaceTargetSchema.parse(input);
+      const target = workspaceProjectTargetSchema.parse(input);
       if (!target.sessionId) throw Error('文件缓存必须绑定原会话。');
       return { ...target, sessionId: target.sessionId };
     };
@@ -2585,7 +2568,7 @@ export class WorkspaceController {
         }
       },
       parseTarget: (input) => {
-        const target = desktopWorkspaceTargetSchema.parse(input);
+        const target = workspaceProjectTargetSchema.parse(input);
         if (!target.sessionId || !same(target, identity))
           throw Error('GitHub 目标不属于当前会话。');
         return { ...target, sessionId: target.sessionId };
@@ -2740,13 +2723,20 @@ export class WorkspaceController {
           sessionId
         ];
       },
-      compareWrite: async (requested, revision, value, valid) => {
+      compareWrite: async (requested, revision, value, valid, freshRejection) => {
         if (requested !== key) throw Error('Git 缓存范围不匹配。');
         const check = () => {
           current();
           if (!valid()) throw Error('Git 面板已改变。');
         };
-        await this.store.saveGit(context.scope, sessionId, revision, value as GitSaved, check);
+        await this.store.saveGit(
+          context.scope,
+          sessionId,
+          revision,
+          value as GitSaved,
+          check,
+          freshRejection,
+        );
         await this.#reloadLedger({ ...context, current: check });
         return true;
       },

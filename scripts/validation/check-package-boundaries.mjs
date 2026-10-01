@@ -4,16 +4,29 @@ import { dirname, join, normalize, relative, resolve } from 'node:path';
 const root = process.cwd();
 const allowedDependencies = new Map([
   ['@moor/protocol', new Set()],
+  ['@moor/local-state', new Set(['@moor/protocol'])],
   ['@moor/session', new Set(['@moor/protocol'])],
   ['@moor/sync', new Set(['@moor/protocol', '@moor/session'])],
-  ['@moor/client', new Set(['@moor/protocol', '@moor/session'])],
+  ['@moor/client', new Set(['@moor/protocol', '@moor/session', '@moor/local-state'])],
   ['@moor/gateway', new Set(['@moor/protocol'])],
-  ['@moor/host', new Set(['@moor/protocol', '@moor/session', '@moor/sync'])],
+  ['@moor/host', new Set(['@moor/protocol', '@moor/session', '@moor/sync', '@moor/local-state'])],
   ['@moor/app-web', new Set(['@moor/protocol', '@moor/session', '@moor/client'])],
   ['@moor/app-desktop', new Set(['@moor/protocol', '@moor/client'])],
-  ['@moor/app-cli', new Set(['@moor/protocol', '@moor/session', '@moor/client'])],
-  ['@moor/app-host', new Set(['@moor/protocol', '@moor/session', '@moor/host', '@moor/gateway'])],
-  ['@moor/app-relay', new Set(['@moor/protocol', '@moor/gateway'])],
+  [
+    '@moor/app-cli',
+    new Set(['@moor/protocol', '@moor/session', '@moor/client', '@moor/local-state']),
+  ],
+  [
+    '@moor/app-host',
+    new Set([
+      '@moor/protocol',
+      '@moor/session',
+      '@moor/host',
+      '@moor/gateway',
+      '@moor/local-state',
+    ]),
+  ],
+  ['@moor/app-relay', new Set(['@moor/protocol', '@moor/gateway', '@moor/local-state'])],
 ]);
 const extensions = ['', '.ts', '.tsx', '.js', '.cjs', '.mjs'];
 const sourceExtension = /\.(?:ts|tsx|js|cjs|mjs)$/;
@@ -95,6 +108,31 @@ for (const workspace of workspaces) {
   const allowed = allowedDependencies.get(workspace.manifest.name) ?? new Set();
   for (const file of workspace.files) {
     for (const specifier of imports(await readFile(file, 'utf8'))) {
+      const productionSource = file.startsWith(join(workspace.directory, 'src') + '/');
+      if (
+        productionSource &&
+        workspace.manifest.name === '@moor/protocol' &&
+        (specifier.startsWith('node:') ||
+          ['electron', 'react', 'react-dom'].some(
+            (name) => specifier === name || specifier.startsWith(name + '/'),
+          ))
+      )
+        errors.push(
+          `${relative(root, file)} imports a runtime implementation into protocol: ${specifier}`,
+        );
+      if (
+        productionSource &&
+        workspace.manifest.name === '@moor/client' &&
+        (file.includes('/src/operations/') || file.includes('/src/features/')) &&
+        (specifier.startsWith('node:') ||
+          specifier.includes('/adapters/') ||
+          ['electron', 'react', 'react-dom', '@moor/local-state'].some(
+            (name) => specifier === name || specifier.startsWith(name + '/'),
+          ))
+      )
+        errors.push(
+          `${relative(root, file)} imports a runtime adapter into client business: ${specifier}`,
+        );
       if (!specifier.startsWith('.') && (specifier.includes('/src/') || specifier.endsWith('/src')))
         errors.push(`${relative(root, file)} imports private source path ${specifier}`);
       if (specifier.startsWith('@moor/')) {

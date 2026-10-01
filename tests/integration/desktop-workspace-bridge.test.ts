@@ -67,7 +67,7 @@ function fixture() {
     loadRuntime: async () => {
       state.loads++;
       return {
-        DesktopWorkspaceClient: class {
+        NodeWorkspaceClient: class {
           constructor(readonly options: any) {
             state.creates++;
             state.configurations.push(options);

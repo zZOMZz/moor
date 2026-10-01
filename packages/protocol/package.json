@@ -4,9 +4,177 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./account-management": {
+      "types": "./src/account-management.ts",
+      "import": "./dist/account-management.js"
+    },
+    "./agent-controls": {
+      "types": "./src/agent-controls.ts",
+      "import": "./dist/agent-controls.js"
+    },
+    "./agent-errors": {
+      "types": "./src/agent-errors.ts",
+      "import": "./dist/agent-errors.js"
+    },
+    "./agent-usage": {
+      "types": "./src/agent-usage.ts",
+      "import": "./dist/agent-usage.js"
+    },
+    "./attachment-protocol": {
+      "types": "./src/attachment-protocol.ts",
+      "import": "./dist/attachment-protocol.js"
+    },
+    "./attention": {
+      "types": "./src/attention.ts",
+      "import": "./dist/attention.js"
+    },
+    "./attention-response": {
+      "types": "./src/attention-response.ts",
+      "import": "./dist/attention-response.js"
+    },
+    "./canonical-json": {
+      "types": "./src/canonical-json.ts",
+      "import": "./dist/canonical-json.js"
+    },
+    "./catalog": {
+      "types": "./src/catalog.ts",
+      "import": "./dist/catalog.js"
+    },
+    "./collaboration-protocol": {
+      "types": "./src/collaboration-protocol.ts",
+      "import": "./dist/collaboration-protocol.js"
+    },
+    "./connection-authority": {
+      "types": "./src/connection-authority.ts",
+      "import": "./dist/connection-authority.js"
+    },
+    "./content-protocol": {
+      "types": "./src/content-protocol.ts",
+      "import": "./dist/content-protocol.js"
+    },
+    "./device-metadata": {
+      "types": "./src/device-metadata.ts",
+      "import": "./dist/device-metadata.js"
+    },
+    "./fork-protocol": {
+      "types": "./src/fork-protocol.ts",
+      "import": "./dist/fork-protocol.js"
+    },
+    "./git-protocol": {
+      "types": "./src/git-protocol.ts",
+      "import": "./dist/git-protocol.js"
+    },
+    "./github-protocol": {
+      "types": "./src/github-protocol.ts",
+      "import": "./dist/github-protocol.js"
+    },
+    "./github-write-protocol": {
+      "types": "./src/github-write-protocol.ts",
+      "import": "./dist/github-write-protocol.js"
+    },
+    "./host-command": {
+      "types": "./src/host-command.ts",
+      "import": "./dist/host-command.js"
+    },
+    "./host-command-contract": {
+      "types": "./src/host-command-contract.ts",
+      "import": "./dist/host-command-contract.js"
+    },
+    "./host-response": {
+      "types": "./src/host-response.ts",
+      "import": "./dist/host-response.js"
+    },
+    "./interaction-protocol": {
+      "types": "./src/interaction-protocol.ts",
+      "import": "./dist/interaction-protocol.js"
+    },
+    "./mcp-protocol": {
+      "types": "./src/mcp-protocol.ts",
+      "import": "./dist/mcp-protocol.js"
+    },
+    "./notification-protocol": {
+      "types": "./src/notification-protocol.ts",
+      "import": "./dist/notification-protocol.js"
+    },
+    "./permission-review": {
+      "types": "./src/permission-review.ts",
+      "import": "./dist/permission-review.js"
+    },
+    "./preview-protocol": {
+      "types": "./src/preview-protocol.ts",
+      "import": "./dist/preview-protocol.js"
+    },
+    "./private-content": {
+      "types": "./src/private-content.ts",
+      "import": "./dist/private-content.js"
+    },
+    "./project-content-protocol": {
+      "types": "./src/project-content-protocol.ts",
+      "import": "./dist/project-content-protocol.js"
+    },
+    "./protocol": {
+      "types": "./src/protocol.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./request-failure": {
+      "types": "./src/request-failure.ts",
+      "import": "./dist/request-failure.js"
+    },
+    "./role-protocol": {
+      "types": "./src/role-protocol.ts",
+      "import": "./dist/role-protocol.js"
+    },
+    "./run-config": {
+      "types": "./src/run-config.ts",
+      "import": "./dist/run-config.js"
+    },
+    "./search-protocol": {
+      "types": "./src/search-protocol.ts",
+      "import": "./dist/search-protocol.js"
+    },
+    "./session-control-protocol": {
+      "types": "./src/session-control-protocol.ts",
+      "import": "./dist/session-control-protocol.js"
+    },
+    "./session-events": {
+      "types": "./src/session-events.ts",
+      "import": "./dist/session-events.js"
+    },
+    "./session-intent-protocol": {
+      "types": "./src/session-intent-protocol.ts",
+      "import": "./dist/session-intent-protocol.js"
+    },
+    "./session-page": {
+      "types": "./src/session-page.ts",
+      "import": "./dist/session-page.js"
+    },
+    "./session-responses": {
+      "types": "./src/session-responses.ts",
+      "import": "./dist/session-responses.js"
+    },
+    "./skills-protocol": {
+      "types": "./src/skills-protocol.ts",
+      "import": "./dist/skills-protocol.js"
+    },
+    "./task-protocol": {
+      "types": "./src/task-protocol.ts",
+      "import": "./dist/task-protocol.js"
+    },
+    "./workspace-attention": {
+      "types": "./src/workspace-attention.ts",
+      "import": "./dist/workspace-attention.js"
+    },
+    "./workspace-catalog": {
+      "types": "./src/workspace-catalog.ts",
+      "import": "./dist/workspace-catalog.js"
+    },
+    "./workspace-client-protocol": {
+      "types": "./src/workspace-client-protocol.ts",
+      "import": "./dist/workspace-client-protocol.js"
+    },
+    "./workspace-target": {
+      "types": "./src/workspace-target.ts",
+      "import": "./dist/workspace-target.js"
     }
   },
   "scripts": {

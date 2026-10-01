@@ -9,14 +9,11 @@ import { AppError } from '@moor/protocol/protocol';
 import { metas } from '@moor/session/model';
 import { CliState } from '../../apps/cli/src/state';
 import { CliClient } from '../../apps/cli/src/client';
-import { CliHttp } from '@moor/client/node/http';
+import { NodeHttp } from '@moor/client/adapters/node/http';
 import { buildSessionTurn } from '@moor/client/session-client';
 import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
-import { replicaBase } from '@moor/client/node/targets';
-import {
-  localCliProof,
-  type LocalCliConnectionLease,
-} from '@moor/protocol/node/local-cli-connection';
+import { replicaBase } from '@moor/client/adapters/node/targets';
+import { localCliProof, type LocalCliConnectionLease } from '@moor/local-state/private-connection';
 import { CliError, parseCliArgs } from '../../apps/cli/src/args';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 import type { AgentOpenOptions } from '@moor/host/agents/driver';
@@ -541,7 +538,7 @@ test('proof-await ending from another CLI prevents the staged request from being
       await release.promise;
     }
   };
-  const http = new CliHttp(
+  const http = new NodeHttp(
     {
       origin: local.connection.origin,
       cookie: 'personal=' + local.connection.secret,

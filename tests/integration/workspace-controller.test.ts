@@ -1,4 +1,5 @@
 import { mirror, vv } from '@moor/session/model';
+import { isRequestRejected } from '@moor/protocol/request-failure';
 import { createGitHubClient } from '@moor/host/integrations/github/client';
 import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
 import type { SessionGithubOptions } from '@moor/host/sessions/github';
@@ -27,9 +28,9 @@ import {
 import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
 import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
 import {
-  desktopWorkspaceCatalogSchema,
-  type DesktopWorkspaceRequest,
-} from '@moor/client/workspace-protocol';
+  workspaceCatalogSchema,
+  type WorkspaceRequest,
+} from '@moor/protocol/workspace-client-protocol';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 import { buildSessionTurn, sessionPermissionReviews } from '@moor/client/session-client';
 import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
@@ -240,7 +241,7 @@ async function fixture(
     workspace: (id) => (id === host.workspace.id ? host : undefined),
     hasOperation: () => false,
   });
-  const catalog = desktopWorkspaceCatalogSchema.parse({
+  const catalog = workspaceCatalogSchema.parse({
     source: 'local',
     ...(config.attention
       ? { actor: { kind: 'local', authorityId: 'synthetic-authority', accountId: 'local-desktop' } }
@@ -272,17 +273,28 @@ async function fixture(
   });
   const memory = new Memory(),
     store = new WorkspaceStore(memory),
-    calls: DesktopWorkspaceRequest[] = [];
+    calls: WorkspaceRequest[] = [];
   const fault: {
     unavailable?: boolean;
     loseMutation?: boolean;
     wrongReceipt?: boolean;
-    before?: (request: DesktopWorkspaceRequest) => Promise<void>;
-    after?: (request: DesktopWorkspaceRequest) => Promise<void>;
+    rejectGit?: boolean;
+    before?: (request: WorkspaceRequest) => Promise<void>;
+    after?: (request: WorkspaceRequest) => Promise<void>;
   } = {};
-  const request = async (input: DesktopWorkspaceRequest): Promise<unknown> => {
+  const request = async (input: WorkspaceRequest): Promise<unknown> => {
     calls.push(structuredClone(input));
     await fault.before?.(input);
+    if (fault.rejectGit && input.action === 'execute' && input.command.method === 'git-action')
+      return {
+        ok: false,
+        error: {
+          code: 'request',
+          status: 409,
+          rejected: true,
+          message: 'Synthetic pre-dispatch Git rejection',
+        },
+      };
     if (fault.unavailable)
       return {
         ok: false,
@@ -1453,6 +1465,57 @@ async function gitProject(f: Awaited<ReturnType<typeof fixture>>) {
   await panel.refresh();
   return { panel, oid };
 }
+
+test('finite workspace Git rejection clears only a fresh operation and preserves an earlier unknown delivery', async (t) => {
+  const fresh = await fixture(t);
+  const initial = await gitProject(fresh);
+  fresh.fault.rejectGit = true;
+  await assert.rejects(
+    initial.panel.prepare('main', initial.oid, 'feature/rejected'),
+    (error: unknown) => isRequestRejected(error) && error.status === 409,
+  );
+  assert.equal(initial.panel.controller.pending, undefined);
+  const reopened = await fresh.controller.openGit();
+  assert.equal(reopened.controller.pending, undefined);
+  assert.equal(fresh.prompts(), 0);
+
+  const uncertain = await fixture(t);
+  const original = await gitProject(uncertain);
+  uncertain.fault.after = async (input) => {
+    if (input.action === 'execute' && input.command.method === 'git-action')
+      throw Error('Synthetic lost Git receipt');
+  };
+  await assert.rejects(original.panel.prepare('main', original.oid, 'feature/unknown'), /lost Git/);
+  const pending = structuredClone(original.panel.controller.pending);
+  assert(pending);
+  const scope = uncertain.controller.state.scope!;
+  const sessionId = uncertain.controller.state.sessionId!;
+  const stored = (await uncertain.store.read(scope, () => {}, sessionId)).git![sessionId]!;
+  await assert.rejects(
+    uncertain.store.saveGit(
+      scope,
+      sessionId,
+      stored.cacheRevision,
+      { ...stored, cacheRevision: stored.cacheRevision + 1, pending: undefined },
+      () => {},
+    ),
+  );
+  assert.deepEqual(
+    (await uncertain.store.read(scope, () => {}, sessionId)).git![sessionId]!.pending,
+    pending,
+  );
+  uncertain.fault.after = undefined;
+  uncertain.fault.rejectGit = true;
+  await assert.rejects(
+    original.panel.retry(),
+    (error: unknown) => isRequestRejected(error) && error.status === 409,
+  );
+  assert.deepEqual(original.panel.controller.pending, pending);
+  uncertain.fault.rejectGit = false;
+  await original.panel.inspect();
+  assert.equal(original.panel.controller.pending, undefined);
+  assert.equal(uncertain.prompts(), 0);
+});
 
 test('workspace Git prepares a real worktree, inspects a lost receipt and checks reviewed state before cleanup', async (t) => {
   const f = await fixture(t),

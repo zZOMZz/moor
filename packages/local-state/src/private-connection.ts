@@ -17,7 +17,7 @@ import {
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { AppError, assert, id } from '../protocol';
+import { AppError, assert, id } from '@moor/protocol/protocol';
 
 export const localCliConnectionSchema = z
   .object({

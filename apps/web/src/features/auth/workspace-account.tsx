@@ -4,7 +4,7 @@ import type {
   AccountManagementRequest,
   AccountManagementValue,
 } from '@moor/protocol/account-management';
-import type { DesktopWorkspaceTarget } from '@moor/client/workspace-protocol';
+import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
 import { CatalogManagement, type ManagedWorkspace } from './catalog-management';
 import type { WorkspaceScope } from '../workspace/workspace-store';
 import { GoogleStart } from './google-login';
@@ -34,7 +34,7 @@ export function WorkspaceAccountPanel({
   onBack(): void;
   openSettings?: () => void;
   extras?: ReactNode;
-  activeTarget?: DesktopWorkspaceTarget;
+  activeTarget?: WorkspaceProjectTarget;
   beforeMove?(): Promise<void>;
   endView?(): Promise<void>;
   visible?: boolean;

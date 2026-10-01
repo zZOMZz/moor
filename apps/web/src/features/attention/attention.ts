@@ -19,7 +19,7 @@ import {
 } from '@moor/protocol/attention';
 import type { Mutation } from '@moor/protocol/protocol';
 import { SESSION_INTENTS_FEATURE, type SendTurn } from '@moor/protocol/session-intent-protocol';
-import { ApiError } from '../../platform/api';
+import { isRequestRejected } from '@moor/protocol/request-failure';
 
 import {
   attentionPageSchema as pageSchema,
@@ -202,7 +202,7 @@ export async function deliverAttention(
       original.operation.body,
     );
   } catch (error) {
-    if (error instanceof ApiError && error.rejected) {
+    if (isRequestRejected(error)) {
       if (await deps.compareAndSet(key, original, undefined)) deps.onPending(undefined);
       else deps.onPending(await deps.read<PendingAttention>(key));
     }

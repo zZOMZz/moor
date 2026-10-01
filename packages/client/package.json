@@ -4,9 +4,53 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./adapters/browser/http": {
+      "types": "./src/adapters/browser/http.ts",
+      "import": "./dist/adapters/browser/http.js"
+    },
+    "./adapters/browser/workspace-client": {
+      "types": "./src/adapters/browser/workspace-client.ts",
+      "import": "./dist/adapters/browser/workspace-client.js"
+    },
+    "./adapters/node/error": {
+      "types": "./src/adapters/node/error.ts",
+      "import": "./dist/adapters/node/error.js"
+    },
+    "./adapters/node/http": {
+      "types": "./src/adapters/node/http.ts",
+      "import": "./dist/adapters/node/http.js"
+    },
+    "./adapters/node/targets": {
+      "types": "./src/adapters/node/targets.ts",
+      "import": "./dist/adapters/node/targets.js"
+    },
+    "./adapters/node/workspace-client": {
+      "types": "./src/adapters/node/workspace-client.ts",
+      "import": "./dist/adapters/node/workspace-client.js"
+    },
+    "./adapters/shared/workspace-transport": {
+      "types": "./src/adapters/shared/workspace-transport.ts",
+      "import": "./dist/adapters/shared/workspace-transport.js"
+    },
+    "./collaboration-client": {
+      "types": "./src/collaboration-client.ts",
+      "import": "./dist/collaboration-client.js"
+    },
+    "./operations/request-rejection": {
+      "types": "./src/operations/request-rejection.ts",
+      "import": "./dist/operations/request-rejection.js"
+    },
+    "./preview-annotation": {
+      "types": "./src/preview-annotation.ts",
+      "import": "./dist/preview-annotation.js"
+    },
+    "./session-client": {
+      "types": "./src/session-client.ts",
+      "import": "./dist/session-client.js"
+    },
+    "./session-intent": {
+      "types": "./src/session-intent.ts",
+      "import": "./dist/session-intent.js"
     }
   },
   "scripts": {
@@ -15,6 +59,7 @@
     "test": "pnpm --filter @moor/client... run build && node ../../scripts/validation/test.mjs packages/client"
   },
   "dependencies": {
+    "@moor/local-state": "workspace:*",
     "@moor/protocol": "workspace:*",
     "@moor/session": "workspace:*",
     "zod": "3.25.76"

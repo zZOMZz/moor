@@ -1,9 +1,9 @@
 import { WebSocket, type ClientOptions } from 'ws';
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
-import type { DesktopWorkspaceChange } from '@moor/client/workspace-protocol';
+import type { WorkspaceChange } from '@moor/protocol/workspace-client-protocol';
 
-type Notice = Pick<DesktopWorkspaceChange, 'kind' | 'deviceId' | 'workspaceId' | 'sessionId'>;
+type Notice = Pick<WorkspaceChange, 'kind' | 'deviceId' | 'workspaceId' | 'sessionId'>;
 const changedSchema = z.object({
   type: z.literal('changed'),
   deviceId: id,

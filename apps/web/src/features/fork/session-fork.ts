@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ApiError } from '../../platform/api';
+import { isRequestRejected } from '@moor/protocol/request-failure';
 import {
   gitTargetSchema,
   gitWorkspaceKey,
@@ -390,7 +390,7 @@ export class SessionForkController {
       response = await this.dependencies.request(this.endpoint('action'), operation.request);
     } catch (error) {
       this.current();
-      if (first && error instanceof ApiError && error.rejected) {
+      if (first && isRequestRejected(error)) {
         await this.save({ operation: undefined, receipt: undefined });
         this.current();
         this.operation = undefined;

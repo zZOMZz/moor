@@ -1,8 +1,8 @@
-import { DesktopWorkspaceClient as Client } from '@moor/client/node/workspace-client';
+import { NodeWorkspaceClient as Client } from '@moor/client/adapters/node/workspace-client';
 import {
-  desktopWorkspaceCatalogSchema,
-  type DesktopWorkspaceChange,
-} from '@moor/client/workspace-protocol';
+  workspaceCatalogSchema,
+  type WorkspaceChange,
+} from '@moor/protocol/workspace-client-protocol';
 import { WorkspaceEvents } from './workspace-events';
 /** @nativeEntry Loaded by account.cjs through main.cjs's packaged workspace-client.mjs loader. */
 export {
@@ -11,12 +11,12 @@ export {
 } from '@moor/protocol/account-management';
 
 /** @nativeEntry Loaded by workspace-bridge.cjs from the packaged workspace-client.mjs module. */
-export class DesktopWorkspaceClient extends Client {
+export class NodeWorkspaceClient extends Client {
   #events?: WorkspaceEvents;
   #closed = false;
   constructor(
     private readonly native: ConstructorParameters<typeof Client>[0] & {
-      onSync?(value: DesktopWorkspaceChange): void;
+      onSync?(value: WorkspaceChange): void;
     },
   ) {
     super(native);
@@ -30,7 +30,7 @@ export class DesktopWorkspaceClient extends Client {
       (raw as { action?: string })?.action === 'catalog' &&
       (result as { ok?: boolean })?.ok
     ) {
-      const catalog = desktopWorkspaceCatalogSchema.parse((result as { value: unknown }).value);
+      const catalog = workspaceCatalogSchema.parse((result as { value: unknown }).value);
       this.#events = new WorkspaceEvents({
         origin: this.native.origin,
         cookie: this.native.cookie,

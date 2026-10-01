@@ -15,7 +15,7 @@ import {
   attentionItemsPageSchema,
 } from '@moor/protocol/attention-response';
 import { id } from '@moor/protocol/protocol';
-import type { DesktopWorkspaceTarget } from './workspace-protocol';
+import type { WorkspaceProjectTarget } from './workspace-client-protocol';
 
 const item = z.string().min(1).max(1024);
 export const workspaceAttentionCommandSchema = z.discriminatedUnion('kind', [
@@ -34,7 +34,7 @@ export const workspaceAttentionCommandSchema = z.discriminatedUnion('kind', [
 export type WorkspaceAttentionCommand = z.infer<typeof workspaceAttentionCommandSchema>;
 export { actorSchema };
 export function workspaceAttentionRoute(
-  target: DesktopWorkspaceTarget,
+  target: WorkspaceProjectTarget,
   input: WorkspaceAttentionCommand,
 ) {
   const command = workspaceAttentionCommandSchema.parse(input);
@@ -79,7 +79,7 @@ const receiptSchema = z
   .strict();
 export function validateWorkspaceAttentionResponse(
   input: unknown,
-  target: DesktopWorkspaceTarget,
+  target: WorkspaceProjectTarget,
   command: WorkspaceAttentionCommand,
 ) {
   workspaceAttentionRoute(target, command);

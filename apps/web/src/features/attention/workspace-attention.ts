@@ -1,5 +1,5 @@
 import { attentionContinueInput } from '@moor/protocol/attention';
-import { workspaceAttentionCommandSchema } from '@moor/client/workspace-attention';
+import { workspaceAttentionCommandSchema } from '@moor/protocol/workspace-attention';
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
 import { attentionPageSchema, attentionDetailSchema } from '@moor/protocol/attention-response';
@@ -13,7 +13,7 @@ import {
   type AttentionRoute,
   type PendingAttention,
 } from './attention';
-import type { DesktopWorkspaceTarget } from '@moor/client/workspace-protocol';
+import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 
 export const workspaceAttentionBucketSchema = z
@@ -102,7 +102,7 @@ export function validateWorkspaceAttentionEntry(
 }
 export function validateWorkspaceAttentionBucket(
   input: unknown,
-  target: Omit<DesktopWorkspaceTarget, 'sessionId'>,
+  target: Omit<WorkspaceProjectTarget, 'sessionId'>,
 ) {
   const value = workspaceAttentionBucketSchema.parse(input),
     route = value.route;

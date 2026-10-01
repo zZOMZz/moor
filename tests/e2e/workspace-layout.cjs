@@ -103,13 +103,18 @@ app
           }),
         ]);
       } catch (error) {
-        fs.writeFileSync(
-          path.join(output, 'failure.png'),
-          (await win.webContents.capturePage()).toPNG(),
-        );
+        console.error('UI operation failed:', label, error);
+        try {
+          fs.writeFileSync(
+            path.join(output, 'failure.png'),
+            (await win.webContents.capturePage()).toPNG(),
+          );
+        } catch (captureError) {
+          console.error('Failure screenshot unavailable:', captureError);
+        }
         console.error(
           await win.webContents.executeJavaScript(
-            `JSON.stringify({ active: document.activeElement?.outerHTML, notices: [...document.querySelectorAll('[role="alert"], .workspace-status')].map(node => node.textContent), fixtureCalls: window.__moorFixture?.calls, fixtureSelection: window.__moorFixture?.selection() })`,
+            `JSON.stringify({ active: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), visibility: document.visibilityState, focused: document.hasFocus(), hasSessionHeading: !!document.querySelector('.workspace-session-heading'), notices: [...document.querySelectorAll('[role="alert"], .workspace-status')].map(node => node.textContent), fixtureCalls: window.__moorFixture?.calls, fixtureSelection: window.__moorFixture?.selection() })`,
           ),
         );
         throw error;
@@ -223,10 +228,19 @@ app
         (await win.webContents.capturePage()).toPNG(),
       );
     };
-    await win.loadURL(url);
-    win.show();
-    win.focus();
-    win.webContents.focus();
+    const foreground = () => {
+      app.focus({ steal: true });
+      win.show();
+      win.focus();
+      win.webContents.focus();
+    };
+    const load = async (address) => {
+      await win.loadURL(address);
+      foreground();
+      assert.equal(win.isVisible(), true, 'navigation keeps the layout window visible');
+      assert.equal(await read('document.hidden'), false, 'navigation requires foreground frames');
+    };
+    await load(url);
     assert.equal(win.isVisible(), true, 'layout checks require a visible native window');
     assert.equal(await read('document.hidden'), false, 'layout checks require foreground frames');
     await wait('.workspace-pinned li');
@@ -452,7 +466,7 @@ app
     await wait('.workspace-new-conversation button:not(:disabled)');
     await shortcut('O', 'ctrlKey', true);
     await until(`window.__moorFixture.calls.filter(call => call === 'create').length === 1`);
-    await win.loadURL(url);
+    await load(url);
     await wait('.workspace-session-heading');
     await toolbarRow();
     assert.equal(
@@ -783,7 +797,7 @@ app
     );
     assert.equal(await read(`window.__moorFixture.calls.includes('send')`), false);
     win.setContentSize(1200, 768);
-    await win.loadURL(url);
+    await load(url);
     await wait('.workspace-history');
     await read(
       `document.querySelector('.workspace-session-header [aria-label="项目文件"]').click()`,
@@ -827,7 +841,7 @@ app
     );
     win.setContentSize(1200, 768);
 
-    await win.loadURL(url + '/?grouped=1');
+    await load(url + '/?grouped=1');
     await wait('.workspace-logical-project');
     const groupedSelection = await win.webContents.executeJavaScript(
       'window.__moorFixture.selection()',
@@ -875,7 +889,7 @@ app
       'computer-name matches load only bounded summaries',
     );
     await shot('computer-search');
-    await win.loadURL(url);
+    await load(url);
     await wait('.workspace-history');
     await win.webContents.executeJavaScript('window.__moorFixture.newConversation()');
     await wait('.workspace-welcome');
@@ -942,7 +956,7 @@ app
       ),
       'saving the current model and effort reaches the scoped default action',
     );
-    await win.loadURL(url);
+    await load(url);
     await wait('.workspace-history');
     await input('[aria-label="消息"]', '中文输入确认测试');
     await wait('.workspace-composer button[type="submit"]:not(:disabled)');
@@ -1093,7 +1107,7 @@ app
     );
     await shot('cached-run');
     win.setContentSize(390, 760);
-    await win.loadURL(url);
+    await load(url);
     await wait('.workspace-history');
     await shot('narrow');
     await toolbarRow();
@@ -1102,16 +1116,10 @@ app
     );
     assert.equal(narrowOverflow, false);
     {
-      win.show();
-      win.focus();
-      win.webContents.focus();
-      await bounded(
-        new Promise((resolve) => {
-          if (win.isFocused()) resolve();
-          else win.once('focus', resolve);
-        }),
-        'test window focus',
-      );
+      foreground();
+      // Native input targets the focused WebContents. The assertions below
+      // verify delivered shortcuts and characters rather than an OS focus flag.
+      await until('document.hasFocus()');
       win.webContents.sendInputEvent({
         type: 'keyDown',
         keyCode: 'K',

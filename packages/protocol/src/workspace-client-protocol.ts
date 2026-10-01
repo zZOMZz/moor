@@ -5,7 +5,7 @@ import { workspaceTargetSchema } from '@moor/protocol/workspace-target';
 import { id, runtimeWorkspaceSchema } from '@moor/protocol/protocol';
 import { hostNotificationEventSchema } from '@moor/protocol/notification-protocol';
 
-export const desktopWorkspaceContextSchema = z
+export const workspaceContextSchema = z
   .object({
     localReady: z.boolean(),
     view: z.enum(['local', 'remote']),
@@ -14,20 +14,20 @@ export const desktopWorkspaceContextSchema = z
   })
   .strict();
 
-export const DESKTOP_WORKSPACE_LIMITS = Object.freeze({
+export const WORKSPACE_LIMITS = Object.freeze({
   requestBytes: 48 * 1024 * 1024,
   responseBytes: 48 * 1024 * 1024,
   pending: 16,
   pendingBytes: 96 * 1024 * 1024,
 });
-export const desktopWorkspaceSourceSchema = z.enum(['local', 'remote']);
-export type DesktopWorkspaceSource = z.infer<typeof desktopWorkspaceSourceSchema>;
-export const desktopWorkspaceTargetSchema = workspaceTargetSchema.extend({ catalogProjectId: id });
-export type DesktopWorkspaceTarget = z.infer<typeof desktopWorkspaceTargetSchema>;
+export const workspaceSourceSchema = z.enum(['local', 'remote']);
+export type WorkspaceSource = z.infer<typeof workspaceSourceSchema>;
+export const workspaceProjectTargetSchema = workspaceTargetSchema.extend({ catalogProjectId: id });
+export type WorkspaceProjectTarget = z.infer<typeof workspaceProjectTargetSchema>;
 // Invalidation only. Session bodies are read through the authenticated host boundary.
-export const desktopWorkspaceChangeSchema = z
+export const workspaceChangeSchema = z
   .object({
-    source: desktopWorkspaceSourceSchema,
+    source: workspaceSourceSchema,
     connectionId: z.string().uuid(),
     owner: z.string().min(1).max(1000),
     kind: z.enum(['connected', 'disconnected', 'changed']),
@@ -36,15 +36,15 @@ export const desktopWorkspaceChangeSchema = z
     sessionId: id.optional(),
   })
   .strict();
-export type DesktopWorkspaceChange = z.infer<typeof desktopWorkspaceChangeSchema>;
-export const desktopWorkspaceRequestSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('catalog'), source: desktopWorkspaceSourceSchema }).strict(),
+export type WorkspaceChange = z.infer<typeof workspaceChangeSchema>;
+export const workspaceRequestSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('catalog'), source: workspaceSourceSchema }).strict(),
   z
     .object({
       action: z.literal('attention'),
-      source: desktopWorkspaceSourceSchema,
+      source: workspaceSourceSchema,
       connectionId: z.string().uuid(),
-      target: desktopWorkspaceTargetSchema,
+      target: workspaceProjectTargetSchema,
       actor: actorSchema,
       command: workspaceAttentionCommandSchema,
     })
@@ -52,18 +52,18 @@ export const desktopWorkspaceRequestSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('execute'),
-      source: desktopWorkspaceSourceSchema,
+      source: workspaceSourceSchema,
       connectionId: z.string().uuid(),
-      target: desktopWorkspaceTargetSchema,
+      target: workspaceProjectTargetSchema,
       command: hostCommandSchema,
     })
     .strict(),
 ]);
-export type DesktopWorkspaceRequest = z.infer<typeof desktopWorkspaceRequestSchema>;
-export const desktopWorkspaceCatalogSchema = z
+export type WorkspaceRequest = z.infer<typeof workspaceRequestSchema>;
+export const workspaceCatalogSchema = z
   .object({
     connectionId: z.string().uuid(),
-    source: desktopWorkspaceSourceSchema,
+    source: workspaceSourceSchema,
     origin: z.string().url().max(2048),
     owner: z.string().min(1).max(1000),
     actor: actorSchema.optional(),
@@ -71,7 +71,7 @@ export const desktopWorkspaceCatalogSchema = z
       .array(
         z
           .object({
-            target: desktopWorkspaceTargetSchema,
+            target: workspaceProjectTargetSchema,
             workspaceName: z.string().max(1000),
             projectName: z.string().max(1000),
             hostName: z.string().max(1000),
@@ -83,9 +83,9 @@ export const desktopWorkspaceCatalogSchema = z
       .max(1000),
   })
   .strict();
-export type DesktopWorkspaceCatalog = z.infer<typeof desktopWorkspaceCatalogSchema>;
+export type WorkspaceCatalog = z.infer<typeof workspaceCatalogSchema>;
 
-export const desktopAddProjectResultSchema = z.discriminatedUnion('canceled', [
+export const addProjectResultSchema = z.discriminatedUnion('canceled', [
   z.object({ canceled: z.literal(true) }).strict(),
   z
     .object({

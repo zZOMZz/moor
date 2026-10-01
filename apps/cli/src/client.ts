@@ -1,3 +1,4 @@
+import { isRequestRejected, RequestFailure } from '@moor/protocol/request-failure';
 import {
   RETIRED_RECORDS_FEATURE,
   RETIRED_SESSION_FEATURE,
@@ -35,9 +36,9 @@ import {
   respondPermissionSchema,
 } from '@moor/protocol/session-intent-protocol';
 import { MCP_LIMITS, mcpReadSchema, validateMcpRead } from '@moor/protocol/mcp-protocol';
-import { readLocalCliConnection } from '@moor/protocol/node/local-cli-connection';
+import { readLocalCliConnection } from '@moor/local-state/private-connection';
 import { CliError, type CliArgs } from './args';
-import { CliHttp, CliHttpError, connectionSchema, serverOrigin } from '@moor/client/node/http';
+import { NodeHttp, connectionSchema, serverOrigin } from '@moor/client/adapters/node/http';
 import { cliInput } from './input';
 import { CliGoogleAuth } from './google-auth';
 import { CliState, type CliOperation, type CliTarget } from './state';
@@ -48,7 +49,7 @@ import {
   replicaBase,
   resolveTarget,
   type CliResolvedTarget,
-} from '@moor/client/node/targets';
+} from '@moor/client/adapters/node/targets';
 export type CliDependencies = {
   state: CliState;
   fetch?: typeof fetch;
@@ -152,7 +153,7 @@ export class CliClient {
           3,
         );
       }
-      return new CliHttp(
+      return new NodeHttp(
         {
           origin: local.connection.origin,
           cookie: 'personal=' + local.connection.secret,
@@ -171,14 +172,14 @@ export class CliClient {
       throw new CliError('authentication', '请先登录或通过 --connection 选择本机连接。', 3);
     if (args.flags.server && serverOrigin(String(args.flags.server)) !== stored.connection.origin)
       throw new CliError('authentication', '指定服务器与保存的登录不同，请先显式登录。', 3);
-    return new CliHttp(connectionSchema.parse(stored.connection), {
+    return new NodeHttp(connectionSchema.parse(stored.connection), {
       fetch: this.deps.fetch,
       signal: this.deps.signal,
       deadline: this.deps.deadline,
       current: () => this.state.assertCurrent(),
     });
   }
-  async target(http: CliHttp, args: CliArgs, withSession = false) {
+  async target(http: NodeHttp, args: CliArgs, withSession = false) {
     const saved = this.state.target();
     let target: CliTarget;
     if (args.flags.workspace || args.flags.replica) {
@@ -211,7 +212,7 @@ export class CliClient {
       this.state.assertOutsideProjects([resolved.rootPath]);
     return resolved;
   }
-  async read(http: CliHttp, target: CliTarget) {
+  async read(http: NodeHttp, target: CliTarget) {
     return readClientSession(
       await http.json(
         replicaBase(target) + '/sessions/' + id.parse(target.sessionId),
@@ -239,7 +240,7 @@ export class CliClient {
       new Date(this.now()).toISOString(),
     );
   }
-  async deliver(http: CliHttp, op: CliOperation, first = false) {
+  async deliver(http: NodeHttp, op: CliOperation, first = false) {
     if (!['pending', 'ending'].includes(op.state)) return summary(op);
     if (op.state === 'ending')
       throw new CliError(
@@ -273,7 +274,7 @@ export class CliClient {
         this.state.assertOutsideProjects([mapped.rootPath]);
       if (request.kind === 'send-turn' || request.kind === 'respond-permission')
         requireFeature(mapped, SESSION_INTENTS_FEATURE);
-      http = new CliHttp(http.connection, {
+      http = new NodeHttp(http.connection, {
         ...http.options,
         current: () => {
           this.state.assertCurrent();
@@ -347,7 +348,7 @@ export class CliClient {
       } else throw new Error('This CLI operation is not a supported session original');
       return summary(this.state.transition(op.operationId, ['pending'], state, receipt));
     } catch (error) {
-      if (error instanceof CliHttpError && error.rejected && first) {
+      if (isRequestRejected(error) && first) {
         this.state.transition(op.operationId, ['pending'], 'rejected');
         throw new CliError(
           error.status === 410 ? 'retired' : 'rejected',
@@ -358,7 +359,7 @@ export class CliClient {
           op.operationId,
         );
       }
-      if (error instanceof CliHttpError && error.status === 410)
+      if (error instanceof RequestFailure && error.status === 410)
         throw new CliError(
           'retired',
           '此功能已退场；旧原操作状态保持不变，请核查已保存的记录。',
@@ -374,7 +375,7 @@ export class CliClient {
       );
     }
   }
-  async recover(http: CliHttp, op: CliOperation, action: 'inspect' | 'abandon') {
+  async recover(http: NodeHttp, op: CliOperation, action: 'inspect' | 'abandon') {
     if (action === 'abandon' && !['pending', 'ending'].includes(op.state)) return summary(op);
     if (action === 'abandon' && op.state === 'pending')
       op = this.state.transition(op.operationId, ['pending'], 'ending');
@@ -410,11 +411,11 @@ export class CliClient {
       );
     }
   }
-  async wait(http: CliHttp, target: CliTarget, args: CliArgs, turnId?: string) {
+  async wait(http: NodeHttp, target: CliTarget, args: CliArgs, turnId?: string) {
     const duration = Number(args.flags.timeout ?? 60000),
       deadline = this.now() + duration,
       ending = (this.deps.deadline ?? AbortSignal.timeout)(duration);
-    http = new CliHttp(http.connection, {
+    http = new NodeHttp(http.connection, {
       ...http.options,
       signal: AbortSignal.any([ending, ...(http.options.signal ? [http.options.signal] : [])]),
     });
@@ -514,7 +515,7 @@ export class CliClient {
       if (args.flags.connection) {
         const initial = await this.http(args);
         authCurrent();
-        const http = new CliHttp(initial.connection, { ...initial.options, current: authCurrent });
+        const http = new NodeHttp(initial.connection, { ...initial.options, current: authCurrent });
         await http.identity();
         authCurrent();
         this.state.compareAndSetSettings(authRevision!, {
@@ -531,7 +532,7 @@ export class CliClient {
         throw new CliError('login-input', '登录输入必须包含 email 和 password，且使用有效 JSON。');
       }
       authCurrent();
-      const initial = new CliHttp(
+      const initial = new NodeHttp(
           { origin },
           {
             fetch: this.deps.fetch,
@@ -549,7 +550,7 @@ export class CliClient {
       const connection = connectionSchema.parse({
         origin,
         cookie,
-        owner: await new CliHttp(
+        owner: await new NodeHttp(
           { origin, cookie },
           {
             fetch: this.deps.fetch,
@@ -591,7 +592,7 @@ export class CliClient {
     let http = await this.http(args);
     if (args.group === 'auth') {
       authCurrent();
-      http = new CliHttp(http.connection, { ...http.options, current: authCurrent });
+      http = new NodeHttp(http.connection, { ...http.options, current: authCurrent });
       if (args.command === 'status')
         return {
           authenticated: true,

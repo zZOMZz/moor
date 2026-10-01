@@ -17,7 +17,7 @@ import {
 import { applySessionEvent } from '@moor/session/session-events';
 import { z } from 'zod';
 import { esc, markdown } from '../../components/content';
-import { ApiError } from '../../platform/api';
+import { isRequestRejected } from '@moor/protocol/request-failure';
 
 const scopeSchema = z
   .object({
@@ -290,7 +290,7 @@ export class InteractionController {
         );
       } catch (error) {
         // Only the host can prove an operation was never staged. Timeouts keep the exact request.
-        if (error instanceof ApiError && error.rejected)
+        if (isRequestRejected(error))
           await this.save((previous) => ({ ...previous, pending: undefined }));
         throw error;
       }

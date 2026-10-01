@@ -4,7 +4,7 @@ import {
   actorSchema,
   workspaceAttentionRoute,
   validateWorkspaceAttentionResponse,
-} from './workspace-attention';
+} from '@moor/protocol/workspace-attention';
 import {
   ATTENTION_FEATURE,
   ACTOR_FEATURE,
@@ -23,16 +23,16 @@ import { AppError } from '@moor/protocol/protocol';
 import { validateHostResponse } from '@moor/protocol/host-response';
 import { publicAgentFailure } from '@moor/protocol/agent-errors';
 import {
-  desktopWorkspaceRequestSchema,
-  desktopWorkspaceCatalogSchema,
-  DESKTOP_WORKSPACE_LIMITS,
-  type DesktopWorkspaceSource,
-  type DesktopWorkspaceTarget,
-  type DesktopWorkspaceCatalog,
-} from './workspace-protocol';
+  workspaceRequestSchema,
+  workspaceCatalogSchema,
+  WORKSPACE_LIMITS,
+  type WorkspaceSource,
+  type WorkspaceProjectTarget,
+  type WorkspaceCatalog,
+} from '@moor/protocol/workspace-client-protocol';
 
 const unavailable = () => new AppError(409, '连接或执行目标已变化，请核查原操作后手动继续');
-export function workspaceCommandRoute(target: DesktopWorkspaceTarget, command: HostCommand) {
+export function workspaceCommandRoute(target: WorkspaceProjectTarget, command: HostCommand) {
   if (
     command.workspaceId !== target.workspaceId ||
     command.localProjectId !== target.localProjectId
@@ -62,7 +62,7 @@ export function workspaceCommandRoute(target: DesktopWorkspaceTarget, command: H
 }
 
 export type LocalWorkspaceIdentity = Pick<
-  DesktopWorkspaceTarget,
+  WorkspaceProjectTarget,
   'owner' | 'deviceId' | 'workspaceId' | 'machineId' | 'userId'
 >;
 export type WorkspaceJsonTransport = {
@@ -78,7 +78,7 @@ export class WorkspaceTransportClient {
   #owner: string | undefined;
   constructor(
     private options: {
-      source: DesktopWorkspaceSource;
+      source: WorkspaceSource;
       origin: string;
       localIdentity?: LocalWorkspaceIdentity;
       current(): void;
@@ -103,7 +103,7 @@ export class WorkspaceTransportClient {
     if (this.#lifetime.signal.aborted) throw unavailable();
     this.options.current();
   }
-  private async catalog(): Promise<DesktopWorkspaceCatalog> {
+  private async catalog(): Promise<WorkspaceCatalog> {
     this.current();
     const snapshot = workspaceCatalogSnapshotSchema.parse(
       await this.#http.json('/api/workspace-catalog', undefined, 16 * 1024 * 1024),
@@ -118,7 +118,7 @@ export class WorkspaceTransportClient {
     };
     unique(catalog);
     unique(devices);
-    const targets: DesktopWorkspaceCatalog['targets'] = [];
+    const targets: WorkspaceCatalog['targets'] = [];
     for (const workspace of catalog) {
       unique(workspace.hosts);
       unique(workspace.projects);
@@ -164,7 +164,7 @@ export class WorkspaceTransportClient {
         });
       }
     }
-    return desktopWorkspaceCatalogSchema.parse({
+    return workspaceCatalogSchema.parse({
       connectionId: this.connectionId,
       source: this.options.source,
       origin: this.#http.origin,
@@ -173,7 +173,7 @@ export class WorkspaceTransportClient {
       targets,
     });
   }
-  private async resolve(target: DesktopWorkspaceTarget, actor?: AttentionActor) {
+  private async resolve(target: WorkspaceProjectTarget, actor?: AttentionActor) {
     this.current();
     const context = workspaceReplicaContextSchema.parse(
       await this.#http.json(
@@ -223,7 +223,7 @@ export class WorkspaceTransportClient {
   }
   async request(raw: unknown): Promise<unknown> {
     try {
-      const request = desktopWorkspaceRequestSchema.parse(raw);
+      const request = workspaceRequestSchema.parse(raw);
       this.current();
       if (request.source !== this.options.source) throw unavailable();
       if (request.action === 'catalog') return { ok: true, value: await this.catalog() };
@@ -251,11 +251,7 @@ export class WorkspaceTransportClient {
         throw new AppError(409, '此执行电脑尚未支持待办操作。');
       let value: unknown, failure: unknown;
       try {
-        value = await this.#http.json(
-          route.path,
-          route.body,
-          DESKTOP_WORKSPACE_LIMITS.responseBytes,
-        );
+        value = await this.#http.json(route.path, route.body, WORKSPACE_LIMITS.responseBytes);
       } catch (error) {
         failure = error;
       }

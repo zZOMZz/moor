@@ -1,8 +1,8 @@
-import { BrowserWorkspaceClient } from '../src/browser-workspace-client';
+import { BrowserWorkspaceClient } from '../src/adapters/browser/workspace-client';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DesktopWorkspaceClient } from '@moor/client/node/workspace-client';
-import { desktopWorkspaceCatalogSchema } from '@moor/client/workspace-protocol';
+import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
 import type { AttentionActor } from '@moor/protocol/attention';
 import { agentModelFailures } from '@moor/protocol/agent-errors';
 
@@ -76,7 +76,7 @@ function fixture(source: 'local' | 'remote' = 'local', browser = false) {
     rejected: false,
     errorMessage: 'SYNTHETIC_PRIVATE_RESPONSE',
   };
-  const Client = browser ? BrowserWorkspaceClient : DesktopWorkspaceClient;
+  const Client = browser ? BrowserWorkspaceClient : NodeWorkspaceClient;
   const client = new Client({
     source,
     origin: 'https://relay.synthetic.invalid',
@@ -137,7 +137,7 @@ function fixture(source: 'local' | 'remote' = 'local', browser = false) {
   async function request(method = 'sessions', params = {}, sessionId?: string) {
     const response: any = await client.request({ action: 'catalog', source });
     assert.equal(response.ok, true);
-    const shown = desktopWorkspaceCatalogSchema.parse(response.value);
+    const shown = workspaceCatalogSchema.parse(response.value);
     return {
       action: 'execute',
       source,

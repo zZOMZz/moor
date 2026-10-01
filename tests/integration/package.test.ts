@@ -30,6 +30,7 @@ test('license discovery includes the root and every application and public packa
     '@moor/client',
     '@moor/gateway',
     '@moor/host',
+    '@moor/local-state',
     '@moor/protocol',
     '@moor/session',
     '@moor/sync',

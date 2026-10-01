@@ -3,18 +3,94 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@moor/client/*": ["./packages/client/src/*.ts"],
-      "@moor/gateway/*": ["./packages/gateway/src/*.ts"],
-      "@moor/host/*": ["./packages/host/src/*.ts"],
-      "@moor/protocol/*": ["./packages/protocol/src/*.ts"],
-      "@moor/session/*": ["./packages/session/src/*.ts"],
-      "@moor/sync/*": ["./packages/sync/src/*.ts"],
       "@moor/app-cli": ["./apps/cli/src/main.ts"],
       "@moor/app-cli/*": ["./apps/cli/src/*.ts"],
       "@moor/app-host": ["./apps/host/src/main.ts"],
       "@moor/app-relay": ["./apps/relay/src/main.ts"],
       "@moor/app-relay/*": ["./apps/relay/src/*.ts"],
-      "@moor/app-web": ["./apps/web/src/app/entry.ts"]
+      "@moor/app-web": ["./apps/web/src/app/entry.ts"],
+      "@moor/client/adapters/browser/http": ["./packages/client/src/adapters/browser/http.ts"],
+      "@moor/client/adapters/browser/workspace-client": [
+        "./packages/client/src/adapters/browser/workspace-client.ts"
+      ],
+      "@moor/client/adapters/node/error": ["./packages/client/src/adapters/node/error.ts"],
+      "@moor/client/adapters/node/http": ["./packages/client/src/adapters/node/http.ts"],
+      "@moor/client/adapters/node/targets": ["./packages/client/src/adapters/node/targets.ts"],
+      "@moor/client/adapters/node/workspace-client": [
+        "./packages/client/src/adapters/node/workspace-client.ts"
+      ],
+      "@moor/client/adapters/shared/workspace-transport": [
+        "./packages/client/src/adapters/shared/workspace-transport.ts"
+      ],
+      "@moor/client/collaboration-client": ["./packages/client/src/collaboration-client.ts"],
+      "@moor/client/operations/request-rejection": [
+        "./packages/client/src/operations/request-rejection.ts"
+      ],
+      "@moor/client/preview-annotation": ["./packages/client/src/preview-annotation.ts"],
+      "@moor/client/session-client": ["./packages/client/src/session-client.ts"],
+      "@moor/client/session-intent": ["./packages/client/src/session-intent.ts"],
+      "@moor/gateway/*": ["./packages/gateway/src/*.ts"],
+      "@moor/host/*": ["./packages/host/src/*.ts"],
+      "@moor/local-state/exclusive-lock": ["./packages/local-state/src/exclusive-lock.ts"],
+      "@moor/local-state/private-connection": ["./packages/local-state/src/private-connection.ts"],
+      "@moor/local-state/private-project-path": [
+        "./packages/local-state/src/private-project-path.ts"
+      ],
+      "@moor/protocol/account-management": ["./packages/protocol/src/account-management.ts"],
+      "@moor/protocol/agent-controls": ["./packages/protocol/src/agent-controls.ts"],
+      "@moor/protocol/agent-errors": ["./packages/protocol/src/agent-errors.ts"],
+      "@moor/protocol/agent-usage": ["./packages/protocol/src/agent-usage.ts"],
+      "@moor/protocol/attachment-protocol": ["./packages/protocol/src/attachment-protocol.ts"],
+      "@moor/protocol/attention": ["./packages/protocol/src/attention.ts"],
+      "@moor/protocol/attention-response": ["./packages/protocol/src/attention-response.ts"],
+      "@moor/protocol/canonical-json": ["./packages/protocol/src/canonical-json.ts"],
+      "@moor/protocol/catalog": ["./packages/protocol/src/catalog.ts"],
+      "@moor/protocol/collaboration-protocol": [
+        "./packages/protocol/src/collaboration-protocol.ts"
+      ],
+      "@moor/protocol/connection-authority": ["./packages/protocol/src/connection-authority.ts"],
+      "@moor/protocol/content-protocol": ["./packages/protocol/src/content-protocol.ts"],
+      "@moor/protocol/device-metadata": ["./packages/protocol/src/device-metadata.ts"],
+      "@moor/protocol/fork-protocol": ["./packages/protocol/src/fork-protocol.ts"],
+      "@moor/protocol/git-protocol": ["./packages/protocol/src/git-protocol.ts"],
+      "@moor/protocol/github-protocol": ["./packages/protocol/src/github-protocol.ts"],
+      "@moor/protocol/github-write-protocol": ["./packages/protocol/src/github-write-protocol.ts"],
+      "@moor/protocol/host-command": ["./packages/protocol/src/host-command.ts"],
+      "@moor/protocol/host-command-contract": ["./packages/protocol/src/host-command-contract.ts"],
+      "@moor/protocol/host-response": ["./packages/protocol/src/host-response.ts"],
+      "@moor/protocol/interaction-protocol": ["./packages/protocol/src/interaction-protocol.ts"],
+      "@moor/protocol/mcp-protocol": ["./packages/protocol/src/mcp-protocol.ts"],
+      "@moor/protocol/notification-protocol": ["./packages/protocol/src/notification-protocol.ts"],
+      "@moor/protocol/permission-review": ["./packages/protocol/src/permission-review.ts"],
+      "@moor/protocol/preview-protocol": ["./packages/protocol/src/preview-protocol.ts"],
+      "@moor/protocol/private-content": ["./packages/protocol/src/private-content.ts"],
+      "@moor/protocol/project-content-protocol": [
+        "./packages/protocol/src/project-content-protocol.ts"
+      ],
+      "@moor/protocol/protocol": ["./packages/protocol/src/protocol.ts"],
+      "@moor/protocol/request-failure": ["./packages/protocol/src/request-failure.ts"],
+      "@moor/protocol/role-protocol": ["./packages/protocol/src/role-protocol.ts"],
+      "@moor/protocol/run-config": ["./packages/protocol/src/run-config.ts"],
+      "@moor/protocol/search-protocol": ["./packages/protocol/src/search-protocol.ts"],
+      "@moor/protocol/session-control-protocol": [
+        "./packages/protocol/src/session-control-protocol.ts"
+      ],
+      "@moor/protocol/session-events": ["./packages/protocol/src/session-events.ts"],
+      "@moor/protocol/session-intent-protocol": [
+        "./packages/protocol/src/session-intent-protocol.ts"
+      ],
+      "@moor/protocol/session-page": ["./packages/protocol/src/session-page.ts"],
+      "@moor/protocol/session-responses": ["./packages/protocol/src/session-responses.ts"],
+      "@moor/protocol/skills-protocol": ["./packages/protocol/src/skills-protocol.ts"],
+      "@moor/protocol/task-protocol": ["./packages/protocol/src/task-protocol.ts"],
+      "@moor/protocol/workspace-attention": ["./packages/protocol/src/workspace-attention.ts"],
+      "@moor/protocol/workspace-catalog": ["./packages/protocol/src/workspace-catalog.ts"],
+      "@moor/protocol/workspace-client-protocol": [
+        "./packages/protocol/src/workspace-client-protocol.ts"
+      ],
+      "@moor/protocol/workspace-target": ["./packages/protocol/src/workspace-target.ts"],
+      "@moor/session/*": ["./packages/session/src/*.ts"],
+      "@moor/sync/*": ["./packages/sync/src/*.ts"]
     }
   },
   "include": []

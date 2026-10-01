@@ -154,7 +154,7 @@ class DesktopWorkspaceBridge {
           slot.expiresAt = credentials.expiresAt;
         }
         this.current(slot);
-        slot.client = new runtime.DesktopWorkspaceClient({
+        slot.client = new runtime.NodeWorkspaceClient({
           source,
           origin: slot.origin,
           cookie,

@@ -4,8 +4,8 @@ import {
   workspaceCatalogSchema as catalogSchema,
   workspaceDevicesSchema as devicesSchema,
 } from '@moor/protocol/workspace-catalog';
-import { CliError } from '../error';
-import { CliHttp } from './http';
+import { NodeClientError } from './error';
+import { NodeHttp } from './http';
 import {
   workspaceTargetSchema as cliTargetSchema,
   type WorkspaceTarget as CliTarget,
@@ -21,11 +21,11 @@ export type CliResolvedTarget = {
   features: string[];
   rootPath?: string;
 };
-export function cliServerKey(http: CliHttp) {
+export function cliServerKey(http: NodeHttp) {
   return http.options.local ? 'local:' + http.options.local.connection.machineId : http.origin;
 }
 export async function listTargets(
-  http: CliHttp,
+  http: NodeHttp,
   onRoots?: (roots: string[]) => void,
 ): Promise<CliResolvedTarget[]> {
   const owner = await http.identity();
@@ -83,12 +83,12 @@ export function replicaBase(target: CliTarget) {
   return '/api/workspaces/' + target.catalogWorkspaceId + '/replicas/' + target.replicaId;
 }
 export async function resolveTarget(
-  http: CliHttp,
+  http: NodeHttp,
   target: CliTarget,
   onRoots?: (roots: string[]) => void,
 ) {
   if (target.serverKey !== cliServerKey(http) || target.owner !== http.owner)
-    throw new CliError('scope', '原目标属于另一服务器或登录账号。', 5);
+    throw new NodeClientError('scope', '原目标属于另一服务器或登录账号。', 5);
   const matches = (await listTargets(http, onRoots)).filter((row) =>
     [
       'serverKey',
@@ -101,9 +101,9 @@ export async function resolveTarget(
     ].every((k) => row.target[k as keyof CliTarget] === target[k as keyof CliTarget]),
   );
   if (matches.length !== 1)
-    throw new CliError('scope', '原执行目标已不可用或归属不明确，未执行操作。', 5);
+    throw new NodeClientError('scope', '原执行目标已不可用或归属不明确，未执行操作。', 5);
   const found = matches[0]!;
-  if (!found.online) throw new CliError('offline', '执行电脑离线；不会自动重试。', 4);
+  if (!found.online) throw new NodeClientError('offline', '执行电脑离线；不会自动重试。', 4);
   return {
     ...found,
     target: { ...found.target, ...(target.sessionId ? { sessionId: target.sessionId } : {}) },

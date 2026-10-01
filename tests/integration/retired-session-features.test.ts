@@ -12,8 +12,8 @@ import {
   RETIRED_RECORDS_FEATURE,
   RETIRED_SESSION_FEATURE,
 } from '@moor/protocol/connection-authority';
-import { DesktopWorkspaceClient } from '@moor/client/node/workspace-client';
-import { desktopWorkspaceCatalogSchema } from '@moor/client/workspace-protocol';
+import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
 import { roleActionSchema } from '@moor/protocol/role-protocol';
 import { previewOpenSchema } from '@moor/protocol/preview-protocol';
 import { taskActionSchema } from '@moor/protocol/task-protocol';
@@ -572,7 +572,7 @@ test('a current Host definite retirement rejection remains 410 through Relay and
         }),
       );
   });
-  const client = new DesktopWorkspaceClient({
+  const client = new NodeWorkspaceClient({
     source: 'remote',
     origin: f.origin,
     cookie: 'personal=' + f.secret,
@@ -580,7 +580,7 @@ test('a current Host definite retirement rejection remains 410 through Relay and
   });
   t.after(() => client.close());
   const loaded: any = await client.request({ action: 'catalog', source: 'remote' });
-  const catalog = desktopWorkspaceCatalogSchema.parse(loaded.value);
+  const catalog = workspaceCatalogSchema.parse(loaded.value);
   const selected = catalog.targets.find(
     (entry) =>
       entry.target.deviceId === host.device.id && entry.target.localProjectId === 'local-moor',

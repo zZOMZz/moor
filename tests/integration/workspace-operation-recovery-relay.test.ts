@@ -12,9 +12,9 @@ import {
   forkRequestVersion,
   type SessionFork,
 } from '@moor/protocol/fork-protocol';
-import { DesktopWorkspaceClient } from '@moor/client/node/workspace-client';
-import { BrowserWorkspaceClient } from '@moor/client/browser-workspace-client';
-import { desktopWorkspaceCatalogSchema } from '@moor/client/workspace-protocol';
+import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
+import { BrowserWorkspaceClient } from '@moor/client/adapters/browser/workspace-client';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 function gate() {
@@ -75,7 +75,7 @@ async function fixture(browser = false) {
   peer.socket.ping();
   await pong;
   const calls: string[] = [];
-  const Client = browser ? BrowserWorkspaceClient : DesktopWorkspaceClient;
+  const Client = browser ? BrowserWorkspaceClient : NodeWorkspaceClient;
   const client = new Client({
     source: 'remote',
     origin: relay.origin,
@@ -98,7 +98,7 @@ async function fixture(browser = false) {
   });
   const opened: any = await client.request({ action: 'catalog', source: 'remote' });
   assert.equal(opened.ok, true);
-  const catalog = desktopWorkspaceCatalogSchema.parse(opened.value);
+  const catalog = workspaceCatalogSchema.parse(opened.value);
   const row = catalog.targets.find(
     (row) => row.target.deviceId === peer.device.id && row.target.localProjectId === 'local-moor',
   )!;

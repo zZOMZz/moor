@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { DesktopWorkspaceClient } from '@moor/client/node/workspace-client';
-import { desktopWorkspaceCatalogSchema } from '@moor/client/workspace-protocol';
+import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
 import {
   workspaceCatalogSnapshotSchema,
   workspaceReplicaContextSchema,
@@ -62,7 +62,7 @@ test('stable desktop requests use three scoped HTTP calls without full catalog s
   const f = await syntheticRelay();
   t.after(f.close);
   const paths: string[] = [];
-  const client = new DesktopWorkspaceClient({
+  const client = new NodeWorkspaceClient({
     source: 'remote',
     origin: f.origin,
     cookie: 'personal=' + f.secret,
@@ -75,7 +75,7 @@ test('stable desktop requests use three scoped HTTP calls without full catalog s
   t.after(() => client.close());
   const response: any = await client.request({ action: 'catalog', source: 'remote' });
   assert.equal(response.ok, true);
-  const shown = desktopWorkspaceCatalogSchema.parse(response.value);
+  const shown = workspaceCatalogSchema.parse(response.value);
   const selected = shown.targets.find((entry) => entry.target.localProjectId === 'local-moor')!;
   const target = selected.target;
   const host = f.hosts.find((entry) => entry.device.id === target.deviceId)!;
@@ -129,7 +129,7 @@ for (const change of ['assignment', 'logout'] as const)
   test(`scoped workspace responses recheck authorization after an in-flight ${change}`, async (t) => {
     const f = await syntheticRelay();
     t.after(f.close);
-    const client = new DesktopWorkspaceClient({
+    const client = new NodeWorkspaceClient({
       source: 'remote',
       origin: f.origin,
       cookie: 'personal=' + f.secret,
@@ -137,7 +137,7 @@ for (const change of ['assignment', 'logout'] as const)
     });
     t.after(() => client.close());
     const response: any = await client.request({ action: 'catalog', source: 'remote' });
-    const shown = desktopWorkspaceCatalogSchema.parse(response.value);
+    const shown = workspaceCatalogSchema.parse(response.value);
     const target = shown.targets.find(
       (entry) => entry.target.localProjectId === 'local-moor',
     )!.target;

@@ -1,12 +1,16 @@
-import { WorkspaceNetworkFailure, type WorkspaceJsonTransport } from './workspace-transport';
+import {
+  WorkspaceNetworkFailure,
+  type WorkspaceJsonTransport,
+} from '../shared/workspace-transport';
+import { RequestFailure } from '@moor/protocol/request-failure';
 
-export class BrowserHttpError extends Error {
+export class BrowserHttpError extends RequestFailure {
   constructor(
     readonly status: number,
     readonly rejected: boolean,
     message: string,
   ) {
-    super(message);
+    super(message, 'http', status, rejected ? 'not-dispatched' : 'unconfirmed');
   }
 }
 

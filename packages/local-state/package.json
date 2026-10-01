@@ -1,0 +1,32 @@
+{
+  "name": "@moor/local-state",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./exclusive-lock": {
+      "types": "./src/exclusive-lock.ts",
+      "import": "./dist/exclusive-lock.js"
+    },
+    "./private-connection": {
+      "types": "./src/private-connection.ts",
+      "import": "./dist/private-connection.js"
+    },
+    "./private-project-path": {
+      "types": "./src/private-project-path.ts",
+      "import": "./dist/private-project-path.js"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build/build-package.mjs",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@moor/protocol": "workspace:*",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

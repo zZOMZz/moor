@@ -34,6 +34,9 @@ importers:
       '@moor/host':
         specifier: workspace:*
         version: link:packages/host
+      '@moor/local-state':
+        specifier: workspace:*
+        version: link:packages/local-state
       '@moor/protocol':
         specifier: workspace:*
         version: link:packages/protocol
@@ -109,6 +112,9 @@ importers:
       '@moor/client':
         specifier: workspace:*
         version: link:../../packages/client
+      '@moor/local-state':
+        specifier: workspace:*
+        version: link:../../packages/local-state
       '@moor/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -159,6 +165,9 @@ importers:
       '@moor/host':
         specifier: workspace:*
         version: link:../../packages/host
+      '@moor/local-state':
+        specifier: workspace:*
+        version: link:../../packages/local-state
       '@moor/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -187,6 +196,9 @@ importers:
       '@moor/gateway':
         specifier: workspace:*
         version: link:../../packages/gateway
+      '@moor/local-state':
+        specifier: workspace:*
+        version: link:../../packages/local-state
       '@moor/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -264,6 +276,9 @@ importers:
 
   packages/client:
     dependencies:
+      '@moor/local-state':
+        specifier: workspace:*
+        version: link:../local-state
       '@moor/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -311,6 +326,9 @@ importers:
       '@agentclientprotocol/sdk':
         specifier: 1.4.0
         version: 1.4.0(zod@3.25.76)
+      '@moor/local-state':
+        specifier: workspace:*
+        version: link:../local-state
       '@moor/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -320,6 +338,22 @@ importers:
       '@moor/sync':
         specifier: workspace:*
         version: link:../sync
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/local-state:
+    dependencies:
+      '@moor/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       zod:
         specifier: 3.25.76
         version: 3.25.76

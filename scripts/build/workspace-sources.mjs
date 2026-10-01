@@ -20,14 +20,19 @@ export function workspaceSourceAliases(root = repository) {
       if (!manifest.name?.startsWith('@moor/')) throw Error('Expected a Moor workspace package');
       return Object.entries(manifest.exports).map(([path, conditions]) => {
         const source = conditions.types;
+        const subpath = path === '.' ? '' : path.slice(1);
+        const wildcard = subpath.includes('*');
         if (
           !source?.startsWith('./src/') ||
-          !['.', './*'].includes(path) ||
-          (path === './*') !== source.includes('*')
+          (path !== '.' && !/^\.\/[A-Za-z0-9_./*-]+$/.test(path)) ||
+          path.includes('..') ||
+          (subpath.match(/\*/g)?.length ?? 0) > 1 ||
+          wildcard !== source.includes('*')
         )
           throw Error(`Unsupported source export ${manifest.name}${path}`);
+        const pattern = escapePattern(manifest.name + subpath).replace('\\*', '(.+)');
         return {
-          find: new RegExp(`^${escapePattern(manifest.name)}${path === '.' ? '' : '/(.+)'}$`),
+          find: new RegExp(`^${pattern}$`),
           replacement: resolve(directory, source.replace('*', '$1')),
         };
       });

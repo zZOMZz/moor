@@ -17,6 +17,7 @@
   "dependencies": {
     "@moor/gateway": "workspace:*",
     "@moor/host": "workspace:*",
+    "@moor/local-state": "workspace:*",
     "@moor/protocol": "workspace:*",
     "ws": "8.18.3",
     "zod": "3.25.76"

@@ -17,7 +17,7 @@ import type {
   WorkspaceController,
   WorkspaceClientState,
 } from '../../apps/web/src/features/workspace/workspace-controller';
-import { desktopWorkspaceCatalogSchema } from '@moor/client/workspace-protocol';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
 import {
   notificationIdentity,
   type HostNotificationEvent,
@@ -94,7 +94,7 @@ test('packaged workspace opens local projects without an account and preserves d
     { createRoot } = await import('react-dom/client'),
     { WorkspaceApp } = await import('../../apps/web/src/app/workspace-app');
   const root = createRoot(dom.window.document.getElementById('app')!);
-  const catalog = desktopWorkspaceCatalogSchema.parse({
+  const catalog = workspaceCatalogSchema.parse({
     source: 'local',
     connectionId: '00000000-0000-4000-8000-000000000001',
     origin: 'http://127.0.0.1:12345',

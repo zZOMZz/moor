@@ -28,7 +28,7 @@ import {
   localCliChallenge,
   localCliProof,
   verifyLocalCliProof,
-} from '@moor/protocol/node/local-cli-connection';
+} from '@moor/local-state/private-connection';
 
 const connection = (instanceId = 'instance-a'): LocalCliConnection => ({
   version: 1,

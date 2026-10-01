@@ -113,7 +113,7 @@ test('development performance classification requires its exact runtime chain an
   await put(metrics, 'export const score = 42; export type Score = number;');
   await put(
     native,
-    'export const DesktopWorkspaceClient = 1, accountManagementPlan = 2, validateAccountManagementResult = 3;',
+    'export const NodeWorkspaceClient = 1, accountManagementPlan = 2, validateAccountManagementResult = 3;',
   );
   const directory = join(root, 'dist/validation/production-graphs');
   const nativeResult = await build({

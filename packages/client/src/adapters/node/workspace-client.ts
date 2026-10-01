@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { CliHttp, CliHttpError } from './http';
-import { CliError } from '../error';
-import { WorkspaceTransportClient, type LocalWorkspaceIdentity } from '../workspace-transport';
-import type { DesktopWorkspaceSource } from '../workspace-protocol';
-export { type LocalWorkspaceIdentity } from '../workspace-transport';
+import { NodeHttp, NodeHttpError } from './http';
+import { NodeClientError } from './error';
+import {
+  WorkspaceTransportClient,
+  type LocalWorkspaceIdentity,
+} from '../shared/workspace-transport';
+import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
+export { type LocalWorkspaceIdentity } from '../shared/workspace-transport';
 
 /** Node owns credentials; the shared client owns the finite business protocol. */
-export class DesktopWorkspaceClient extends WorkspaceTransportClient {
+export class NodeWorkspaceClient extends WorkspaceTransportClient {
   constructor(options: {
-    source: DesktopWorkspaceSource;
+    source: WorkspaceSource;
     origin: string;
     cookie: string;
     localIdentity?: LocalWorkspaceIdentity;
@@ -20,7 +23,7 @@ export class DesktopWorkspaceClient extends WorkspaceTransportClient {
       ...options,
       uuid: options.uuid ?? randomUUID,
       createHttp: (context) =>
-        new CliHttp(
+        new NodeHttp(
           { origin: options.origin, cookie: options.cookie, owner: options.localIdentity?.owner },
           {
             current: context.current,
@@ -28,9 +31,9 @@ export class DesktopWorkspaceClient extends WorkspaceTransportClient {
             fetch: options.fetch,
           },
         ),
-      classifyHttpError: (error) => (error instanceof CliHttpError ? error : undefined),
+      classifyHttpError: (error) => (error instanceof NodeHttpError ? error : undefined),
       isNetworkError: (error) =>
-        error instanceof CliError && ['network', 'deadline'].includes(error.code),
+        error instanceof NodeClientError && ['network', 'deadline'].includes(error.code),
     });
   }
 }

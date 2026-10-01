@@ -12,8 +12,8 @@ import {
   hostCommandFeatures,
   matchHostCommandRoute,
 } from '@moor/protocol/host-command-contract';
-import { workspaceCommandRoute } from '@moor/client/workspace-transport';
-import type { DesktopWorkspaceTarget } from '@moor/client/workspace-protocol';
+import { workspaceCommandRoute } from '@moor/client/adapters/shared/workspace-transport';
+import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
 import type { Workspace } from '@moor/protocol/catalog';
 import { cases } from '../fixtures/host-command-cases';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
@@ -27,7 +27,7 @@ async function fixture() {
     replica = space.replicas.find(
       (value) => value.hostId === host.id && value.localProjectId === 'local-moor',
     )!;
-  const target: DesktopWorkspaceTarget = {
+  const target: WorkspaceProjectTarget = {
     serverKey: 'synthetic',
     owner: relay.owner,
     deviceId: host.deviceId,

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ApiError } from '../../platform/api';
+import { isRequestRejected } from '@moor/protocol/request-failure';
 import {
   gitTargetSchema,
   gitWorkspaceKey,
@@ -503,7 +503,7 @@ export class GithubController {
       );
     } catch (error) {
       this.access(generation);
-      if (first && error instanceof ApiError && error.rejected) {
+      if (first && isRequestRejected(error)) {
         await this.save({ pending: undefined }, generation);
         this.current(generation);
         this.pending = undefined;

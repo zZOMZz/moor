@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { ApiError } from '../../platform/api';
+import { isRequestRejected } from '@moor/protocol/request-failure';
+import type { FreshRequestRejection } from '@moor/client/operations/request-rejection';
 import { id } from '@moor/protocol/protocol';
 import { contentScopeSchema } from '@moor/protocol/content-protocol';
 import {
@@ -67,6 +68,7 @@ export type GitWorkspaceDependencies = {
     expectedRevision: number,
     value: { cacheRevision: number },
     current: () => boolean,
+    freshRejection?: FreshRequestRejection,
   ): Promise<boolean>;
   request(path: string, body: unknown): Promise<unknown>;
   current(): boolean;
@@ -114,6 +116,7 @@ export class GitWorkspaceController {
   }
   private async save(
     values: Partial<Pick<GitWorkspaceController, 'state' | 'receipt' | 'pending'>> = {},
+    freshRejection?: FreshRequestRejection,
   ) {
     this.current();
     if (this.loadError) throw new Error(this.loadError);
@@ -132,6 +135,7 @@ export class GitWorkspaceController {
         this.cacheRevision,
         value,
         this.dependencies.current,
+        freshRejection,
       );
       this.current();
       if (!saved) throw new Error('Git 操作记录已被其他页面更新。');
@@ -333,8 +337,8 @@ export class GitWorkspaceController {
       this.current();
       // Only a fresh operation's first explicit rejection proves no dispatch.
       // Rejection of a retry says nothing about its earlier unknown delivery.
-      if (firstDelivery && error instanceof ApiError && error.rejected) {
-        await this.save({ pending: undefined });
+      if (firstDelivery && isRequestRejected(error)) {
+        await this.save({ pending: undefined }, { request: pending.request, failure: error });
         this.current();
         this.pending = undefined;
       }

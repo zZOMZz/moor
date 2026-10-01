@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { actorSchema } from '@moor/protocol/attention';
 import { id } from '@moor/protocol/protocol';
 import { CliError } from './args';
-import { serverOrigin, withAbort } from '@moor/client/node/http';
+import { serverOrigin, withAbort } from '@moor/client/adapters/node/http';
 import type { CliState } from './state';
 
 export const CLI_GOOGLE_FLOW_KEY = 'google-login-v1';

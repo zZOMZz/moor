@@ -171,7 +171,7 @@ for (const name of requiredProductionGraphs) {
       (artifact) => artifact.entry === 'apps/desktop/src/main/workspace-client-entry.ts',
     );
     const expected = [
-      'DesktopWorkspaceClient',
+      'NodeWorkspaceClient',
       'accountManagementPlan',
       'validateAccountManagementResult',
     ];

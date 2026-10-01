@@ -1,8 +1,8 @@
 import { createRoot } from 'react-dom/client';
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
-import { desktopWorkspaceTargetSchema } from '@moor/client/workspace-protocol';
-import { BrowserHttpError, createBrowserWorkspaceHttp } from '@moor/client/browser-http';
+import { workspaceProjectTargetSchema } from '@moor/protocol/workspace-client-protocol';
+import { BrowserHttpError, createBrowserWorkspaceHttp } from '@moor/client/adapters/browser/http';
 import {
   accountManagementPlan,
   validateAccountManagementResult,
@@ -23,7 +23,7 @@ import { parseNotificationNavigation } from '../features/notifications/notificat
 const selectionSchema = z.object({
   scope: z.object({
     source: z.literal('remote'),
-    target: desktopWorkspaceTargetSchema.omit({ sessionId: true }),
+    target: workspaceProjectTargetSchema.omit({ sessionId: true }),
   }),
   sessionId: id,
 });

@@ -1,5 +1,6 @@
-import { CliError } from '@moor/client/error';
-export { CliError } from '@moor/client/error';
+import { NodeClientError } from '@moor/client/adapters/node/error';
+
+export class CliError extends NodeClientError {}
 
 const commands: Record<string, readonly string[]> = {
   auth: [

@@ -1,3 +1,4 @@
+import { NodeClientError } from '@moor/client/adapters/node/error';
 import { resolve } from 'node:path';
 import { CliError, cliHelp, parseCliArgs } from './args';
 import { CliState, defaultCliDirectory } from './state';
@@ -35,16 +36,16 @@ try {
   }
 } catch (error) {
   const safe =
-    error instanceof CliError && error.code === 'interrupted'
+    error instanceof NodeClientError && error.code === 'interrupted'
       ? error
       : controller.signal.aborted
         ? new CliError(
             'interrupted',
             '等待或请求已中断；连接已关闭，原请求的执行结果请手动核查。',
             130,
-            error instanceof CliError ? error.operationId : undefined,
+            error instanceof NodeClientError ? error.operationId : undefined,
           )
-        : error instanceof CliError
+        : error instanceof NodeClientError
           ? error
           : new CliError('invalid', '输入、状态或服务器响应不可验证；未自动重试。', 1);
   const result = {

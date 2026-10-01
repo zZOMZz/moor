@@ -1,16 +1,16 @@
+import { RequestFailure } from '@moor/protocol/request-failure';
 import { useEffect, useMemo, useState } from 'react';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
-import type { DesktopWorkspaceSource } from '@moor/client/workspace-protocol';
+import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
 import {
-  WorkspaceRequestError,
   isWorkspaceListOfflineFailure,
   type WorkspaceController,
   type WorkspaceClientState,
   type WorkspaceSessionPage,
 } from '../workspace/workspace-controller';
 export type NavigationProject = NonNullable<WorkspaceClientState['project']> & {
-  source: DesktopWorkspaceSource;
+  source: WorkspaceSource;
 };
 export const projectKey = (entry: NavigationProject) => canonical([entry.source, entry.target]);
 export const workspaceKey = (entry: NavigationProject) =>
@@ -75,7 +75,7 @@ type Entry = {
   error?: string;
 };
 export const sessionPageError = (error: unknown) =>
-  error instanceof WorkspaceRequestError && error.status === 409
+  error instanceof RequestFailure && error.status === 409
     ? '会话列表已变化，请重新读取。'
     : '会话列表尚未确认，请重新读取或检查连接。';
 

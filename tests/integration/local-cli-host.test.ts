@@ -21,7 +21,7 @@ import {
   readLocalCliConnection,
   localCliChallenge,
   verifyLocalCliProof,
-} from '@moor/protocol/node/local-cli-connection';
+} from '@moor/local-state/private-connection';
 
 function fixture(t: TestContext, insideProject = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-local-cli-host-'))),

@@ -67,7 +67,7 @@ corepack pnpm --filter @moor/host test
 | `pnpm build`                              | 所有 workspace 和交付物                               |
 | `pnpm package:relay` / `pnpm package:mac` | 构建相应交付物后组装分发包                            |
 
-应用入口位于 `apps/{web,desktop,host,relay,cli}`，共享边界位于 `packages/{protocol,session,client,gateway,host,sync}`。`pnpm boundaries` 检查依赖方向；只有 Host 导入并持久接受用户 CRDT 操作，Relay 不保存正文。新增请求必须绑定完整身份，不暴露原始 shell/socket 代理。
+应用入口位于 `apps/{web,desktop,host,relay,cli}`，共享边界位于 `packages/{protocol,session,client,gateway,host,sync,local-state}`。`local-state` 只提供 Node 私有连接、进程锁与路径隔离。`pnpm boundaries` 检查依赖方向；只有 Host 导入并持久接受用户 CRDT 操作，Relay 不保存正文。新增请求必须绑定完整身份，不暴露原始 shell/socket 代理。
 
 开发模式从 workspace manifest 的 `exports.types` 解析源码；Node 构建入口统一在 [runtime-build.mjs](../scripts/build/runtime-build.mjs)，生产构建与开发 watch 共用。每个运行组件按实际依赖生成许可。生成的 `dist`、临时数据库、截图、会话和日志不提交。
 

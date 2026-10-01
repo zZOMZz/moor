@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
-import { createBrowserWorkspaceHttp } from '@moor/client/browser-http';
+import { createBrowserWorkspaceHttp } from '@moor/client/adapters/browser/http';
 
 /** Revoke only the reviewed account; an old response must not clear a newer login. */
 export async function logoutBrowserAccount(options: {

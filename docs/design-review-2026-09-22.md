@@ -223,9 +223,9 @@ Moor 最需要解决的是**产品范围与实现复杂度失衡、同一业务�
 
 ### D15：安全检查被实现为每个请求重复遍历完整目录
 
-**证据。** [DesktopWorkspaceClient.catalog](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/packages/client/src/node/workspace-client.ts)第 154—166 行顺序获取身份、工作区、设备、身份；第 228—229 行每次 `resolve` 都重新执行 `catalog`；第 252、264、273 行在业务请求前后各调用一次 `resolve`。普通成功路径由此形成 **4 + 1 + 4 = 9 次 HTTP 请求**，还不包含调用方为刷新 UI 发出的其他请求。
+**证据。** [NodeWorkspaceClient.catalog](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/packages/client/src/adapters/node/workspace-client.ts)第 154—166 行顺序获取身份、工作区、设备、身份；第 228—229 行每次 `resolve` 都重新执行 `catalog`；第 252、264、273 行在业务请求前后各调用一次 `resolve`。普通成功路径由此形成 **4 + 1 + 4 = 9 次 HTTP 请求**，还不包含调用方为刷新 UI 发出的其他请求。
 
-**合成复现。** 实际 `DesktopWorkspaceClient` 注入 fake fetch 与虚构目录：初始 catalog 成功后清空计数，执行一次 `sessions`，返回 `ok: true, value: []`；请求次序为 `me → workspaces → devices → me → sessions → me → workspaces → devices → me`，共 9 次。没有访问真实网络或账号。
+**合成复现。** 实际 `NodeWorkspaceClient` 注入 fake fetch 与虚构目录：初始 catalog 成功后清空计数，执行一次 `sessions`，返回 `ok: true, value: []`；请求次序为 `me → workspaces → devices → me → sessions → me → workspaces → devices → me`，共 9 次。没有访问真实网络或账号。
 
 **问题。** 一个读文件或会话列表动作承担两轮完整目录往返；与 D14 的逐项目读取叠加后放大网络延迟。这些检查意图正确，但实现粒度过粗。
 
@@ -431,16 +431,16 @@ D24 的核心真实设备基线应在 A/B 阶段同步开始，由操作者执�
 
 ## 本次验证记录与限制
 
-| 检查                            | 结果               | 说明                                                                     |
-| ------------------------------- | ------------------ | ------------------------------------------------------------------------ |
-| 包边界检查                      | 通过               | 检查 12 个 workspace package                                             |
-| 文档链接检查                    | 通过               | 报告完成后复查 61 篇 Markdown，全部链接目标存在                          |
-| `pnpm knip:production`          | 未通过             | 两个未使用导出、一个未使用导出类型；见 D21                               |
-| WorkspaceStore 容量实验         | 复现故障           | 内存合成 512 条 confirmed 后，第 513 条被 schema 拒绝                    |
-| DesktopWorkspaceClient 请求计数 | 复现请求放大       | 实际客户端与 fake fetch；单次 sessions 成功请求触发 9 次串行 HTTP        |
-| Loro 输出快照实验               | 观察到写放大       | 固定内容/分片/随机种子；只测导出字节，不等价于磁盘或时间基准             |
-| workspace alias 检查            | 确认遗漏           | `@moor/sync/store` 未命中源码 alias                                      |
-| 完整类型、测试、构建四项门禁    | 本次未运行完整组合 | 本次只新增报告，没有业务修改或提交；既有历史通过记录不当作当前工作区通过 |
-| 真实设备、真实账号和线上服务    | 未操作             | 未使用真实 Agent/GitHub/Google 账号，未部署，未做真机性能或安全认证      |
+| 检查                         | 结果               | 说明                                                                     |
+| ---------------------------- | ------------------ | ------------------------------------------------------------------------ |
+| 包边界检查                   | 通过               | 检查 12 个 workspace package                                             |
+| 文档链接检查                 | 通过               | 报告完成后复查 61 篇 Markdown，全部链接目标存在                          |
+| `pnpm knip:production`       | 未通过             | 两个未使用导出、一个未使用导出类型；见 D21                               |
+| WorkspaceStore 容量实验      | 复现故障           | 内存合成 512 条 confirmed 后，第 513 条被 schema 拒绝                    |
+| NodeWorkspaceClient 请求计数 | 复现请求放大       | 实际客户端与 fake fetch；单次 sessions 成功请求触发 9 次串行 HTTP        |
+| Loro 输出快照实验            | 观察到写放大       | 固定内容/分片/随机种子；只测导出字节，不等价于磁盘或时间基准             |
+| workspace alias 检查         | 确认遗漏           | `@moor/sync/store` 未命中源码 alias                                      |
+| 完整类型、测试、构建四项门禁 | 本次未运行完整组合 | 本次只新增报告，没有业务修改或提交；既有历史通过记录不当作当前工作区通过 |
+| 真实设备、真实账号和线上服务 | 未操作             | 未使用真实 Agent/GitHub/Google 账号，未部署，未做真机性能或安全认证      |
 
 所有发现均应按本报告的证据强度阅读。性能项应先建立合成基线再验证改造收益；产品取舍项需要在实施前确认近期功能范围。本次仅新增报告，未覆盖或回退已有源码与文档修改，也未创建提交。报告文件的 Prettier 格式检查通过。

@@ -11,7 +11,7 @@ import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { HostCommandDispatcher } from '@moor/host/commands/host-command';
 import { LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
-import { desktopWorkspaceRequestSchema } from '@moor/client/workspace-protocol';
+import { workspaceRequestSchema } from '@moor/protocol/workspace-client-protocol';
 
 const configuration = JSON.parse(process.env.MOOR_STREAM_HOST!);
 const now = () => performance.timeOrigin + performance.now();
@@ -154,9 +154,7 @@ const server = createServer(async (request, response) => {
     try {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
-      const input = desktopWorkspaceRequestSchema.parse(
-        JSON.parse(Buffer.concat(chunks).toString()),
-      );
+      const input = workspaceRequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString()));
       method = input.action === 'execute' ? input.command.method : input.action;
       const startedAt = now();
       let value: unknown;

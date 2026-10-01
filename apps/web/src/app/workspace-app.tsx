@@ -82,14 +82,11 @@ import { WorkspaceAccountPanel } from '../features/auth/workspace-account';
 import type { Account, AccountApi } from '../platform/account';
 import { sessionPendingOperations } from '../features/workspace/workspace-store';
 
-import type {
-  DesktopWorkspaceRequest,
-  DesktopWorkspaceSource,
-} from '@moor/client/workspace-protocol';
+import type { WorkspaceRequest, WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
 import {
-  desktopWorkspaceContextSchema,
-  desktopAddProjectResultSchema,
-} from '@moor/client/workspace-protocol';
+  workspaceContextSchema,
+  addProjectResultSchema,
+} from '@moor/protocol/workspace-client-protocol';
 import type { z } from 'zod';
 import { RunControls } from '../components/ui';
 import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
@@ -1430,7 +1427,7 @@ export function WorkspaceApp({
   };
   const [desktop, setDesktop] = useState<{
     serial: number;
-    value: z.infer<typeof desktopWorkspaceContextSchema>;
+    value: z.infer<typeof workspaceContextSchema>;
   } | null>(null);
   const desktopHandled = useRef(0),
     navigationHandled = useRef(-1),
@@ -1476,7 +1473,7 @@ export function WorkspaceApp({
       void readDesktopContext()
         .then((raw) => {
           if (active && current === serial)
-            setDesktop({ serial: current, value: desktopWorkspaceContextSchema.parse(raw) });
+            setDesktop({ serial: current, value: workspaceContextSchema.parse(raw) });
         })
         .catch((reason: unknown) => {
           if (active && current === serial) setError(message(reason));
@@ -1561,7 +1558,7 @@ export function WorkspaceApp({
         if (blocked) return;
         run(async () => {
           setNotice('');
-          const result = desktopAddProjectResultSchema.parse(await addLocalProject());
+          const result = addProjectResultSchema.parse(await addLocalProject());
           if (result.canceled || !mounted.current) return;
           await controller.refreshCatalog('local');
           const entry = controller.state.catalogs.local?.targets.find(
@@ -2167,7 +2164,7 @@ export async function bootWorkspace() {
   const bridges = window as unknown as {
     moorWorkspace?: {
       version: number;
-      request(value: DesktopWorkspaceRequest): Promise<unknown>;
+      request(value: WorkspaceRequest): Promise<unknown>;
       account: AccountApi;
       context(): Promise<unknown>;
       addProject(): Promise<unknown>;

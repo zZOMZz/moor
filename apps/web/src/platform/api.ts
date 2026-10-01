@@ -1,4 +1,5 @@
 import type { AttentionActor } from '@moor/protocol/attention';
+import { RequestFailure } from '@moor/protocol/request-failure';
 
 export interface Identity {
   owner: string | null;
@@ -9,13 +10,18 @@ export interface Identity {
   google?: { enabled: boolean; linked?: { email: string } | null; hasPassword?: boolean };
 }
 
-export class ApiError extends Error {
+export class ApiError extends RequestFailure {
   constructor(
     message: string,
     public status: number,
     public rejected = false,
   ) {
-    super(message);
+    super(
+      message,
+      status === 0 ? 'network' : 'http',
+      status,
+      rejected ? 'not-dispatched' : 'unconfirmed',
+    );
   }
 }
 export async function api(path: string, body?: unknown) {

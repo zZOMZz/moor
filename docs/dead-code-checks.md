@@ -41,7 +41,7 @@ pnpm production:check
 
 ## 有限动态入口
 
-Desktop 主进程通过固定的 `workspace-client.mjs` 动态加载三个导出：`DesktopWorkspaceClient`、`accountManagementPlan` 和 `validateAccountManagementResult`。源码中的 `@nativeEntry` 注解说明具体调用方；生产门禁同时核对这个 bundle 的导出集合，避免把任意未使用导出都视为原生入口。
+Desktop 主进程通过固定的 `workspace-client.mjs` 动态加载三个导出：`NodeWorkspaceClient`、`accountManagementPlan` 和 `validateAccountManagementResult`。源码中的 `@nativeEntry` 注解说明具体调用方；生产门禁同时核对这个 bundle 的导出集合，避免把任意未使用导出都视为原生入口。
 
 ACP 适配器是固定版本的外部子进程包，按打包与启动路径使用，不是普通静态 `import`。原有精确的依赖例外保留；新增动态入口或例外必须指出调用方和实际产物证据。
 

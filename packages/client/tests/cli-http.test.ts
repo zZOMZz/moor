@@ -1,10 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CliHttp, serverOrigin } from '@moor/client/node/http';
-import {
-  localCliProof,
-  type LocalCliConnectionLease,
-} from '@moor/protocol/node/local-cli-connection';
+import { NodeHttp, serverOrigin } from '@moor/client/adapters/node/http';
+import { localCliProof, type LocalCliConnectionLease } from '@moor/local-state/private-connection';
 const local: LocalCliConnectionLease = {
   connection: {
     version: 1,
@@ -29,7 +26,7 @@ test('CLI HTTP rejects unsafe origins, redirects and limits responses without fo
   ])
     assert.throws(() => serverOrigin(origin));
   let called = 0;
-  const http = new CliHttp(
+  const http = new NodeHttp(
     { origin: 'https://synthetic.invalid', cookie: 'personal=' + 'a'.repeat(32), owner: 'owner' },
     {
       fetch: (async (_url, init) => {
@@ -46,7 +43,7 @@ test('CLI HTTP rejects unsafe origins, redirects and limits responses without fo
     (error) => error instanceof Error && !error.message.includes('PRIVATE_SECRET'),
   );
   assert.equal(called, 1);
-  const huge = new CliHttp(
+  const huge = new NodeHttp(
     { origin: 'https://synthetic.invalid' },
     { fetch: (async () => new Response('"' + 'x'.repeat(100) + '"')) as typeof fetch },
   );
@@ -56,7 +53,7 @@ test('descriptor preflight sends no credential to changed instance and rechecks 
   const calls: RequestInit[] = [];
   let instance = 'other',
     revoked = false;
-  const http = new CliHttp(
+  const http = new NodeHttp(
     {
       origin: local.connection.origin,
       cookie: 'personal=' + local.connection.secret,
@@ -96,7 +93,7 @@ test('descriptor preflight sends no credential to changed instance and rechecks 
 test('HTTP and streaming response deadlines are injected and terminate without a retry', async () => {
   const deadline = new AbortController();
   let calls = 0;
-  const http = new CliHttp(
+  const http = new NodeHttp(
     { origin: 'https://synthetic.invalid' },
     {
       deadline: () => deadline.signal,
@@ -115,7 +112,7 @@ test('HTTP and streaming response deadlines are injected and terminate without a
   const entered = new Promise<void>((r) => {
     streamStarted = r;
   });
-  const stream = new CliHttp(
+  const stream = new NodeHttp(
     { origin: 'https://synthetic.invalid' },
     {
       deadline: () => streamDeadline.signal,

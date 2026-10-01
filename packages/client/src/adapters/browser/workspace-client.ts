@@ -1,12 +1,15 @@
-import { WorkspaceTransportClient, type LocalWorkspaceIdentity } from './workspace-transport';
-import { BrowserHttpError, createBrowserWorkspaceHttp } from './browser-http';
-import type { DesktopWorkspaceSource } from './workspace-protocol';
+import {
+  WorkspaceTransportClient,
+  type LocalWorkspaceIdentity,
+} from '../shared/workspace-transport';
+import { BrowserHttpError, createBrowserWorkspaceHttp } from './http';
+import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
 
 /** The browser supplies its same-origin cookie; no credential reaches application state. */
 export class BrowserWorkspaceClient extends WorkspaceTransportClient {
   constructor(options: {
     origin: string;
-    source?: DesktopWorkspaceSource;
+    source?: WorkspaceSource;
     localIdentity?: LocalWorkspaceIdentity;
     current(): void;
     fetch?: typeof fetch;

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { z } from 'zod';
 import type { workspaceCatalogSchema } from '@moor/protocol/workspace-catalog';
-import type { DesktopWorkspaceTarget } from '@moor/client/workspace-protocol';
+import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
 import { projectSourceSchema, type ProjectSource } from '@moor/protocol/catalog';
 import { assertCatalogDataSettled, type CatalogDataScope } from '../../platform/catalog-data-guard';
 
@@ -24,7 +24,7 @@ export function CatalogManagement({
   visible = true,
 }: {
   actions: CatalogManagementActions;
-  activeTarget?: DesktopWorkspaceTarget;
+  activeTarget?: WorkspaceProjectTarget;
   beforeMove?(): Promise<void>;
   onChanged(): void;
   owner: string;

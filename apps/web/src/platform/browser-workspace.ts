@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { BrowserWorkspaceClient } from '@moor/client/browser-workspace-client';
-import { WorkspaceTransportClient } from '@moor/client/workspace-transport';
+import { BrowserWorkspaceClient } from '@moor/client/adapters/browser/workspace-client';
+import { WorkspaceTransportClient } from '@moor/client/adapters/shared/workspace-transport';
 import {
-  desktopWorkspaceCatalogSchema,
-  desktopWorkspaceRequestSchema,
-  type DesktopWorkspaceCatalog,
-  type DesktopWorkspaceRequest,
-} from '@moor/client/workspace-protocol';
+  workspaceCatalogSchema,
+  workspaceRequestSchema,
+  type WorkspaceCatalog,
+  type WorkspaceRequest,
+} from '@moor/protocol/workspace-client-protocol';
 import { workspaceCatalogSnapshotSchema } from '@moor/protocol/workspace-catalog';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { sessionReadResponseSchema, sessionListSchema } from '@moor/protocol/session-responses';
@@ -42,7 +42,7 @@ export class BrowserWorkspaceRuntime {
   readonly client: BrowserWorkspaceClient;
   #closed = false;
   #authenticated = false;
-  #catalog?: DesktopWorkspaceCatalog;
+  #catalog?: WorkspaceCatalog;
   #catalogRead = 0;
   #initialCache: boolean;
   constructor(
@@ -81,8 +81,8 @@ export class BrowserWorkspaceRuntime {
       await backend.compareAndSet(key, before, value, current);
     });
   }
-  async request(raw: DesktopWorkspaceRequest): Promise<unknown> {
-    const request = desktopWorkspaceRequestSchema.parse(raw);
+  async request(raw: WorkspaceRequest): Promise<unknown> {
+    const request = workspaceRequestSchema.parse(raw);
     if (request.source !== 'remote') return unavailable();
     if (request.action !== 'catalog' && !this.#authenticated) return unavailable();
     if (request.action === 'catalog' && this.#initialCache) {
@@ -104,7 +104,7 @@ export class BrowserWorkspaceRuntime {
         },
       };
     if (result.ok) {
-      const value = desktopWorkspaceCatalogSchema.parse(result.value);
+      const value = workspaceCatalogSchema.parse(result.value);
       if (value.owner !== this.options.owner || value.origin !== this.options.origin) {
         this.#authenticated = false;
         return {
@@ -138,7 +138,7 @@ export class BrowserWorkspaceRuntime {
     );
     if (cached === null) cached = await this.#legacyCatalog();
     if (cached === undefined || cached === null) return undefined;
-    const value = desktopWorkspaceCatalogSchema.parse(cached);
+    const value = workspaceCatalogSchema.parse(cached);
     if (
       value.owner !== this.options.owner ||
       value.origin !== this.options.origin ||
@@ -176,7 +176,7 @@ export class BrowserWorkspaceRuntime {
     try {
       const result = (await projection.request({ action: 'catalog', source: 'remote' })) as Result;
       if (!result.ok) return undefined;
-      const catalog = desktopWorkspaceCatalogSchema.parse(result.value);
+      const catalog = workspaceCatalogSchema.parse(result.value);
       for (const entry of catalog.targets) {
         const target = entry.target;
         const raw = await read<unknown[]>(
