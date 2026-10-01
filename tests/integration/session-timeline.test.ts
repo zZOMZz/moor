@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -37,7 +38,11 @@ async function timeline(t: TestContext) {
     document: dom.window.document,
     async render(history: TimelineTurn[], confirmed = true, live = true) {
       await act(async () =>
-        root.render(createElement(SessionTimeline, { history, confirmed, live, renderItem })),
+        root.render(
+          withBrowserUiPorts(
+            createElement(SessionTimeline, { history, confirmed, live, renderItem }),
+          ),
+        ),
       );
     },
   };

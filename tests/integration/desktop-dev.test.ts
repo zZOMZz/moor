@@ -61,7 +61,7 @@ test('development policy requires a development build and exact loopback origin;
   const policy = developmentClientPolicy(input)!;
   assert.equal(policy.url, input.rendererUrl + '/');
   assert(Object.isFrozen(policy));
-  assert(allowsClientResource(policy, policy.origin + '/src/app/desktop-entry.ts'));
+  assert(allowsClientResource(policy, policy.origin + '/src/app/desktop-shell.ts'));
   assert(allowsClientResource(policy, 'ws://127.0.0.1:5173/__moor_dev__/hmr?token=synthetic'));
   for (const url of [
     'http://127.0.0.1:5174/',

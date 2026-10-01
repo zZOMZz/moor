@@ -94,7 +94,7 @@ test('development performance classification requires its exact runtime chain an
   for (const file of ['check-production-reachability.mjs', 'production-graph.mjs'])
     await put('scripts/validation/' + file, await readFile('scripts/validation/' + file, 'utf8'));
 
-  const bootstrap = 'apps/web/src/app/desktop-entry.ts';
+  const bootstrap = 'apps/web/src/app/desktop-shell.ts';
   const panel = 'apps/web/src/features/performance/performance-panel.ts';
   const metrics = 'apps/web/src/features/performance/performance-metrics.ts';
   const native = 'apps/desktop/src/main/workspace-client-entry.ts';

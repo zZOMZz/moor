@@ -55,7 +55,9 @@
     },
     "apps/web": {
       "entry": [
-        "src/features/notifications/notification-worker.ts!",
+        "src/app/worker-entry.ts!",
+        "src/app/desktop-entry.tsx!",
+        "src/platform/desktop/startup.ts!",
         "public/{startup,sw}.js!",
         "src/styles/*.css!",
         "public/style.css!",
@@ -63,7 +65,7 @@
       ],
       "project": ["src/**/*.{ts,tsx,css}!", "public/*.{js,css}!", "tests/**/*.ts"],
       "paths": {
-        "__ENTRY__": ["./src/app/entry.ts"],
+        "__ENTRY__": ["./src/app/web-entry.ts"],
       },
     },
     "apps/desktop": {

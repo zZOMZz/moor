@@ -7,7 +7,7 @@ import {
   WorkspaceStore,
   type WorkspaceScope,
 } from '../../apps/web/src/features/workspace/workspace-store';
-import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 
 const scope: WorkspaceScope = {
   source: 'local',

@@ -1,3 +1,4 @@
+import { usePreferences, type PreferencePort } from '../../platform/ui-ports';
 import {
   useCallback,
   useEffect,
@@ -12,9 +13,9 @@ const minimumWidth = 320;
 const conversationWidth = 320;
 const separatorWidth = 5;
 
-function initialWidth() {
+function initialWidth(preferences: PreferencePort) {
   try {
-    const saved = Number(localStorage.getItem(widthKey));
+    const saved = Number(preferences.read(widthKey));
     if (Number.isFinite(saved) && saved >= minimumWidth) return Math.min(saved, 1200);
   } catch {
     // The panel remains resizable when browser storage is unavailable.
@@ -24,9 +25,10 @@ function initialWidth() {
 
 /** A device-local presentation preference; never part of a shared session or execution target. */
 export function useContentDockLayout(open: boolean) {
+  const preferences = usePreferences();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [available, setAvailable] = useState(900);
-  const [preferred, setPreferred] = useState(initialWidth);
+  const [preferred, setPreferred] = useState(() => initialWidth(preferences));
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (!container) return;
@@ -99,7 +101,7 @@ export function useContentDockLayout(open: boolean) {
   );
   const persist = (value: number) => {
     try {
-      localStorage.setItem(widthKey, String(value));
+      preferences.write(widthKey, String(value));
     } catch {
       // Keep the in-memory preference when storage is unavailable.
     }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
-import type { StorageBackend, StorageChange } from '../../platform/indexed-storage';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import type { WorkspaceLedger, WorkspaceOperation, WorkspaceScope } from './workspace-store';
 
 export const WORKSPACE_RECENT_OPERATIONS = 64;

@@ -5,8 +5,8 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/app/entry.ts",
-      "import": "./dist/app/entry.js"
+      "types": "./src/app/web-entry.ts",
+      "import": "./dist/app/web-entry.js"
     }
   },
   "scripts": {

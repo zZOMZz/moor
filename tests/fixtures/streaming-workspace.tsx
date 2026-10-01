@@ -1,3 +1,6 @@
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
+import { api } from '../../apps/web/src/platform/api';
+import { IndexedStorage } from '../../apps/web/src/platform/indexed-storage';
 import { createRoot } from 'react-dom/client';
 import { WorkspaceApp } from '../../apps/web/src/app/workspace-app';
 import { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
@@ -53,7 +56,7 @@ IDBObjectStore.prototype.delete = function (key) {
   track(this.transaction).deletes++;
   return originalDelete.call(this, key);
 };
-const store = new WorkspaceStore();
+const store = new WorkspaceStore(new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }));
 const controller = new WorkspaceController({
   store,
   request: async (input) => {
@@ -103,6 +106,8 @@ const subscribe = (listener: (value: unknown) => void) => {
 const root = createRoot(document.getElementById('app')!);
 root.render(
   <WorkspaceApp
+    localAvailable={true}
+    ports={createBrowserUiPorts({ window, location, request: api })}
     controller={controller}
     subscribeSessionChanges={subscribe}
     accountApi={async () => ({

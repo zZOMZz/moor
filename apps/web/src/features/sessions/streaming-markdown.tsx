@@ -1,3 +1,4 @@
+import { useNavigation } from '../../platform/ui-ports';
 import { memo, useState } from 'react';
 import { markdownInline, plainCode } from '../../components/content';
 
@@ -178,6 +179,7 @@ const ListPart = memo(function ListPart({ html }: { html: string }) {
   return <li dangerouslySetInnerHTML={{ __html: html }} />;
 });
 const CopyCode = memo(function CopyCode({ block }: { block: Block }) {
+  const navigation = useNavigation();
   const [copied, setCopied] = useState<readonly string[]>();
   const [failed, setFailed] = useState(false);
   return (
@@ -193,7 +195,7 @@ const CopyCode = memo(function CopyCode({ block }: { block: Block }) {
       }
       onClick={async () => {
         try {
-          await navigator.clipboard.writeText(block.parts.join(''));
+          await navigation.copy(block.parts.join(''));
           setCopied(block.parts);
           setFailed(false);
         } catch {

@@ -79,7 +79,7 @@ Moor 最需要解决的是**产品范围与实现复杂度失衡、同一业务�
 
 ### D02：客户端统一停留在外壳层面
 
-**证据。** [entry.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/entry.ts)第 6—18、63—74 行分别进入 Desktop Workspace、SecureApp、协作页和普通 Web App；[workspace-app.tsx](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/workspace-app.tsx)第 1586—1593 行还通过 `hidden` 切换独立 SecureApp。普通 [app.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/app.ts)为 4,748 行，桌面 Workspace 为 1,654 行，SecureApp 为 2,068 行，另有各自控制器与 feature 适配。
+**证据。** [entry.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/web-entry.ts)第 6—18、63—74 行分别进入 Desktop Workspace、SecureApp、协作页和普通 Web App；[workspace-app.tsx](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/workspace-app.tsx)第 1586—1593 行还通过 `hidden` 切换独立 SecureApp。普通 [app.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/app.ts)为 4,748 行，桌面 Workspace 为 1,654 行，SecureApp 为 2,068 行，另有各自控制器与 feature 适配。
 
 普通 Web 还在 [ui.tsx](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/components/ui.tsx)第 77—86 行通过 `paint`、`flushSync` 和统一监听器广播衔接命令式状态；[app.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/app.ts)第 340 行起维护多组模块级状态。
 
@@ -103,7 +103,7 @@ Moor 最需要解决的是**产品范围与实现复杂度失衡、同一业务�
 
 ### D04：个人多设备工具正在承担平台级范围
 
-**证据。** [README](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/README.md)定位个人开发预览；[Catalog](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/packages/gateway/src/catalog.ts)第 24—73 行已包含跨账号协作成员/权限，[entry.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/entry.ts)第 63 行有独立协作入口；[接口语义](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/docs/interface-semantics.md)包含共享 TaskDoc、成员授权、双通道送达与持久队列。旧父子任务、PR 全流程、预览渲染等也已实现，而 [roadmap](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/docs/roadmap.md)第 21—41 行列出的核心真机验收仍多为待完成。
+**证据。** [README](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/README.md)定位个人开发预览；[Catalog](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/packages/gateway/src/catalog.ts)第 24—73 行已包含跨账号协作成员/权限，[entry.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/web-entry.ts)第 63 行有独立协作入口；[接口语义](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/docs/interface-semantics.md)包含共享 TaskDoc、成员授权、双通道送达与持久队列。旧父子任务、PR 全流程、预览渲染等也已实现，而 [roadmap](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/docs/roadmap.md)第 21—41 行列出的核心真机验收仍多为待完成。
 
 **判断。** 这些能力各自有价值，但组合起来远超“手机继续自己电脑上的会话”。本报告不能仅凭个人定位断言协作无需求；需要产品明确选择。
 
@@ -303,7 +303,7 @@ Moor 最需要解决的是**产品范围与实现复杂度失衡、同一业务�
 
 ### D22：PWA 更新缺少旧页面与新资源的交接
 
-**证据。** [sw.js](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/public/sw.js)第 6—25 行安装后立即 `skipWaiting`，激活时删除旧 shell cache 并 `clients.claim`；[build.mjs](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/scripts/build/build.mjs)第 8 行清理旧 hash assets；[entry.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/entry.ts)使用动态 import。新 Service Worker 的 fetch 只处理本版本资源清单。
+**证据。** [sw.js](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/public/sw.js)第 6—25 行安装后立即 `skipWaiting`，激活时删除旧 shell cache 并 `clients.claim`；[build.mjs](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/scripts/build/build.mjs)第 8 行清理旧 hash assets；[entry.ts](https://github.com/zZOMZz/moor/blob/ce42138b3059ac679705b32d0872ffdfc1057fb6/apps/web/src/app/web-entry.ts)使用动态 import。新 Service Worker 的 fetch 只处理本版本资源清单。
 
 **风险判断。** 已打开的旧页面若随后请求尚未加载的旧 hash chunk，旧缓存和服务器资源可能均已不存在。本次没有模拟真实浏览器升级重现，报告不把它写成已发生的数据丢失。
 

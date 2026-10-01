@@ -1,3 +1,4 @@
+import { useNavigation } from '../../platform/ui-ports';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Account, AccountApi } from '../../platform/account';
 import type {
@@ -40,6 +41,7 @@ export function WorkspaceAccountPanel({
   visible?: boolean;
   pairingScope?: WorkspaceScope;
 }) {
+  const navigation = useNavigation();
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true),
     [busy, setBusy] = useState(false),
@@ -117,7 +119,7 @@ export function WorkspaceAccountPanel({
       throw Error('账号管理结果未确认，请重新读取后核对。');
     return result.value as Extract<AccountManagementValue, { action: T['action'] }>;
   };
-  const changed = () => window.dispatchEvent(new Event('moor:catalog-changed'));
+  const changed = () => navigation.catalogChanged();
   const assertPairCurrent = (reviewed: Account) => {
     const current = latest.current;
     if (
@@ -237,7 +239,7 @@ export function WorkspaceAccountPanel({
                   <button
                     disabled={busy}
                     onClick={() => {
-                      if (!window.confirm(`撤销“${device.name}”的远程访问授权？`)) return;
+                      if (!navigation.confirm(`撤销“${device.name}”的远程访问授权？`)) return;
                       void run(async () => {
                         await manage({
                           action: 'revoke',
@@ -313,7 +315,7 @@ export function WorkspaceAccountPanel({
                 if (!result.ok) throw Error(result.error.message);
                 setAccount(null);
                 onAccountVerified(null);
-                location.reload();
+                navigation.reload();
               })
             }
           >

@@ -90,7 +90,7 @@ test('trusted window keeps service authority separate from its immutable documen
       CLIENT_URL + '?next=x',
       CLIENT_URL + '#x',
       'moor-client://evil/remote/',
-      CLIENT_ORIGIN + '/assets/entry-ABCDEFG1.js',
+      CLIENT_ORIGIN + '/assets/desktop-entry-ABCDEFG1.js',
     ]) {
       let prevented = false;
       contents.emit(
@@ -131,7 +131,7 @@ test('trusted session serves a packaged snapshot, blocks network and permissions
     'icon-512.png',
     'apple-touch-icon.png',
     'favicon.ico',
-    'assets/entry-ABCDEFG1.js',
+    'assets/desktop-entry-ABCDEFG1.js',
   ];
   for (const name of files) await writeFile(join(directory, name), 'synthetic packaged asset');
   let handler: any, before: any, permission: any, checkPermission: any;

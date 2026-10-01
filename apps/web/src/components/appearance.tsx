@@ -1,8 +1,9 @@
+import { useAppearancePort, type Appearance } from '../platform/ui-ports';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
 import { Moon, Sun, Monitor, X } from 'lucide-react';
 
-export type Appearance = 'dark' | 'light' | 'system';
+export type { Appearance } from '../platform/ui-ports';
 const choices = [
   { value: 'dark', label: 'Dark mode', description: '深色', Icon: Moon },
   { value: 'light', label: 'Light mode', description: '浅色', Icon: Sun },
@@ -10,69 +11,14 @@ const choices = [
 ] as const;
 const valid = (value: unknown): value is Appearance =>
   value === 'dark' || value === 'light' || value === 'system';
-type DesktopAppearance = {
-  appearance?: (value?: Appearance) => Promise<unknown>;
-  onAppearance?: (listener: (value: unknown) => void) => () => void;
-};
-const desktop = () => (window as unknown as { moorDesktop?: DesktopAppearance }).moorDesktop;
 export function applyAppearance(value: unknown) {
-  if (!valid(value)) return;
-  document.documentElement.dataset.theme = value;
-  try {
-    localStorage.setItem('moor-appearance', value);
-  } catch {
-    // The current window can still change appearance when storage is unavailable.
-  }
-  window.dispatchEvent(new Event('moor:appearance'));
+  if (valid(value)) document.documentElement.dataset.theme = value;
 }
 export function useAppearance() {
-  const appearance = useSyncExternalStore(
-    (listener) => {
-      window.addEventListener('moor:appearance', listener);
-      const storage = (event: StorageEvent) => {
-        if (event.key === 'moor-appearance') applyAppearance(event.newValue ?? 'system');
-      };
-      window.addEventListener('storage', storage);
-      return () => {
-        window.removeEventListener('moor:appearance', listener);
-        window.removeEventListener('storage', storage);
-      };
-    },
-    () => {
-      const value = document.documentElement.dataset.theme;
-      return valid(value) ? value : 'system';
-    },
-    () => 'system' as Appearance,
-  );
-  useEffect(() => {
-    const bridge = desktop();
-    let active = true;
-    let fresh = true;
-    const unsubscribe = bridge?.onAppearance?.((value) => {
-      fresh = false;
-      applyAppearance(value);
-    });
-    if (bridge?.appearance)
-      void bridge
-        .appearance()
-        .then((value) => active && fresh && applyAppearance(value))
-        .catch(() => {});
-    return () => {
-      active = false;
-      unsubscribe?.();
-    };
-  }, []);
-  return {
-    appearance,
-    async change(value: Appearance) {
-      const bridge = desktop();
-      if (bridge?.appearance) {
-        const saved = await bridge.appearance(value);
-        if (!valid(saved)) throw Error('外观设置未能保存，请重试。');
-        applyAppearance(saved);
-      } else applyAppearance(value);
-    },
-  };
+  const port = useAppearancePort();
+  const appearance = useSyncExternalStore(port.subscribe, port.read, () => 'system' as Appearance);
+  useEffect(() => applyAppearance(appearance), [appearance]);
+  return { appearance, change: (value: Appearance) => port.change(value) };
 }
 export function AppearanceSettings({
   open,

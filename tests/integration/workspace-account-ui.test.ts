@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -133,7 +134,7 @@ async function fixture(t: TestContext) {
   const props = { accountApi, onAccountVerified() {}, onBeforeLogout: async () => {}, onBack() {} };
   const render = async (extra: Partial<Parameters<typeof WorkspaceAccountPanel>[0]> = {}) => {
     await act(async () =>
-      root.render(createElement(WorkspaceAccountPanel, { ...props, ...extra })),
+      root.render(withBrowserUiPorts(createElement(WorkspaceAccountPanel, { ...props, ...extra }))),
     );
   };
   const button = (label: string) => {

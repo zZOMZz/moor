@@ -117,9 +117,12 @@ export default defineConfig(({ command }) => {
           ...workspaceAliases,
           {
             find: '@moor-desktop-entry',
-            replacement: join(repository, 'apps/web/src/app/entry.ts'),
+            replacement: join(repository, 'apps/web/src/app/desktop-entry.tsx'),
           },
-          { find: '__ENTRY__', replacement: join(repository, 'apps/web/src/app/entry.ts') },
+          {
+            find: '__ENTRY__',
+            replacement: join(repository, 'apps/web/src/app/desktop-entry.tsx'),
+          },
           { find: /^loro-crdt$/, replacement: 'loro-crdt/bundler' },
           { find: '@loro-dev/flock-wasm/base64', replacement: flock },
         ],
@@ -169,10 +172,7 @@ export default defineConfig(({ command }) => {
         rollupOptions: {
           input: {
             index: join(repository, 'apps/web/index.html'),
-            'notification-worker': join(
-              repository,
-              'apps/web/src/features/notifications/notification-worker.ts',
-            ),
+            'notification-worker': join(repository, 'apps/web/src/app/worker-entry.ts'),
           },
           output: {
             entryFileNames: (chunk) =>

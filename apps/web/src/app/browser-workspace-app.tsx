@@ -1,3 +1,5 @@
+import type { UiPorts } from '../platform/ui-ports';
+import { IndexedStorage } from '../platform/indexed-storage';
 import { createRoot } from 'react-dom/client';
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
@@ -17,7 +19,11 @@ import type { AccountApi } from '../platform/account';
 import { logoutBrowserAccount } from '../platform/browser-logout';
 import { firstStartupSource } from './bootstrap';
 import { BrowserAccountControls } from '../features/auth/browser-account';
-import { reconcileNotificationAccount } from '../features/notifications/notification-browser';
+import {
+  reconcileNotificationAccount,
+  notificationBrowser,
+  browserNotificationReason,
+} from '../platform/browser/notifications';
 import { parseNotificationNavigation } from '../features/notifications/notification-navigation';
 
 const selectionSchema = z.object({
@@ -37,12 +43,14 @@ const changedSchema = z.object({
 export async function bootBrowserWorkspace(
   identity: Promise<Identity | null>,
   cachedOwner: Promise<string | undefined>,
+  ports: UiPorts,
 ) {
   const source = await firstStartupSource(identity, cachedOwner);
   if (source.kind === 'identity' && source.identity && !source.identity.owner) {
     await forgetBrowserOwner(location.origin).catch(() => {});
     const { showAuth } = await import('../components/ui');
     showAuth({
+      ports,
       setup: source.identity.needsSetup,
       googleEnabled: source.identity.google?.enabled,
       onSubmit: async (data) => {
@@ -57,6 +65,7 @@ export async function bootBrowserWorkspace(
   if (!owner) {
     const { showAuth } = await import('../components/ui');
     showAuth({
+      ports,
       setup: false,
       onSubmit: async (data) => {
         await api('/api/login', data);
@@ -65,7 +74,9 @@ export async function bootBrowserWorkspace(
     });
     return;
   }
-  const store = new WorkspaceStore();
+  const store = new WorkspaceStore(
+    new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }),
+  );
   const runtime = new BrowserWorkspaceRuntime({
     origin: location.origin,
     owner,
@@ -216,14 +227,25 @@ export async function bootBrowserWorkspace(
     if (closed) return;
     stop();
     await rememberBrowserOwner(location.origin, value.owner ?? '').catch(() => {});
-    await bootBrowserWorkspace(Promise.resolve(value), Promise.resolve(undefined));
+    await bootBrowserWorkspace(Promise.resolve(value), Promise.resolve(undefined), ports);
   }
   root.render(
     <WorkspaceApp
+      ports={ports}
       controller={controller}
       accountApi={accountApi}
       localAvailable={false}
-      accountExtras={<BrowserAccountControls owner={owner} identity={accountIdentity} />}
+      accountExtras={
+        <BrowserAccountControls
+          owner={owner}
+          identity={accountIdentity}
+          notifications={{
+            browser: notificationBrowser,
+            request: api,
+            reason: browserNotificationReason,
+          }}
+        />
+      }
       subscribeSessionChanges={(listener) => {
         listeners.add(listener);
         return () => {

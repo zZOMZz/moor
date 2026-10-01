@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from './ui-ports';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -65,7 +66,7 @@ test('dock dragging coalesces pointer samples, persists only release and cancels
     );
   }
   try {
-    await act(async () => root.render(createElement(Harness)));
+    await act(async () => root.render(withBrowserUiPorts(createElement(Harness))));
     const separator = document.querySelector<HTMLElement>('[role="separator"]')!;
     let captured: number | undefined;
     separator.setPointerCapture = (id) => {
@@ -142,7 +143,7 @@ test('dock dragging coalesces pointer samples, persists only release and cancels
       pointer('pointermove', 350);
       flushFrame();
     });
-    await act(async () => root.render(createElement(Harness, { open: false })));
+    await act(async () => root.render(withBrowserUiPorts(createElement(Harness, { open: false }))));
     assert.equal(
       separator.parentElement!.dataset.expanded,
       'false',
@@ -150,7 +151,7 @@ test('dock dragging coalesces pointer samples, persists only release and cancels
     );
     assert.equal(separator.getAttribute('aria-valuenow'), '550');
     assert.equal(writes, 1);
-    await act(async () => root.render(createElement(Harness)));
+    await act(async () => root.render(withBrowserUiPorts(createElement(Harness))));
     await act(async () => {
       pointer('pointerdown', 450);
       pointer('pointermove', 300);

@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type Identity } from '../../platform/api';
+import type { api, Identity } from '../../platform/api';
 import { NotificationController } from '../notifications/notifications';
 import { NotificationPanel } from '../notifications/notification-ui';
-import {
-  notificationBrowser,
-  browserNotificationReason,
-} from '../notifications/notification-browser';
+import type { NotificationBrowser } from '../notifications/notifications';
 import { GoogleAccount } from './google-login';
 
 export function BrowserAccountControls({
   owner,
   identity,
+  notifications,
 }: {
   owner: string;
   identity: () => Promise<Identity>;
+  notifications: { browser: NotificationBrowser; request: typeof api; reason(): string };
 }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [google, setGoogle] = useState<Identity>();
@@ -43,8 +42,8 @@ export function BrowserAccountControls({
       <button
         onClick={() => {
           controller.current ??= new NotificationController(owner, {
-            browser: notificationBrowser,
-            request: api,
+            browser: notifications.browser,
+            request: notifications.request,
             current: () => active.current,
             changed: () => {
               if (active.current) render((value) => value + 1);
@@ -82,7 +81,7 @@ export function BrowserAccountControls({
       {notificationsOpen && (
         <NotificationPanel
           controller={controller.current}
-          reason={browserNotificationReason()}
+          reason={notifications.reason()}
           onClose={() => setNotificationsOpen(false)}
           onRefresh={() => {
             void controller.current?.refresh();

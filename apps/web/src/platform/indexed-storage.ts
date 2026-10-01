@@ -1,18 +1,8 @@
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
 const canonical = (value: unknown) => productCanonicalJson(value ?? null);
 const CONFLICT = '本机原操作或草稿已在另一页面改变，请重新读取后继续。';
 
-export type StorageBackend = {
-  read(key: string): Promise<unknown>;
-  exclusive<T>(key: string, current: () => void, task: () => Promise<T>): Promise<T>;
-  compareAndSet(key: string, expected: unknown, value: unknown, current: () => void): Promise<void>;
-  /** Comparisons, writes and explicit deletions commit together, or none do. */
-  compareAndSetMany?(changes: StorageChange[], current: () => void): Promise<void>;
-  close?(): void;
-};
-export type StorageChange =
-  | { key: string; expected: unknown; value: unknown; delete?: never }
-  | { key: string; expected: unknown; delete: true; value?: never };
 /** Separate from legacy HTTP caches; no migration or automatic dispatch is performed. */
 export class IndexedStorage implements StorageBackend {
   #database?: Promise<IDBDatabase>;

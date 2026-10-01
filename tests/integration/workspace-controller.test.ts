@@ -26,7 +26,7 @@ import {
   type WorkspaceClientState,
 } from '../../apps/web/src/features/workspace/workspace-controller';
 import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
-import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import {
   workspaceCatalogSchema,
   type WorkspaceRequest,

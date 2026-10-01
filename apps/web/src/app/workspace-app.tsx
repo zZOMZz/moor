@@ -1,3 +1,5 @@
+import { UiPortsProvider, type UiPorts } from '../platform/ui-ports';
+import type { ComponentProps } from 'react';
 import { changeRunSelection } from '@moor/protocol/run-config';
 import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import { ComposerInput } from '../features/sessions/composer-input';
@@ -50,7 +52,6 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { createRoot } from 'react-dom/client';
 import {
   Folder,
   FolderOpen,
@@ -82,7 +83,7 @@ import { WorkspaceAccountPanel } from '../features/auth/workspace-account';
 import type { Account, AccountApi } from '../platform/account';
 import { sessionPendingOperations } from '../features/workspace/workspace-store';
 
-import type { WorkspaceRequest, WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
+import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
 import {
   workspaceContextSchema,
   addProjectResultSchema,
@@ -1298,16 +1299,16 @@ function WorkspaceConversation({
   );
 }
 
-export function WorkspaceApp({
+function WorkspaceView({
   controller,
   accountApi,
   onAccountVerified,
   openSettings,
   addLocalProject,
-  readDesktopContext,
-  subscribeDesktopChanges,
+  readRuntimeContext,
+  subscribeRuntimeChanges,
   subscribeSessionChanges,
-  localAvailable = true,
+  localAvailable,
   accountExtras,
 }: {
   controller: WorkspaceController;
@@ -1315,10 +1316,10 @@ export function WorkspaceApp({
   onAccountVerified?: (account: Account | null) => void;
   openSettings?: () => Promise<unknown>;
   addLocalProject?: () => Promise<unknown>;
-  readDesktopContext?: () => Promise<unknown>;
-  subscribeDesktopChanges?: (listener: () => void) => () => void;
+  readRuntimeContext?: () => Promise<unknown>;
+  subscribeRuntimeChanges?: (listener: () => void) => () => void;
   subscribeSessionChanges?: (listener: (notice: unknown) => void) => () => void;
-  localAvailable?: boolean;
+  localAvailable: boolean;
   accountExtras?: ReactNode;
 }) {
   const [state, setState] = useState(() => controller.state);
@@ -1425,11 +1426,11 @@ export function WorkspaceApp({
   const hideMobileNavigation = () => {
     if (window.innerWidth <= 700) setNavigationOpen(false);
   };
-  const [desktop, setDesktop] = useState<{
+  const [runtimeContext, setRuntimeContext] = useState<{
     serial: number;
     value: z.infer<typeof workspaceContextSchema>;
   } | null>(null);
-  const desktopHandled = useRef(0),
+  const runtimeHandled = useRef(0),
     navigationHandled = useRef(-1),
     notificationHandled = useRef('');
   const action = useRef(false),
@@ -1459,33 +1460,33 @@ export function WorkspaceApp({
     };
   }, [controller, subscribeSessionChanges]);
   useEffect(() => {
-    if (readDesktopContext || !localAvailable) return;
+    if (readRuntimeContext || !localAvailable) return;
     void controller.refreshCatalog('local').catch((reason: unknown) => {
       if (mounted.current) setError(message(reason));
     });
-  }, [controller, readDesktopContext, localAvailable]);
+  }, [controller, readRuntimeContext, localAvailable]);
   useEffect(() => {
-    if (!readDesktopContext) return;
+    if (!readRuntimeContext) return;
     let active = true,
       serial = 0;
     const refresh = () => {
       const current = ++serial;
-      void readDesktopContext()
+      void readRuntimeContext()
         .then((raw) => {
           if (active && current === serial)
-            setDesktop({ serial: current, value: workspaceContextSchema.parse(raw) });
+            setRuntimeContext({ serial: current, value: workspaceContextSchema.parse(raw) });
         })
         .catch((reason: unknown) => {
           if (active && current === serial) setError(message(reason));
         });
     };
-    const unsubscribe = subscribeDesktopChanges?.(refresh);
+    const unsubscribe = subscribeRuntimeChanges?.(refresh);
     refresh();
     return () => {
       active = false;
       unsubscribe?.();
     };
-  }, [readDesktopContext, subscribeDesktopChanges]);
+  }, [readRuntimeContext, subscribeRuntimeChanges]);
   const verified = useCallback(
     (account: Account | null) => {
       setAccount(account);
@@ -1521,10 +1522,10 @@ export function WorkspaceApp({
   };
   const blocked = busy || plainDirty;
   useEffect(() => {
-    if (!desktop || blocked || desktopHandled.current === desktop.serial) return;
-    desktopHandled.current = desktop.serial;
+    if (!runtimeContext || blocked || runtimeHandled.current === runtimeContext.serial) return;
+    runtimeHandled.current = runtimeContext.serial;
     run(async () => {
-      const context = desktop.value;
+      const context = runtimeContext.value;
       if (context.revision !== navigationHandled.current) {
         navigationHandled.current = context.revision;
         if (context.view === 'remote') setView('connections');
@@ -1547,7 +1548,7 @@ export function WorkspaceApp({
       await controller.openSession(notification.sessionId);
       hideMobileNavigation();
     });
-  }, [desktop, blocked, controller]);
+  }, [runtimeContext, blocked, controller]);
   const sessions = state.sessions;
   const agents = state.project?.runtime.agents ?? [];
   const selectedAgent = agents.some((agent) => agent.id === agentId)
@@ -1804,7 +1805,7 @@ export function WorkspaceApp({
           {addProject && (
             <button
               className="workspace-add-project"
-              disabled={blocked || (desktop !== null && !desktop.value.localReady)}
+              disabled={blocked || (runtimeContext !== null && !runtimeContext.value.localReady)}
               onClick={addProject}
             >
               <Plus size={15} />
@@ -2099,7 +2100,7 @@ export function WorkspaceApp({
             <span className="sr-only">项目与会话</span>
           </button>
         </div>
-        {desktop && !desktop.value.localReady && (
+        {runtimeContext && !runtimeContext.value.localReady && (
           <p className="workspace-status" role="status">
             本机执行组件正在准备。连接其他电脑或打开设置仍可继续。
           </p>
@@ -2160,43 +2161,13 @@ export function WorkspaceApp({
   );
 }
 
-export async function bootWorkspace() {
-  const bridges = window as unknown as {
-    moorWorkspace?: {
-      version: number;
-      request(value: WorkspaceRequest): Promise<unknown>;
-      account: AccountApi;
-      context(): Promise<unknown>;
-      addProject(): Promise<unknown>;
-      onChange(listener: () => void): () => void;
-      onSync(listener: (notice: unknown) => void): () => void;
-    };
-    moorDesktop?: { openSettings?: () => Promise<unknown> };
-  };
-  if (bridges.moorWorkspace?.version !== 1) throw Error('桌面工作区接口不可用。');
-  const container = document.getElementById('app');
-  if (!container) throw Error('桌面页面容器不可用。');
-  const controller = new WorkspaceController({
-    request: (value) => bridges.moorWorkspace!.request(value),
-  });
-  const root = createRoot(container);
-  root.render(
-    <WorkspaceApp
-      controller={controller}
-      accountApi={(value) => bridges.moorWorkspace!.account(value)}
-      openSettings={bridges.moorDesktop?.openSettings}
-      addLocalProject={bridges.moorWorkspace.addProject}
-      readDesktopContext={bridges.moorWorkspace.context}
-      subscribeDesktopChanges={bridges.moorWorkspace.onChange}
-      subscribeSessionChanges={bridges.moorWorkspace.onSync}
-    />,
-  );
-  window.addEventListener(
-    'pagehide',
-    () => {
-      root.unmount();
-      void controller.flushDraft().finally(() => controller.close());
-    },
-    { once: true },
+export function WorkspaceApp({
+  ports,
+  ...props
+}: ComponentProps<typeof WorkspaceView> & { ports: UiPorts }) {
+  return (
+    <UiPortsProvider ports={ports}>
+      <WorkspaceView {...props} />
+    </UiPortsProvider>
   );
 }

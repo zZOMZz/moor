@@ -1,9 +1,7 @@
+import { notificationLocalSchema } from '@moor/client/features/notifications/local-state';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  createNotificationStorage,
-  notificationLocalSchema,
-} from '../../apps/web/src/features/notifications/notification-storage';
+import { createNotificationStorage } from '../../apps/web/src/platform/browser/notification-storage';
 function fixture() {
   const timers = new Set<() => void>();
   let closed = 0,

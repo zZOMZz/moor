@@ -4,8 +4,8 @@ import {
   NotificationWorker,
   genericNotification,
   type NotificationWorkerDependencies,
-} from '../../apps/web/src/features/notifications/notification-worker';
-import type { NotificationLocalState } from '../../apps/web/src/features/notifications/notification-storage';
+} from '@moor/client/features/notifications/worker';
+import type { NotificationLocalState } from '@moor/client/features/notifications/local-state';
 const preferences = { completed: true, failed: true, approvals: true };
 const event = {
   notificationVersion: 1,

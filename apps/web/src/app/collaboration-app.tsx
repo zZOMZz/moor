@@ -1,3 +1,4 @@
+import type { UiPorts } from '../platform/ui-ports';
 import { useEffect, useState, type ReactNode } from 'react';
 import { actorKey, actorSchema, type AttentionActor } from '@moor/protocol/attention';
 import {
@@ -347,12 +348,16 @@ export function CollaborationBoard({
   );
 }
 
-export async function bootCollaboration(owner: string, identity: Promise<Identity | null>) {
+export async function bootCollaboration(
+  owner: string,
+  identity: Promise<Identity | null>,
+  ports: UiPorts,
+) {
   const query = new URLSearchParams(location.search),
     workspace = query.get('workspace'),
     replica = query.get('replica'),
     session = query.get('session');
-  const root = { render: (node: ReactNode) => paint('#app', node) };
+  const root = { render: (node: ReactNode) => paint('#app', node, ports) };
   if (!workspace || !replica || !session) {
     root.render(
       <main style={{ padding: 24 }}>

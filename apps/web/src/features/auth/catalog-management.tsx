@@ -1,9 +1,10 @@
+import { useNavigation, useCatalogSafety } from '../../platform/ui-ports';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { z } from 'zod';
 import type { workspaceCatalogSchema } from '@moor/protocol/workspace-catalog';
 import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
 import { projectSourceSchema, type ProjectSource } from '@moor/protocol/catalog';
-import { assertCatalogDataSettled, type CatalogDataScope } from '../../platform/catalog-data-guard';
+import type { CatalogDataScope } from '@moor/client/features/workspace/catalog-safety';
 
 export type ManagedWorkspace = z.infer<typeof workspaceCatalogSchema>[number];
 export type CatalogManagementActions = {
@@ -31,6 +32,8 @@ export function CatalogManagement({
   origin: string;
   visible?: boolean;
 }) {
+  const navigation = useNavigation();
+  const catalog = useCatalogSafety();
   const [open, setOpen] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
@@ -84,7 +87,7 @@ export function CatalogManagement({
   };
   const move = async (scope: CatalogDataScope, message: string, action: () => Promise<unknown>) => {
     await beforeMove?.();
-    await assertCatalogDataSettled(scope);
+    await catalog.assertSettled(scope);
     if (!alive.current || !view.current.visible) throw Error('管理页面已关闭，本次没有更改分组。');
     const target = view.current.activeTarget;
     if (
@@ -97,7 +100,7 @@ export function CatalogManagement({
       throw Error(
         '这个执行范围仍在当前会话中查看。请先处理未发送草稿和原请求，再结束当前查看后调整分组。',
       );
-    if (!window.confirm(message)) return false;
+    if (!navigation.confirm(message)) return false;
     return action();
   };
   return (

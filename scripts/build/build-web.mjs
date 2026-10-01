@@ -25,7 +25,7 @@ const browserBuild = await build({
   minify: true,
   splitting: true,
   logOverride: { 'import-is-undefined': 'error' },
-  entryPoints: ['apps/web/src/app/entry.ts'],
+  entryPoints: ['apps/web/src/app/web-entry.ts'],
   entryNames: 'assets/[name]-[hash]',
   chunkNames: 'assets/[name]-[hash]',
   outdir: 'dist/public',
@@ -33,7 +33,7 @@ const browserBuild = await build({
 await cp('apps/web/public', 'dist/public', { recursive: true });
 const notificationWorkerBuild = await build({
   plugins: [workspaceSources],
-  entryPoints: ['apps/web/src/features/notifications/notification-worker.ts'],
+  entryPoints: ['apps/web/src/app/worker-entry.ts'],
   outfile: 'dist/public/notification-worker.js',
   platform: 'browser',
   format: 'iife',
@@ -48,7 +48,7 @@ const scripts = Object.keys(browserBuild.metafile.outputs).filter((file) =>
 await recordEsbuildGraph('web', browserBuild.metafile);
 await recordEsbuildGraph('web-worker', notificationWorkerBuild.metafile);
 const entry = Object.entries(browserBuild.metafile.outputs)
-  .find(([, output]) => output.entryPoint === 'apps/web/src/app/entry.ts')[0]
+  .find(([, output]) => output.entryPoint === 'apps/web/src/app/web-entry.ts')[0]
   .replace('dist/public', '');
 // The UI is always needed. Discover its static imports so slow connections can
 // fetch them directly from HTML without a module-discovery waterfall. Exclude
@@ -62,7 +62,9 @@ function preloadImports(file) {
       preloadImports(dependency.path);
 }
 for (const [file, output] of Object.entries(browserBuild.metafile.outputs))
-  if (['apps/web/src/app/entry.ts', 'apps/web/src/components/ui.tsx'].includes(output.entryPoint))
+  if (
+    ['apps/web/src/app/web-entry.ts', 'apps/web/src/components/ui.tsx'].includes(output.entryPoint)
+  )
     preloadImports(file);
 for (const file of ['index.html', 'startup.js'])
   await writeFile(

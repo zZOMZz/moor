@@ -1,26 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { api, type Identity } from '../../platform/api';
+import type { Identity } from '../../platform/api';
+import { useGoogleAuth, useNavigation } from '../../platform/ui-ports';
+import type {
+  GoogleMode as Mode,
+  GoogleReview as Review,
+} from '@moor/client/features/auth/google-auth';
 import { Dialog } from '@base-ui/react/dialog';
 
-type Mode = 'login' | 'setup' | 'link';
-type DesktopGoogle = {
-  begin(value: {
-    mode: Mode;
-    setupToken?: string;
-    password?: string;
-  }): Promise<{ flowId: string; code: string }>;
-  complete(): Promise<{ completed: boolean }>;
-  cancel(): Promise<void>;
-};
-function desktopGoogle(): DesktopGoogle | undefined {
-  const bridge = (
-    window as unknown as { moorDesktop?: { version: number; googleAuth?: DesktopGoogle } }
-  ).moorDesktop;
-  return bridge?.version === 1 ? bridge.googleAuth : undefined;
-}
 const message = (e: unknown) => (e instanceof Error ? e.message : 'Google 登录暂时不可用，请重试');
 
 export function GoogleStart({ mode, disabled = false }: { mode: Mode; disabled?: boolean }) {
+  const google = useGoogleAuth();
+  const navigation = useNavigation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [pending, setPending] = useState<{ code: string }>();
@@ -31,10 +22,7 @@ export function GoogleStart({ mode, disabled = false }: { mode: Mode; disabled?:
     active.current = true;
     return () => {
       active.current = false;
-      if (waiting.current)
-        void desktopGoogle()
-          ?.cancel()
-          .catch(() => {});
+      if (waiting.current) void google.cancel().catch(() => {});
     };
   }, []);
   async function run(action: () => Promise<void>) {
@@ -60,22 +48,13 @@ export function GoogleStart({ mode, disabled = false }: { mode: Mode; disabled?:
         ...(mode === 'setup' ? { setupToken: String(data.get('setupToken') ?? '') } : {}),
         ...(mode === 'link' ? { password: String(data.get('password') ?? '') } : {}),
       };
-      const desktop = desktopGoogle();
-      if (desktop) {
+      waiting.current = true;
+      const result = await google.begin(input, () => active.current);
+      if (!active.current) return;
+      if (result.kind === 'confirmation') {
         waiting.current = true;
-        const result = await desktop.begin(input);
-        if (!active.current) {
-          await desktop.cancel();
-          return;
-        }
         setPending({ code: result.code });
-      } else {
-        const result = await api('/api/auth/google/start', { ...input, desktop: false });
-        if (!active.current) return;
-        if (!/^\/auth\/google\/start\?flow=[A-Za-z0-9_-]{43}$/.test(result.launchPath))
-          throw new Error('登录地址无效，请重新开始');
-        location.assign(result.launchPath);
-      }
+      } else waiting.current = false;
     });
   }
   return (
@@ -93,11 +72,11 @@ export function GoogleStart({ mode, disabled = false }: { mode: Mode; disabled?:
               disabled={busy}
               onClick={() =>
                 void run(async () => {
-                  const result = await desktopGoogle()!.complete();
+                  const result = await google.complete(() => active.current);
                   if (!active.current) return;
                   if (result.completed) {
                     waiting.current = false;
-                    location.reload();
+                    navigation.reload();
                   } else setError('登录尚未完成。请核对系统浏览器，或取消后重新发起。');
                 })
               }
@@ -109,7 +88,7 @@ export function GoogleStart({ mode, disabled = false }: { mode: Mode; disabled?:
               disabled={busy}
               onClick={() =>
                 void run(async () => {
-                  await desktopGoogle()!.cancel();
+                  await google.cancel();
                   waiting.current = false;
                   if (active.current) setPending(undefined);
                 })
@@ -163,8 +142,15 @@ export function GoogleStart({ mode, disabled = false }: { mode: Mode; disabled?:
   );
 }
 
-type Review = { flowId: string; mode: Mode; desktop: boolean; code: string; email: string };
 export function GoogleComplete() {
+  const google = useGoogleAuth();
+  const current = useRef(true);
+  useEffect(() => {
+    current.current = true;
+    return () => {
+      current.current = false;
+    };
+  }, []);
   const [review, setReview] = useState<Review>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -173,7 +159,8 @@ export function GoogleComplete() {
   const locked = useRef(false);
   useEffect(() => {
     let active = true;
-    void api('/api/auth/google/review')
+    void google
+      .review()
       .then((value) => {
         if (active) setReview(value);
       })
@@ -190,9 +177,8 @@ export function GoogleComplete() {
     setBusy(true);
     setError('');
     try {
-      await api('/api/auth/google/confirm', { flowId: review.flowId });
-      if (review.desktop) setDone(true);
-      else location.replace('/');
+      await google.confirm(review.flowId, review.desktop, () => current.current);
+      if (current.current && review.desktop) setDone(true);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -272,6 +258,7 @@ export function GoogleAccount({
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
+  const auth = useGoogleAuth();
   const lock = useRef(false);
   const google = identity.google;
   return (
@@ -297,9 +284,8 @@ export function GoogleAccount({
                     lock.current = true;
                     setBusy(true);
                     setError('');
-                    void api('/api/auth/google/unlink', {
-                      password: String(data.get('password') ?? ''),
-                    })
+                    void auth
+                      .unlink(String(data.get('password') ?? ''))
                       .then(onRefresh)
                       .catch((e) => setError(message(e)))
                       .finally(() => {

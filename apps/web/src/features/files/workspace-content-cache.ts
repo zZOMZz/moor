@@ -3,7 +3,7 @@ import {
   type WorkspaceSource,
 } from '@moor/protocol/workspace-client-protocol';
 import { ScopedProjectContentCache } from './scoped-project-content-cache';
-import type { StorageBackend } from '../../platform/indexed-storage';
+import type { StorageBackend } from '@moor/client/operations/storage';
 
 export const workspaceContentTargetSchema = workspaceProjectTargetSchema.required({
   sessionId: true,

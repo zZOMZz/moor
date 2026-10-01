@@ -11,7 +11,7 @@ test('browser cleanup clears bindings before failing APIs, keeps pending records
   const directory = await mkdtemp(join(process.cwd(), 'dist/tests/notification-browser-')),
     outfile = join(directory, 'browser.mjs');
   await build({
-    entryPoints: ['apps/web/src/features/notifications/notification-browser.ts'],
+    entryPoints: ['apps/web/src/platform/browser/notifications.ts'],
     outfile,
     bundle: true,
     format: 'esm',
@@ -21,7 +21,7 @@ test('browser cleanup clears bindings before failing APIs, keeps pending records
       {
         name: 'synthetic-private-notification-storage',
         setup(builder) {
-          builder.onResolve({ filter: /^\.\/notification-storage$/ }, () => ({
+          builder.onResolve({ filter: /notification-storage$/ }, () => ({
             path: 'storage',
             namespace: 'synthetic',
           }));

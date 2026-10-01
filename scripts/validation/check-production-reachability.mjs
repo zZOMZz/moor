@@ -9,7 +9,7 @@ const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 // Exact development consumers, never entry globs or test references. The desktop
 // bootstrap must remain in the actual graph and its guarded import chain intact;
 // these implementations must never emit into any production graph.
-const developmentBootstrap = 'apps/web/src/app/desktop-entry.ts';
+const developmentBootstrap = 'apps/web/src/app/desktop-shell.ts';
 const developmentPanel = 'apps/web/src/features/performance/performance-panel.ts';
 const developmentMetrics = 'apps/web/src/features/performance/performance-metrics.ts';
 const developmentImplementations = new Set([developmentPanel, developmentMetrics]);

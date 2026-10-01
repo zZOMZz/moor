@@ -18,14 +18,6 @@ export function Login({ setup, invited = false, onSubmit, googleEnabled }: Login
   const [error, setError] = useState('');
   const [paused, setPaused] = useState(false);
   useEffect(() => {
-    try {
-      const appearance = localStorage.getItem('moor-appearance');
-      if (appearance === 'light' || appearance === 'dark' || appearance === 'system') {
-        document.documentElement.dataset.theme = appearance;
-      }
-    } catch {
-      // Appearance remains system-controlled when storage is unavailable.
-    }
     water.current = startWater(canvas.current!);
     return () => {
       water.current?.dispose();

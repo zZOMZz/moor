@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -98,14 +99,16 @@ test('shared browser attachment view escapes text and downloads only explicitly 
   const render = async (sessionId: string) => {
     await act(async () =>
       root.render(
-        createElement(WorkspaceAttachmentView, {
-          controller,
-          scope,
-          sessionId,
-          reference,
-          busy: false,
-          run,
-        }),
+        withBrowserUiPorts(
+          createElement(WorkspaceAttachmentView, {
+            controller,
+            scope,
+            sessionId,
+            reference,
+            busy: false,
+            run,
+          }),
+        ),
       ),
     );
   };

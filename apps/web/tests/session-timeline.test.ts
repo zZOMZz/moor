@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from './ui-ports';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
@@ -144,11 +145,13 @@ test('following survives delayed programmatic scroll events and preserves delibe
   let revision = 0;
   const render = (focusTurnId?: string) =>
     root.render(
-      createElement(SessionTimeline, {
-        history: [{ ...turn, items: [{ type: 'text', text: String(++revision) }] }],
-        focusTurnId,
-        renderItem: () => null,
-      }),
+      withBrowserUiPorts(
+        createElement(SessionTimeline, {
+          history: [{ ...turn, items: [{ type: 'text', text: String(++revision) }] }],
+          focusTurnId,
+          renderItem: () => null,
+        }),
+      ),
     );
   const flushFrame = () => {
     const callbacks = [...frames.values()];

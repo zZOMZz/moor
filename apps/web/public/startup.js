@@ -1,16 +1,7 @@
 // Keep this entry independent of the large application/WASM bundle so failures
 // can be displayed even when that bundle never downloads or evaluates.
+import './browser-appearance.js';
 const root = document.getElementById('app');
-if (window.moorDesktop?.platform === 'darwin') document.documentElement.dataset.platform = 'darwin';
-try {
-  const appearance = window.moorDesktop?.appearance
-    ? 'system'
-    : localStorage.getItem('moor-appearance');
-  if (['light', 'dark', 'system'].includes(appearance))
-    document.documentElement.dataset.theme = appearance;
-} catch {
-  // The system theme also works when browser storage is unavailable.
-}
 const systemAppearance = window.matchMedia?.('(prefers-color-scheme: dark)');
 function updateThemeColor() {
   const appearance = document.documentElement.dataset.theme;

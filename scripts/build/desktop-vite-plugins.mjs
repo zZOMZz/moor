@@ -56,7 +56,12 @@ export function desktopRendererAssets({ token }) {
     enforce: 'pre',
     transform(code, id) {
       if (normalizePath(id.split('?')[0]) === normalizePath(join(publicRoot, 'startup.js')))
-        return { code: code.replace("'__ENTRY__'", "'@moor-desktop-entry'"), map: null };
+        return {
+          code: code
+            .replace("'__ENTRY__'", "'@moor-desktop-entry'")
+            .replace("'./browser-appearance.js'", "'/src/platform/desktop/startup.ts'"),
+          map: null,
+        };
     },
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {

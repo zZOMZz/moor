@@ -36,7 +36,7 @@ import { workspaceSessionPage } from './workspace-session-pages';
 import { ClientSessionReplica } from '@moor/client/session-client';
 import { cacheWorkspaceSessionDelta, loadWorkspaceSessionCache } from './workspace-session-cache';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
-import { IndexedStorage, type StorageBackend } from '../../platform/indexed-storage';
+import type { StorageBackend } from '@moor/client/operations/storage';
 import {
   workspaceAttachmentDraftSchema,
   emptyWorkspaceAttachments,
@@ -185,11 +185,7 @@ const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 
 /** Private recoverable Draft State and reliable Ledger; neither is relayed to another client. */
 export class WorkspaceStore {
-  constructor(
-    readonly backend: StorageBackend = new IndexedStorage({
-      databaseName: 'moor-desktop-workspace-v1',
-    }),
-  ) {}
+  constructor(readonly backend: StorageBackend) {}
   get records() {
     return new WorkspaceRecords(this.backend);
   }

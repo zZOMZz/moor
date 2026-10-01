@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -33,7 +34,9 @@ test('streaming Markdown preserves safe formatting across arbitrary chunk bounda
     return template.innerHTML;
   };
   const render = async (text: string) => {
-    await act(async () => root.render(createElement(StreamingMarkdown, { text })));
+    await act(async () =>
+      root.render(withBrowserUiPorts(createElement(StreamingMarkdown, { text }))),
+    );
     const rendered = dom.window.document.querySelector('.markdown')!;
     assert.equal(
       normalized(rendered.outerHTML),
@@ -114,7 +117,9 @@ test('streaming Markdown preserves safe formatting across arbitrary chunk bounda
         sanitized = 0;
         for (let index = 0; index < 10; index++) {
           source += 'x';
-          await act(async () => root.render(createElement(StreamingMarkdown, { text: source })));
+          await act(async () =>
+            root.render(withBrowserUiPorts(createElement(StreamingMarkdown, { text: source }))),
+          );
           const code = dom.window.document.querySelector('code')!;
           assert.equal(code.firstChild, firstPart);
           assert.equal(code.textContent, 'x'.repeat(Math.min(size + index + 1, 120_000)));

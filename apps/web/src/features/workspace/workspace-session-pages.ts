@@ -6,7 +6,7 @@ import {
   validateSessionPageResult,
   type SessionPageRequest,
 } from '@moor/protocol/session-page';
-import type { StorageBackend, StorageChange } from '../../platform/indexed-storage';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import type { WorkspaceScope } from './workspace-store';
 
 export const SESSION_PAGE_CACHE_LIMITS = { pages: 64, bytes: 8 * 1024 * 1024 } as const;

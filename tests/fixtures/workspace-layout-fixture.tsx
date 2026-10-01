@@ -1,3 +1,5 @@
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
+import { api } from '../../apps/web/src/platform/api';
 // Synthetic presentation fixture. Every action stays in memory; there is no Agent or account.
 import { createRoot } from 'react-dom/client';
 import { applyAppearance } from '../../apps/web/src/components/appearance';
@@ -774,6 +776,7 @@ const fixture = {
 Object.assign(window, { __moorFixture: fixture });
 createRoot(document.getElementById('app')!).render(
   <WorkspaceApp
+    ports={createBrowserUiPorts({ window, location, request: api })}
     controller={controller}
     localAvailable={!grouped}
     accountApi={async () => ({ ok: false, error: { message: 'Synthetic offline account' } })}

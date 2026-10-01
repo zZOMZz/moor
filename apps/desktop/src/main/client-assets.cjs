@@ -152,7 +152,7 @@ async function createClientAssetHandler({
     check(entries.length <= MAX_ENTRIES);
     const names = entries.filter((name) => hashed.test(name)).sort();
     check(names.length > 0 && names.length + Object.keys(fixed).length <= MAX_FILES);
-    check(names.some((name) => /^entry-[A-Za-z0-9_-]{8}\.js$/.test(name)));
+    check(names.some((name) => /^desktop-entry-[A-Za-z0-9_-]{8}\.js$/.test(name)));
     let total = 0;
     const inventory = [];
     async function directoriesCurrent() {

@@ -379,7 +379,7 @@ export class WorkspaceController {
   constructor(
     private readonly options: {
       request: (request: WorkspaceRequest) => Promise<unknown>;
-      store?: WorkspaceStore;
+      store: WorkspaceStore;
       uuid?: () => string;
       now?: () => string;
       schedule?: (ms: number, work: () => void) => () => void;
@@ -392,7 +392,7 @@ export class WorkspaceController {
       ) => Promise<void>;
     },
   ) {
-    this.store = options.store ?? new WorkspaceStore();
+    this.store = options.store;
   }
   readonly store: WorkspaceStore;
   /** An immutable view. Changed branches are replaced; retained snapshots never

@@ -13,7 +13,7 @@ import {
 } from '../../apps/web/src/features/workspace/workspace-records';
 import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
 import { emptyInteractionSaved } from '../../apps/web/src/features/interactions/interactions';
-import type { StorageBackend, StorageChange } from '../../apps/web/src/platform/indexed-storage';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import type { SessionOriginalOperation } from '@moor/protocol/session-control-protocol';
 
 const scope: WorkspaceScope = {

@@ -41,6 +41,7 @@ test('local startup does not wait for identity, and confirmed identity does not 
 test('slow startup retains its skeleton, offers manual retry and accepts late readiness', async () => {
   const html = await readFile('apps/web/public/index.html', 'utf8');
   const source = await readFile('apps/web/public/startup.js', 'utf8');
+  const appearance = await readFile('apps/web/public/browser-appearance.js', 'utf8');
   const dom = new JSDOM(html, { url: 'https://synthetic.invalid' });
   const { window } = dom;
   window.localStorage.setItem('moor-appearance', 'dark');
@@ -49,18 +50,23 @@ test('slow startup retains its skeleton, offers manual retry and accepts late re
   const entry = new Promise<{ start: () => void }>((resolve) => {
     complete = resolve;
   });
-  runInNewContext(source.replace("import('__ENTRY__')", 'loadEntry()'), {
-    window,
-    document: window.document,
-    localStorage: window.localStorage,
-    location: window.location,
-    setTimeout: (callback: () => void) => {
-      expire = callback;
-      return 1;
+  runInNewContext(
+    source
+      .replace("import('__ENTRY__')", 'loadEntry()')
+      .replace("import './browser-appearance.js';", appearance),
+    {
+      window,
+      document: window.document,
+      localStorage: window.localStorage,
+      location: window.location,
+      setTimeout: (callback: () => void) => {
+        expire = callback;
+        return 1;
+      },
+      clearTimeout() {},
+      loadEntry: () => entry,
     },
-    clearTimeout() {},
-    loadEntry: () => entry,
-  });
+  );
   assert.equal(window.document.documentElement.dataset.theme, 'dark');
   assert.equal(
     window.document.querySelector('meta[name="theme-color"]')!.getAttribute('content'),

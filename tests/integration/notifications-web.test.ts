@@ -5,7 +5,7 @@ import {
   pushEndpointHash,
   type NotificationBrowser,
 } from '../../apps/web/src/features/notifications/notifications';
-import type { NotificationLocalState } from '../../apps/web/src/features/notifications/notification-storage';
+import type { NotificationLocalState } from '@moor/client/features/notifications/local-state';
 const preferences = { completed: true, failed: true, approvals: true };
 const payload = {
   endpoint: 'https://push.synthetic.invalid/endpoint',

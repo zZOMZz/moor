@@ -3,7 +3,7 @@ import {
   notificationWanted,
   type NotificationEnvelope,
 } from '@moor/protocol/notification-protocol';
-import { notificationLocal, type NotificationLocalState } from './notification-storage';
+import type { NotificationLocalState } from './local-state';
 import { z } from 'zod';
 import { notificationPreferencesSchema } from '@moor/protocol/notification-protocol';
 export const notificationBindingMessageSchema = z
@@ -132,64 +132,4 @@ export class NotificationWorker {
       await client.focus?.();
     } else await this.deps.open(url.href);
   }
-}
-// This module is also imported by deterministic tests; installation is worker-only.
-const worker = globalThis as unknown as {
-  document?: unknown;
-  registration?: ServiceWorkerRegistration;
-  location: Location;
-  clients?: {
-    get(id: string): Promise<WorkerClient | undefined>;
-    matchAll(options: object): Promise<WorkerClient[]>;
-    openWindow(url: string): Promise<unknown>;
-  };
-  addEventListener(type: string, callback: (event: any) => void): void;
-};
-if (!worker.document && worker.registration && worker.clients) {
-  const registration = worker.registration,
-    clients = worker.clients;
-  const handler = new NotificationWorker({
-    origin: worker.location.origin,
-    now: Date.now,
-    local: notificationLocal,
-    identity: async () => {
-      const response = await fetch('/api/me', {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!response.ok) throw new Error('身份不可用');
-      return response.json();
-    },
-    show: (title, options) => registration.showNotification(title, options),
-    close: async () => {
-      for (const item of await registration.getNotifications()) item.close();
-    },
-    client: (id) => clients.get(id),
-    clients: () => clients.matchAll({ type: 'window', includeUncontrolled: true }),
-    open: (url) => clients.openWindow(url),
-  });
-  worker.addEventListener('push', (event) => {
-    let value: unknown;
-    try {
-      const text = event.data?.text();
-      if (text && new TextEncoder().encode(text).byteLength <= 3000) value = JSON.parse(text);
-    } catch {
-      /* Generic reminder. */
-    }
-    event.waitUntil(handler.push(value));
-  });
-  worker.addEventListener('notificationclick', (event) => {
-    event.notification.close();
-    event.waitUntil(handler.click(event.notification.data));
-  });
-  worker.addEventListener('message', (event) => {
-    if (event.data?.type !== 'moor:notification-binding' || !event.ports?.[0]) return;
-    event.waitUntil(
-      handler.binding(event.source?.id ?? '', event.data).then(
-        () => event.ports[0].postMessage({ ok: true }),
-        () => event.ports[0].postMessage({ ok: false }),
-      ),
-    );
-  });
 }

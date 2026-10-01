@@ -1,17 +1,13 @@
+import { createBrowserUiPorts } from '../platform/browser/ui-ports';
 import { api, ApiError, type Identity } from '../platform/api';
 import { firstStartupSource } from './bootstrap';
 
 // Fetch identity alongside the UI. Signing in never needs the session WASM runtime.
 export async function start() {
-  if ((window as unknown as { moorWorkspace?: { version: number } }).moorWorkspace?.version === 1) {
-    const { bootWorkspace } = await import('./workspace-app');
-    await bootWorkspace();
-    window.dispatchEvent(new Event('moor:ready'));
-    return;
-  }
+  const ports = createBrowserUiPorts({ window, location, request: api });
   if (location.pathname === '/auth/google/complete') {
     const { showGoogleComplete } = await import('../components/ui');
-    showGoogleComplete();
+    showGoogleComplete(ports);
     window.dispatchEvent(new Event('moor:ready'));
     return;
   }
@@ -19,6 +15,7 @@ export async function start() {
   if (invitation) {
     const { showAuth } = await import('../components/ui');
     showAuth({
+      ports,
       setup: true,
       invited: true,
       onSubmit: async (data) => {
@@ -45,6 +42,7 @@ export async function start() {
     const me = source.identity;
     void forgetBrowserOwner(location.origin).catch(() => {});
     showAuth({
+      ports,
       setup: me.needsSetup,
       googleEnabled: me.google?.enabled,
       onSubmit: async (data) => {
@@ -60,14 +58,14 @@ export async function start() {
     const owner = source.kind === 'cache' ? source.owner : source.identity?.owner;
     if (owner) {
       const { bootCollaboration } = await import('./collaboration-app');
-      await bootCollaboration(owner, identity);
+      await bootCollaboration(owner, identity, ports);
       window.dispatchEvent(new Event('moor:ready'));
       return;
     }
   }
   if (status) status.textContent = '正在恢复工作区…';
   const { bootBrowserWorkspace } = await import('./browser-workspace-app');
-  await bootBrowserWorkspace(identity, cachedOwner);
+  await bootBrowserWorkspace(identity, cachedOwner, ports);
   window.dispatchEvent(new Event('moor:ready'));
   if (
     'serviceWorker' in navigator &&

@@ -3,7 +3,7 @@ import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json
 import { sessionReadResponseSchema, validateSessionBundle } from '@moor/protocol/session-responses';
 import { verifiedSessionDelta } from '@moor/client/session-client';
 import { decode, encode, LoroDoc, VersionVector } from '@moor/session/model';
-import type { StorageBackend, StorageChange } from '../../platform/indexed-storage';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import type { WorkspaceScope } from './workspace-store';
 
 type Envelope = z.infer<typeof sessionReadResponseSchema>;

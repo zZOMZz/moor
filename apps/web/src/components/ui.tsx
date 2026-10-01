@@ -1,3 +1,4 @@
+import { UiPortsProvider, type UiPorts } from '../platform/ui-ports';
 import { Select } from '@base-ui/react/select';
 import { canonicalMode, type RunCapabilities, type RunSelection } from '@moor/protocol/run-config';
 import { Check, ChevronDown, ShieldCheck } from 'lucide-react';
@@ -10,20 +11,20 @@ import { ModelMenu } from './model-menu';
 
 let applicationRoot: Root | undefined;
 /** Mount the standalone login and collaboration routes. Workspace owns its own React root. */
-export function paint(selector: '#app', node: ReactNode) {
+export function paint(selector: '#app', node: ReactNode, ports: UiPorts) {
   applicationRoot ??= createRoot(document.querySelector(selector)!);
-  flushSync(() => applicationRoot!.render(node));
+  flushSync(() => applicationRoot!.render(<UiPortsProvider ports={ports}>{node}</UiPortsProvider>));
 }
-export function showGoogleComplete() {
-  paint('#app', <GoogleComplete />);
+export function showGoogleComplete(ports: UiPorts) {
+  paint('#app', <GoogleComplete />, ports);
 }
 export function disposeUI() {
   if (applicationRoot) flushSync(() => applicationRoot!.unmount());
   applicationRoot = undefined;
 }
-export function showAuth(props: LoginProps) {
+export function showAuth(props: LoginProps & { ports: UiPorts }) {
   disposeUI();
-  paint('#app', <Login {...props} />);
+  paint('#app', <Login {...props} />, props.ports);
 }
 
 function Picker({

@@ -1,10 +1,11 @@
+import { usePreferences, type PreferencePort } from '../../platform/ui-ports';
 import { useEffect, useState, useRef, type CSSProperties, type ReactNode } from 'react';
 import { Ellipsis, SlidersHorizontal, Plus } from 'lucide-react';
 const key = 'moor-workspace-layout-v1';
 const clamp = (width: number) => Math.max(220, Math.min(400, width));
-function initial(): { width: number; open: boolean } {
+function initial(preferences: PreferencePort): { width: number; open: boolean } {
   try {
-    const value = JSON.parse(localStorage.getItem(key) ?? '{}');
+    const value = JSON.parse(preferences.read(key) ?? '{}');
     return {
       width: Number.isFinite(value.width) ? clamp(value.width) : 260,
       open: typeof value.open === 'boolean' ? value.open : true,
@@ -14,7 +15,8 @@ function initial(): { width: number; open: boolean } {
   }
 }
 export function useWorkspaceLayout() {
-  const [preference, update] = useState(initial);
+  const preferences = usePreferences();
+  const [preference, update] = useState(() => initial(preferences));
   const [narrow, setNarrow] = useState(
     () => typeof window !== 'undefined' && window.innerWidth <= 700,
   );
@@ -23,7 +25,7 @@ export function useWorkspaceLayout() {
   );
   useEffect(() => {
     try {
-      localStorage.setItem(key, JSON.stringify(preference));
+      preferences.write(key, JSON.stringify(preference));
     } catch {
       /* Appearance remains usable without persistent storage. */
     }

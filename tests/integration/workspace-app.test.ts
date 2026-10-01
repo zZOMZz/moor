@@ -1,4 +1,10 @@
 import {
+  createDesktopUiPorts,
+  type DesktopUiBridge,
+} from '../../apps/web/src/platform/desktop/ui-ports';
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
+import { api } from '../../apps/web/src/platform/api';
+import {
   fixture as githubFixture,
   target as githubTarget,
 } from '../fixtures/github-session-fixture';
@@ -94,6 +100,30 @@ test('packaged workspace opens local projects without an account and preserves d
     { createRoot } = await import('react-dom/client'),
     { WorkspaceApp } = await import('../../apps/web/src/app/workspace-app');
   const root = createRoot(dom.window.document.getElementById('app')!);
+  const environment = {
+    window: dom.window as unknown as Window,
+    location: dom.window.location,
+    request: api,
+  };
+  const ports = createBrowserUiPorts(environment);
+  const bridge: DesktopUiBridge = {
+    version: 1,
+    appearance: async (value) => value ?? 'system',
+    onAppearance: () => () => {},
+    googleAuth: {
+      begin: async () => {
+        throw Error('Unexpected Google attempt');
+      },
+      complete: async () => ({ completed: false }),
+      cancel: async () => {},
+    },
+    saveAttachment: async () => {
+      throw Error('Unexpected attachment save');
+    },
+    cancelAttachmentSave: async () => {},
+  };
+  ports.attachments = createDesktopUiPorts(environment, bridge).attachments;
+
   const catalog = workspaceCatalogSchema.parse({
     source: 'local',
     connectionId: '00000000-0000-4000-8000-000000000001',
@@ -797,6 +827,8 @@ test('packaged workspace opens local projects without an account and preserves d
     await act(async () => {
       root.render(
         createElement(WorkspaceApp, {
+          ports,
+          localAvailable: true,
           controller,
           accountApi: async () => ({ ok: false as const, error: { message: 'No remote account' } }),
           openSettings: async () => {
@@ -817,8 +849,8 @@ test('packaged workspace opens local projects without an account and preserves d
               },
             };
           },
-          readDesktopContext: async () => structuredClone(desktop),
-          subscribeDesktopChanges: (listener) => {
+          readRuntimeContext: async () => structuredClone(desktop),
+          subscribeRuntimeChanges: (listener) => {
             desktopChanged = listener;
             return () => {
               desktopChanged = undefined;
@@ -1336,7 +1368,7 @@ test('packaged workspace opens local projects without an account and preserves d
     const attachment = state.ledger!.attachments![state.sessionId!]!.items[0]!;
     const saves: unknown[] = [];
     let completeSave: ((value: { status: string }) => void) | undefined;
-    (dom.window as any).moorDesktop = {
+    Object.assign(bridge, {
       version: 1,
       saveAttachment: async (input: unknown) => {
         saves.push(structuredClone(input));
@@ -1346,7 +1378,7 @@ test('packaged workspace opens local projects without an account and preserves d
         calls.push('attachment:cancel-save');
         completeSave?.({ status: 'cancelled' });
       },
-    };
+    });
     await act(async () => {
       state.session!.history[0]!.items!.push({
         type: 'attachment',
@@ -1370,7 +1402,7 @@ test('packaged workspace opens local projects without an account and preserves d
       data: attachment.data,
     });
     assert.match(history.textContent!, /附件已保存/);
-    (dom.window as any).moorDesktop.saveAttachment = () =>
+    bridge.saveAttachment = () =>
       new Promise((resolve) => {
         completeSave = resolve;
       });

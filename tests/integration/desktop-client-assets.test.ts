@@ -19,7 +19,7 @@ const files: Record<string, Buffer> = {
   'index.html': Buffer.from(
     '<!doctype html><html><script type="module" src="/startup.js"></script></html>',
   ),
-  'startup.js': Buffer.from("import('/assets/entry-ABCDEFG1.js');"),
+  'startup.js': Buffer.from("import('/assets/desktop-entry-ABCDEFG1.js');"),
   'notification-worker.js': Buffer.from("self.onmessage = () => postMessage('synthetic');"),
   'style.css': Buffer.from('body { color: black }'),
   'manifest.webmanifest': Buffer.from('{"name":"Synthetic Moor","start_url":"/"}'),
@@ -29,7 +29,7 @@ const files: Record<string, Buffer> = {
   'icon-512.png': Buffer.from('synthetic png 512'),
   'apple-touch-icon.png': Buffer.from('synthetic apple icon'),
   'favicon.ico': Buffer.from('synthetic icon'),
-  'assets/entry-ABCDEFG1.js': Buffer.from(
+  'assets/desktop-entry-ABCDEFG1.js': Buffer.from(
     "import './chunk-ABCDEFG2.js'; export const source = 'packaged';",
   ),
   'assets/chunk-ABCDEFG2.js': Buffer.from('export const synthetic = true;'),
@@ -64,7 +64,7 @@ test('trusted client document has one canonical scheme and host even though Node
     'moor-client://app/',
     'moor-client://app/remote',
     'moor-client://app/index.html',
-    'moor-client://app/assets/entry-ABCDEFG1.js',
+    'moor-client://app/assets/desktop-entry-ABCDEFG1.js',
     'moor-client://app/remote/?',
     'moor-client://app/remote/#',
     'moor-client://app/remote/?flow=secret',
@@ -152,10 +152,10 @@ test('trusted client protocol rejects raw traversal, escaping, noncanonical orig
     CLIENT_ORIGIN + '/assets/../startup.js',
     CLIENT_ORIGIN + '/../startup.js',
     CLIENT_ORIGIN + '/%2e%2e/startup.js',
-    CLIENT_ORIGIN + '/assets%2fentry-ABCDEFG1.js',
-    CLIENT_ORIGIN + '/assets%5centry-ABCDEFG1.js',
+    CLIENT_ORIGIN + '/assets%2fdesktop-entry-ABCDEFG1.js',
+    CLIENT_ORIGIN + '/assets%5cdesktop-entry-ABCDEFG1.js',
     CLIENT_ORIGIN + '/%252e%252e/private',
-    CLIENT_ORIGIN + '/assets\\entry-ABCDEFG1.js',
+    CLIENT_ORIGIN + '/assets\\desktop-entry-ABCDEFG1.js',
     CLIENT_ORIGIN + '/startup.js?',
     CLIENT_ORIGIN + '/startup.js?type=text/html',
     CLIENT_ORIGIN + '/startup.js#private',
@@ -183,8 +183,8 @@ test('trusted client paths are an immutable allowlist, excluding directories, AP
     'secrets.json',
     '.env',
     'unexpected.js',
-    'assets/entry-ABCDEFG1.js.map',
-    'assets/entry-ABCDEFG1.js.gz',
+    'assets/desktop-entry-ABCDEFG1.js.map',
+    'assets/desktop-entry-ABCDEFG1.js.gz',
     'assets/draft.js',
   ])
     await fs.writeFile(join(publicRoot, filename), 'synthetic-private');
@@ -200,8 +200,8 @@ test('trusted client paths are an immutable allowlist, excluding directories, AP
     '/secrets.json',
     '/.env',
     '/unexpected.js',
-    '/assets/entry-ABCDEFG1.js.map',
-    '/assets/entry-ABCDEFG1.js.gz',
+    '/assets/desktop-entry-ABCDEFG1.js.map',
+    '/assets/desktop-entry-ABCDEFG1.js.gz',
     '/assets/draft.js',
     '/assets/missing-ABCDEFG4.js',
     '/style.css/',
@@ -309,7 +309,7 @@ test('trusted client refuses source templates and missing entry assets before re
     await assert.rejects(createClientAssetHandler({ publicRoot }), { message: unavailable });
   }
   const { publicRoot } = await fixture(t);
-  await fs.unlink(join(publicRoot, 'assets/entry-ABCDEFG1.js'));
+  await fs.unlink(join(publicRoot, 'assets/desktop-entry-ABCDEFG1.js'));
   await assert.rejects(createClientAssetHandler({ publicRoot }), { message: unavailable });
 });
 
@@ -357,7 +357,7 @@ test('trusted client bounds file size, total bytes and file count before opening
       async readdir(filename: string) {
         return kind === 'count'
           ? Array.from({ length: 257 }, (_, n) =>
-              n === 0 ? 'entry-ABCDEFG1.js' : `chunk${n}-ABCDEFG1.js`,
+              n === 0 ? 'desktop-entry-ABCDEFG1.js' : `chunk${n}-ABCDEFG1.js`,
             )
           : fs.readdir(filename);
       },

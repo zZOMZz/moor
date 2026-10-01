@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { id } from '@moor/protocol/protocol';
-import type { NotificationLocalState, NotificationLocalRecord } from './notification-storage';
+import type {
+  NotificationLocalState,
+  NotificationLocalRecord,
+} from '@moor/client/features/notifications/local-state';
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   notificationPreferencesSchema,

@@ -2,9 +2,12 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   pushSubscriptionSchema,
 } from '@moor/protocol/notification-protocol';
-import { deadline } from '../../platform/deadline';
+import { deadline } from '../deadline';
 import { notificationLocal, rememberNotification } from './notification-storage';
-import { pushEndpointHash, type NotificationBrowser } from './notifications';
+import {
+  pushEndpointHash,
+  type NotificationBrowser,
+} from '../../features/notifications/notifications';
 export function browserNotificationReason() {
   if (!globalThis.isSecureContext) return '通知需要 HTTPS 安全连接。';
   if (!('Notification' in globalThis) || !('PushManager' in globalThis) || !navigator.serviceWorker)

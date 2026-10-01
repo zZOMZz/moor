@@ -1,3 +1,4 @@
+import { withBrowserUiPorts } from './ui-ports';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -158,7 +159,9 @@ test('login preserves form data on failure, prevents duplicate submission and su
   const submit = () =>
     form().dispatchEvent(new env.win.Event('submit', { bubbles: true, cancelable: true }));
   try {
-    await act(async () => root.render(createElement(Login, { setup: false, onSubmit })));
+    await act(async () =>
+      root.render(withBrowserUiPorts(createElement(Login, { setup: false, onSubmit }))),
+    );
     input('email').value = 'synthetic@example.com';
     input('password').value = 'synthetic-password-only';
     assert.equal(form().checkValidity(), true);
@@ -181,7 +184,9 @@ test('login preserves form data on failure, prevents duplicate submission and su
     assert.equal(input('email').value, 'synthetic@example.com');
     assert.equal(input('password').value, 'synthetic-password-only');
     assert.equal(form().getAttribute('aria-busy'), 'false');
-    await act(async () => root.render(createElement(Login, { setup: true, onSubmit })));
+    await act(async () =>
+      root.render(withBrowserUiPorts(createElement(Login, { setup: true, onSubmit }))),
+    );
     assert.equal(input('password').minLength, 12);
     assert.equal(input('password').autocomplete, 'new-password');
     assert.equal(input('setupToken').required, true);

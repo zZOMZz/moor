@@ -8,7 +8,7 @@
       "@moor/app-host": ["./apps/host/src/main.ts"],
       "@moor/app-relay": ["./apps/relay/src/main.ts"],
       "@moor/app-relay/*": ["./apps/relay/src/*.ts"],
-      "@moor/app-web": ["./apps/web/src/app/entry.ts"],
+      "@moor/app-web": ["./apps/web/src/app/web-entry.ts"],
       "@moor/client/adapters/browser/http": ["./packages/client/src/adapters/browser/http.ts"],
       "@moor/client/adapters/browser/workspace-client": [
         "./packages/client/src/adapters/browser/workspace-client.ts"
@@ -23,9 +23,25 @@
         "./packages/client/src/adapters/shared/workspace-transport.ts"
       ],
       "@moor/client/collaboration-client": ["./packages/client/src/collaboration-client.ts"],
+      "@moor/client/features/attachments/export": [
+        "./packages/client/src/features/attachments/export.ts"
+      ],
+      "@moor/client/features/auth/google-auth": [
+        "./packages/client/src/features/auth/google-auth.ts"
+      ],
+      "@moor/client/features/notifications/local-state": [
+        "./packages/client/src/features/notifications/local-state.ts"
+      ],
+      "@moor/client/features/notifications/worker": [
+        "./packages/client/src/features/notifications/worker.ts"
+      ],
+      "@moor/client/features/workspace/catalog-safety": [
+        "./packages/client/src/features/workspace/catalog-safety.ts"
+      ],
       "@moor/client/operations/request-rejection": [
         "./packages/client/src/operations/request-rejection.ts"
       ],
+      "@moor/client/operations/storage": ["./packages/client/src/operations/storage.ts"],
       "@moor/client/preview-annotation": ["./packages/client/src/preview-annotation.ts"],
       "@moor/client/session-client": ["./packages/client/src/session-client.ts"],
       "@moor/client/session-intent": ["./packages/client/src/session-intent.ts"],

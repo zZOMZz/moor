@@ -1,3 +1,4 @@
+import { useAttachmentExport } from '../../platform/ui-ports';
 import { useEffect, useRef, useState } from 'react';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import type { WorkspaceController } from '../workspace/workspace-controller';
@@ -31,15 +32,7 @@ export function WorkspaceAttachmentView({
   const [notice, setNotice] = useState('');
   const epoch = useRef(0),
     saving = useRef(false);
-  const saver = (
-    window as unknown as {
-      moorDesktop?: {
-        version: number;
-        saveAttachment(input: unknown): Promise<{ status: string }>;
-        cancelAttachmentSave(): Promise<void>;
-      };
-    }
-  ).moorDesktop;
+  const saver = useAttachmentExport();
   const identity = canonical([scope, sessionId, reference]);
   useEffect(() => {
     epoch.current++;
@@ -47,7 +40,7 @@ export function WorkspaceAttachmentView({
     setNotice('');
     return () => {
       epoch.current++;
-      if (saving.current) void saver?.cancelAttachmentSave().catch(() => {});
+      if (saving.current) void saver.cancel().catch(() => {});
     };
   }, [identity]);
   const image = value && attachmentPreviewUrl(reference, value.data);
@@ -90,51 +83,36 @@ export function WorkspaceAttachmentView({
               onClick={() =>
                 run(async () => {
                   const version = epoch.current;
-                  if (
-                    !saver &&
-                    scope.source === 'remote' &&
-                    ['http:', 'https:'].includes(window.location.protocol)
-                  ) {
-                    const bytes = await verifyAttachmentBytes(reference, value.data);
-                    if (version !== epoch.current) return;
-                    const url = URL.createObjectURL(
-                      new Blob([bytes], { type: reference.content.mediaType }),
-                    );
-                    try {
-                      const link = document.createElement('a');
-                      link.href = url;
-                      link.download = reference.name;
-                      link.click();
-                      setNotice('已交给浏览器下载。');
-                    } finally {
-                      setTimeout(() => URL.revokeObjectURL(url), 0);
-                    }
-                    return;
-                  }
-                  if (
-                    saver?.version !== 1 ||
-                    typeof saver.saveAttachment !== 'function' ||
-                    typeof saver.cancelAttachmentSave !== 'function'
-                  )
-                    throw Error('原生附件保存接口不可用，请重新打开桌面窗口。');
+                  const bytes = await verifyAttachmentBytes(reference, value.data);
+                  if (version !== epoch.current) return;
                   const target = scope.target;
                   saving.current = true;
                   try {
-                    const result = await saver.saveAttachment({
-                      scope: {
-                        owner: target.owner,
-                        deviceId: target.deviceId,
-                        workspaceId: target.workspaceId,
-                        localProjectId: target.localProjectId,
-                        sessionId,
+                    const result = await saver.save(
+                      {
+                        scope: {
+                          owner: target.owner,
+                          deviceId: target.deviceId,
+                          workspaceId: target.workspaceId,
+                          localProjectId: target.localProjectId,
+                          sessionId,
+                        },
+                        reference,
+                        data: value.data,
+                        bytes,
                       },
-                      reference,
-                      data: value.data,
-                    });
+                      () => version === epoch.current,
+                    );
                     if (version !== epoch.current) return;
-                    if (!['saved', 'cancelled'].includes(result.status))
+                    if (!['saved', 'cancelled', 'handed-off'].includes(result.status))
                       throw Error('附件保存结果尚未确认。');
-                    setNotice(result.status === 'saved' ? '附件已保存。' : '已取消保存。');
+                    setNotice(
+                      result.status === 'saved'
+                        ? '附件已保存。'
+                        : result.status === 'handed-off'
+                          ? '已交给浏览器下载。'
+                          : '已取消保存。',
+                    );
                   } finally {
                     saving.current = false;
                   }

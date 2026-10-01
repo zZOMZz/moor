@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
-import { type StorageBackend } from '../../platform/indexed-storage';
+import type { StorageBackend } from '@moor/client/operations/storage';
 
 const MAX_ENTRIES = 96;
 const MAX_BYTES = 24 * 1024 * 1024;

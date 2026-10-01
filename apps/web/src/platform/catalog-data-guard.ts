@@ -1,18 +1,8 @@
+import type { CatalogDataScope } from '@moor/client/features/workspace/catalog-safety';
 import { CollaborationReplica } from '@moor/session/collaboration-replica';
 import { collaborationScopeSchema } from '@moor/protocol/collaboration-protocol';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
 
-export type CatalogDataScope = {
-  owner: string;
-  origin: string;
-  deviceId: string;
-  workspaceId: string;
-  machineId?: string;
-  localProjectId?: string;
-  replicaId?: string;
-  catalogWorkspaceId: string;
-  catalogProjectIds: string[];
-};
 const blocked = () =>
   Error('受影响的项目仍有未发送草稿、附件或待确认操作。请先回到原会话核对；本次没有更改分组。');
 const object = (value: unknown): Record<string, any> | undefined =>

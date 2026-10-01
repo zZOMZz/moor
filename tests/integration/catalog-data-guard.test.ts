@@ -1,10 +1,8 @@
+import type { CatalogDataScope } from '@moor/client/features/workspace/catalog-safety';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
-import {
-  assertCatalogDataSettled,
-  type CatalogDataScope,
-} from '../../apps/web/src/platform/catalog-data-guard';
+import { assertCatalogDataSettled } from '../../apps/web/src/platform/catalog-data-guard';
 
 const scope: CatalogDataScope = {
   owner: 'owner',

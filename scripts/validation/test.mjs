@@ -2,7 +2,7 @@ import { build } from 'esbuild';
 import { readdir, mkdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { availableParallelism } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -21,28 +21,41 @@ async function findTests(directory) {
 }
 const scope = process.argv[2];
 const e2e = scope === '--e2e';
+const selected = scope === '--files' ? process.argv.slice(3) : undefined;
+if (
+  selected &&
+  (!selected.length ||
+    selected.some(
+      (file) => !file.endsWith('.test.ts') || relative(repository, resolve(file)).startsWith('..'),
+    ))
+)
+  throw Error('--files requires repository test files');
 const roots = e2e
   ? ['tests/e2e']
-  : scope
-    ? [join(scope, 'tests')]
-    : [
-        'tests/integration',
-        ...(await readdir('packages', { withFileTypes: true }))
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => join('packages', entry.name, 'tests')),
-        ...(await readdir('apps', { withFileTypes: true }).catch(() => []))
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => join('apps', entry.name, 'tests')),
-      ];
-const tests = (
-  await Promise.all(
-    roots.map((root) =>
-      findTests(root).catch((error) => (error?.code === 'ENOENT' ? [] : Promise.reject(error))),
-    ),
+  : selected
+    ? []
+    : scope
+      ? [join(scope, 'tests')]
+      : [
+          'tests/integration',
+          ...(await readdir('packages', { withFileTypes: true }))
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => join('packages', entry.name, 'tests')),
+          ...(await readdir('apps', { withFileTypes: true }).catch(() => []))
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => join('apps', entry.name, 'tests')),
+        ];
+const tests =
+  selected?.slice().sort() ??
+  (
+    await Promise.all(
+      roots.map((root) =>
+        findTests(root).catch((error) => (error?.code === 'ENOENT' ? [] : Promise.reject(error))),
+      ),
+    )
   )
-)
-  .flat()
-  .sort();
+    .flat()
+    .sort();
 if (!tests.length) throw new Error('No tests found for ' + (scope ?? 'integration'));
 // Hosted CI reports nominal CPUs even when subprocess-heavy suites share a
 // constrained quota. Serialize files there so deliberate test deadlines keep

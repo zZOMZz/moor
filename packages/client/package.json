@@ -36,9 +36,33 @@
       "types": "./src/collaboration-client.ts",
       "import": "./dist/collaboration-client.js"
     },
+    "./features/attachments/export": {
+      "types": "./src/features/attachments/export.ts",
+      "import": "./dist/features/attachments/export.js"
+    },
+    "./features/auth/google-auth": {
+      "types": "./src/features/auth/google-auth.ts",
+      "import": "./dist/features/auth/google-auth.js"
+    },
+    "./features/notifications/local-state": {
+      "types": "./src/features/notifications/local-state.ts",
+      "import": "./dist/features/notifications/local-state.js"
+    },
+    "./features/notifications/worker": {
+      "types": "./src/features/notifications/worker.ts",
+      "import": "./dist/features/notifications/worker.js"
+    },
+    "./features/workspace/catalog-safety": {
+      "types": "./src/features/workspace/catalog-safety.ts",
+      "import": "./dist/features/workspace/catalog-safety.js"
+    },
     "./operations/request-rejection": {
       "types": "./src/operations/request-rejection.ts",
       "import": "./dist/operations/request-rejection.js"
+    },
+    "./operations/storage": {
+      "types": "./src/operations/storage.ts",
+      "import": "./dist/operations/storage.js"
     },
     "./preview-annotation": {
       "types": "./src/preview-annotation.ts",

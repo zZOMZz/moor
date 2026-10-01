@@ -1,3 +1,10 @@
+import { UiPortsProvider } from '../../apps/web/src/platform/ui-ports';
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
+import {
+  createDesktopUiPorts,
+  type DesktopUiBridge,
+} from '../../apps/web/src/platform/desktop/ui-ports';
+import { api } from '../../apps/web/src/platform/api';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
@@ -108,9 +115,15 @@ async function environment() {
   const { createRoot } = await import('react-dom/client');
   const components = await import('../../apps/web/src/features/auth/google-login');
   const root = createRoot(document.getElementById('app')!);
+  const environment = {
+    window: win as unknown as Window,
+    location: globalThis.location,
+    request: api,
+  };
+  const ports = createBrowserUiPorts(environment);
   let mounted = true;
   async function render(node: ReactNode) {
-    await act(async () => root.render(node));
+    await act(async () => root.render(createElement(UiPortsProvider, { ports, children: node })));
   }
   async function unmount() {
     if (mounted) {
@@ -136,7 +149,14 @@ async function environment() {
     form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   }
   function desktop(value: unknown) {
-    Object.assign(win, { moorDesktop: { version: 1, googleAuth: value } });
+    ports.google = createDesktopUiPorts(environment, {
+      version: 1,
+      appearance: async () => 'system',
+      onAppearance: () => () => {},
+      googleAuth: value as DesktopUiBridge['googleAuth'],
+      saveAttachment: async () => ({ status: 'cancelled' }),
+      cancelAttachmentSave: async () => {},
+    }).google;
   }
   return {
     ...components,

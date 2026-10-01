@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import type { StorageBackend } from '../../apps/web/src/platform/indexed-storage';
+import type { StorageBackend } from '@moor/client/operations/storage';
 import { gitTargetSchema, type GitTarget } from '../../apps/web/src/features/git/git-workspace';
 import {
   GithubSessionController,
