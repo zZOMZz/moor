@@ -1,14 +1,14 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CliState } from '../../apps/cli/src/state';
+import test from 'node:test';
 import {
   CLI_GOOGLE_FAILED,
   CLI_GOOGLE_FLOW_KEY,
   CliGoogleAuth,
 } from '../../apps/cli/src/google-auth';
+import { CliState } from '../../apps/cli/src/state';
 
 test('a relay clock two seconds ahead does not reject its normal ten-minute Google flow', async (t) => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'moor-google-clock-review-')));

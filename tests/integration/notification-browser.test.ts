@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire as createPackageRequire } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire as createPackageRequire } from 'node:module';
 import { join } from 'node:path';
+import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 const preferences = { completed: true, failed: true, approvals: true };
 test('browser cleanup clears bindings before failing APIs, keeps pending records and independently closes/unsubscribes', async () => {

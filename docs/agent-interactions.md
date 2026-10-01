@@ -44,6 +44,6 @@ Moor 不从适配器私有扩展推断或展示账号额度，也不从模型级
 
 真实 Codex 登录和模型调用、Mac 安装包、iPhone/Safari/PWA 按[功能专项](validation.md#功能专项)验收。普通草稿不会自动提交；用户明确提交的共享持久任务遵循独立的队列授权规则。
 
-实现入口：[交互协议](../packages/protocol/src/interaction-protocol.ts)、[事件模型](../packages/host/src/sessions/events.ts)、[ACP 适配](../packages/host/src/agents/acp/driver.ts)、[主机交互](../packages/host/src/sessions/interactions.ts)、[浏览器草稿与确认](../apps/web/src/features/interactions/interactions.ts)。
+实现入口：[交互协议](../packages/protocol/src/interaction-protocol.ts)、[事件模型](../packages/host/src/sessions/events.ts)、[ACP 适配](../packages/host/src/agents/acp/driver.ts)、[主机交互](../packages/host/src/sessions/interactions.ts)、[浏览器草稿与确认](../packages/client/src/features/interactions/interactions.ts)。
 
 返回[会话与回合](session.md) · [功能完善计划](roadmap.md) · [文档目录](README.md)。

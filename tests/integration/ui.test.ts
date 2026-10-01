@@ -1,6 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 // Real component interactions against synthetic data, with deterministic observer
 // signals. No model account, network, real runtime, animation delay or sleeps.

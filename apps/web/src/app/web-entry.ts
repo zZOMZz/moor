@@ -1,5 +1,5 @@
-import { createBrowserUiPorts } from '../platform/browser/ui-ports';
 import { api, ApiError, type Identity } from '../platform/api';
+import { createBrowserUiPorts } from '../platform/browser/ui-ports';
 import { firstStartupSource } from './bootstrap';
 
 // Fetch identity alongside the UI. Signing in never needs the session WASM runtime.

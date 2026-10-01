@@ -1,29 +1,28 @@
-import test from 'node:test';
-import { guardedCommandHost } from '../fixtures/guarded-command-host';
-import type { HostCommand } from '@moor/host/commands/host-command';
+import { createGitHubClient } from '@moor/host/integrations/github/client';
+import { type GitHubProjectConfig } from '@moor/host/integrations/github/config';
+import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { readProjectGit } from '@moor/host/projects/git';
+import * as gitActions from '@moor/host/projects/git-actions';
+import type { SessionGithubWriteOptions } from '@moor/host/sessions/github-write';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import {
+  githubPatchLines,
+  githubWriteActionSchema,
+  githubWriteReceiptSchema,
+  type GithubPullFile,
+  type GithubWriteAction,
+  type GithubWriteRead,
+} from '@moor/protocol/github-write-protocol';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
-import { randomUUID, createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { createGitHubClient } from '@moor/host/integrations/github/client';
-import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
-import { type GitHubProjectConfig } from '@moor/host/integrations/github/config';
-import * as gitActions from '@moor/host/projects/git-actions';
-import { readProjectGit } from '@moor/host/projects/git';
-import type { SessionGithubWriteOptions } from '@moor/host/sessions/github-write';
-import { AppError } from '@moor/protocol/protocol';
-import {
-  githubWriteActionSchema,
-  githubWriteReceiptSchema,
-  githubPatchLines,
-  type GithubWriteAction,
-  type GithubWriteRead,
-  type GithubPullFile,
-} from '@moor/protocol/github-write-protocol';
+import test from 'node:test';
+import { guardedCommandHost } from '../fixtures/guarded-command-host';
 
 const hash = (text: string) => 'sha256:' + createHash('sha256').update(text).digest('hex');
 const headSha = 'a'.repeat(40),

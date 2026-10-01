@@ -1,19 +1,19 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostCommandDispatcher, type HostCommand } from '@moor/host/commands/host-command';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { attachmentActionSchema, type AttachmentAction } from '@moor/protocol/attachment-protocol';
+import { validateHostResponse } from '@moor/protocol/host-response';
 import {
   ATTACHMENT_OPERATIONS_FEATURE,
   sessionOperationSchema,
   validateSessionOperationResult,
 } from '@moor/protocol/session-control-protocol';
-import { validateHostResponse } from '@moor/protocol/host-response';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 
 function fixture(t: TestContext) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-attachment-recovery-'))),

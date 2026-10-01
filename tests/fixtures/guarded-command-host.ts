@@ -1,8 +1,8 @@
-import type { TestContext } from 'node:test';
 import { HostCommandDispatcher, type HostCommand } from '@moor/host/commands/host-command';
-import { AppError } from '@moor/protocol/protocol';
-import { validateHostResponse } from '@moor/protocol/host-response';
 import type { HostWorkspace } from '@moor/host/sessions/workspace';
+import { validateHostResponse } from '@moor/protocol/host-response';
+import { AppError } from '@moor/protocol/protocol';
+import type { TestContext } from 'node:test';
 
 /** Exercises the real Host boundary with a deterministic revocable connection guard. */
 export async function guardedCommandHost(t: TestContext, workspace: () => HostWorkspace) {

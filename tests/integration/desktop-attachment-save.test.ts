@@ -1,10 +1,10 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as fileSystem from 'node:fs/promises';
-import { mkdtemp, readFile, rm, writeFile, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import test from 'node:test';
 import {
   attachmentPayload,
   createAttachmentSaver,

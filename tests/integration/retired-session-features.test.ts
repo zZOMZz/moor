@@ -1,28 +1,28 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, realpathSync, rmSync, lstatSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { once } from 'node:events';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
 import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import {
   RETIRED_RECORDS_FEATURE,
   RETIRED_SESSION_FEATURE,
 } from '@moor/protocol/connection-authority';
-import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
-import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
-import { roleActionSchema } from '@moor/protocol/role-protocol';
 import { previewOpenSchema } from '@moor/protocol/preview-protocol';
-import { taskActionSchema } from '@moor/protocol/task-protocol';
-import { buildSessionTurn } from '@moor/session/session-operations';
-import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import { syntheticTaskPlan } from '../fixtures/task-plan';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
 import { PROTOCOL } from '@moor/protocol/protocol';
+import { roleActionSchema } from '@moor/protocol/role-protocol';
 import { SESSION_CONTROL_FEATURE } from '@moor/protocol/session-control-protocol';
+import { taskActionSchema } from '@moor/protocol/task-protocol';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
+import { buildSessionTurn } from '@moor/session/session-operations';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { lstatSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
+import { syntheticCapabilities } from '../fixtures/agent-capabilities';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
+import { syntheticTaskPlan } from '../fixtures/task-plan';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 async function fixture(t: TestContext) {

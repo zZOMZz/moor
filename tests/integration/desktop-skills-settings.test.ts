@@ -1,13 +1,13 @@
-import test from 'node:test';
+import { SkillsConfig } from '@moor/host/integrations/skills-config';
+import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { JSDOM } from 'jsdom';
 import { DesktopSkillsSettings } from '../../apps/desktop/src/main/skills-settings.cjs';
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
 
 function transport() {
   const sent: any[] = [],

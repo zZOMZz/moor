@@ -1,10 +1,10 @@
-import test from 'node:test';
+import type { Workspace } from '@moor/protocol/catalog';
+import { QUESTIONS_FEATURE, STEER_FEATURE } from '@moor/protocol/interaction-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import { QUESTIONS_FEATURE, STEER_FEATURE } from '@moor/protocol/interaction-protocol';
+import test from 'node:test';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
-import type { Workspace } from '@moor/protocol/catalog';
 
 const actions = ['question-answers', 'steer'] as const;
 type Action = (typeof actions)[number];

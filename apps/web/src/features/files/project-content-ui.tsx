@@ -1,11 +1,16 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { formatAttachmentSize } from '@moor/client/features/attachments/attachments';
+import type { FileContentView } from '@moor/client/features/files/file-content';
+import {
+  compareTextLines,
+  type ProjectContentView,
+} from '@moor/client/features/files/project-content';
 import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
 import type {
   ProjectContentIssue,
   ProjectDiffChange,
   ProjectDiffFileResult,
   ProjectDiffReference,
-  ProjectTreeResult,
   ProjectTurnDiffResult,
 } from '@moor/protocol/project-content-protocol';
 import {
@@ -34,29 +39,15 @@ import {
   type RefObject,
 } from 'react';
 import { markdown } from '../../components/content';
-import { formatAttachmentSize } from '../attachments/attachments';
-import type { FileContentView } from './file-content';
-import { compareTextLines, type ProjectContentView } from './project-content';
 
-export type ProjectTurnChoice = { id: string; label: string; reference?: ProjectDiffReference };
-export type ProjectContentPanelProps = {
+import type { ProjectContentViewState } from '@moor/client/features/files/view';
+export type ProjectContentPanelProps = ProjectContentViewState & {
   docked?: boolean;
   expanded?: boolean;
   onToggleExpanded?(): void;
   onQuote?(text: string): void;
   returnFocus?: RefObject<HTMLElement | null>;
   quoteFocus?: RefObject<HTMLElement | null>;
-  title: string;
-  mode: 'tree' | 'changes';
-  busy?: boolean;
-  error?: string;
-  tree?: ProjectContentView<ProjectTreeResult>;
-  currentFile?: Omit<FileContentView, 'bytes'>;
-  currentUnavailable?: { path: string; message: string };
-  turns: ProjectTurnChoice[];
-  turnId?: string;
-  diff?: ProjectContentView<ProjectTurnDiffResult>;
-  diffFile?: ProjectContentView<ProjectDiffFileResult>;
   onMode: (mode: 'tree' | 'changes') => void;
   onTreeMore: () => void;
   onFile: (path: string, size: number) => void;

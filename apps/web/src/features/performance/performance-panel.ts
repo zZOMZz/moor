@@ -1,6 +1,6 @@
 import { PerformanceMetrics } from './performance-metrics';
-import { observePerformanceSignals } from './performance-signals';
 import './performance-panel.css';
+import { observePerformanceSignals } from './performance-signals';
 
 type CpuSample = { rendererCpuPercent: number | null };
 type SessionUpdate = { sessionId: string; version: string; started: number };

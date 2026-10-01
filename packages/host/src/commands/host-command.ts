@@ -7,11 +7,10 @@ import {
   hostCommandSchemas,
   hostCommandSchema,
   type HostCommand,
-  type HostCommandInput,
   type HostCommandMethod,
 } from '@moor/protocol/host-command';
 export { HOST_COMMAND_METHODS, hostCommandSchemas, hostCommandSchema };
-export type { HostCommand, HostCommandInput, HostCommandMethod };
+export type { HostCommand, HostCommandMethod };
 
 // Type-only picks avoid importing the execution runtime, relay or transports.
 export type HostCommandWorkspace = Pick<

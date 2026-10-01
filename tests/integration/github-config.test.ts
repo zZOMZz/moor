@@ -1,20 +1,20 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-  chmodSync,
-  rmSync,
-  symlinkSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { GitHubConfig, type GitHubConfigVerifier } from '@moor/host/integrations/github/config';
 import { AppError } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
 
 function gate() {
   let release!: () => void;

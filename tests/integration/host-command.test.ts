@@ -1,26 +1,25 @@
-import { cases, scope, operationId } from '../fixtures/host-command-cases';
+import { buildSessionTurn } from '@moor/session/session-operations';
+import type { AgentOpenOptions } from '@moor/host/agents/driver';
+import {
+  HOST_COMMAND_METHODS,
+  HostCommandDispatcher,
+  hostCommandSchema,
+  hostCommandSchemas,
+  type HostCommandMethod,
+  type HostCommandWorkspace,
+} from '@moor/host/commands/host-command';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { assertHostCommandActive, hostCommandFeatures } from '@moor/protocol/host-command-contract';
-import test from 'node:test';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import test from 'node:test';
 import { z } from 'zod';
-import {
-  HOST_COMMAND_METHODS,
-  hostCommandSchemas,
-  hostCommandSchema,
-  HostCommandDispatcher,
-  type HostCommandInput,
-  type HostCommandMethod,
-  type HostCommandWorkspace,
-} from '@moor/host/commands/host-command';
-import { AppError } from '@moor/protocol/protocol';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { buildSessionTurn } from '@moor/client/session-client';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import type { AgentOpenOptions } from '@moor/host/agents/driver';
+import { cases, operationId, scope } from '../fixtures/host-command-cases';
 
 function fixture() {
   const calls: { method: string; args: unknown[] }[] = [];

@@ -1,23 +1,22 @@
-import test, { type TestContext } from 'node:test';
+import { Store } from '@moor/gateway/accounts';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:net';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
-  writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
-import { Store } from '@moor/gateway/accounts';
+import test, { type TestContext } from 'node:test';
 import {
   ACCOUNT_RECOVERY_FAILED,
   ACCOUNT_RECOVERY_MAX_BYTES,
@@ -25,7 +24,6 @@ import {
   acquireRelayAccountLock,
   recoverAccount,
 } from '../../apps/relay/src/account-recovery';
-import { AppError } from '@moor/protocol/protocol';
 
 const identity = {
   issuer: 'https://accounts.google.com' as const,

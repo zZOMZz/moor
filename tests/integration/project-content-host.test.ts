@@ -1,19 +1,11 @@
-import test from 'node:test';
-import strict from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { RuntimeStore } from '@moor/host/persistence/store';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
-import type { Mutation } from '@moor/protocol/protocol';
 import { readProjectFileBytes } from '@moor/host/projects/files';
 import {
   captureProjectSnapshot,
   enumerateProjectFiles,
   type ProjectSnapshot,
 } from '@moor/host/projects/snapshot';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import {
   projectDiffFileResultSchema,
   projectDiffReferenceSchema,
@@ -22,6 +14,14 @@ import {
   projectTurnDiffResultSchema,
   type ProjectDiffReference,
 } from '@moor/protocol/project-content-protocol';
+import type { Mutation } from '@moor/protocol/protocol';
+import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import strict from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 
 const plain = {

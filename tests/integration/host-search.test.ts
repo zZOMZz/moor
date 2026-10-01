@@ -1,15 +1,15 @@
-import test from 'node:test';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import type { ProjectSnapshot } from '@moor/host/projects/snapshot';
+import { searchHostSessions } from '@moor/host/sessions/search';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import type { SessionSearchRequest } from '@moor/protocol/search-protocol';
+import { mirror, putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { searchHostSessions } from '@moor/host/sessions/search';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { mirror, putMeta } from '@moor/session/model';
-import type { SessionSearchRequest } from '@moor/protocol/search-protocol';
-import type { ProjectSnapshot } from '@moor/host/projects/snapshot';
+import test from 'node:test';
 
 function fixture(t: { after(fn: () => void): void }) {
   const dir = mkdtempSync(join(tmpdir(), 'moor-host-search-'));

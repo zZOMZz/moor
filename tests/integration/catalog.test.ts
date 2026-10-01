@@ -1,12 +1,12 @@
-import test from 'node:test';
+import { Store, hash } from '@moor/gateway/accounts';
+import { projectSourceSchema } from '@moor/protocol/catalog';
+import type { RuntimeWorkspace } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Store, hash } from '@moor/gateway/accounts';
-import { projectSourceSchema } from '@moor/protocol/catalog';
-import type { RuntimeWorkspace } from '@moor/protocol/protocol';
+import test from 'node:test';
 
 const runtime = (machineId: string): RuntimeWorkspace => ({
   id: 'lw_same',

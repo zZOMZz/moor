@@ -1,117 +1,113 @@
-import { UiPortsProvider, type UiPorts } from '../platform/ui-ports';
-import type { ComponentProps } from 'react';
-import { changeRunSelection } from '@moor/protocol/run-config';
-import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
-import { ComposerInput } from '../features/sessions/composer-input';
-import { sessionPerformanceCommitted } from '../features/performance/performance-signals';
 import { Popover } from '@base-ui/react/popover';
-import { useContentDockLayout } from '../features/files/workspace-content-layout';
-import { UsagePanel, latestContextUsage } from '../components/usage-panel';
-import { AppearanceSettings } from '../components/appearance';
-import {
-  NavigationSessions,
-  NavigationProjectGroup,
-  useNavigationSessions,
-  navigationProjects,
-  projectKey,
-  workspaceKey,
-  logicalProjectGroups,
-  navigationSessionQuery,
-  type NavigationProject,
-} from '../features/sessions/workspace-navigation';
-import {
-  useWorkspaceLayout,
-  SidebarSizer,
-  WorkspaceToolMenu,
-} from '../features/workspace/workspace-layout';
-import {
-  SessionTimeline,
-  SessionInformation,
-  hasTurnFileChanges,
-  turnFileChanges,
-  type TimelineTurn,
-} from '../features/sessions/session-timeline';
+import { Workspace, type WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import { sessionPendingOperations } from '@moor/client/operations/workspace/compose';
+import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import { SESSION_FORK_FEATURE } from '@moor/protocol/fork-protocol';
 import { PROJECT_DIFF_FEATURE } from '@moor/protocol/project-content-protocol';
+import { changeRunSelection } from '@moor/protocol/run-config';
+import {
+  ArrowUp,
+  ChevronDown,
+  CircleUserRound,
+  Compass,
+  Folder,
+  FolderOpen,
+  GitBranch,
+  GitCompareArrows,
+  GitFork,
+  ListChecks,
+  Monitor,
+  PanelLeft,
+  Paperclip,
+  Plus,
+  RefreshCw,
+  ScanLine,
+  Search,
+  Settings,
+  Square,
+  SquarePen,
+  X,
+} from 'lucide-react';
+import type { ComponentProps } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
+import { AppearanceSettings } from '../components/appearance';
+import { UsagePanel, latestContextUsage } from '../components/usage-panel';
+import { WorkspaceAttentionUI } from '../features/attention/workspace-attention-ui';
+import { WorkspaceAccountPanel } from '../features/auth/workspace-account';
+import { useContentDockLayout } from '../features/files/workspace-content-layout';
 import {
   WorkspaceContentUI,
   type WorkspaceContentHandle,
 } from '../features/files/workspace-content-ui';
-import { WorkspaceAttentionUI } from '../features/attention/workspace-attention-ui';
-import { WorkspaceSessionTools } from '../features/workspace/workspace-session-tools';
 import { WorkspaceGithubUI } from '../features/github/workspace-github-ui';
+import { sessionPerformanceCommitted } from '../features/performance/performance-signals';
+import { ComposerInput } from '../features/sessions/composer-input';
 import {
-  Fragment,
-  memo,
-  useMemo,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+  SessionInformation,
+  SessionTimeline,
+  hasTurnFileChanges,
+  turnFileChanges,
+  type TimelineTurn,
+} from '../features/sessions/session-timeline';
 import {
-  Folder,
-  FolderOpen,
-  GitCompareArrows,
-  Compass,
-  ListChecks,
-  ScanLine,
-  Settings,
-  Plus,
-  RefreshCw,
-  Monitor,
-  PanelLeft,
-  GitFork,
-  Paperclip,
-  ArrowUp,
-  Square,
-  SquarePen,
-  Search,
-  ChevronDown,
-  GitBranch,
-  CircleUserRound,
-  X,
-} from 'lucide-react';
+  NavigationProjectGroup,
+  NavigationSessions,
+  logicalProjectGroups,
+  navigationProjects,
+  navigationSessionQuery,
+  projectKey,
+  useNavigationSessions,
+  workspaceKey,
+  type NavigationProject,
+} from '../features/sessions/workspace-navigation';
 import {
-  WorkspaceController,
-  type WorkspaceClientState,
-} from '../features/workspace/workspace-controller';
-import { WorkspaceAccountPanel } from '../features/auth/workspace-account';
+  SidebarSizer,
+  WorkspaceToolMenu,
+  useWorkspaceLayout,
+} from '../features/workspace/workspace-layout';
+import { WorkspaceSessionTools } from '../features/workspace/workspace-session-tools';
 import type { Account, AccountApi } from '../platform/account';
-import { sessionPendingOperations } from '../features/workspace/workspace-store';
+import { UiPortsProvider, type UiPorts } from '../platform/ui-ports';
 
-import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
-import {
-  workspaceContextSchema,
-  addProjectResultSchema,
-} from '@moor/protocol/workspace-client-protocol';
-import type { z } from 'zod';
-import { RunControls } from '../components/ui';
-import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
-import { markdown } from '../components/content';
-import {
-  sessionPermissionReviews,
-  type SessionPermissionReview,
-} from '@moor/client/session-client';
-import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import {
   attachmentInputReason,
   attachmentPreviewUrl,
   attachmentText,
   formatAttachmentSize,
-} from '../features/attachments/attachments';
-import { attachmentReferenceSchema } from '@moor/protocol/content-protocol';
-import { WorkspaceAttachmentView } from '../features/attachments/workspace-attachment-view';
+} from '@moor/client/features/attachments/attachments';
+import { workspaceInteractionSnapshot } from '@moor/client/features/interactions/workspace-interactions';
+import {
+  sessionPermissionReviews,
+  type SessionPermissionReview,
+} from '@moor/session/session-operations';
 import { ATTACHMENTS_FEATURE } from '@moor/protocol/attachment-protocol';
-import { WorkspaceInteractionUI } from '../features/interactions/workspace-interaction-ui';
-import { workspaceInteractionSnapshot } from '../features/interactions/workspace-interactions';
-import { STEER_FEATURE, QUESTION_LIMITS } from '@moor/protocol/interaction-protocol';
-import { WorkspaceSkillsUI } from '../features/skills/workspace-skills-ui';
-import { WorkspaceGitUI } from '../features/git/workspace-git-ui';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import { attachmentReferenceSchema } from '@moor/protocol/content-protocol';
+import { QUESTION_LIMITS, STEER_FEATURE } from '@moor/protocol/interaction-protocol';
+import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
+import {
+  addProjectResultSchema,
+  workspaceContextSchema,
+} from '@moor/protocol/workspace-client-protocol';
+import type { z } from 'zod';
+import { markdown } from '../components/content';
+import { RunControls } from '../components/ui';
+import { WorkspaceAttachmentView } from '../features/attachments/workspace-attachment-view';
 import { WorkspaceForkUI, type WorkspaceForkHandle } from '../features/fork/workspace-fork-ui';
+import { WorkspaceGitUI } from '../features/git/workspace-git-ui';
+import { WorkspaceInteractionUI } from '../features/interactions/workspace-interaction-ui';
+import { WorkspaceSkillsUI } from '../features/skills/workspace-skills-ui';
 
 type Run = (action: () => Promise<unknown>) => boolean;
 const message = (error: unknown) =>
@@ -168,7 +164,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
   history: NonNullable<WorkspaceClientState['session']>['history'];
   scope: NonNullable<WorkspaceClientState['scope']>;
   sessionId: string;
-  controller: WorkspaceController;
+  controller: Workspace;
   busy: boolean;
   live: boolean;
   confirmed: boolean;
@@ -307,7 +303,7 @@ function WorkspaceConversation({
   projects,
   onProjectChange,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   run: Run;
@@ -1311,7 +1307,7 @@ function WorkspaceView({
   localAvailable,
   accountExtras,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   accountApi: AccountApi;
   onAccountVerified?: (account: Account | null) => void;
   openSettings?: () => Promise<unknown>;

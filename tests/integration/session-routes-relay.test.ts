@@ -1,15 +1,15 @@
-import test from 'node:test';
+import { Store } from '@moor/gateway/accounts';
+import { createApp } from '@moor/gateway/http';
+import type { Workspace } from '@moor/protocol/catalog';
+import { AppError, PROTOCOL } from '@moor/protocol/protocol';
+import { SESSION_CONTROL_FEATURE } from '@moor/protocol/session-control-protocol';
+import { LoroDoc, delta } from '@moor/session/model';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import { createHmac } from 'node:crypto';
+import { once } from 'node:events';
+import test from 'node:test';
 import { WebSocket } from 'ws';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
-import { AppError, PROTOCOL } from '@moor/protocol/protocol';
-import type { Workspace } from '@moor/protocol/catalog';
-import { LoroDoc, delta } from '@moor/session/model';
-import { createApp } from '@moor/gateway/http';
-import { Store } from '@moor/gateway/accounts';
-import { SESSION_CONTROL_FEATURE } from '@moor/protocol/session-control-protocol';
 
 function signal() {
   let resolve!: () => void;

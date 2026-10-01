@@ -1,17 +1,17 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { createHash } from 'node:crypto';
-import {
-  DesktopNotifications,
-  validateEvent,
-  notificationUrl,
-} from '../../apps/desktop/src/main/notifications.cjs';
 import {
   hostNotificationEventSchema,
   notificationIdentity,
   type HostNotificationEvent,
 } from '@moor/protocol/notification-protocol';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import test from 'node:test';
+import {
+  DesktopNotifications,
+  notificationUrl,
+  validateEvent,
+} from '../../apps/desktop/src/main/notifications.cjs';
 const scope = {
   userId: 'user',
   machineId: 'machine',

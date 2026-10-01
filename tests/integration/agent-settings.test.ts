@@ -1,4 +1,8 @@
-import test, { type TestContext } from 'node:test';
+import type { AgentDriver, AgentSession } from '@moor/host/agents/driver';
+import { inspectAgentProgram } from '@moor/host/agents/program';
+import { AgentSettings } from '@moor/host/agents/settings';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import {
   existsSync,
@@ -10,13 +14,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentSettings } from '@moor/host/agents/settings';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import type { AgentDriver, AgentSession } from '@moor/host/agents/driver';
-import { AppError } from '@moor/protocol/protocol';
-import { inspectAgentProgram } from '@moor/host/agents/program';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 
 const caps = { models: [{ id: 'synthetic', name: 'Synthetic', efforts: [] }], modes: [] };
 function signal<T = void>() {

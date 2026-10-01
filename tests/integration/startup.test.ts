@@ -1,13 +1,13 @@
-import test from 'node:test';
+import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { JSDOM } from 'jsdom';
+import { clearLocalShellCache, loadPage } from '../../apps/desktop/src/main/page-loader.cjs';
 import { firstStartupSource } from '../../apps/web/src/app/bootstrap';
 import type { Identity } from '../../apps/web/src/platform/api';
 import { deadline } from '../../apps/web/src/platform/deadline';
-import { loadPage, clearLocalShellCache } from '../../apps/desktop/src/main/page-loader.cjs';
 
 test('local startup does not wait for identity, and confirmed identity does not wait for blocked storage', async () => {
   let confirm!: (identity: Identity | null) => void;

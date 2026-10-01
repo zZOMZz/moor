@@ -1,8 +1,8 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { safeGithubLink, type GithubController } from '@moor/client/features/github/github';
 import type { GithubPage, GithubRepository } from '@moor/protocol/github-protocol';
 import { X } from 'lucide-react';
 import { useState } from 'react';
-import { safeGithubLink, type GithubController } from './github';
 
 type PageInfo = Pick<GithubPage<unknown>, 'page' | 'hasNext' | 'partial'>;
 function Pages({

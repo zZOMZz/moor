@@ -1,16 +1,16 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { Flock, LoroDoc, delta, decode, mirror, putMeta, vv } from '@moor/session/model';
-import { appendSessionText } from '@moor/session/session-output';
+import { buildRespondPermission } from '@moor/client/features/sessions/session-intent';
 import {
   buildSessionPermission,
-  ClientSessionReplica,
   readClientSession,
   sessionPermissionReviews,
-} from '@moor/client/session-client';
-import { validateMutation } from '@moor/host/commands/validate-mutation';
-import { buildRespondPermission } from '@moor/client/session-intent';
+} from '@moor/session/session-operations';
+import { ClientSessionReplica } from '@moor/session/client-session-replica';
 import { prepareSessionIntent } from '@moor/host/commands/prepare-session-intent';
+import { validateMutation } from '@moor/host/commands/validate-mutation';
+import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
+import { appendSessionText } from '@moor/session/session-output';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const scope = {
   userId: 'owner',

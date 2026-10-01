@@ -1,5 +1,10 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import {
+  forkOperationSchema,
+  forkRequestVersion,
+  sessionForkSchema,
+  validateForkActionReceipt,
+  validateForkOperationResult,
+} from '@moor/protocol/fork-protocol';
 import {
   gitActionSchema,
   gitOperationSchema,
@@ -7,13 +12,8 @@ import {
   validateGitActionReceipt,
   validateGitOperationResult,
 } from '@moor/protocol/git-protocol';
-import {
-  sessionForkSchema,
-  forkOperationSchema,
-  forkRequestVersion,
-  validateForkActionReceipt,
-  validateForkOperationResult,
-} from '@moor/protocol/fork-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const scope = { workspaceId: 'workspace', localProjectId: 'project', sessionId: 'session' };
 const oid = 'a'.repeat(40),

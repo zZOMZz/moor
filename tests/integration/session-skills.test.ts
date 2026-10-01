@@ -1,20 +1,20 @@
-import test, { type TestContext } from 'node:test';
+import { SkillsConfig } from '@moor/host/integrations/skills-config';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import {
+  SKILLS_FEATURE,
+  type SkillDetail,
+  type SkillsList,
+  type SkillsRead,
+} from '@moor/protocol/skills-protocol';
+import { putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
-import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
-import {
-  SKILLS_FEATURE,
-  type SkillsList,
-  type SkillsRead,
-  type SkillDetail,
-} from '@moor/protocol/skills-protocol';
-import { putMeta } from '@moor/session/model';
+import test, { type TestContext } from 'node:test';
 
 const body = (value: string) => `---\nname: synthetic\ndescription: 合成 Skill\n---\n${value}\n`;
 function writeSkill(root: string, path: string, value: string) {

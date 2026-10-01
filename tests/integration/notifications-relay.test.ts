@@ -1,11 +1,5 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { createECDH, createHash } from 'node:crypto';
-import { WebSocket } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
-import { PROTOCOL, type RuntimeWorkspace } from '@moor/protocol/protocol';
 import type { Workspace } from '@moor/protocol/catalog';
 import {
   NOTIFICATIONS_FEATURE,
@@ -13,6 +7,12 @@ import {
   type HostNotificationEvent,
   type NotificationEnvelope,
 } from '@moor/protocol/notification-protocol';
+import { PROTOCOL, type RuntimeWorkspace } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import { createECDH, createHash } from 'node:crypto';
+import { once } from 'node:events';
+import test, { type TestContext } from 'node:test';
+import { WebSocket } from 'ws';
 import type { WebPushResult, WebPushTransport } from '../../apps/relay/src/web-push';
 
 const owner = 'synthetic-relay-account',

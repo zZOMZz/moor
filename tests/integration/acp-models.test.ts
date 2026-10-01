@@ -1,13 +1,13 @@
-import test from 'node:test';
+import { createAcpDriver } from '@moor/host/agents/acp/driver';
+import type { AgentSession } from '@moor/host/agents/driver';
+import { agentModelFailures } from '@moor/protocol/agent-errors';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createAcpDriver } from '@moor/host/agents/acp/driver';
-import type { AgentSession } from '@moor/host/agents/driver';
-import { agentModelFailures } from '@moor/protocol/agent-errors';
+import test from 'node:test';
 
 async function fixture(
   t: { after(fn: () => unknown): void },

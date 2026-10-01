@@ -1,35 +1,35 @@
-import test from 'node:test';
-import { guardedCommandHost } from '../fixtures/guarded-command-host';
+import { buildSessionTurn, readClientSession } from '@moor/session/session-operations';
+import type { AgentConfig, AgentDriver } from '@moor/host/agents/driver';
+import type { AgentForkCapabilities, AgentForkInput } from '@moor/host/agents/fork';
 import type { HostCommand } from '@moor/host/commands/host-command';
-import { readClientSession, buildSessionTurn } from '@moor/client/session-client';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import {
+  forkReceiptSchema,
+  type ForkCutoff,
+  type ForkDirectory,
+  type SessionFork,
+} from '@moor/protocol/fork-protocol';
+import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
+import { AppError, type Mutation } from '@moor/protocol/protocol';
+import { delta, Flock, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  realpathSync,
-  rmSync,
   existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
   renameSync,
+  rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { Flock, metas, mirror, putMeta, vv, delta } from '@moor/session/model';
-import { AppError, type Mutation } from '@moor/protocol/protocol';
-import type { AgentConfig, AgentDriver } from '@moor/host/agents/driver';
-import type { AgentForkInput, AgentForkCapabilities } from '@moor/host/agents/fork';
-import {
-  forkReceiptSchema,
-  type SessionFork,
-  type ForkDirectory,
-  type ForkCutoff,
-} from '@moor/protocol/fork-protocol';
-import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
+import { guardedCommandHost } from '../fixtures/guarded-command-host';
 
 function signal() {
   let resolve!: () => void;

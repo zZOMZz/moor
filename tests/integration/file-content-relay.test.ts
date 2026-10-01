@@ -1,11 +1,11 @@
-import test from 'node:test';
+import type { Workspace } from '@moor/protocol/catalog';
+import { CONTENT_VERSION, type ProjectFileRead } from '@moor/protocol/content-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import test from 'node:test';
 import { WebSocket } from 'ws';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
-import type { Workspace } from '@moor/protocol/catalog';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import { CONTENT_VERSION, type ProjectFileRead } from '@moor/protocol/content-protocol';
 
 async function fixture() {
   const relay = await syntheticRelay();

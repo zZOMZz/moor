@@ -1,15 +1,15 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import { informationHtml } from '../../apps/web/src/features/interactions/information';
 import {
+  answerFromDraft,
   InteractionController,
   interactionKey,
   questionDefaults,
-  answerFromDraft,
-  informationHtml,
   sessionInformation,
   type InteractionTarget,
-} from '../../apps/web/src/features/interactions/interactions';
+} from '@moor/client/features/interactions/interactions';
 import { questionRequestSchema, type QuestionRequest } from '@moor/protocol/interaction-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import { ApiError } from '../../apps/web/src/platform/api';
 const target: InteractionTarget = {
   owner: 'owner',
@@ -93,14 +93,12 @@ function fixture() {
             'sessionId',
             'expectedTurnId',
             'operationId',
-            ...(path.endsWith('question-answers') ? ['requestId'] : []),
+            ...(path.endsWith('answer-question') ? ['requestId'] : []),
           ].map((key) => [key, key === 'operationId' && mode === 'wrong' ? 'other' : body[key]]),
         ),
         accepted: true,
         delivered: true,
-        ...(path.endsWith('question-answers')
-          ? { interactionVersion: 1 }
-          : { activityBound: true }),
+        ...(path.endsWith('answer-question') ? { interactionVersion: 1 } : { activityBound: true }),
       };
     },
   };
@@ -134,7 +132,7 @@ test('question outbox restores without sending, validates full receipt and expli
   assert.equal(f.calls.length, 2);
   f.setMode('success');
   await restored.retry({ ...target, catalogWorkspaceId: 'moved', replicaId: 'new-replica' });
-  assert.equal(f.calls[2]!.path, '/api/workspaces/moved/replicas/new-replica/question-answers');
+  assert.equal(f.calls[2]!.path, 'answer-question');
   assert.deepEqual(f.calls[2]!.body, original.request);
   assert.equal(restored.pending, undefined);
   assert.deepEqual(restored.questionDraft(request), questionDefaults(request));

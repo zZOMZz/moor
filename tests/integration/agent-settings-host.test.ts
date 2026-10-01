@@ -1,8 +1,9 @@
-import test, { type TestContext } from 'node:test';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import type { Workspace } from '@moor/protocol/catalog';
 import assert from 'node:assert/strict';
 import { fork, spawn, type ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -15,8 +16,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import type { Workspace } from '@moor/protocol/catalog';
+import test, { type TestContext } from 'node:test';
 
 const entry = resolve('apps/host/src/main.ts');
 function fixture(t: TestContext) {

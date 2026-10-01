@@ -1,11 +1,11 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
-import { createRequire as createLocalRequire } from 'node:module';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { registerDesktopProject } from '@moor/host/projects/registration';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { createRequire as createLocalRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
 const { DesktopProjectRegistration } = createLocalRequire(import.meta.url)(
   resolve('apps/desktop/src/main/project-registration.cjs'),
 );

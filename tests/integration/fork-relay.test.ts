@@ -1,10 +1,10 @@
-import test from 'node:test';
+import type { Workspace } from '@moor/protocol/catalog';
+import { SESSION_FORK_FEATURE, type SessionFork } from '@moor/protocol/fork-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import { SESSION_FORK_FEATURE, type SessionFork } from '@moor/protocol/fork-protocol';
-import type { Workspace } from '@moor/protocol/catalog';
+import test from 'node:test';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 const version = 'sha256:' + 'a'.repeat(64),

@@ -32,49 +32,141 @@
       "types": "./src/adapters/shared/workspace-transport.ts",
       "import": "./dist/adapters/shared/workspace-transport.js"
     },
-    "./collaboration-client": {
-      "types": "./src/collaboration-client.ts",
-      "import": "./dist/collaboration-client.js"
+    "./features/attachments/attachments": {
+      "types": "./src/features/attachments/attachments.ts",
+      "import": "./dist/features/attachments/attachments.js"
     },
     "./features/attachments/export": {
       "types": "./src/features/attachments/export.ts",
       "import": "./dist/features/attachments/export.js"
     },
+    "./features/attention/attention": {
+      "types": "./src/features/attention/attention.ts",
+      "import": "./dist/features/attention/attention.js"
+    },
     "./features/auth/google-auth": {
       "types": "./src/features/auth/google-auth.ts",
       "import": "./dist/features/auth/google-auth.js"
+    },
+    "./features/collaboration/client": {
+      "types": "./src/features/collaboration/client.ts",
+      "import": "./dist/features/collaboration/client.js"
+    },
+    "./features/files/file-content": {
+      "types": "./src/features/files/file-content.ts",
+      "import": "./dist/features/files/file-content.js"
+    },
+    "./features/files/project-content": {
+      "types": "./src/features/files/project-content.ts",
+      "import": "./dist/features/files/project-content.js"
+    },
+    "./features/files/project-content-controller": {
+      "types": "./src/features/files/project-content-controller.ts",
+      "import": "./dist/features/files/project-content-controller.js"
+    },
+    "./features/files/view": {
+      "types": "./src/features/files/view.ts",
+      "import": "./dist/features/files/view.js"
+    },
+    "./features/fork/session-fork": {
+      "types": "./src/features/fork/session-fork.ts",
+      "import": "./dist/features/fork/session-fork.js"
+    },
+    "./features/git/git-workspace": {
+      "types": "./src/features/git/git-workspace.ts",
+      "import": "./dist/features/git/git-workspace.js"
+    },
+    "./features/github/github": {
+      "types": "./src/features/github/github.ts",
+      "import": "./dist/features/github/github.js"
+    },
+    "./features/github/github-session": {
+      "types": "./src/features/github/github-session.ts",
+      "import": "./dist/features/github/github-session.js"
+    },
+    "./features/github/github-write": {
+      "types": "./src/features/github/github-write.ts",
+      "import": "./dist/features/github/github-write.js"
+    },
+    "./features/interactions/interactions": {
+      "types": "./src/features/interactions/interactions.ts",
+      "import": "./dist/features/interactions/interactions.js"
+    },
+    "./features/interactions/workspace-interactions": {
+      "types": "./src/features/interactions/workspace-interactions.ts",
+      "import": "./dist/features/interactions/workspace-interactions.js"
+    },
+    "./features/mcp/workspace-mcp": {
+      "types": "./src/features/mcp/workspace-mcp.ts",
+      "import": "./dist/features/mcp/workspace-mcp.js"
     },
     "./features/notifications/local-state": {
       "types": "./src/features/notifications/local-state.ts",
       "import": "./dist/features/notifications/local-state.js"
     },
+    "./features/notifications/notifications": {
+      "types": "./src/features/notifications/notifications.ts",
+      "import": "./dist/features/notifications/notifications.js"
+    },
     "./features/notifications/worker": {
       "types": "./src/features/notifications/worker.ts",
       "import": "./dist/features/notifications/worker.js"
+    },
+    "./features/preview/project-preview": {
+      "types": "./src/features/preview/project-preview.ts",
+      "import": "./dist/features/preview/project-preview.js"
+    },
+    "./features/preview/workspace-preview": {
+      "types": "./src/features/preview/workspace-preview.ts",
+      "import": "./dist/features/preview/workspace-preview.js"
+    },
+    "./features/sessions/session-actions": {
+      "types": "./src/features/sessions/session-actions.ts",
+      "import": "./dist/features/sessions/session-actions.js"
+    },
+    "./features/sessions/session-intent": {
+      "types": "./src/features/sessions/session-intent.ts",
+      "import": "./dist/features/sessions/session-intent.js"
+    },
+    "./features/sessions/session-search": {
+      "types": "./src/features/sessions/session-search.ts",
+      "import": "./dist/features/sessions/session-search.js"
+    },
+    "./features/skills/skills": {
+      "types": "./src/features/skills/skills.ts",
+      "import": "./dist/features/skills/skills.js"
     },
     "./features/workspace/catalog-safety": {
       "types": "./src/features/workspace/catalog-safety.ts",
       "import": "./dist/features/workspace/catalog-safety.js"
     },
+    "./features/workspace/compose": {
+      "types": "./src/features/workspace/compose.ts",
+      "import": "./dist/features/workspace/compose.js"
+    },
+    "./features/workspace/workspace-records": {
+      "types": "./src/features/workspace/workspace-records.ts",
+      "import": "./dist/features/workspace/workspace-records.js"
+    },
+    "./features/workspace/workspace-session-pages": {
+      "types": "./src/features/workspace/workspace-session-pages.ts",
+      "import": "./dist/features/workspace/workspace-session-pages.js"
+    },
     "./operations/request-rejection": {
       "types": "./src/operations/request-rejection.ts",
       "import": "./dist/operations/request-rejection.js"
+    },
+    "./operations/session-operation": {
+      "types": "./src/operations/session-operation.ts",
+      "import": "./dist/operations/session-operation.js"
     },
     "./operations/storage": {
       "types": "./src/operations/storage.ts",
       "import": "./dist/operations/storage.js"
     },
-    "./preview-annotation": {
-      "types": "./src/preview-annotation.ts",
-      "import": "./dist/preview-annotation.js"
-    },
-    "./session-client": {
-      "types": "./src/session-client.ts",
-      "import": "./dist/session-client.js"
-    },
-    "./session-intent": {
-      "types": "./src/session-intent.ts",
-      "import": "./dist/session-intent.js"
+    "./operations/workspace/compose": {
+      "types": "./src/operations/workspace/compose.ts",
+      "import": "./dist/operations/workspace/compose.js"
     }
   },
   "scripts": {

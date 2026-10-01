@@ -1,27 +1,26 @@
-import test, { type TestContext } from 'node:test';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import {
+  localCliChallenge,
+  readLocalCliConnection,
+  verifyLocalCliProof,
+} from '@moor/local-state/private-connection';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:http';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { DatabaseSync } from 'node:sqlite';
 import { join, resolve } from 'node:path';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import {
-  readLocalCliConnection,
-  localCliChallenge,
-  verifyLocalCliProof,
-} from '@moor/local-state/private-connection';
+import { DatabaseSync } from 'node:sqlite';
+import test, { type TestContext } from 'node:test';
 
 function fixture(t: TestContext, insideProject = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-local-cli-host-'))),

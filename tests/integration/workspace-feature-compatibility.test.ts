@@ -1,13 +1,13 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import type { GitTarget } from '@moor/client/features/git/git-workspace';
+import { workspaceFeatureTarget } from '@moor/client/features/mcp/workspace-mcp';
 import {
-  WorkspaceStore,
   type WorkspaceLedger,
   type WorkspaceScope,
-} from '../../apps/web/src/features/workspace/workspace-store';
-import { workspaceFeatureTarget } from '../../apps/web/src/features/mcp/workspace-mcp';
+  createWorkspacePersistence,
+} from '@moor/client/operations/workspace/compose';
 import type { TaskPlan } from '@moor/protocol/task-protocol';
-import type { GitTarget } from '../../apps/web/src/features/git/git-workspace';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const scope: WorkspaceScope = {
   source: 'local',
@@ -113,7 +113,7 @@ function ledger(): WorkspaceLedger {
   };
 }
 function read(record: WorkspaceLedger) {
-  const store = new WorkspaceStore({
+  const store = createWorkspacePersistence({
     read: async () => structuredClone(record),
     async compareAndSet() {
       assert.fail('Reading a valid historical ledger must not rewrite it');

@@ -1,6 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import { paginationFixture, signal } from '../fixtures/workspace-pagination';
 
 test('React navigation consumes bounded summaries, cursors, server search and archive pages without unrelated reloads', async (t) => {

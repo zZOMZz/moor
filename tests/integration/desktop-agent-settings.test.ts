@@ -1,14 +1,14 @@
-import test from 'node:test';
+import { inspectAgentProgram } from '@moor/host/agents/program';
+import { AgentSettings } from '@moor/host/agents/settings';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { JSDOM } from 'jsdom';
 import { DesktopAgentSettings } from '../../apps/desktop/src/main/agent-settings.cjs';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { AgentSettings } from '@moor/host/agents/settings';
-import { inspectAgentProgram } from '@moor/host/agents/program';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 
 function transport() {

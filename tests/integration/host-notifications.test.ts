@@ -1,21 +1,21 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import type { AgentCallbacks } from '@moor/host/agents/driver';
 import { HostNotifications, notificationEventId } from '@moor/host/integrations/host-notifications';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { Flock, LoroDoc, delta, mirror, putMeta, vv } from '@moor/session/model';
-import type { AgentCallbacks } from '@moor/host/agents/driver';
-import type { Mutation } from '@moor/protocol/protocol';
 import {
   NOTIFICATION_LIMITS,
   hostNotificationEventSchema,
   type NotificationScope,
 } from '@moor/protocol/notification-protocol';
+import type { Mutation } from '@moor/protocol/protocol';
+import { Flock, LoroDoc, delta, mirror, putMeta, vv } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 
 const scope: NotificationScope = {

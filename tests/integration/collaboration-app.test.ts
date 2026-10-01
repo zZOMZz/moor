@@ -1,12 +1,15 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
-import { CollaborationClient, type CollaborationStorage } from '@moor/client/collaboration-client';
-import { CollaborationStore } from '@moor/sync/store';
+import {
+  CollaborationClient,
+  type CollaborationStorage,
+} from '@moor/client/features/collaboration/client';
 import {
   collaborationReadResponseSchema,
   type CollaborationSyncRequest,
 } from '@moor/protocol/collaboration-protocol';
+import { CollaborationStore } from '@moor/sync/store';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import { syntheticCollaboration } from '../fixtures/collaboration-host';
 
 class Memory implements CollaborationStorage {

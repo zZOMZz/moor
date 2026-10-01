@@ -11,12 +11,18 @@ import { workspaceCatalogSnapshotSchema } from '@moor/protocol/workspace-catalog
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { sessionReadResponseSchema, sessionListSchema } from '@moor/protocol/session-responses';
 import { mutationSchema } from '@moor/protocol/protocol';
-import { readClientSession } from '@moor/client/session-client';
+import { readClientSession } from '@moor/session/session-operations';
 import { runSelectionSchema } from '@moor/protocol/run-config';
-import { WorkspaceStore, type WorkspaceScope } from '../features/workspace/workspace-store';
+import {
+  WorkspacePersistence,
+  type WorkspaceScope,
+} from '@moor/client/operations/workspace/compose';
 import { readLegacyWebRecord } from './retired-records';
 import { browserOwnerKey as ownerKey } from './browser-storage';
-import { pendingSessionActionSchema, sessionActionKey } from '../features/sessions/session-actions';
+import {
+  pendingSessionActionSchema,
+  sessionActionKey,
+} from '@moor/client/features/sessions/session-actions';
 
 const catalogKey = (origin: string, owner: string) =>
   canonical(['moor-browser-catalog-v1', origin, owner]);
@@ -49,7 +55,8 @@ export class BrowserWorkspaceRuntime {
     readonly options: {
       origin: string;
       owner: string;
-      store: WorkspaceStore;
+      store: WorkspacePersistence;
+      storage: import('@moor/client/operations/storage').StorageBackend;
       fetch?: typeof fetch;
       legacyRead?: <T>(key: string) => Promise<T | undefined>;
       initialCache?: boolean;
@@ -71,7 +78,7 @@ export class BrowserWorkspaceRuntime {
     return this.#catalog;
   }
   async #write(key: string, value: unknown) {
-    const backend = this.options.store.backend;
+    const backend = this.options.storage;
     const current = () => {
       if (this.#closed) throw Error('浏览器工作区已关闭。');
     };
@@ -133,7 +140,7 @@ export class BrowserWorkspaceRuntime {
     return cached ? { ok: true, value: cached } : result;
   }
   async #cachedCatalog() {
-    let cached = await this.options.store.backend.read(
+    let cached = await this.options.storage.read(
       catalogKey(this.options.origin, this.options.owner),
     );
     if (cached === null) cached = await this.#legacyCatalog();
@@ -248,7 +255,7 @@ export class BrowserWorkspaceRuntime {
     const signature =
       'sha256:' +
       Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-    if ((await this.options.store.backend.read(markerKey)) === signature) return;
+    if ((await this.options.storage.read(markerKey)) === signature) return;
     current();
     const live = (await this.client.request({
       action: 'execute',
@@ -318,7 +325,7 @@ export class BrowserWorkspaceRuntime {
     await this.#write(selectionKey(this.options.origin, this.options.owner), { scope, sessionId });
   }
   async selection() {
-    const current = await this.options.store.backend.read(
+    const current = await this.options.storage.read(
       selectionKey(this.options.origin, this.options.owner),
     );
     if (current !== null) return current;

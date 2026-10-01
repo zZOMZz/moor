@@ -1,11 +1,11 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import type { NotificationLocalState } from '@moor/client/features/notifications/local-state';
 import {
   NotificationWorker,
   genericNotification,
   type NotificationWorkerDependencies,
 } from '@moor/client/features/notifications/worker';
-import type { NotificationLocalState } from '@moor/client/features/notifications/local-state';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 const preferences = { completed: true, failed: true, approvals: true };
 const event = {
   notificationVersion: 1,

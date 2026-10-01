@@ -1,17 +1,20 @@
-import type { UiPorts } from '../platform/ui-ports';
-import { useEffect, useState, type ReactNode } from 'react';
+import {
+  CollaborationClient,
+  type CollaborationDocument,
+} from '@moor/client/features/collaboration/client';
+import { readClientSession } from '@moor/session/session-operations';
 import { actorKey, actorSchema, type AttentionActor } from '@moor/protocol/attention';
 import {
   collaborationAllows,
   collaborationReadResponseSchema,
   type TaskPhase,
 } from '@moor/protocol/collaboration-protocol';
-import { CollaborationClient, type CollaborationDocument } from '@moor/client/collaboration-client';
-import { readClientSession } from '@moor/client/session-client';
-import { IndexedStorage } from '../platform/indexed-storage';
-import { api, ApiError, type Identity } from '../platform/api';
+import { useEffect, useState, type ReactNode } from 'react';
 import { z } from 'zod';
 import { paint } from '../components/ui';
+import { api, ApiError, type Identity } from '../platform/api';
+import { IndexedStorage } from '../platform/indexed-storage';
+import type { UiPorts } from '../platform/ui-ports';
 
 type Read = z.infer<typeof collaborationReadResponseSchema>;
 const phases: Record<TaskPhase, string> = {

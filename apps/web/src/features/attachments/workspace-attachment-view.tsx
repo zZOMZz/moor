@@ -1,15 +1,15 @@
-import { useAttachmentExport } from '../../platform/ui-ports';
-import { useEffect, useRef, useState } from 'react';
-import type { AttachmentReference } from '@moor/protocol/content-protocol';
-import type { WorkspaceController } from '../workspace/workspace-controller';
-import type { WorkspaceScope } from '../workspace/workspace-store';
 import {
   attachmentPreviewUrl,
   attachmentText,
   formatAttachmentSize,
   verifyAttachmentBytes,
-} from './attachments';
+} from '@moor/client/features/attachments/attachments';
+import type { Workspace } from '@moor/client/features/workspace/compose';
+import type { WorkspaceScope } from '@moor/client/operations/workspace/compose';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import { useEffect, useRef, useState } from 'react';
+import { useAttachmentExport } from '../../platform/ui-ports';
 
 export function WorkspaceAttachmentView({
   controller,
@@ -19,16 +19,14 @@ export function WorkspaceAttachmentView({
   busy,
   run,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   scope: WorkspaceScope;
   sessionId: string;
   reference: AttachmentReference;
   busy: boolean;
   run(task: () => Promise<unknown>): void;
 }) {
-  const [value, setValue] = useState<Awaited<
-    ReturnType<WorkspaceController['readAttachment']>
-  > | null>(null);
+  const [value, setValue] = useState<Awaited<ReturnType<Workspace['readAttachment']>> | null>(null);
   const [notice, setNotice] = useState('');
   const epoch = useRef(0),
     saving = useRef(false);

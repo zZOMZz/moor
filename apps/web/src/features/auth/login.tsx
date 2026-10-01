@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowRight, LoaderCircle, Pause, Play } from 'lucide-react';
-import { startWater, type WaterSurface } from './login-water';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { GoogleStart } from './google-login';
+import { startWater, type WaterSurface } from './login-water';
 
 export interface LoginProps {
   setup: boolean;

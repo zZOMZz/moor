@@ -1,23 +1,22 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
 import type {
   AgentCallbacks,
   AgentRunBinding,
   AgentSession,
   AgentSteerResult,
 } from '@moor/host/agents/driver';
+import { RuntimeStore } from '@moor/host/persistence/store';
 import {
   runtimeFeatureReport,
   type SessionEvent,
   type SessionEventState,
 } from '@moor/host/sessions/events';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import type { QuestionAnswer, QuestionRequest } from '@moor/protocol/interaction-protocol';
+import { Flock, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import { sessionInformation } from '../../apps/web/src/features/interactions/interactions';
 
 const scope = { workspaceId: 'workspace', localProjectId: 'project', sessionId: 'session' };
 function signal<T = void>() {

@@ -1,5 +1,4 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import type { AgentSteerResult } from '@moor/host/agents/driver';
 import { Journal } from '@moor/host/persistence/journal';
 import {
   SessionInteractions,
@@ -8,14 +7,15 @@ import {
   type InteractionRun,
   type InteractionTurn,
 } from '@moor/host/sessions/interactions';
-import { AppError } from '@moor/protocol/protocol';
 import {
   INTERACTION_VERSION,
-  type QuestionRequest,
   type QuestionAnswer,
+  type QuestionRequest,
   type SteerRequest,
 } from '@moor/protocol/interaction-protocol';
-import type { AgentSteerResult } from '@moor/host/agents/driver';
+import { AppError } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const scope = { workspaceId: 'workspace', localProjectId: 'project', sessionId: 'session' };
 const question: QuestionRequest = {

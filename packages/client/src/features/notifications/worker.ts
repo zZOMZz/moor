@@ -1,11 +1,11 @@
 import {
   notificationEnvelopeSchema,
+  notificationPreferencesSchema,
   notificationWanted,
   type NotificationEnvelope,
 } from '@moor/protocol/notification-protocol';
-import type { NotificationLocalState } from './local-state';
 import { z } from 'zod';
-import { notificationPreferencesSchema } from '@moor/protocol/notification-protocol';
+import type { NotificationLocalState } from './local-state';
 export const notificationBindingMessageSchema = z
   .object({
     type: z.literal('moor:notification-binding'),

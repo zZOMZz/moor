@@ -118,6 +118,9 @@ importers:
       '@moor/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@moor/session':
+        specifier: workspace:*
+        version: link:../../packages/session
       zod:
         specifier: 3.25.76
         version: 3.25.76

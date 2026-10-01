@@ -1,23 +1,23 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { ProjectContentController } from '../../apps/web/src/features/files/project-content-controller';
 import {
   compareTextLines,
   projectContentKey,
-  readProjectTree,
   readCurrentProjectFile,
-  readProjectTurnDiff,
   readProjectDiffFile,
+  readProjectTree,
+  readProjectTurnDiff,
   type ProjectContentTarget,
-} from '../../apps/web/src/features/files/project-content';
+} from '@moor/client/features/files/project-content';
+import { ProjectContentController } from '@moor/client/features/files/project-content-controller';
 import type {
   ProjectDiffChange,
-  ProjectDiffReference,
   ProjectDiffFileResult,
+  ProjectDiffReference,
   ProjectTreeResult,
   ProjectTurnDiffResult,
 } from '@moor/protocol/project-content-protocol';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
 const hash = (text: string) => 'sha256:' + createHash('sha256').update(text).digest('hex');
 const target: ProjectContentTarget = {
   owner: 'synthetic-owner',
@@ -160,7 +160,7 @@ test('tree pages retain one version, cache each page and isolate every execution
     true,
     f.dependencies,
   );
-  assert.equal(f.calls.at(-1)!.path, '/api/workspaces/moved/replicas/moved-replica/project-tree');
+  assert.equal(f.calls.at(-1)!.path, 'read-project-tree');
 });
 
 test('tree responses reject scope substitution, mixed versions, duplicate paths and inconsistent paging', async () => {
@@ -207,7 +207,7 @@ test('current file reads cache exact verified versions and offline results remai
 
 test('frozen diff summaries and contents remain readable offline without consulting the current project file', async () => {
   const f = fixture();
-  f.respond((path) => (path.endsWith('/turn-diff') ? summary : diffFile));
+  f.respond((path) => (path.endsWith('read-turn-diff') ? summary : diffFile));
   const result = await readProjectTurnDiff(target, 'turn', true, f.dependencies, reference);
   assert.equal(result.result.state, 'ready');
   const body = await readProjectDiffFile(target, reference, change, true, f.dependencies);

@@ -1,12 +1,12 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { ApiError } from '../../apps/web/src/platform/api';
 import {
   GitWorkspaceController,
   gitWorkspaceKey,
   type GitTarget,
-} from '../../apps/web/src/features/git/git-workspace';
+} from '@moor/client/features/git/git-workspace';
 import type { GitAction, GitStateResult, SessionExecution } from '@moor/protocol/git-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { ApiError } from '../../apps/web/src/platform/api';
 const target: GitTarget = {
   owner: 'owner',
   deviceId: 'device',
@@ -84,7 +84,7 @@ function fixture() {
       uuid: () => options.uuid ?? 'operation',
       request: async (path, body) => {
         calls.push({ path, body: structuredClone(body) });
-        if (path.endsWith('/state')) {
+        if (path.endsWith('git-state')) {
           const result = structuredClone(state());
           await options.waitState?.();
           return result;
@@ -179,11 +179,9 @@ test('Git prepare is durable before transmission; reload and moved catalog retry
   assert.equal(moved.blocked, true);
   f.transportFails = false;
   await moved.retry();
-  assert.deepEqual(f.calls.findLast((call) => call.path.endsWith('/action'))?.body, original);
-  assert.match(
-    f.calls.findLast((call) => call.path.endsWith('/action'))!.path,
-    /moved\/replicas\/moved-replica/,
-  );
+  assert.deepEqual(f.calls.findLast((call) => call.path.endsWith('git-action'))?.body, original);
+  assert.equal(moved.target.catalogWorkspaceId, 'moved');
+  assert.equal(moved.target.replicaId, 'moved-replica');
   assert.equal(moved.pending, undefined);
   assert.equal(moved.blocked, false);
   assert.notEqual(gitWorkspaceKey({ ...target, deviceId: 'other' }), gitWorkspaceKey(target));
@@ -214,7 +212,7 @@ test('failed durable writes never send actions and dirty cleanup is rechecked be
   await controller.load();
   f.writeFails = true;
   await assert.rejects(controller.prepare('main', oid, 'feature/test'), /storage/);
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/action')).length, 0);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('git-action')).length, 0);
   assert.ok(controller.loadError);
   assert.equal(controller.blocked, true);
   f.writeFails = false;
@@ -222,10 +220,10 @@ test('failed durable writes never send actions and dirty cleanup is rechecked be
   await controller.prepare('main', oid, 'feature/test');
   f.canRemove = false;
   await assert.rejects(controller.remove(), /不能清理/);
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('git-action')).length, 1);
   f.canRemove = true;
   await controller.remove();
-  const request = f.calls.findLast((call) => call.path.endsWith('/action'))!.body;
+  const request = f.calls.findLast((call) => call.path.endsWith('git-action'))!.body;
   assert.equal(request.expectedStateVersion, version);
   assert.equal(request.executionId, 'execution');
   assert.equal(controller.execution?.status, 'removed');
@@ -236,7 +234,7 @@ test('a changed selected baseline fails before Git side effects and corrupt scop
     controller = f.create();
   await controller.load();
   await assert.rejects(controller.prepare('main', 'b'.repeat(40), 'feature/test'), /基线已经改变/);
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/action')).length, 0);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('git-action')).length, 0);
   f.cache.set(gitWorkspaceKey(target), {
     version: 1,
     target: { ...target, userId: 'foreign' },
@@ -298,7 +296,7 @@ test('fresh unknown directory state takes precedence over an accepted receipt at
   assert.equal(reloaded.execution?.status, 'unknown');
   assert.equal(reloaded.source, 'cache');
   assert.equal(reloaded.blocked, true);
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('git-action')).length, 1);
 });
 
 function signal() {
@@ -399,7 +397,7 @@ test('two active pages competing to stage preserve the winning original request 
   assert.deepEqual(f.cache.get(gitWorkspaceKey(target)), saved);
   await assert.rejects(old.retry(), /重新打开/);
   assert.deepEqual(
-    f.calls.filter((call) => call.path.endsWith('/action')).map((call) => call.body.operationId),
+    f.calls.filter((call) => call.path.endsWith('git-action')).map((call) => call.body.operationId),
     ['winning-operation'],
   );
   const restored = f.create();
@@ -426,7 +424,7 @@ test('shared worktrees detach only with host permission and preserve the exact u
   assert.equal(restored.blocked, true);
   f.transportFails = false;
   await restored.retry();
-  assert.deepEqual(f.calls.findLast((call) => call.path.endsWith('/action'))!.body, original);
+  assert.deepEqual(f.calls.findLast((call) => call.path.endsWith('git-action'))!.body, original);
   assert.equal(restored.execution?.disposition, 'detached');
   assert.equal(restored.blocked, true);
 });

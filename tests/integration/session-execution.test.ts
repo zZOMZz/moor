@@ -1,6 +1,19 @@
-import test from 'node:test';
-import { guardedCommandHost } from '../fixtures/guarded-command-host';
 import type { HostCommand } from '@moor/host/commands/host-command';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { readProjectFileBytes } from '@moor/host/projects/files';
+import {
+  inspectProjectWorktree,
+  prepareProjectWorktree,
+  readProjectGit,
+  removeProjectWorktree,
+  type ProjectGitOptions,
+} from '@moor/host/projects/git';
+import { captureProjectSnapshot, enumerateProjectFiles } from '@moor/host/projects/snapshot';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
+import { gitActionReceiptSchema, gitStateResultSchema } from '@moor/protocol/git-protocol';
+import type { Mutation } from '@moor/protocol/protocol';
+import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -16,22 +29,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
-import type { Mutation } from '@moor/protocol/protocol';
-import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
-import { gitActionReceiptSchema, gitStateResultSchema } from '@moor/protocol/git-protocol';
-import {
-  readProjectGit,
-  prepareProjectWorktree,
-  inspectProjectWorktree,
-  removeProjectWorktree,
-  type ProjectGitOptions,
-} from '@moor/host/projects/git';
-import { readProjectFileBytes } from '@moor/host/projects/files';
-import { captureProjectSnapshot, enumerateProjectFiles } from '@moor/host/projects/snapshot';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
+import { guardedCommandHost } from '../fixtures/guarded-command-host';
 
 function signal<T = void>() {
   let resolve!: (value: T) => void;

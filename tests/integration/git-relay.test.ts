@@ -1,12 +1,12 @@
-import test from 'node:test';
+import type { Workspace } from '@moor/protocol/catalog';
+import { GIT_WORKTREE_FEATURE, type GitAction } from '@moor/protocol/git-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
-import { createHash } from 'node:crypto';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import { GIT_WORKTREE_FEATURE, type GitAction } from '@moor/protocol/git-protocol';
+import test from 'node:test';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
-import type { Workspace } from '@moor/protocol/catalog';
 
 const oid = 'a'.repeat(40);
 const version = 'sha256:' + createHash('sha256').update('synthetic-git-state').digest('hex');

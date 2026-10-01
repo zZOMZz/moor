@@ -1,42 +1,38 @@
+import { createAttachmentDraftItem } from '@moor/client/features/attachments/attachments';
+import { AttentionController } from '@moor/client/features/attention/attention';
 import {
-  createDesktopUiPorts,
-  type DesktopUiBridge,
-} from '../../apps/web/src/platform/desktop/ui-ports';
-import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
-import { api } from '../../apps/web/src/platform/api';
-import {
-  fixture as githubFixture,
-  target as githubTarget,
-} from '../fixtures/github-session-fixture';
-import test from 'node:test';
-import { AttentionController } from '../../apps/web/src/features/attention/attention';
+  emptyInteractionSaved,
+  questionDraftKey,
+  type QuestionDraftValues,
+} from '@moor/client/features/interactions/interactions';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
   FOLLOWUP_FEATURE,
   type AttentionItem,
 } from '@moor/protocol/attention';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { JSDOM } from 'jsdom';
-import type {
-  WorkspaceController,
-  WorkspaceClientState,
-} from '../../apps/web/src/features/workspace/workspace-controller';
-import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
+import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import type { QuestionAnswer, QuestionRequest } from '@moor/protocol/interaction-protocol';
 import {
   notificationIdentity,
   type HostNotificationEvent,
 } from '@moor/protocol/notification-protocol';
-import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
-import type { AttachmentReference } from '@moor/protocol/content-protocol';
-import type { QuestionRequest, QuestionAnswer } from '@moor/protocol/interaction-protocol';
-import { syntheticTaskPlan, syntheticTaskGrant } from '../fixtures/task-plan';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+import { api } from '../../apps/web/src/platform/api';
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
 import {
-  questionDraftKey,
-  emptyInteractionSaved,
-  type QuestionDraftValues,
-} from '../../apps/web/src/features/interactions/interactions';
+  createDesktopUiPorts,
+  type DesktopUiBridge,
+} from '../../apps/web/src/platform/desktop/ui-ports';
+import {
+  fixture as githubFixture,
+  target as githubTarget,
+} from '../fixtures/github-session-fixture';
 
 test('packaged workspace opens local projects without an account and preserves drafts while navigating', async () => {
   const dom = new JSDOM('<!doctype html><div id="app"></div>', {
@@ -527,15 +523,16 @@ test('packaged workspace opens local projects without an account and preserves d
         continued: async () => {
           throw Error('Not expected in navigation test');
         },
-        request: async (path, body) => {
+        request: async (_route, command) => {
+          const body = 'input' in command ? command.input : undefined;
           if (body) {
             calls.push('attention:seen');
-            assert(path.endsWith('/seen'));
+            assert.equal(command.kind, 'seen');
             const input = body as { operationId: string; eventRevision: number };
             item.seenRevision = input.eventRevision;
             return { accepted: true, delivered: true, operationId: input.operationId, item };
           }
-          if (path.endsWith('/' + item.itemId))
+          if (command.kind === 'detail')
             return {
               item,
               title: 'Synthetic attention session',
@@ -806,7 +803,7 @@ test('packaged workspace opens local projects without an account and preserves d
         },
       };
     },
-  } as unknown as WorkspaceController;
+  } as unknown as Workspace;
   const visibleButton = (label: string) => {
     const result = [...dom.window.document.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) =>
@@ -1854,7 +1851,7 @@ test('packaged workspace opens local projects without an account and preserves d
         if (listReads.length <= 2) await listGate;
         return [{ ...meta, id: target.localProjectId, title: 'revision-' + version }];
       },
-    } as unknown as WorkspaceController;
+    } as unknown as Workspace;
     function NavigationProbe() {
       const value = useNavigationSessions(listing, {
         ...state,

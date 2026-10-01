@@ -1,13 +1,13 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { Flock, LoroDoc, delta, mirror, putMeta, vv } from '@moor/session/model';
-import { ClientSessionReplica } from '@moor/client/session-client';
-import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
-import {
-  WorkspaceStore,
-  type WorkspaceScope,
-} from '../../apps/web/src/features/workspace/workspace-store';
 import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
+import {
+  type WorkspaceScope,
+  createWorkspacePersistence,
+} from '@moor/client/operations/workspace/compose';
+import { ClientSessionReplica } from '@moor/session/client-session-replica';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import { Flock, LoroDoc, delta, mirror, putMeta, vv } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
 
 const scope: WorkspaceScope = {
   source: 'local',
@@ -79,7 +79,7 @@ function fixture(t: TestContext, settledTurns = 120) {
     view = mirror(doc, sessionId),
     flock = new Flock(),
     memory = new Memory(),
-    store = new WorkspaceStore(memory),
+    store = createWorkspacePersistence(memory),
     replica = new ClientSessionReplica({ ...scope.target, sessionId });
   const meta = {
     id: sessionId,

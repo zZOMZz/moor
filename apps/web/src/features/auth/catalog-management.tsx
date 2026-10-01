@@ -1,10 +1,10 @@
-import { useNavigation, useCatalogSafety } from '../../platform/ui-ports';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { z } from 'zod';
+import type { CatalogDataScope } from '@moor/client/features/workspace/catalog-safety';
+import { projectSourceSchema, type ProjectSource } from '@moor/protocol/catalog';
 import type { workspaceCatalogSchema } from '@moor/protocol/workspace-catalog';
 import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
-import { projectSourceSchema, type ProjectSource } from '@moor/protocol/catalog';
-import type { CatalogDataScope } from '@moor/client/features/workspace/catalog-safety';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import type { z } from 'zod';
+import { useCatalogSafety, useNavigation } from '../../platform/ui-ports';
 
 export type ManagedWorkspace = z.infer<typeof workspaceCatalogSchema>[number];
 export type CatalogManagementActions = {

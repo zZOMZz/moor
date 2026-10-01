@@ -1,6 +1,6 @@
+import { Ellipsis, Plus, SlidersHorizontal } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { usePreferences, type PreferencePort } from '../../platform/ui-ports';
-import { useEffect, useState, useRef, type CSSProperties, type ReactNode } from 'react';
-import { Ellipsis, SlidersHorizontal, Plus } from 'lucide-react';
 const key = 'moor-workspace-layout-v1';
 const clamp = (width: number) => Math.max(220, Math.min(400, width));
 function initial(preferences: PreferencePort): { width: number; open: boolean } {

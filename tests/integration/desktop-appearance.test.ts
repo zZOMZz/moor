@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import test from 'node:test';
 import { createAppearance } from '../../apps/desktop/src/main/appearance.cjs';
 
 test('appearance persists independently, defaults to Auto and does not announce failed saves', (t) => {

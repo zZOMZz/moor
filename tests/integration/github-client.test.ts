@@ -1,10 +1,8 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import {
   createGitHubClient,
-  GitHubClientError,
   GITHUB_API_VERSION,
   GITHUB_CLIENT_LIMITS,
+  GitHubClientError,
   type GitHubClientOptions,
 } from '@moor/host/integrations/github/client';
 import {
@@ -12,6 +10,8 @@ import {
   githubPullSchema,
   githubStatusesPageSchema,
 } from '@moor/protocol/github-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const target = { owner: 'synthetic', repo: 'moor-test', repositoryId: 42 };
 const headSha = 'a'.repeat(40),

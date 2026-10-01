@@ -1,20 +1,23 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { CollaborationStore } from '@moor/sync/store';
-import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
+import {
+  CollaborationClient,
+  type CollaborationStorage,
+} from '@moor/client/features/collaboration/client';
 import { CollaborationExecutionPlane } from '@moor/host/sessions/collaboration';
-import { LoroDoc, encode } from '@moor/session/model';
-import { CollaborationReplica } from '@moor/session/collaboration-replica';
-import { CollaborationClient, type CollaborationStorage } from '@moor/client/collaboration-client';
+import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
 import {
   collaborationKey,
+  type CollaborationOffer,
   type CollaborationScope,
   type TaskExecutionTarget,
   type TaskIntent,
-  type CollaborationOffer,
 } from '@moor/protocol/collaboration-protocol';
-import { syntheticCollaboration } from '../fixtures/collaboration-host';
+import { CollaborationReplica } from '@moor/session/collaboration-replica';
+import { LoroDoc, encode } from '@moor/session/model';
 import { buildSessionTurn } from '@moor/session/session-operations';
+import { CollaborationStore } from '@moor/sync/store';
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
+import { syntheticCollaboration } from '../fixtures/collaboration-host';
 
 const actor = { kind: 'relay' as const, authorityId: 'authority', accountId: 'owner' };
 const scope: CollaborationScope = {

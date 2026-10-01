@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
-import { BookOpen } from 'lucide-react';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
-import { SkillsPanel } from './skills-ui';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
+import { BookOpen } from 'lucide-react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
+import { SkillsPanel } from './skills-ui';
 
 export function WorkspaceSkillsUI({
   controller,
@@ -11,14 +11,14 @@ export function WorkspaceSkillsUI({
   run,
   controlRef,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   controlRef?: Ref<{ open(): boolean }>;
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
-  const panel = useRef<ReturnType<WorkspaceController['openSkills']> | null>(null);
+  const panel = useRef<ReturnType<Workspace['openSkills']> | null>(null);
   useEffect(
     () => () => {
       panel.current?.close();

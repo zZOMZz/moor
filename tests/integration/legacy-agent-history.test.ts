@@ -1,15 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
-import {
-  accountRateLimitSchema,
-  normalizeSessionEvent,
-  sessionEventSchema,
-} from '@moor/host/sessions/events';
-import {
-  informationHtml,
-  sessionInformation,
-} from '../../apps/web/src/features/interactions/interactions';
+import { informationHtml } from '../../apps/web/src/features/interactions/information';
+import { sessionInformation } from '@moor/client/features/interactions/interactions';
+import type { AgentConfig } from '@moor/host/agents/driver';
 import {
   agentForkAnchorSchema,
   codexAgentForkAnchorSchema,
@@ -19,7 +10,14 @@ import {
   type AgentForkAnchor,
 } from '@moor/host/agents/fork';
 import { RuntimeStore } from '@moor/host/persistence/store';
-import type { AgentConfig } from '@moor/host/agents/driver';
+import {
+  accountRateLimitSchema,
+  normalizeSessionEvent,
+  sessionEventSchema,
+} from '@moor/host/sessions/events';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const legacyRateLimit = {
   source: 'claude-agent-acp' as const,

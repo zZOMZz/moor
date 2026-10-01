@@ -1,9 +1,9 @@
-import test from 'node:test';
+import { build } from 'esbuild';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { build } from 'esbuild';
+import test from 'node:test';
 import {
   repository,
   workspaceSourceAliases,

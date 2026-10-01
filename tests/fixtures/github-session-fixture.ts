@@ -1,18 +1,18 @@
-import assert from 'node:assert/strict';
-import type { StorageBackend } from '@moor/client/operations/storage';
-import { gitTargetSchema, type GitTarget } from '../../apps/web/src/features/git/git-workspace';
+import { gitTargetSchema, type GitTarget } from '@moor/client/features/git/git-workspace';
+import { githubKey } from '@moor/client/features/github/github';
 import {
   GithubSessionController,
   type GithubSessionContext,
   type GithubSessionMethod,
   type GithubSessionStorage,
-} from '../../apps/web/src/features/github/github-session';
+} from '@moor/client/features/github/github-session';
 import {
   githubWriteKey,
   githubWriteRequestVersion,
-} from '../../apps/web/src/features/github/github-write';
-import { githubKey } from '../../apps/web/src/features/github/github';
+} from '@moor/client/features/github/github-write';
+import type { StorageBackend } from '@moor/client/operations/storage';
 import type { GithubBinding } from '@moor/protocol/github-protocol';
+import assert from 'node:assert/strict';
 
 export const target: GitTarget = {
   owner: 'owner',

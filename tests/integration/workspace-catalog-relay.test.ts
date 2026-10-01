@@ -1,14 +1,14 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { WebSocket } from 'ws';
 import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
-import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import {
   workspaceCatalogSnapshotSchema,
   workspaceReplicaContextSchema,
 } from '@moor/protocol/workspace-catalog';
-import { PROTOCOL } from '@moor/protocol/protocol';
+import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
+import { WebSocket } from 'ws';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 function gate() {

@@ -1,16 +1,13 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
-import { questionRequestSchema, type QuestionAnswer } from '@moor/protocol/interaction-protocol';
 import {
   questionDefaults,
   type QuestionDraftValues,
-} from '../../apps/web/src/features/interactions/interactions';
+} from '@moor/client/features/interactions/interactions';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import { questionRequestSchema, type QuestionAnswer } from '@moor/protocol/interaction-protocol';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import type { QuestionPanelProps } from '../../apps/web/src/features/interactions/interaction-ui';
-import type {
-  WorkspaceClientState,
-  WorkspaceController,
-} from '../../apps/web/src/features/workspace/workspace-controller';
 
 test('React question forms preserve all field types, save offline drafts and keep decline/cancel separate from Stop', async () => {
   const dom = new JSDOM('<!doctype html><div id="app"></div>', {
@@ -244,7 +241,7 @@ test('React question forms preserve all field types, save offline drafts and kee
             steer: async () => {
               submissions++;
             },
-          } as unknown as WorkspaceController,
+          } as unknown as Workspace,
           run: (task) => {
             void task();
             return true;

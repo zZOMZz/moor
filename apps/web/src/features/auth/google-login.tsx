@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { Identity } from '../../platform/api';
-import { useGoogleAuth, useNavigation } from '../../platform/ui-ports';
+import { Dialog } from '@base-ui/react/dialog';
 import type {
   GoogleMode as Mode,
   GoogleReview as Review,
 } from '@moor/client/features/auth/google-auth';
-import { Dialog } from '@base-ui/react/dialog';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import type { Identity } from '../../platform/api';
+import { useGoogleAuth, useNavigation } from '../../platform/ui-ports';
 
 const message = (e: unknown) => (e instanceof Error ? e.message : 'Google 登录暂时不可用，请重试');
 

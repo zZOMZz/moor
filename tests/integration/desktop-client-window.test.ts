@@ -1,10 +1,10 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CLIENT_URL, CLIENT_ORIGIN } from '../../apps/desktop/src/main/client-assets.cjs';
+import test from 'node:test';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 import {
   createClientWindow,
   prepareClientSession,

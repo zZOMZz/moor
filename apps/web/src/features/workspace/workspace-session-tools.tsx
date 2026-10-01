@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
-import { Search, Ellipsis } from 'lucide-react';
-import { SessionSearchPanel } from '../sessions/session-search-ui';
-import type { SessionSearchView } from '../sessions/session-search';
-import type { SessionMetadata } from '@moor/protocol/session-responses';
+import type { SessionSearchView } from '@moor/client/features/sessions/session-search';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import type { SessionAction } from '@moor/protocol/protocol';
-import type { WorkspaceController, WorkspaceClientState } from './workspace-controller';
+import type { SessionMetadata } from '@moor/protocol/session-responses';
+import { Ellipsis, Search } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { SessionSearchPanel } from '../sessions/session-search-ui';
 
 export function WorkspaceSessionTools({
   controller,
@@ -14,7 +14,7 @@ export function WorkspaceSessionTools({
   run,
   navigate,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
@@ -23,7 +23,7 @@ export function WorkspaceSessionTools({
   const [searching, setSearching] = useState(false),
     [result, setResult] = useState<SessionSearchView>();
   const [error, setError] = useState('');
-  const search = useRef<ReturnType<WorkspaceController['openSearch']> | null>(null);
+  const search = useRef<ReturnType<Workspace['openSearch']> | null>(null);
   const [metadata, setMetadata] = useState<SessionMetadata>(),
     [title, setTitle] = useState('');
   const sessionWritable = state.sessionLoad.status === 'ready' && !state.offline;

@@ -1,55 +1,53 @@
-import { isRequestRejected, RequestFailure } from '@moor/protocol/request-failure';
-import {
-  RETIRED_RECORDS_FEATURE,
-  RETIRED_SESSION_FEATURE,
-} from '@moor/protocol/connection-authority';
-import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
-import { z } from 'zod';
-import {
-  agentSchema,
-  AGENT_VERSIONS_FEATURE,
-  id,
-  mutationSchema,
-  sessionActionSchema,
-} from '@moor/protocol/protocol';
-import {
-  sessionListSchema,
-  mutationReceiptSchema,
-  validateSessionActionReceipt,
-  SESSION_RESPONSE_LIMITS,
-} from '@moor/protocol/session-responses';
-import {
-  sessionControlActionSchema,
-  sessionOperationSchema,
-  validateSessionControlReceipt,
-  validateSessionOperationResult,
-  SESSION_CONTROL_FEATURE,
-  type SessionControlScope,
-  type SessionOriginalOperation,
-} from '@moor/protocol/session-control-protocol';
-import { readClientSession } from '@moor/client/session-client';
-import { buildSendTurn } from '@moor/client/session-intent';
-import {
-  SESSION_INTENTS_FEATURE,
-  sendTurnSchema,
-  respondPermissionSchema,
-} from '@moor/protocol/session-intent-protocol';
-import { MCP_LIMITS, mcpReadSchema, validateMcpRead } from '@moor/protocol/mcp-protocol';
-import { readLocalCliConnection } from '@moor/local-state/private-connection';
-import { CliError, type CliArgs } from './args';
 import { NodeHttp, connectionSchema, serverOrigin } from '@moor/client/adapters/node/http';
-import { cliInput } from './input';
-import { CliGoogleAuth } from './google-auth';
-import { CliState, type CliOperation, type CliTarget } from './state';
-import { exportRetiredOperation } from './retired';
 import {
-  cliServerKey,
   listTargets,
   replicaBase,
   resolveTarget,
   type CliResolvedTarget,
 } from '@moor/client/adapters/node/targets';
+import { buildSendTurn } from '@moor/client/features/sessions/session-intent';
+import {
+  ConfirmationPersistenceFailure,
+  deliverOriginalOperation,
+  persistOriginalConfirmation,
+  recoverOriginalOperation,
+} from '@moor/client/operations/session-operation';
+import { readLocalCliConnection } from '@moor/local-state/private-connection';
+import {
+  RETIRED_RECORDS_FEATURE,
+  RETIRED_SESSION_FEATURE,
+} from '@moor/protocol/connection-authority';
+import { hostCommandContracts } from '@moor/protocol/host-command-contract';
+import { MCP_LIMITS, mcpReadSchema, validateMcpRead } from '@moor/protocol/mcp-protocol';
+import {
+  AGENT_VERSIONS_FEATURE,
+  agentSchema,
+  id,
+  mutationSchema,
+  sessionActionSchema,
+} from '@moor/protocol/protocol';
+import { RequestFailure, isRequestRejected } from '@moor/protocol/request-failure';
+import {
+  SESSION_CONTROL_FEATURE,
+  sessionControlActionSchema,
+  sessionOperationSchema,
+  type SessionControlScope,
+  type SessionOriginalOperation,
+} from '@moor/protocol/session-control-protocol';
+import {
+  SESSION_INTENTS_FEATURE,
+  respondPermissionSchema,
+  sendTurnSchema,
+} from '@moor/protocol/session-intent-protocol';
+import { SESSION_RESPONSE_LIMITS, sessionListSchema } from '@moor/protocol/session-responses';
+import { readClientSession } from '@moor/session/session-operations';
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
+import { CliError, type CliArgs } from './args';
+import { CliGoogleAuth } from './google-auth';
+import { cliInput } from './input';
+import { exportRetiredOperation } from './retired';
+import { CliState, type CliOperation, type CliTarget } from './state';
 export type CliDependencies = {
   state: CliState;
   fetch?: typeof fetch;
@@ -293,60 +291,45 @@ export class CliClient {
             );
         },
       });
-      const suffix =
-        op.kind === 'send-turn' || op.kind === 'respond-permission'
-          ? '/' + op.kind
-          : op.kind === 'turn'
-            ? '/mutations'
-            : op.kind === 'session-action'
-              ? '/session-actions'
-              : '/session-control';
-      const raw = (await http.request(replicaBase(mapped.target) + suffix, op.body, 64 * 1024))
-        .value;
-      let receipt: unknown,
-        state: CliOperation['state'] = 'accepted';
-      if (request.kind === 'control') {
-        const parsed = validateSessionControlReceipt(raw, scope(op.target), request);
-        receipt = parsed;
-        if (parsed.status === 'stopping') {
-          this.state.transition(op.operationId, ['pending'], 'pending', parsed);
-          throw new CliError(
-            'unknown',
-            '停止已登记，尚未确认结束；请手动核查原操作。',
-            6,
-            op.operationId,
-          );
-        }
-        if (parsed.status === 'interrupted') {
-          this.state.transition(op.operationId, ['pending'], 'accepted', parsed);
-          throw new CliError(
-            'interrupted-turn',
-            '原回合已因主机重启或中断结束，未确认正常停止。',
-            5,
-            op.operationId,
-          );
-        }
-        if (parsed.status === 'abandoned') state = 'abandoned';
-      } else if (
-        request.kind === 'mutation' ||
-        request.kind === 'send-turn' ||
-        request.kind === 'respond-permission'
-      ) {
-        const parsed = mutationReceiptSchema.parse(raw);
-        if (parsed.operationId !== op.operationId) throw new Error();
-        receipt = parsed;
-        if (!parsed.accepted) state = 'abandoned';
-      } else if (request.kind === 'metadata') {
-        const parsed = validateSessionActionReceipt(request.value, raw);
-        if (
-          parsed.accepted &&
-          (parsed.meta.userId !== op.target.userId || parsed.meta.machineId !== op.target.machineId)
-        )
-          throw new Error();
-        receipt = parsed;
-        if (!parsed.accepted) state = 'abandoned';
-      } else throw new Error('This CLI operation is not a supported session original');
-      return summary(this.state.transition(op.operationId, ['pending'], state, receipt));
+      const confirmation = await deliverOriginalOperation(scope(op.target), request, {
+        dispatch: async (method) =>
+          (
+            await http.request(
+              replicaBase(mapped.target) + '/' + hostCommandContracts[method].http.path,
+              op.body,
+              64 * 1024,
+            )
+          ).value,
+      });
+      if (confirmation.status === 'pending') {
+        await persistOriginalConfirmation(
+          op.operationId,
+          'pending',
+          () => this.state.assertCurrent(),
+          () => this.state.transition(op.operationId, ['pending'], 'pending', confirmation.receipt),
+        );
+        throw new CliError(
+          'unknown',
+          '停止已登记，尚未确认结束；请手动核查原操作。',
+          6,
+          op.operationId,
+        );
+      }
+      const state = confirmation.status === 'abandoned' ? 'abandoned' : 'accepted';
+      const saved = await persistOriginalConfirmation(
+        op.operationId,
+        confirmation.status,
+        () => this.state.assertCurrent(),
+        () => this.state.transition(op.operationId, ['pending'], state, confirmation.receipt),
+      );
+      if (confirmation.interrupted)
+        throw new CliError(
+          'interrupted-turn',
+          '原回合已因主机重启或中断结束，未确认正常停止。',
+          5,
+          op.operationId,
+        );
+      return summary(saved);
     } catch (error) {
       if (isRequestRejected(error) && first) {
         this.state.transition(op.operationId, ['pending'], 'rejected');
@@ -366,6 +349,8 @@ export class CliClient {
           6,
           op.operationId,
         );
+      if (error instanceof ConfirmationPersistenceFailure)
+        throw new CliError('local-persistence', error.message, 6, op.operationId);
       if (error instanceof CliError && error.operationId) throw error;
       throw new CliError(
         'unknown',
@@ -389,10 +374,10 @@ export class CliClient {
       request: original(op),
     });
     try {
-      const result = validateSessionOperationResult(
-        await http.json(replicaBase(mapped.target) + '/session-operations', request, 4096),
-        request,
-      );
+      const result = await recoverOriginalOperation(scope(op.target), request.request, action, {
+        dispatch: (_method, input) =>
+          http.json(replicaBase(mapped.target) + '/session-operations', input, 4096),
+      });
       if (
         result.found &&
         ['accepted', 'abandoned', 'interrupted'].includes(result.receipt.status)

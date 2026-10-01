@@ -1,25 +1,25 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { WebSocket } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import type { Workspace } from '@moor/protocol/catalog';
-import { AppError, PROTOCOL } from '@moor/protocol/protocol';
-import { putMeta } from '@moor/session/model';
-import { CONTENT_LIMITS, CONTENT_VERSION } from '@moor/protocol/content-protocol';
 import {
   ATTACHMENTS_FEATURE,
   attachmentActionSchema,
   attachmentReadSchema,
   type AttachmentAction,
 } from '@moor/protocol/attachment-protocol';
+import type { Workspace } from '@moor/protocol/catalog';
+import { CONTENT_LIMITS, CONTENT_VERSION } from '@moor/protocol/content-protocol';
+import { AppError, PROTOCOL } from '@moor/protocol/protocol';
+import { putMeta } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { WebSocket } from 'ws';
 
 function upload(
   bytes = Buffer.from('private synthetic attachment'),

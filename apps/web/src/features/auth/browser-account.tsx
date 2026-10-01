@@ -1,8 +1,8 @@
+import type { NotificationBrowser } from '@moor/client/features/notifications/notifications';
+import { NotificationController } from '@moor/client/features/notifications/notifications';
 import { useEffect, useRef, useState } from 'react';
-import type { api, Identity } from '../../platform/api';
-import { NotificationController } from '../notifications/notifications';
+import type { Identity } from '../../platform/api';
 import { NotificationPanel } from '../notifications/notification-ui';
-import type { NotificationBrowser } from '../notifications/notifications';
 import { GoogleAccount } from './google-login';
 
 export function BrowserAccountControls({
@@ -12,7 +12,11 @@ export function BrowserAccountControls({
 }: {
   owner: string;
   identity: () => Promise<Identity>;
-  notifications: { browser: NotificationBrowser; request: typeof api; reason(): string };
+  notifications: {
+    browser: NotificationBrowser;
+    request: import('@moor/client/features/notifications/notifications').NotificationDependencies['request'];
+    reason(): string;
+  };
 }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [google, setGoogle] = useState<Identity>();

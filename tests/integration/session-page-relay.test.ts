@@ -1,10 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { WebSocket } from 'ws';
-import { AppError, PROTOCOL } from '@moor/protocol/protocol';
+import { readSessionPage } from '@moor/host/sessions/page';
 import type { Workspace } from '@moor/protocol/catalog';
-import type { SessionMetadata } from '@moor/protocol/session-responses';
+import { AppError, PROTOCOL } from '@moor/protocol/protocol';
 import {
   SESSION_PAGE_FEATURE,
   SESSION_PAGE_LIMITS,
@@ -13,9 +9,13 @@ import {
   type SessionPageRequest,
   type SessionPageResult,
 } from '@moor/protocol/session-page';
-import { readSessionPage } from '@moor/host/sessions/page';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
+import type { SessionMetadata } from '@moor/protocol/session-responses';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
+import { WebSocket } from 'ws';
 import { syntheticSessionPageIndex } from '../fixtures/session-page-index';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 function signal() {
   let resolve!: () => void;

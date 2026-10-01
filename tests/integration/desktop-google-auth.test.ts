@@ -1,15 +1,15 @@
-import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import test, { type TestContext } from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 import {
   DesktopGoogleAuth,
   beginInput,
-  startResult,
   sessionCookie,
+  startResult,
 } from '../../apps/desktop/src/main/google-auth.cjs';
-import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 
 const relay = 'https://relay.synthetic.invalid';
 const token = (number: number) => Buffer.alloc(32, number).toString('base64url');

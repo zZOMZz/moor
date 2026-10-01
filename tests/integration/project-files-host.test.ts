@@ -1,7 +1,16 @@
-import test from 'node:test';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { readProjectFileBytes, type ProjectFileReadOptions } from '@moor/host/projects/files';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import {
+  CONTENT_LIMITS,
+  FILE_CONTENT_FEATURE,
+  projectFileResultSchema,
+  type ProjectFileRead,
+} from '@moor/protocol/content-protocol';
+import { putMeta } from '@moor/session/model';
 import strict from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -17,16 +26,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import {
-  CONTENT_LIMITS,
-  FILE_CONTENT_FEATURE,
-  projectFileResultSchema,
-  type ProjectFileRead,
-} from '@moor/protocol/content-protocol';
-import { putMeta } from '@moor/session/model';
-import { readProjectFileBytes, type ProjectFileReadOptions } from '@moor/host/projects/files';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import test from 'node:test';
 import { writePrivateArtifacts, writePrivateDocument } from '../fixtures/private-documents';
 
 function directory(t: { after(fn: () => void): void }) {

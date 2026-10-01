@@ -1,8 +1,8 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { type SkillsController } from '@moor/client/features/skills/skills';
 import { X } from 'lucide-react';
 import { useState } from 'react';
 import { markdown } from '../../components/content';
-import { type SkillsController } from './skills';
 
 export type SkillsPanelProps = {
   controller?: SkillsController;

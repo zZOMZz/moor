@@ -1,22 +1,22 @@
+import type { Workspace } from '@moor/client/features/workspace/compose';
+import { FolderOpen, GitCompareArrows } from 'lucide-react';
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  useImperativeHandle,
   useSyncExternalStore,
   type Ref,
   type RefObject,
 } from 'react';
-import { FolderOpen, GitCompareArrows } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { ProjectContentPanel, type ProjectContentPanelProps } from './project-content-ui';
-import type { WorkspaceController } from '../workspace/workspace-controller';
 
 export type WorkspaceContentHandle = { open(mode: 'tree' | 'changes', turnId?: string): boolean };
-type Panel = Awaited<ReturnType<WorkspaceController['openProjectContent']>>;
+type Panel = Awaited<ReturnType<Workspace['openProjectContent']>>;
 const noop = () => {};
 const emptySnapshot = () => null;
 async function previewFirstChange(current: Panel) {
@@ -45,7 +45,7 @@ export function WorkspaceContentUI({
   quoteFocus,
   hideTriggers = false,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   controlRef?: Ref<WorkspaceContentHandle>;
   dockContainer?: HTMLElement | null;
   onVisibilityChange?(open: boolean): void;

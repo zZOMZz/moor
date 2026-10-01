@@ -1,12 +1,12 @@
-import test from 'node:test';
+import { acpDriver, createAcpDriver } from '@moor/host/agents/acp/driver';
+import { LOCAL_CODEX_NOT_INSTALLED } from '@moor/host/agents/driver';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { acpDriver, createAcpDriver } from '@moor/host/agents/acp/driver';
-import { LOCAL_CODEX_NOT_INSTALLED } from '@moor/host/agents/driver';
-import { AppError } from '@moor/protocol/protocol';
+import test from 'node:test';
 
 test('retired per-turn tool injection fails before an adapter or authority callback can run', async () => {
   let launches = 0;

@@ -1,8 +1,8 @@
-import test from 'node:test';
+import { localCodexPath, withLocalCodex } from '@moor/host/agents/acp/local-codex';
 import assert from 'node:assert/strict';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { localCodexPath, withLocalCodex } from '@moor/host/agents/acp/local-codex';
+import test from 'node:test';
 
 test('host resolves installed Codex without running a shell or consulting remote inputs', () => {
   assert.equal(

@@ -145,7 +145,7 @@ HTTP 路径为 `/api/collaboration/:workspaceId/:replicaId/:sessionId/`：
 | --------------------------------------------------------------------------------- | -------------------------------------- |
 | [协作协议](../packages/protocol/src/collaboration-protocol.ts)                    | 文档同步、意图与 RPC 送达契约          |
 | [Loro TaskDoc](../packages/session/src/collaboration-replica.ts)                  | 版本化文档、快照、版本向量与状态物化   |
-| [客户端](../packages/client/src/collaboration-client.ts)                          | 离线文档、显式控制、RPC 加速和同步恢复 |
+| [客户端](../packages/client/src/features/collaboration/client.ts)                 | 离线文档、显式控制、RPC 加速和同步恢复 |
 | [State 存储](../packages/sync/src/store.ts)                                       | 字段授权、文档持久化与增量读取         |
 | [执行协调器](../packages/host/src/sessions/collaboration-coordinator.ts)          | Doc/RPC 汇合、提交与撤回规则           |
 | [私有执行账本](../packages/host/src/persistence/collaboration-execution-store.ts) | 队列、认领、原命令与原子状态投影       |

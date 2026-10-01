@@ -1,14 +1,6 @@
-import test from 'node:test';
-import strict from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
-import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
 import type { AgentDriver } from '@moor/host/agents/driver';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
-import type { Mutation } from '@moor/protocol/protocol';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import type {
   AttachmentAction,
   AttachmentRead,
@@ -19,6 +11,14 @@ import {
   MAX_SESSION_ATTACHMENT_BYTES,
 } from '@moor/protocol/attachment-protocol';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import type { Mutation } from '@moor/protocol/protocol';
+import { delta, Flock, LoroDoc, metas, mirror, putMeta, vv } from '@moor/session/model';
+import strict from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 import { writePrivateArtifacts } from '../fixtures/private-documents';
 

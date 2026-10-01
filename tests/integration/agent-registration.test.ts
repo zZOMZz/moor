@@ -1,13 +1,13 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { RuntimeStore, type AttachmentScope } from '@moor/host/persistence/store';
-import { Flock, LoroDoc, metas, mirror, putMeta } from '@moor/session/model';
 import type { AgentConfig } from '@moor/host/agents/driver';
+import { RuntimeStore, type AttachmentScope } from '@moor/host/persistence/store';
 import { AppError } from '@moor/protocol/protocol';
+import { Flock, LoroDoc, metas, mirror, putMeta } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import test, { type TestContext } from 'node:test';
 
 const identity = {
   id: 'workspace',

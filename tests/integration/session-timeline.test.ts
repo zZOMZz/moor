@@ -1,10 +1,10 @@
-import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
+import { appendSessionText } from '@moor/session/session-output';
 import { JSDOM } from 'jsdom';
 import { LoroDoc, LoroList, LoroMap } from 'loro-crdt';
-import { appendSessionText } from '@moor/session/session-output';
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
 import type { TimelineTurn } from '../../apps/web/src/features/sessions/session-timeline';
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 
 async function timeline(t: TestContext) {
   const dom = new JSDOM('<div id="app"></div>');

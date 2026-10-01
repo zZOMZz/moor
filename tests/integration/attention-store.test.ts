@@ -1,11 +1,11 @@
-import test from 'node:test';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import type { AttentionContext, AttentionContinue } from '@moor/protocol/attention';
+import { mirror, putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { mirror, putMeta } from '@moor/session/model';
-import type { AttentionContext, AttentionContinue } from '@moor/protocol/attention';
+import test from 'node:test';
 
 function fixture(file = ':memory:') {
   let now = 1000;

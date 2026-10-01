@@ -7,7 +7,7 @@ import { notificationLocal, rememberNotification } from './notification-storage'
 import {
   pushEndpointHash,
   type NotificationBrowser,
-} from '../../features/notifications/notifications';
+} from '@moor/client/features/notifications/notifications';
 export function browserNotificationReason() {
   if (!globalThis.isSecureContext) return '通知需要 HTTPS 安全连接。';
   if (!('Notification' in globalThis) || !('PushManager' in globalThis) || !navigator.serviceWorker)
@@ -183,4 +183,20 @@ export async function reconcileNotificationAccount(owner?: string) {
     (!state.binding && (await notificationBrowser.getSubscription()))
   )
     await clearLocalNotifications(state.revision);
+}
+
+/** The UI supplies a finite notification port, not an arbitrary request function. */
+export function createNotificationRequests(
+  request: (path: string, body?: unknown) => Promise<unknown>,
+): import('@moor/client/features/notifications/notifications').NotificationDependencies['request'] {
+  return (method, body, subscriptionId) => {
+    if (method === 'state') return request('/api/notifications');
+    if (method === 'subscribe') return request('/api/notifications/subscriptions', body);
+    if (!subscriptionId || !/^[a-zA-Z0-9_-]+$/.test(subscriptionId))
+      throw Error('通知订阅编号无效。');
+    return request(
+      '/api/notifications/subscriptions/' + encodeURIComponent(subscriptionId) + '/' + method,
+      body,
+    );
+  };
 }

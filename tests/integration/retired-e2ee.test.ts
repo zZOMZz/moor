@@ -1,6 +1,9 @@
-import test from 'node:test';
+import { Store } from '@moor/gateway/accounts';
+import { createApp } from '@moor/gateway/http';
+import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
 import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -13,18 +16,15 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import test from 'node:test';
 import { WebSocket } from 'ws';
-import { CliState } from '../../apps/cli/src/state';
-import { CliClient } from '../../apps/cli/src/client';
 import { parseCliArgs } from '../../apps/cli/src/args';
+import { CliClient } from '../../apps/cli/src/client';
 import { exportRetiredOperation } from '../../apps/cli/src/retired';
-import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { CliState } from '../../apps/cli/src/state';
 
 function directory(t: { after(work: () => void): void }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-retired-e2ee-')));

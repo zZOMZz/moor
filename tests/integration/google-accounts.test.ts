@@ -1,10 +1,10 @@
-import test, { type TestContext } from 'node:test';
+import { Store } from '@moor/gateway/accounts';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '@moor/gateway/accounts';
-import { AppError } from '@moor/protocol/protocol';
+import test, { type TestContext } from 'node:test';
 import type { GoogleIdentity } from '../../apps/relay/src/google-oidc';
 
 const owner = 'synthetic-existing-owner',

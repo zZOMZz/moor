@@ -1,13 +1,13 @@
-import test, { type TestContext } from 'node:test';
+import type { AgentConfig } from '@moor/host/agents/driver';
+import type { AttachmentScope } from '@moor/host/persistence/store';
+import { SessionAgentStore } from '@moor/host/sessions/agent';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SessionAgentStore } from '@moor/host/sessions/agent';
-import { AppError } from '@moor/protocol/protocol';
-import type { AgentConfig } from '@moor/host/agents/driver';
-import type { AttachmentScope } from '@moor/host/persistence/store';
+import { DatabaseSync } from 'node:sqlite';
+import test, { type TestContext } from 'node:test';
 
 const scope: AttachmentScope = {
   workspaceId: 'workspace',

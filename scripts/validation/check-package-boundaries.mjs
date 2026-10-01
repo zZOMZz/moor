@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, normalize, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
 const root = process.cwd();
 const allowedDependencies = new Map([
@@ -93,10 +94,42 @@ const workspaceFor = (path) =>
   workspaces.find(
     (workspace) => path === workspace.directory || path.startsWith(workspace.directory + '/'),
   );
-const imports = (body) =>
-  [...body.matchAll(/(?:from\s*|import\s*\(|require\s*\()(['"])([^'"]+)\1/g)].map(
-    (match) => match[2],
-  );
+function imports(body, file) {
+  const source = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true);
+  const specifiers = new Set();
+  function visit(node) {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    )
+      specifiers.add(node.moduleSpecifier.text);
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0])
+    )
+      specifiers.add(node.arguments[0].text);
+    if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    )
+      specifiers.add(node.argument.literal.text);
+    if (
+      file.includes('/packages/client/src/features/') ||
+      file.includes('/packages/client/src/operations/')
+    ) {
+      if (ts.isStringLiteralLike(node) && node.text.startsWith('/api/'))
+        errors.push(`${relative(root, file)} contains a physical API route in client business`);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return [...specifiers];
+}
 
 for (const workspace of workspaces) {
   const declared = {
@@ -107,7 +140,7 @@ for (const workspace of workspaces) {
   };
   const allowed = allowedDependencies.get(workspace.manifest.name) ?? new Set();
   for (const file of workspace.files) {
-    for (const specifier of imports(await readFile(file, 'utf8'))) {
+    for (const specifier of imports(await readFile(file, 'utf8'), file)) {
       const productionSource = file.startsWith(join(workspace.directory, 'src') + '/');
       if (
         productionSource &&

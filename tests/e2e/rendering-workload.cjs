@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const renderingFixtureSource = `
-import { ClientSessionReplica as BenchmarkReplica } from '@moor/client/session-client';
+import { ClientSessionReplica as BenchmarkReplica } from '@moor/session/client-session-replica';
 import { LoroDoc as BenchmarkDoc, Flock as BenchmarkFlock, mirror as benchmarkMirror, delta as benchmarkDelta, putMeta as benchmarkPutMeta, vv as benchmarkVersion } from '@moor/session/model';
 import { appendSessionText as benchmarkAppend } from '@moor/session/session-output';
 window.__benchCounters={};

@@ -1,3 +1,10 @@
+import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
+import { AppError } from '@moor/protocol/protocol';
+import {
+  SKILLS_LIMITS,
+  skillSummarySchema,
+  type SkillSource,
+} from '@moor/protocol/skills-protocol';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -14,13 +21,6 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { AppError } from '@moor/protocol/protocol';
-import {
-  SKILLS_LIMITS,
-  skillSummarySchema,
-  type SkillSource,
-} from '@moor/protocol/skills-protocol';
-import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
 import { writePrivateArtifacts } from '../fixtures/private-documents';
 
 const version = 'sha256:' + '1'.repeat(64);

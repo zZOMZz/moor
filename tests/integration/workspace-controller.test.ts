@@ -1,58 +1,56 @@
-import { mirror, vv } from '@moor/session/model';
-import { isRequestRejected } from '@moor/protocol/request-failure';
-import { createGitHubClient } from '@moor/host/integrations/github/client';
-import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
-import type { SessionGithubOptions } from '@moor/host/sessions/github';
-import type { SessionGithubWriteOptions } from '@moor/host/sessions/github-write';
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import {
-  mkdtempSync,
-  mkdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import {
-  WorkspaceController,
-  type WorkspaceClientState,
-} from '../../apps/web/src/features/workspace/workspace-controller';
-import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
-import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
-import {
-  workspaceCatalogSchema,
-  type WorkspaceRequest,
-} from '@moor/protocol/workspace-client-protocol';
-import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import { buildSessionTurn, sessionPermissionReviews } from '@moor/client/session-client';
-import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import { createAttachmentDraftItem } from '@moor/client/features/attachments/attachments';
 import {
   attentionPendingKey,
   attentionRouteSchema,
   pendingAttentionSchema,
-} from '../../apps/web/src/features/attention/attention';
-import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
-import type { AgentCallbacks, AgentOpenOptions } from '@moor/host/agents/driver';
-import { workspaceInteractionSnapshot } from '../../apps/web/src/features/interactions/workspace-interactions';
-import { STEER_FEATURE, type QuestionRequest } from '@moor/protocol/interaction-protocol';
-import type { AgentForkInput } from '@moor/host/agents/fork';
-import { syntheticTaskPlan, syntheticTaskGrant } from '../fixtures/task-plan';
-import { workspaceFeatureTarget } from '../../apps/web/src/features/mcp/workspace-mcp';
-import { type PreviewAnnotationSnapshot } from '../../apps/web/src/features/preview/project-preview';
+} from '@moor/client/features/attention/attention';
+import { workspaceInteractionSnapshot } from '@moor/client/features/interactions/workspace-interactions';
+import { workspaceFeatureTarget } from '@moor/client/features/mcp/workspace-mcp';
 import {
-  previewFrame,
-  previewPng,
-  previewVersion,
-  previewViewport,
-} from '../fixtures/preview-fixture';
+  createWorkspace,
+  type Workspace,
+  type WorkspaceClientState,
+} from '@moor/client/features/workspace/compose';
+import { ConfirmationPersistenceFailure } from '@moor/client/operations/session-operation';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
+import {
+  createWorkspacePersistence,
+  type WorkspacePersistence,
+} from '@moor/client/operations/workspace/compose';
+import type { AgentCallbacks, AgentOpenOptions } from '@moor/host/agents/driver';
+import type { AgentForkInput } from '@moor/host/agents/fork';
+import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import { createGitHubClient } from '@moor/host/integrations/github/client';
+import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import type { SessionGithubOptions } from '@moor/host/sessions/github';
+import type { SessionGithubWriteOptions } from '@moor/host/sessions/github-write';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { STEER_FEATURE, type QuestionRequest } from '@moor/protocol/interaction-protocol';
+import { isRequestRejected } from '@moor/protocol/request-failure';
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import {
+  workspaceCatalogSchema,
+  type WorkspaceRequest,
+} from '@moor/protocol/workspace-client-protocol';
+import { mirror, vv } from '@moor/session/model';
+import { buildSessionTurn, sessionPermissionReviews } from '@moor/session/session-operations';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
+import { syntheticCapabilities } from '../fixtures/agent-capabilities';
+import { syntheticTaskGrant, syntheticTaskPlan } from '../fixtures/task-plan';
 
 function signal() {
   let resolve!: () => void;
@@ -61,7 +59,7 @@ function signal() {
   });
   return { promise, resolve };
 }
-async function cacheSettled(controller: WorkspaceController) {
+async function cacheSettled(controller: Workspace) {
   if (controller.state.sessionCache?.status !== 'saving') return;
   const done = signal();
   const unsubscribe = controller.subscribe(() => {
@@ -74,7 +72,7 @@ async function cacheSettled(controller: WorkspaceController) {
   }
 }
 async function observeState(
-  controller: WorkspaceController,
+  controller: Workspace,
   match: (state: WorkspaceClientState) => boolean,
 ) {
   if (match(controller.state)) return;
@@ -136,6 +134,7 @@ async function fixture(
     githubWrite?: (projectId: string) => SessionGithubWriteOptions;
     schedule?: (ms: number, work: () => void) => () => void;
     yieldCache?: () => Promise<void>;
+    sessionReceived?: Parameters<typeof createWorkspace>[0]['sessionReceived'];
     runCapabilities?: typeof syntheticCapabilities;
   } = {},
 ) {
@@ -272,7 +271,7 @@ async function fixture(
     ],
   });
   const memory = new Memory(),
-    store = new WorkspaceStore(memory),
+    store = createWorkspacePersistence(memory),
     calls: WorkspaceRequest[] = [];
   const fault: {
     unavailable?: boolean;
@@ -384,9 +383,10 @@ async function fixture(
       value = { accepted: true, delivered: true, operationId: 'another-operation' };
     return { ok: true, value };
   };
-  const controller = new WorkspaceController({
+  const controller = createWorkspace({
     request,
     store,
+    sessionReceived: config.sessionReceived,
     schedule: config.schedule ?? (() => () => {}),
     yieldCache: config.yieldCache ?? (() => Promise.resolve()),
   });
@@ -1022,7 +1022,7 @@ test('large streamed text uses a conservative warm-view budget without changing 
     const held = t.mock.method(
       f.store,
       'loadSessionCache',
-      async (...args: Parameters<WorkspaceStore['loadSessionCache']>) => {
+      async (...args: Parameters<WorkspacePersistence['loadSessionCache']>) => {
         entered.resolve();
         await release.promise;
         return load(...args);
@@ -1062,9 +1062,9 @@ test('a fast persisted snapshot avoids the loading screen after controller resta
   const f = await fixture(t),
     sessionId = await f.create();
   const scheduled: Array<{ milliseconds: number; canceled: boolean }> = [];
-  const restored = new WorkspaceController({
+  const restored = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
     schedule: (milliseconds) => {
       const entry = { milliseconds, canceled: false };
       scheduled.push(entry);
@@ -1097,9 +1097,9 @@ test('cold navigation retires the previous editor before cache reads and ignores
     first = await f.create(),
     second = await f.create(),
     third = await f.create(),
-    store = new WorkspaceStore(f.memory);
+    store = createWorkspacePersistence(f.memory);
   const scheduled: Array<{ milliseconds: number; work: () => void; canceled: boolean }> = [];
-  const restored = new WorkspaceController({
+  const restored = createWorkspace({
     request: f.request,
     store,
     schedule: (milliseconds, work) => {
@@ -1572,7 +1572,7 @@ test('workspace Git holds the shared operation lock across delivery so another p
   };
   const preparing = panel.prepare('main', oid, 'feature/one-operation');
   await arrived.promise;
-  const second = new WorkspaceController({ request: f.request, store: f.store });
+  const second = createWorkspace({ request: f.request, store: f.store });
   t.after(() => second.close());
   await second.refreshCatalog('local');
   await second.selectProject('local', f.catalog.targets[0]!.target);
@@ -1781,7 +1781,7 @@ test('two pages cannot replay the same pending Fork while its original native re
   };
   const creating = panel.create({ kind: 'current' }, { kind: 'same-directory' });
   await arrived.promise;
-  const second = new WorkspaceController({ request: f.request, store: f.store });
+  const second = createWorkspace({ request: f.request, store: f.store });
   t.after(() => second.close());
   await second.refreshCatalog('local');
   await second.selectProject('local', f.catalog.targets[0]!.target);
@@ -2253,7 +2253,7 @@ test('main composer steering cannot follow an asynchronous session switch or an 
   f.fault.before = undefined;
   let persisted = false,
     supportsSteer = true;
-  const unconfirmed = new WorkspaceController({
+  const unconfirmed = createWorkspace({
     request: async (input) => {
       const response: any = await f.request(input);
       if (input.action === 'execute' && input.command.method === 'session' && response.ok)
@@ -2265,7 +2265,7 @@ test('main composer steering cannot follow an asynchronous session switch or an 
           );
       return response;
     },
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
     schedule: () => () => {},
   });
   t.after(() => unconfirmed.close());
@@ -2322,9 +2322,9 @@ test('two workspace pages hold the interaction lock across delivery and only one
   };
   const first = f.controller.steer(question.expectedTurnId, 'Once across pages');
   await entered.promise;
-  const other = new WorkspaceController({
+  const other = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
   });
   t.after(() => other.close());
   await other.refreshCatalog('local');
@@ -2779,9 +2779,9 @@ test('lost delivery retains the original operation and draft; reconnect and rest
   f.fault.loseMutation = false;
   await f.controller.refreshCatalog('local');
   await f.controller.refreshSessions();
-  const restored = new WorkspaceController({
+  const restored = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
   });
   t.after(() => restored.close());
   await restored.refreshCatalog('local');
@@ -2836,9 +2836,9 @@ test('durable draft conflicts and failed operation staging prevent dispatch', as
   await f.controller.reloadDraft();
   assert.equal(f.controller.state.draft?.text, 'Other page');
   await f.controller.saveDraft('Resolved by user', {});
-  const clean = new WorkspaceController({
+  const clean = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
   });
   t.after(() => clean.close());
   await clean.refreshCatalog('local');
@@ -3123,9 +3123,9 @@ test('two pages cannot replay the same pending operation concurrently', async (t
   const operationId = f.controller.state.ledger!.operations.find(
     (entry) => entry.status === 'pending',
   )!.original.value.operationId;
-  const other = new WorkspaceController({
+  const other = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
   });
   t.after(() => other.close());
   await other.refreshCatalog('local');
@@ -3163,7 +3163,13 @@ test('failed receipt persistence keeps the durable original recoverable', async 
     if (request.action === 'execute' && request.command.method === 'send-turn')
       f.memory.failWrite = true;
   };
-  await assert.rejects(f.controller.send(), /storage failure/);
+  await assert.rejects(f.controller.send(), (error: unknown) => {
+    assert(error instanceof ConfirmationPersistenceFailure);
+    assert.equal(error.hostStatus, 'confirmed');
+    assert.match(error.message, /主机已确认.*本机.*保存失败/);
+    assert.match(String(error.cause), /storage failure/);
+    return true;
+  });
   f.memory.failWrite = false;
   const ledger = await f.store.read(f.controller.state.scope!, () => {});
   const pending = ledger.operations.find((entry) => entry.status === 'pending')!;
@@ -4050,7 +4056,7 @@ test('retired task recovery uses only the reviewed original, retains failed rece
   await f.store.saveTasks(scope, id, 0, saved, () => {});
   const actions: unknown[] = [];
   let lost = true;
-  const client = new WorkspaceController({
+  const client = createWorkspace({
     store: f.store,
     schedule: () => () => {},
     request: async (request) => {
@@ -4304,9 +4310,9 @@ test('ordinary semantic permission freezes the entire reviewed tool and a lost r
   assert.equal('update' in original.value, false);
   assert.equal('meta' in original.value, false);
   f.fault.loseMutation = false;
-  const restored = new WorkspaceController({
+  const restored = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
   });
   t.after(() => restored.close());
   await restored.refreshCatalog('local');
@@ -4349,9 +4355,9 @@ test('a legacy Mutation already stored in the workspace remains byte-for-byte or
   const frozen = JSON.stringify(
     (await f.store.operation(scope, value.operationId, () => {}))!.original,
   );
-  const restored = new WorkspaceController({
+  const restored = createWorkspace({
     request: f.request,
-    store: new WorkspaceStore(f.memory),
+    store: createWorkspacePersistence(f.memory),
   });
   t.after(() => restored.close());
   await restored.refreshCatalog('local');
@@ -4404,4 +4410,36 @@ test('a legacy draft mode alias freezes its verified Moor preset without rewriti
   await f.controller.retry(operation.original.value.operationId);
   assert.equal(f.prompts(), 1);
   assert.equal((await f.store.readDraft(f.controller.state.scope!, sessionId, () => {})).text, '');
+});
+
+test('composed session reads publish the visible workspace identity to the optional observer', async (t) => {
+  const marks: { owner: object; sessionId: string; version: string }[] = [];
+  const f = await fixture(t, {
+    sessionReceived: () => (owner, sessionId, version) => marks.push({ owner, sessionId, version }),
+  });
+  const id = await f.create();
+  const doc = f.runtime.doc(id),
+    view = mirror(doc, id);
+  view.setState((state) => {
+    state.history.push({
+      id: 'observed-turn',
+      role: 'assistant',
+      timestamp: '2026-09-26T00:00:00.000Z',
+      userId: undefined,
+      userTurnId: undefined,
+      status: undefined,
+      read: undefined,
+      inputConfig: undefined,
+      fileDiff: null,
+      finished: true,
+      items: [{ type: 'text', text: 'Synthetic observed output' }],
+    });
+  });
+  view.dispose();
+  f.runtime.persist(id, doc);
+  doc.free();
+  await f.controller.refreshSession();
+  assert.ok(marks.length > 0, 'actual confirmed reads must reach the observer');
+  assert.ok(marks.every((mark) => mark.owner === f.controller && mark.sessionId === id));
+  assert.equal(marks.at(-1)!.version, f.controller.state.session!.version);
 });

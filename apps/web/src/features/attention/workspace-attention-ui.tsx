@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
 import { Dialog } from '@base-ui/react/dialog';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { Inbox } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { AttentionWorkbench } from './attention-ui';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 
 export function WorkspaceAttentionUI({
   controller,
@@ -10,12 +10,12 @@ export function WorkspaceAttentionUI({
   busy,
   run,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
 }) {
-  type Panel = Awaited<ReturnType<WorkspaceController['openAttention']>>;
+  type Panel = Awaited<ReturnType<Workspace['openAttention']>>;
   const panel = useRef<Panel | null>(null),
     [, render] = useState(0);
   const close = () => {

@@ -1,12 +1,13 @@
-import { api } from '../platform/api';
-import { createDesktopUiPorts, type DesktopUiBridge } from '../platform/desktop/ui-ports';
-import { createRoot } from 'react-dom/client';
-import { WorkspaceApp } from './workspace-app';
-import { WorkspaceController } from '../features/workspace/workspace-controller';
-import { WorkspaceStore } from '../features/workspace/workspace-store';
-import { IndexedStorage } from '../platform/indexed-storage';
-import type { AccountApi } from '../platform/account';
+import { createWorkspace } from '@moor/client/features/workspace/compose';
+import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
 import type { WorkspaceRequest } from '@moor/protocol/workspace-client-protocol';
+import { createRoot } from 'react-dom/client';
+import { beginSessionPerformanceRead } from '../features/performance/performance-signals';
+import type { AccountApi } from '../platform/account';
+import { api } from '../platform/api';
+import { type DesktopUiBridge, createDesktopUiPorts } from '../platform/desktop/ui-ports';
+import { IndexedStorage } from '../platform/indexed-storage';
+import { WorkspaceApp } from './workspace-app';
 
 /** @nativeEntry Invoked by the desktop startup module through its build-owned entry alias. */
 export async function start() {
@@ -27,10 +28,11 @@ export async function start() {
   const ports = createDesktopUiPorts({ window, location, request: api }, bridges.moorDesktop!);
   const container = document.getElementById('app');
   if (!container) throw Error('桌面页面容器不可用。');
-  const store = new WorkspaceStore(
+  const store = createWorkspacePersistence(
     new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }),
   );
-  const controller = new WorkspaceController({
+  const controller = createWorkspace({
+    sessionReceived: beginSessionPerformanceRead,
     store,
     request: (value) => bridges.moorWorkspace!.request(value),
   });

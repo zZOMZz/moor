@@ -1,14 +1,14 @@
-import test from 'node:test';
+import type { AgentConfig, AgentDriver } from '@moor/host/agents/driver';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import type { Mutation } from '@moor/protocol/protocol';
+import { Flock, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { Flock, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
-import type { Mutation } from '@moor/protocol/protocol';
-import type { AgentConfig, AgentDriver } from '@moor/host/agents/driver';
+import test from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 
 function signal() {

@@ -1,12 +1,8 @@
-import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
 import { api } from '../../apps/web/src/platform/api';
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
 // Synthetic presentation fixture. Every action stays in memory; there is no Agent or account.
-import { createRoot } from 'react-dom/client';
-import { applyAppearance } from '../../apps/web/src/components/appearance';
-applyAppearance(localStorage.getItem('moor-appearance') ?? 'system');
-import { WorkspaceApp } from '../../apps/web/src/app/workspace-app';
-import { ProjectContentController } from '../../apps/web/src/features/files/project-content-controller';
-import type { ProjectContentTarget } from '../../apps/web/src/features/files/project-content';
+import type { ProjectContentTarget } from '@moor/client/features/files/project-content';
+import { ProjectContentController } from '@moor/client/features/files/project-content-controller';
 import {
   SESSION_PAGE_FEATURE,
   compareSessionPageItems,
@@ -14,6 +10,10 @@ import {
   sessionPageRequestSchema,
   validateSessionPageResult,
 } from '@moor/protocol/session-page';
+import { createRoot } from 'react-dom/client';
+import { WorkspaceApp } from '../../apps/web/src/app/workspace-app';
+import { applyAppearance } from '../../apps/web/src/components/appearance';
+applyAppearance(localStorage.getItem('moor-appearance') ?? 'system');
 const target = {
   serverKey: 'local:machine',
   owner: 'local-desktop',

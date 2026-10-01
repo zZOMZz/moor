@@ -1,16 +1,16 @@
-import test from 'node:test';
+import { notificationIdentity } from '@moor/protocol/notification-protocol';
+import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { createRequire as createPackageRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile, realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createRequire as createPackageRequire } from 'node:module';
 import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { JSDOM } from 'jsdom';
-import { notificationIdentity } from '@moor/protocol/notification-protocol';
-import { CLIENT_URL, CLIENT_ORIGIN } from '../../apps/desktop/src/main/client-assets.cjs';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 
 function gate() {
   let enter!: () => void, release!: () => void;

@@ -1,9 +1,9 @@
-import test from 'node:test';
 import strict from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, realpath, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import test from 'node:test';
 import {
   copyCodexAdapter,
   isAgentRuntimePackagePath,

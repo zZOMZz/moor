@@ -1,3 +1,7 @@
+import {
+  workspaceAttentionRoute,
+  type WorkspaceAttentionCommand,
+} from '@moor/protocol/workspace-attention';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
@@ -13,7 +17,6 @@ import {
 import { ApiError } from '../src/platform/api';
 import {
   AttentionController,
-  attentionEndpoint,
   attentionGroups,
   attentionItemKey,
   attentionOperationId,
@@ -28,7 +31,7 @@ import {
   type AttentionRoute,
   type AttentionTarget,
   type PendingAttention,
-} from '../src/features/attention/attention';
+} from '@moor/client/features/attention/attention';
 import { AttentionWorkbench } from '../src/features/attention/attention-ui';
 
 const route: AttentionRoute = {
@@ -162,20 +165,21 @@ function fixture(overrides: Partial<AttentionDependencies> = {}) {
       update: 'AA==',
     }),
     continued: async () => {},
-    request: async (path, body) => {
+    request: async (_route, command) => {
+      const path = command.kind;
+      const body = 'input' in command ? command.input : undefined;
       calls.push({ path, body: structuredClone(body) });
-      const url = new URL(path, route.origin);
       if (!body)
-        return url.pathname.endsWith('/' + item.itemId)
+        return command.kind === 'detail'
           ? detail()
-          : page(url.searchParams.get('view') ?? 'pending');
+          : page('query' in command ? command.query.view : 'pending');
       assert.ok(
         storage.get(
           attentionPendingKey({
             route,
             sessionId: item.sessionId,
             itemId: item.itemId,
-            ...(url.pathname.endsWith('/seen')
+            ...(command.kind === 'seen'
               ? {
                   operation: {
                     kind: 'seen' as const,
@@ -188,14 +192,14 @@ function fixture(overrides: Partial<AttentionDependencies> = {}) {
         'persist before transmission',
       );
       const request = body as any;
-      if (url.pathname.endsWith('/seen')) item = { ...item, seenRevision: request.eventRevision };
-      if (url.pathname.endsWith('/disposition'))
+      if (command.kind === 'seen') item = { ...item, seenRevision: request.eventRevision };
+      if (command.kind === 'disposition')
         item = {
           ...item,
           disposition: request.disposition,
           observationRevision: item.observationRevision + 1,
         };
-      if (url.pathname.endsWith('/continue'))
+      if (command.kind === 'continue')
         item = {
           ...item,
           disposition: 'continued',
@@ -247,7 +251,10 @@ test('unknown confirmations remain durable and an explicit retry uses the exact 
     onPending: (value?: PendingAttention) => {
       pending = value;
     },
-    request: async (path: string, body?: unknown) => {
+    request: async (target: AttentionRoute, command: WorkspaceAttentionCommand) => {
+      const path = command.kind;
+      const body = 'input' in command ? command.input : undefined;
+      assert.deepEqual(target, original.route);
       assert.ok(writes.get(attentionPendingKey(original)));
       sent.push({ path, body });
       if (sent.length === 1) throw new ApiError('synthetic reply lost', 0);
@@ -321,10 +328,10 @@ test('background reads never mark seen, opening only marks seen, and checking pr
   assert.equal(f.calls.filter((call) => call.body).length, 0);
   await f.controller.open(selection);
   assert.equal(f.calls.filter((call) => call.body).length, 1);
-  assert.match(f.calls.find((call) => call.body)!.path, /\/seen$/);
+  assert.equal(f.calls.find((call) => call.body)!.path, 'seen');
   assert.equal(f.getItem().disposition, 'pending');
   await f.controller.refresh();
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/seen')).length, 1);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('seen')).length, 1);
   await f.controller.disposition('checked');
   assert.equal(f.controller.state.view, 'pending');
   assert.equal(f.controller.state.detail?.item.disposition, 'checked');
@@ -364,13 +371,13 @@ test('late pre-check pages cannot restore a confirmed result to pending', async 
     started = deferred<void>();
   const request = f.deps.request;
   let defer = true;
-  f.deps.request = async (path, body) => {
-    if (!body && path.includes('?view=') && defer) {
+  f.deps.request = async (target, command, sessionId) => {
+    if (command.kind === 'list' && defer) {
       defer = false;
       started.resolve();
       return release.promise;
     }
-    return request(path, body);
+    return request(target, command, sessionId);
   };
   const reading = f.controller.refresh();
   await started.promise;
@@ -419,7 +426,7 @@ test('failed draft storage never changes shared state and continue has no ordina
   f.deps.write = write;
   await f.controller.saveDraft();
   await f.controller.sendContinue();
-  assert.ok(f.calls.some((call) => call.path.endsWith('/continue')));
+  assert.ok(f.calls.some((call) => call.path.endsWith('continue')));
   assert.equal(
     f.calls.some((call) => call.path.includes('/mutations')),
     false,
@@ -456,15 +463,25 @@ test('cached UI is read-only, escapes source text, and separate hosts never merg
   ]);
   assert.equal(groups.length, 2);
   assert.equal(attentionOperationId(original.operation), 'check-once');
-  assert.equal(attentionEndpoint(route, 'session/a', 'item/a').includes('session%2Fa'), true);
+  assert.equal(
+    workspaceAttentionRoute(
+      {
+        catalogWorkspaceId: route.catalogWorkspaceId,
+        replicaId: route.replicaId,
+        sessionId: 'session/a',
+      } as Parameters<typeof workspaceAttentionRoute>[0],
+      { kind: 'detail', itemId: 'item/a' },
+    ).path.includes('session%2Fa'),
+    true,
+  );
 });
 
 test('unconfirmed seen records use a separate channel and never lock a processing decision', async () => {
   const f = fixture(),
     request = f.deps.request;
-  f.deps.request = async (path, body) => {
-    const result = await request(path, body);
-    if (path.endsWith('/seen')) throw new ApiError('seen reply lost', 0);
+  f.deps.request = async (target, command, sessionId) => {
+    const result = await request(target, command, sessionId);
+    if (command.kind === 'seen') throw new ApiError('seen reply lost', 0);
     return result;
   };
   await f.controller.refresh();
@@ -517,14 +534,14 @@ test('switching items while a request is pending does not leave the next item bu
   const release = deferred<unknown>(),
     started = deferred<void>(),
     request = f.deps.request;
-  f.deps.request = async (path, body) => {
-    if (path.endsWith('/disposition')) {
-      const response = await request(path, body);
+  f.deps.request = async (target, command, sessionId) => {
+    if (command.kind === 'disposition') {
+      const response = await request(target, command, sessionId);
       started.resolve();
       await release.promise;
       return response;
     }
-    return request(path, body);
+    return request(target, command, sessionId);
   };
   const writing = f.controller.disposition('checked');
   await started.promise;

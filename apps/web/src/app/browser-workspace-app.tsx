@@ -1,30 +1,32 @@
-import type { UiPorts } from '../platform/ui-ports';
-import { IndexedStorage } from '../platform/indexed-storage';
-import { createRoot } from 'react-dom/client';
-import { z } from 'zod';
-import { id } from '@moor/protocol/protocol';
-import { workspaceProjectTargetSchema } from '@moor/protocol/workspace-client-protocol';
 import { BrowserHttpError, createBrowserWorkspaceHttp } from '@moor/client/adapters/browser/http';
+import { createWorkspace } from '@moor/client/features/workspace/compose';
+import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
 import {
   accountManagementPlan,
   validateAccountManagementResult,
 } from '@moor/protocol/account-management';
-import { WorkspaceApp } from './workspace-app';
-import { WorkspaceController } from '../features/workspace/workspace-controller';
-import { WorkspaceStore } from '../features/workspace/workspace-store';
-import { BrowserWorkspaceRuntime } from '../platform/browser-workspace';
-import { forgetBrowserOwner, rememberBrowserOwner } from '../platform/browser-storage';
-import { api, ApiError, type Identity } from '../platform/api';
-import type { AccountApi } from '../platform/account';
-import { logoutBrowserAccount } from '../platform/browser-logout';
-import { firstStartupSource } from './bootstrap';
+import { id } from '@moor/protocol/protocol';
+import { workspaceProjectTargetSchema } from '@moor/protocol/workspace-client-protocol';
+import { createRoot } from 'react-dom/client';
+import { z } from 'zod';
 import { BrowserAccountControls } from '../features/auth/browser-account';
-import {
-  reconcileNotificationAccount,
-  notificationBrowser,
-  browserNotificationReason,
-} from '../platform/browser/notifications';
 import { parseNotificationNavigation } from '../features/notifications/notification-navigation';
+import { beginSessionPerformanceRead } from '../features/performance/performance-signals';
+import type { AccountApi } from '../platform/account';
+import { ApiError, type Identity, api } from '../platform/api';
+import { logoutBrowserAccount } from '../platform/browser-logout';
+import { forgetBrowserOwner, rememberBrowserOwner } from '../platform/browser-storage';
+import { BrowserWorkspaceRuntime } from '../platform/browser-workspace';
+import {
+  browserNotificationReason,
+  createNotificationRequests,
+  notificationBrowser,
+  reconcileNotificationAccount,
+} from '../platform/browser/notifications';
+import { IndexedStorage } from '../platform/indexed-storage';
+import type { UiPorts } from '../platform/ui-ports';
+import { firstStartupSource } from './bootstrap';
+import { WorkspaceApp } from './workspace-app';
 
 const selectionSchema = z.object({
   scope: z.object({
@@ -74,16 +76,17 @@ export async function bootBrowserWorkspace(
     });
     return;
   }
-  const store = new WorkspaceStore(
-    new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }),
-  );
+  const storage = new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' });
+  const store = createWorkspacePersistence(storage);
   const runtime = new BrowserWorkspaceRuntime({
     origin: location.origin,
     owner,
     store,
+    storage,
     initialCache: true,
   });
-  const controller = new WorkspaceController({
+  const controller = createWorkspace({
+    sessionReceived: beginSessionPerformanceRead,
     store,
     request: (request) => runtime.request(request),
     restoreLegacy: (...args) => runtime.restoreLegacy(...args),
@@ -241,7 +244,7 @@ export async function bootBrowserWorkspace(
           identity={accountIdentity}
           notifications={{
             browser: notificationBrowser,
-            request: api,
+            request: createNotificationRequests(api),
             reason: browserNotificationReason,
           }}
         />

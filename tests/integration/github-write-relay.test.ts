@@ -1,14 +1,14 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { createHash } from 'node:crypto';
-import { WebSocket } from 'ws';
-import { PROTOCOL } from '@moor/protocol/protocol';
+import type { Workspace } from '@moor/protocol/catalog';
 import {
   GITHUB_WRITE_FEATURE,
   githubWriteActionSchema,
 } from '@moor/protocol/github-write-protocol';
-import type { Workspace } from '@moor/protocol/catalog';
+import { PROTOCOL } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import test from 'node:test';
+import { WebSocket } from 'ws';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 const version = 'sha256:' + 'a'.repeat(64),

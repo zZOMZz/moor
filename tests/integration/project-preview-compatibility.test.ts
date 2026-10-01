@@ -1,16 +1,16 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import type { GitTarget } from '@moor/client/features/git/git-workspace';
 import {
-  snapshotVersion,
   previewAnnotationSnapshotSchema,
+  snapshotVersion,
   type PreviewAnnotationSnapshot,
-} from '../../apps/web/src/features/preview/project-preview';
+} from '@moor/client/features/preview/project-preview';
 import {
   validateWorkspaceAnnotations,
   validateWorkspacePreview,
-} from '../../apps/web/src/features/preview/workspace-preview';
-import type { GitTarget } from '../../apps/web/src/features/git/git-workspace';
+} from '@moor/client/features/preview/workspace-preview';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
 import { previewPng, previewVersion, previewViewport } from '../fixtures/preview-fixture';
 
 const target: GitTarget = {

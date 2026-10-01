@@ -1,4 +1,4 @@
-import test, { type TestContext } from 'node:test';
+import { SkillsConfig } from '@moor/host/integrations/skills-config';
 import assert from 'node:assert/strict';
 import {
   chmodSync,
@@ -14,9 +14,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
+import { dirname, join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 
 function fixture(t: TestContext) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'moor-skills-config-'))),

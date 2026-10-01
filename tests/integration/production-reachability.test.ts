@@ -1,13 +1,13 @@
+import { build } from 'esbuild';
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { build } from 'esbuild';
+import test from 'node:test';
 import {
-  recordEsbuildGraph,
   productionGraphPlugin,
+  recordEsbuildGraph,
   requiredProductionGraphs,
 } from '../../scripts/validation/production-graph.mjs';
 

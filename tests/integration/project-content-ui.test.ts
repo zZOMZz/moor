@@ -1,8 +1,8 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
-import type { ProjectContentPanelProps } from '../../apps/web/src/features/files/project-content-ui';
 import type { ProjectDiffReference } from '@moor/protocol/project-content-protocol';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { ProjectContentPanelProps } from '../../apps/web/src/features/files/project-content-ui';
 
 const version = 'sha256:' + '0'.repeat(64);
 const scope = {

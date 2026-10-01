@@ -77,4 +77,4 @@ JSON
 
 安装、编辑、同步 Skills 与原生激活属于后续独立范围。共享客户端定向检查使用合成目录与 Agent，覆盖完整范围、只读入口、原文引用、跨页条件写入、关闭与连接变化后的迟到结果。真实 Agent、双 Mac、iPhone/Safari/PWA 仍需[专项验收](validation.md)；最终安装包和部署结果以对应批次记录为准。
 
-实现入口：[协议](../packages/protocol/src/skills-protocol.ts)、[本机配置](../packages/host/src/integrations/skills-config.ts)、[发现器](../packages/host/src/projects/skills.ts)、[主机范围](../packages/host/src/sessions/skills.ts)、[Skills 控制器](../apps/web/src/features/skills/skills.ts)、[共享会话控制器](../apps/web/src/features/workspace/workspace-controller.ts)与[面板](../apps/web/src/features/skills/workspace-skills-ui.tsx)。返回[文档目录](README.md)。
+实现入口：[协议](../packages/protocol/src/skills-protocol.ts)、[本机配置](../packages/host/src/integrations/skills-config.ts)、[发现器](../packages/host/src/projects/skills.ts)、[主机范围](../packages/host/src/sessions/skills.ts)、[Skills 控制器](../packages/client/src/features/skills/skills.ts)、[共享会话控制器](../packages/client/src/features/workspace/compose.ts)与[面板](../apps/web/src/features/skills/workspace-skills-ui.tsx)。返回[文档目录](README.md)。

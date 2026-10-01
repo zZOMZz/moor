@@ -1,19 +1,19 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
+import {
+  SESSION_SEARCH_SCAN_SQL,
+  sessionSearchDocument,
+  SessionSearchIndex,
+  type FrozenSearchDiff,
+  type SearchScope,
+} from '@moor/host/sessions/search-index';
 import {
   SEARCH_LIMITS,
   searchEntrySchema,
   sessionSearchRequestSchema,
   sessionSearchResultSchema,
 } from '@moor/protocol/search-protocol';
-import {
-  SessionSearchIndex,
-  SESSION_SEARCH_SCAN_SQL,
-  sessionSearchDocument,
-  type FrozenSearchDiff,
-  type SearchScope,
-} from '@moor/host/sessions/search-index';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import test from 'node:test';
 
 const scope: SearchScope = {
   workspaceId: 'workspace',

@@ -3,16 +3,16 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { prepareDesktopDevApp } from '../../scripts/build/desktop-dev-app.mjs';
-import { publishRuntime, desktopRuntimeGroups } from '../../scripts/build/desktop-runtime.mjs';
 import {
-  developmentClientPolicy,
-  confirmDevelopmentServer,
-  clientDocumentMatches,
   allowsClientResource,
+  clientDocumentMatches,
+  confirmDevelopmentServer,
+  developmentClientPolicy,
 } from '../../apps/desktop/src/main/client-policy.cjs';
-import { watchHostRuntime } from '../../apps/desktop/src/main/dev-runtime.cjs';
 import { isCurrentContentDocument } from '../../apps/desktop/src/main/content-authority.cjs';
+import { watchHostRuntime } from '../../apps/desktop/src/main/dev-runtime.cjs';
+import { prepareDesktopDevApp } from '../../scripts/build/desktop-dev-app.mjs';
+import { desktopRuntimeGroups, publishRuntime } from '../../scripts/build/desktop-runtime.mjs';
 
 test('desktop development preparation preserves data and existing program files', async () => {
   const repository = await mkdtemp(join(tmpdir(), 'moor-desktop-dev-'));

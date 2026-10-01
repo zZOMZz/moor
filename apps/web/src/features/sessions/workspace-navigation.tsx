@@ -1,45 +1,45 @@
-import { useEffect, useId, useRef, useState } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
-import { Menu } from '@base-ui/react/menu';
 import { Dialog } from '@base-ui/react/dialog';
-import {
-  Folder,
-  ChevronRight,
-  Pin,
-  PinOff,
-  Archive,
-  ArchiveRestore,
-  SquarePen,
-  Ellipsis,
-  RefreshCw,
-  LoaderCircle,
-  MessageSquare,
-  ShieldQuestion,
-  Search,
-} from 'lucide-react';
+import { Menu } from '@base-ui/react/menu';
 import {
   isWorkspaceListOfflineFailure,
-  type WorkspaceController,
+  type Workspace,
   type WorkspaceSessionPage,
-} from '../workspace/workspace-controller';
-import type { SessionMetadata } from '@moor/protocol/session-responses';
-import type { SessionAction } from '@moor/protocol/protocol';
+} from '@moor/client/features/workspace/compose';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import type { SessionAction } from '@moor/protocol/protocol';
+import type { SessionMetadata } from '@moor/protocol/session-responses';
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronRight,
+  Ellipsis,
+  Folder,
+  LoaderCircle,
+  MessageSquare,
+  Pin,
+  PinOff,
+  RefreshCw,
+  Search,
+  ShieldQuestion,
+  SquarePen,
+} from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import {
-  projectKey,
   appendNavigationPage,
-  sessionPageError,
   navigationSessionQuery,
+  projectKey,
+  sessionPageError,
   type NavigationProject,
 } from './workspace-navigation-pages';
 export {
-  useNavigationSessions,
-  navigationProjects,
-  projectKey,
-  workspaceKey,
   logicalProjectGroups,
+  navigationProjects,
   navigationSessionQuery,
+  projectKey,
+  useNavigationSessions,
+  workspaceKey,
   type NavigationProject,
 } from './workspace-navigation-pages';
 
@@ -390,7 +390,7 @@ export function NavigationProjectGroup({
   onAction: ProjectAction;
   onCreate(project: NavigationProject): void;
   onRefresh(project: NavigationProject): void | Promise<void>;
-  controller?: WorkspaceController;
+  controller?: Workspace;
   revision?: number;
   grouped?: boolean;
   selectedAttention?: NavigationAttention;
@@ -414,7 +414,7 @@ export function NavigationProjectGroup({
   };
   const pageScope = canonical([projectKey(project), effectiveQuery, archived]);
   const [loaded, setLoaded] = useState<{
-    controller: WorkspaceController;
+    controller: Workspace;
     scope: string;
     page: WorkspaceSessionPage;
   }>();

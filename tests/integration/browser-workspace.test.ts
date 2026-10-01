@@ -1,12 +1,12 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { LoroDoc, Flock, mirror, putMeta, encode } from '@moor/session/model';
-import { BrowserWorkspaceRuntime } from '../../apps/web/src/platform/browser-workspace';
-import {
-  WorkspaceStore,
-  type WorkspaceScope,
-} from '../../apps/web/src/features/workspace/workspace-store';
 import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
+import {
+  type WorkspaceScope,
+  createWorkspacePersistence,
+} from '@moor/client/operations/workspace/compose';
+import { Flock, LoroDoc, encode, mirror, putMeta } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { BrowserWorkspaceRuntime } from '../../apps/web/src/platform/browser-workspace';
 
 class Memory implements StorageBackend {
   values = new Map<string, unknown>();
@@ -92,11 +92,12 @@ function fixture(memory = new Memory(), initialCache = false) {
   const state = { offline: false, denied: false, owner, wrongSession: false };
   const calls: Array<{ path: string; method: string }> = [];
   const legacy = new Map<string, unknown>();
-  const store = new WorkspaceStore(memory);
+  const store = createWorkspacePersistence(memory);
   const client = new BrowserWorkspaceRuntime({
     origin,
     owner,
     store,
+    storage: memory,
     initialCache,
     legacyRead: async <T>(key: string) => structuredClone(legacy.get(key)) as T | undefined,
     fetch: async (input, options) => {

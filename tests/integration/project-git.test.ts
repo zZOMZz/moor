@@ -1,4 +1,13 @@
-import test from 'node:test';
+import {
+  inspectProjectWorktree,
+  prepareProjectWorktree,
+  readProjectGit,
+  removeProjectWorktree,
+  validateManagedWorktreeRoot,
+  type WorktreePlan,
+} from '@moor/host/projects/git';
+import { gitRepositoryStateSchema } from '@moor/protocol/git-protocol';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -15,16 +24,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AppError } from '@moor/protocol/protocol';
-import { gitRepositoryStateSchema } from '@moor/protocol/git-protocol';
-import {
-  readProjectGit,
-  prepareProjectWorktree,
-  inspectProjectWorktree,
-  removeProjectWorktree,
-  validateManagedWorktreeRoot,
-  type WorktreePlan,
-} from '@moor/host/projects/git';
+import test from 'node:test';
 
 function fixture(t: { after(fn: () => void): void }, initialized = true) {
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'moor-project-git-')));

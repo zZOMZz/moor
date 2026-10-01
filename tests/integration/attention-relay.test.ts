@@ -1,17 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
-import { WebSocket, WebSocketServer } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
-import { PROTOCOL, type RuntimeWorkspace } from '@moor/protocol/protocol';
-import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
-import { SESSION_INTENTS_FEATURE, sendTurnSchema } from '@moor/protocol/session-intent-protocol';
+import { RuntimeStore } from '@moor/host/persistence/store';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
@@ -20,8 +9,19 @@ import {
   type AttentionContext,
 } from '@moor/protocol/attention';
 import type { Workspace } from '@moor/protocol/catalog';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
+import { PROTOCOL, type RuntimeWorkspace } from '@moor/protocol/protocol';
+import { SESSION_INTENTS_FEATURE, sendTurnSchema } from '@moor/protocol/session-intent-protocol';
 import { LoroDoc, mirror, putMeta } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
+import { WebSocket, WebSocketServer } from 'ws';
 
 const features = [ATTENTION_FEATURE, ACTOR_FEATURE, FOLLOWUP_FEATURE];
 const addressOf = (server: ReturnType<typeof createServer>) => {

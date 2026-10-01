@@ -1,12 +1,12 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import {
   SessionForkController,
   sessionForkKey,
   type ForkTarget,
-} from '../../apps/web/src/features/fork/session-fork';
-import { ApiError } from '../../apps/web/src/platform/api';
+} from '@moor/client/features/fork/session-fork';
 import type { ForkOptionsResult, SessionFork } from '@moor/protocol/fork-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { ApiError } from '../../apps/web/src/platform/api';
 const target: ForkTarget = {
   owner: 'owner',
   deviceId: 'device',
@@ -90,7 +90,7 @@ function fixture() {
       uuid: () => `id-${++counter}`,
       request: async (path, body) => {
         calls.push({ path, body: structuredClone(body) });
-        if (path.endsWith('/options')) return structuredClone(options);
+        if (path.endsWith('fork-options')) return structuredClone(options);
         const request = body as SessionFork;
         assert.deepEqual(cache.get(sessionForkKey(t)).operation.request, request);
         if (controls.rejected) throw new ApiError('explicit rejection', 409, true);
@@ -162,10 +162,11 @@ test('Fork persists independent child identity and exact native cutoff before se
   const receipt = await moved.retry();
   assert.equal(receipt.phase, 'accepted');
   assert.equal(moved.pending, undefined);
-  const action = f.calls.filter((call) => call.path.endsWith('/action'));
+  const action = f.calls.filter((call) => call.path.endsWith('fork-action'));
   assert.equal(action.length, 2);
   assert.deepEqual(action[1].body, original);
-  assert.match(action[1].path, /moved\/replicas\/new-route/);
+  assert.equal(moved.target.catalogWorkspaceId, 'moved');
+  assert.equal(moved.target.replicaId, 'new-route');
 });
 test('unavailable anchors, changed source versions, bad receipts and durable failures never silently choose a different Fork', async () => {
   const f = fixture(),
@@ -176,7 +177,7 @@ test('unavailable anchors, changed source versions, bad receipts and durable fai
     c.create({ kind: 'turn', turnId: 'old' }, { kind: 'same-directory' }),
     /截止点/,
   );
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/action')).length, 0);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('fork-action')).length, 0);
   f.options.sourceVersion = 'sha256:' + 'c'.repeat(64);
   await assert.rejects(c.create({ kind: 'current' }, { kind: 'same-directory' }), /源会话已经改变/);
   f.controls.wrong = true;
@@ -195,7 +196,7 @@ test('unavailable anchors, changed source versions, bad receipts and durable fai
   await blocked.refresh();
   fresh.controls.failWrite = true;
   await assert.rejects(blocked.create({ kind: 'current' }, { kind: 'same-directory' }), /storage/);
-  assert.equal(fresh.calls.filter((call) => call.path.endsWith('/action')).length, 0);
+  assert.equal(fresh.calls.filter((call) => call.path.endsWith('fork-action')).length, 0);
   assert.equal(blocked.blocked, true);
 });
 test('only a first explicit rejection clears a new Fork outbox; native unknown remains recoverable', async () => {
@@ -249,10 +250,10 @@ test('a late response and a concurrent page cannot replace newer Fork confirmati
   await first.load();
   await second.load();
   await first.refresh();
-  const before = f.calls.filter((call) => call.path.endsWith('/action')).length;
+  const before = f.calls.filter((call) => call.path.endsWith('fork-action')).length;
   await assert.rejects(second.create({ kind: 'current' }, { kind: 'same-directory' }), /其他页面/);
   assert.equal(second.blocked, true);
-  assert.equal(f.calls.filter((call) => call.path.endsWith('/action')).length, before);
+  assert.equal(f.calls.filter((call) => call.path.endsWith('fork-action')).length, before);
 });
 
 test('failed Fork worktrees remain reachable across later operations and only a matching cleanup removes the resource', async () => {

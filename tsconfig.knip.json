@@ -22,29 +22,100 @@
       "@moor/client/adapters/shared/workspace-transport": [
         "./packages/client/src/adapters/shared/workspace-transport.ts"
       ],
-      "@moor/client/collaboration-client": ["./packages/client/src/collaboration-client.ts"],
+      "@moor/client/features/attachments/attachments": [
+        "./packages/client/src/features/attachments/attachments.ts"
+      ],
       "@moor/client/features/attachments/export": [
         "./packages/client/src/features/attachments/export.ts"
+      ],
+      "@moor/client/features/attention/attention": [
+        "./packages/client/src/features/attention/attention.ts"
       ],
       "@moor/client/features/auth/google-auth": [
         "./packages/client/src/features/auth/google-auth.ts"
       ],
+      "@moor/client/features/collaboration/client": [
+        "./packages/client/src/features/collaboration/client.ts"
+      ],
+      "@moor/client/features/files/file-content": [
+        "./packages/client/src/features/files/file-content.ts"
+      ],
+      "@moor/client/features/files/project-content": [
+        "./packages/client/src/features/files/project-content.ts"
+      ],
+      "@moor/client/features/files/project-content-controller": [
+        "./packages/client/src/features/files/project-content-controller.ts"
+      ],
+      "@moor/client/features/files/view": ["./packages/client/src/features/files/view.ts"],
+      "@moor/client/features/fork/session-fork": [
+        "./packages/client/src/features/fork/session-fork.ts"
+      ],
+      "@moor/client/features/git/git-workspace": [
+        "./packages/client/src/features/git/git-workspace.ts"
+      ],
+      "@moor/client/features/github/github": ["./packages/client/src/features/github/github.ts"],
+      "@moor/client/features/github/github-session": [
+        "./packages/client/src/features/github/github-session.ts"
+      ],
+      "@moor/client/features/github/github-write": [
+        "./packages/client/src/features/github/github-write.ts"
+      ],
+      "@moor/client/features/interactions/interactions": [
+        "./packages/client/src/features/interactions/interactions.ts"
+      ],
+      "@moor/client/features/interactions/workspace-interactions": [
+        "./packages/client/src/features/interactions/workspace-interactions.ts"
+      ],
+      "@moor/client/features/mcp/workspace-mcp": [
+        "./packages/client/src/features/mcp/workspace-mcp.ts"
+      ],
       "@moor/client/features/notifications/local-state": [
         "./packages/client/src/features/notifications/local-state.ts"
+      ],
+      "@moor/client/features/notifications/notifications": [
+        "./packages/client/src/features/notifications/notifications.ts"
       ],
       "@moor/client/features/notifications/worker": [
         "./packages/client/src/features/notifications/worker.ts"
       ],
+      "@moor/client/features/preview/project-preview": [
+        "./packages/client/src/features/preview/project-preview.ts"
+      ],
+      "@moor/client/features/preview/workspace-preview": [
+        "./packages/client/src/features/preview/workspace-preview.ts"
+      ],
+      "@moor/client/features/sessions/session-actions": [
+        "./packages/client/src/features/sessions/session-actions.ts"
+      ],
+      "@moor/client/features/sessions/session-intent": [
+        "./packages/client/src/features/sessions/session-intent.ts"
+      ],
+      "@moor/client/features/sessions/session-search": [
+        "./packages/client/src/features/sessions/session-search.ts"
+      ],
+      "@moor/client/features/skills/skills": ["./packages/client/src/features/skills/skills.ts"],
       "@moor/client/features/workspace/catalog-safety": [
         "./packages/client/src/features/workspace/catalog-safety.ts"
+      ],
+      "@moor/client/features/workspace/compose": [
+        "./packages/client/src/features/workspace/compose.ts"
+      ],
+      "@moor/client/features/workspace/workspace-records": [
+        "./packages/client/src/features/workspace/workspace-records.ts"
+      ],
+      "@moor/client/features/workspace/workspace-session-pages": [
+        "./packages/client/src/features/workspace/workspace-session-pages.ts"
       ],
       "@moor/client/operations/request-rejection": [
         "./packages/client/src/operations/request-rejection.ts"
       ],
+      "@moor/client/operations/session-operation": [
+        "./packages/client/src/operations/session-operation.ts"
+      ],
       "@moor/client/operations/storage": ["./packages/client/src/operations/storage.ts"],
-      "@moor/client/preview-annotation": ["./packages/client/src/preview-annotation.ts"],
-      "@moor/client/session-client": ["./packages/client/src/session-client.ts"],
-      "@moor/client/session-intent": ["./packages/client/src/session-intent.ts"],
+      "@moor/client/operations/workspace/compose": [
+        "./packages/client/src/operations/workspace/compose.ts"
+      ],
       "@moor/gateway/*": ["./packages/gateway/src/*.ts"],
       "@moor/host/*": ["./packages/host/src/*.ts"],
       "@moor/local-state/exclusive-lock": ["./packages/local-state/src/exclusive-lock.ts"],

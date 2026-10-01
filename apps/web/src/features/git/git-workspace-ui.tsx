@@ -1,7 +1,7 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { type GitWorkspaceController } from '@moor/client/features/git/git-workspace';
 import { X } from 'lucide-react';
 import { useRef, useState, type ReactNode } from 'react';
-import { type GitWorkspaceController } from './git-workspace';
 export type GitWorkspacePanelProps = {
   controller?: GitWorkspaceController;
   newSession: boolean;

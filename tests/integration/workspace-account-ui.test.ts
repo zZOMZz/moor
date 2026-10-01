@@ -1,9 +1,9 @@
-import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
-import type { AccountApi } from '../../apps/web/src/platform/account';
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
 import type { ManagedWorkspace } from '../../apps/web/src/features/auth/catalog-management';
+import type { AccountApi } from '../../apps/web/src/platform/account';
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 
 const workspaces: ManagedWorkspace[] = [
   {

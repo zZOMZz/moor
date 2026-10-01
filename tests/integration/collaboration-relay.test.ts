@@ -1,8 +1,8 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { syntheticCollaboration } from '../fixtures/collaboration-host';
 import { CollaborationReplica } from '@moor/session/collaboration-replica';
 import { buildSessionTurn } from '@moor/session/session-operations';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { syntheticCollaboration } from '../fixtures/collaboration-host';
 
 function signal() {
   let resolve!: () => void;

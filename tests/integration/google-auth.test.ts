@@ -1,9 +1,9 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { createHash } from 'node:crypto';
 import { Store, token } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import test, { type TestContext } from 'node:test';
 import type { GoogleIdentity, GoogleOidcProvider } from '../../apps/relay/src/google-oidc';
 
 const prefix = '/api/auth/google';

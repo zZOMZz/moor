@@ -1,17 +1,17 @@
 // Actual Host persistence and command reads; ACP-shaped updates are synthetic.
 // Agent startup/handshake and a remote Relay are deliberately outside this fixture.
+import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { workspaceRequestSchema } from '@moor/protocol/workspace-client-protocol';
+import { LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync } from 'node:fs';
-import { join, resolve, extname } from 'node:path';
+import { createServer } from 'node:http';
+import { extname, join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import { LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
-import { workspaceRequestSchema } from '@moor/protocol/workspace-client-protocol';
 
 const configuration = JSON.parse(process.env.MOOR_STREAM_HOST!);
 const now = () => performance.timeOrigin + performance.now();

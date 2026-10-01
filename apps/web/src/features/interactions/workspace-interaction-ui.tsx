@@ -1,15 +1,15 @@
-import { useMemo, useRef, useState } from 'react';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
-import { workspaceInteractionSnapshot } from './workspace-interactions';
 import {
   emptyInteractionSaved,
   questionDefaults,
   questionDraftKey,
   questionStatus,
   steerStatus,
-} from './interactions';
-import { QuestionPanel, SteerPanel } from './interaction-ui';
+} from '@moor/client/features/interactions/interactions';
+import { workspaceInteractionSnapshot } from '@moor/client/features/interactions/workspace-interactions';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { STEER_FEATURE } from '@moor/protocol/interaction-protocol';
+import { useMemo, useRef, useState } from 'react';
+import { QuestionPanel, SteerPanel } from './interaction-ui';
 
 export function WorkspaceInteractionUI({
   controller,
@@ -19,7 +19,7 @@ export function WorkspaceInteractionUI({
   onDirty,
   snapshot: suppliedSnapshot,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;

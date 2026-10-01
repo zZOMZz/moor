@@ -1,22 +1,22 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { NodeHttp } from '@moor/client/adapters/node/http';
+import { replicaBase } from '@moor/client/adapters/node/targets';
+import { buildSessionTurn } from '@moor/session/session-operations';
+import type { AgentOpenOptions } from '@moor/host/agents/driver';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { AppError } from '@moor/protocol/protocol';
-import { metas } from '@moor/session/model';
-import { CliState } from '../../apps/cli/src/state';
-import { CliClient } from '../../apps/cli/src/client';
-import { NodeHttp } from '@moor/client/adapters/node/http';
-import { buildSessionTurn } from '@moor/client/session-client';
-import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
-import { replicaBase } from '@moor/client/adapters/node/targets';
 import { localCliProof, type LocalCliConnectionLease } from '@moor/local-state/private-connection';
+import { AppError } from '@moor/protocol/protocol';
+import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import { metas } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 import { CliError, parseCliArgs } from '../../apps/cli/src/args';
+import { CliClient } from '../../apps/cli/src/client';
+import { CliState } from '../../apps/cli/src/state';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import type { AgentOpenOptions } from '@moor/host/agents/driver';
 const signal = () => {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => {

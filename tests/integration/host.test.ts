@@ -1,15 +1,8 @@
-import { syntheticCapabilities } from '../fixtures/agent-capabilities';
-import test from 'node:test';
-import { buildSendTurn } from '@moor/client/session-intent';
-import strict from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import type { AgentDriver } from '@moor/host/agents/driver';
+import { buildSendTurn } from '@moor/client/features/sessions/session-intent';
 import { Store } from '@moor/gateway/accounts';
-import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import type { AgentDriver } from '@moor/host/agents/driver';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import type { AttentionContext, AttentionListQuery } from '@moor/protocol/attention';
 import {
   runtimeWorkspaceSchema,
@@ -18,6 +11,13 @@ import {
   type RuntimeWorkspace,
   type SessionAction,
 } from '@moor/protocol/protocol';
+import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import strict from 'node:assert/strict';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 const ws: RuntimeWorkspace = {
   id: 'lw_synthetic',
   name: '验证工作区',

@@ -98,7 +98,7 @@ Lody 的 Agent Role 可以把 Agent、模型、强度、权限和说明组合成
 
 - 主机能力缓存：`packages/host/src/sessions/workspace.ts`，目录按实际执行范围共享，单次主机生命周期内记录初始化成功或失败，并发刷新合并。
 - ACP 能力投影：`packages/host/src/agents/capabilities.ts`、`packages/host/src/agents/acp/driver.ts`，在一次探测中收齐可用档位与默认值；补丁与上游许可、版本保持可追溯。
-- 统一工作区控制器：`apps/web/src/features/workspace/workspace-controller.ts`，本机和远程共用就绪触发、缓存读取和手动刷新语义，草稿选项独立保存。
+- 统一工作区控制器：`packages/client/src/features/workspace/compose.ts`，本机和远程共用就绪触发、缓存读取和手动刷新语义，草稿选项独立保存。
 - 共享控件：`apps/web/src/components/ui.tsx`，合并模型与推理强度入口，移除虚拟模型选项和常驻刷新。
 - 设置入口：`apps/desktop/src/settings/settings.html`、`apps/desktop/src/settings/settings.js`，接入明确的手动能力刷新；远程访问端的入口沿用目标执行主机的授权边界。
 - 运行默认配置：`packages/host/src/agents/run-preferences.ts` 保留全局审批默认记录，并把模型/强度写入按用户与 Agent 配置隔离的 `run-defaults-v1` 记录。两者使用独立递增 revision；新会话冻结 `initialModeId`、`initialModelId` 和 `initialReasoningEffort`，恢复只读，不反写偏好。

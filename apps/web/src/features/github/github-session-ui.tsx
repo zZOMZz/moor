@@ -1,7 +1,10 @@
+import type {
+  GithubSessionController,
+  GithubSessionState,
+} from '@moor/client/features/github/github-session';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
 import { GithubPanel } from './github-ui';
 import { GithubWritePanel } from './github-write-ui';
-import type { GithubSessionController, GithubSessionState } from './github-session';
 /** The same read/write panels serve every transport; recovery labels belong to the caller. */
 export function GithubSessionPanel<T>({
   state,

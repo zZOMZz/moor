@@ -1,17 +1,17 @@
+import { createWorkspace } from '@moor/client/features/workspace/compose';
+import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
+import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
+import { readSessionPage } from '@moor/host/sessions/page';
+import { AppError } from '@moor/protocol/protocol';
+import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
+import type { SessionMetadata } from '@moor/protocol/session-responses';
+import {
+  type WorkspaceRequest,
+  workspaceCatalogSchema,
+} from '@moor/protocol/workspace-client-protocol';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
-import { AppError } from '@moor/protocol/protocol';
-import type { SessionMetadata } from '@moor/protocol/session-responses';
-import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
-import { readSessionPage } from '@moor/host/sessions/page';
 import { syntheticSessionPageIndex } from './session-page-index';
-import {
-  workspaceCatalogSchema,
-  type WorkspaceRequest,
-} from '@moor/protocol/workspace-client-protocol';
-import { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
-import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
-import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 
 export function signal() {
   let resolve!: () => void;
@@ -116,7 +116,7 @@ export async function paginationFixture(
   );
   const calls: WorkspaceRequest[] = [],
     memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const projection = syntheticSessionPageIndex(rows);
   t.after(() => projection.close());
   const failures = new Map<
@@ -124,7 +124,7 @@ export async function paginationFixture(
     { code: string; status: number | null; rejected: boolean; message: string }
   >();
   const controls: { after?: (request: WorkspaceRequest) => Promise<void> } = {};
-  const controller = new WorkspaceController({
+  const controller = createWorkspace({
     store,
     schedule: () => () => {},
     request: async (input) => {

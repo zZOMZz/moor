@@ -1,13 +1,13 @@
-import test from 'node:test';
+import { GitHubConfig } from '@moor/host/integrations/github/config';
+import { RuntimeStore } from '@moor/host/persistence/store';
 import assert from 'node:assert/strict';
 import { fork, spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { GitHubConfig } from '@moor/host/integrations/github/config';
+import test from 'node:test';
 import { DesktopGitHubSettings } from '../../apps/desktop/src/main/github-settings.cjs';
 
 const entry = resolve('apps/host/src/main.ts');

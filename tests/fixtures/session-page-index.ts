@@ -1,7 +1,7 @@
-import { DatabaseSync } from 'node:sqlite';
-import { Flock, putMeta } from '@moor/session/model';
 import { SessionMetadataIndex } from '@moor/host/persistence/session-metadata';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
+import { Flock, putMeta } from '@moor/session/model';
+import { DatabaseSync } from 'node:sqlite';
 
 /** Mutable synthetic metadata, persisted through the actual SQL projection. */
 export function syntheticSessionPageIndex(rows: SessionMetadata[]) {

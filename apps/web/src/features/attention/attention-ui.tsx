@@ -1,4 +1,12 @@
 import {
+  attentionCategory,
+  attentionGroups,
+  attentionPending,
+  type AttentionController,
+  type AttentionRoute,
+} from '@moor/client/features/attention/attention';
+import type { AttentionItem } from '@moor/protocol/attention';
+import {
   ArrowLeft,
   CheckCheck,
   CircleCheck,
@@ -8,15 +16,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
-import type { AttentionItem } from '@moor/protocol/attention';
 import { useLayoutEffect, useRef } from 'react';
-import {
-  attentionCategory,
-  attentionGroups,
-  attentionPending,
-  type AttentionController,
-  type AttentionRoute,
-} from './attention';
 
 const labels = ['等待审批', '失败与中断', '需要继续', '待检查'];
 const historyLabels = ['审批记录', '异常记录', '检查记录', '检查记录'];

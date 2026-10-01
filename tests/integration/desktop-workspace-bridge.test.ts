@@ -1,11 +1,11 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import test from 'node:test';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 import {
   DesktopWorkspaceBridge,
   WORKSPACE_CLIENT_LIMITS,
 } from '../../apps/desktop/src/main/workspace-bridge.cjs';
-import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 
 function gate() {
   let release!: () => void;

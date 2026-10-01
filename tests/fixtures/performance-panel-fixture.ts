@@ -1,6 +1,6 @@
-import './workspace-layout-fixture';
 import { installPerformancePanel } from '../../apps/web/src/features/performance/performance-panel';
 import { beginSessionPerformanceRead } from '../../apps/web/src/features/performance/performance-signals';
+import './workspace-layout-fixture';
 
 type SessionMark = ReturnType<typeof beginSessionPerformanceRead>;
 const replay = window as unknown as {

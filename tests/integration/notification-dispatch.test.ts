@@ -1,10 +1,7 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
 import { HostNotifications } from '@moor/host/integrations/host-notifications';
 import {
-  NotificationDispatcher,
   NOTIFICATION_DISPATCH_LIMITS,
+  NotificationDispatcher,
   relayNotificationChannel,
   type NotificationHost,
 } from '@moor/host/integrations/notification-dispatch';
@@ -13,6 +10,9 @@ import {
   type HostNotificationEvent,
   type NotificationScope,
 } from '@moor/protocol/notification-protocol';
+import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import test from 'node:test';
 
 const scope: NotificationScope = {
   userId: 'synthetic-owner',

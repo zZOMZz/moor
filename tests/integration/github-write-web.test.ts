@@ -1,12 +1,12 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import {
   GithubWriteController,
   githubWriteKey,
   githubWriteRequestVersion,
   type GithubWriteTarget,
-} from '../../apps/web/src/features/github/github-write';
+} from '@moor/client/features/github/github-write';
 import type { GithubWriteAction, GithubWriteReceipt } from '@moor/protocol/github-write-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 const target: GithubWriteTarget = {
   owner: 'owner',
   deviceId: 'device',
@@ -133,7 +133,7 @@ function fixture() {
           sessionId: t.sessionId,
           confirmed: true,
         };
-        if (path.endsWith('/github/read'))
+        if (path === 'github-read')
           return {
             ...scope,
             githubVersion: 1,
@@ -144,7 +144,7 @@ function fixture() {
             binding: { revision: 0 },
             item,
           };
-        if (path.endsWith('/read')) {
+        if (path.endsWith('github-write-read')) {
           const common = { ...scope, githubWriteVersion: 1, view: r.view, readAt: date };
           if (r.view === 'overview')
             return {
@@ -269,7 +269,10 @@ test('write drafts and review are durable but never execute until confirmation; 
     /Private remote body|Private PR title/,
   );
   await c.prepare(id);
-  assert.equal(f.calls.filter((v) => !v.path.endsWith('/read')).length, 0);
+  assert.equal(
+    f.calls.filter((v) => !['github-read', 'github-write-read'].includes(v.path)).length,
+    0,
+  );
   const original = structuredClone(c.review!.request);
   f.controls.lost = true;
   await assert.rejects(c.confirm(), /network lost/);
@@ -283,7 +286,9 @@ test('write drafts and review are durable but never execute until confirmation; 
   f.controls.phase = 'unknown';
   await moved.inspect(2);
   assert.deepEqual(f.calls.at(-1)!.body, { request: original, page: 2 });
-  assert.match(f.calls.at(-1)!.path, /moved\/replicas\/new-route\/github-write\/inspect/);
+  assert.equal(f.calls.at(-1)!.path, 'github-write-inspect');
+  assert.equal(moved.target.catalogWorkspaceId, 'moved');
+  assert.equal(moved.target.replicaId, 'new-route');
   assert.ok(moved.pending);
   f.controls.wrong = true;
   await assert.rejects(moved.inspect(), /匹配的主机确认/);
@@ -293,7 +298,7 @@ test('write drafts and review are durable but never execute until confirmation; 
   await moved.abandon();
   assert.equal(moved.pending, undefined);
   assert.match(moved.error, /不表示远端操作已取消/);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, 1);
   assert.equal(moved.drafts[id].values.body, 'My manually authored comment');
 });
 test('comment targets use actual complete patch lines and exact review threads, and changed heads cannot silently retarget drafts', async () => {
@@ -339,7 +344,7 @@ test('comment targets use actual complete patch lines and exact review threads, 
   assert.equal(c.review!.request.action, 'review-reply');
   f.item.head.sha = 'e'.repeat(40);
   await assert.rejects(c.prepare(reply), /提交已变化/);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, 1);
 });
 test('all PR operations show concrete reviewed values and only final confirmation stages external writes', async () => {
   const f = fixture(),
@@ -377,14 +382,14 @@ test('all PR operations show concrete reviewed values and only final confirmatio
   ];
   for (const [kind, values] of inputs) {
     const id = await c.createDraft(kind, values),
-      before = f.calls.filter((v) => v.path.endsWith('/action')).length;
+      before = f.calls.filter((v) => v.path.endsWith('github-write-action')).length;
     await c.prepare(id);
-    assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, before);
+    assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, before);
     assert.equal(c.review!.request.action, kind);
     await c.confirm();
     assert.equal(c.receipt?.phase, 'accepted');
   }
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 4);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, 4);
   f.controls.writes = false;
   const id = await c.createDraft('pr-state', {
     number: 2,
@@ -393,7 +398,7 @@ test('all PR operations show concrete reviewed values and only final confirmatio
     state: 'open',
   });
   await assert.rejects(c.prepare(id), /外部写入/);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 4);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, 4);
 });
 test('local commits need no GitHub permission; unknown commit blocks execution, while push pins the reviewed remote OID', async () => {
   const f = fixture(),
@@ -428,7 +433,7 @@ test('local commits need no GitHub permission; unknown commit blocks execution, 
   assert.equal(restored.pushPreview, undefined);
   assert.deepEqual(
     f.calls.slice(callsBeforeInspect).map((call) => call.path.split('/').at(-1)),
-    ['inspect'],
+    ['github-write-inspect'],
   );
   f.controls.writes = true;
   await restored.refresh();
@@ -442,7 +447,7 @@ test('local commits need no GitHub permission; unknown commit blocks execution, 
   assert.ok(restored.pushPreview);
   await restored.confirm();
   assert.equal(restored.pushPreview, undefined);
-  const request = f.calls.filter((v) => v.path.endsWith('/action')).at(-1)!.body;
+  const request = f.calls.filter((v) => v.path.endsWith('github-write-action')).at(-1)!.body;
   assert.equal(request.action, 'push');
   assert.equal(request.headOid, head);
   assert.equal(request.expectedRemoteOid, base);
@@ -467,7 +472,7 @@ test('CAS conflict and failed persistence prevent dispatch, stale confirmations 
   await c.prepare(id);
   f.controls.failWrite = true;
   await assert.rejects(c.confirm(), /storage failed/);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 0);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, 0);
   f.controls.failWrite = false;
   let current = true;
   const d = f.create(target, () => current);
@@ -510,5 +515,5 @@ test('a refreshed repository change clears provider content without adopting exi
   assert.equal(c.drafts[id].values.repositoryId, 42);
   assert.equal(c.drafts[id].values.body, 'Keep my authored draft');
   await assert.rejects(c.prepare(id), /草稿的 GitHub 仓库已变化/);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 0);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-write-action')).length, 0);
 });

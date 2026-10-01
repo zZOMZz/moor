@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import { GIT_OPERATIONS_FEATURE, GIT_WORKTREE_FEATURE } from '@moor/protocol/git-protocol';
 import { GitBranch } from 'lucide-react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { GitWorkspacePanel } from './git-workspace-ui';
-import { GIT_WORKTREE_FEATURE, GIT_OPERATIONS_FEATURE } from '@moor/protocol/git-protocol';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 
 export function WorkspaceGitUI({
   controller,
@@ -12,7 +12,7 @@ export function WorkspaceGitUI({
   controlRef,
   onChanged,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   controlRef?: Ref<{ open(): boolean }>;
@@ -20,7 +20,7 @@ export function WorkspaceGitUI({
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
-  const panel = useRef<Awaited<ReturnType<WorkspaceController['openGit']>> | null>(null);
+  const panel = useRef<Awaited<ReturnType<Workspace['openGit']>> | null>(null);
   const close = () => {
     panel.current?.close();
     panel.current = null;

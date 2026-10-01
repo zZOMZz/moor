@@ -1,8 +1,8 @@
-import test from 'node:test';
+import { SkillsController } from '@moor/client/features/skills/skills';
+import type { SkillsRead } from '@moor/protocol/skills-protocol';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { SkillsController } from '../../apps/web/src/features/skills/skills';
-import type { SkillsRead } from '@moor/protocol/skills-protocol';
+import test from 'node:test';
 
 const target = {
   owner: 'owner',
@@ -100,7 +100,7 @@ test('Skills are scoped read-only content; a deliberate reference revalidates it
     ['list', 'detail', 'detail'],
   );
   assert.deepEqual(f.calls[1], f.calls[2]);
-  assert.match(f.calls[1].path, /\/catalog\/replicas\/replica\/skills\/read$/);
+  assert.equal(f.calls[1].path, 'skills-read');
   assert.equal((f.calls[1].body as any).executionRevision, 3);
 });
 test('wrong scope, file digest, catalog, execution revision and deceptive source metadata cannot be appended', async () => {

@@ -1,20 +1,20 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {
-  WorkspaceStore,
-  type WorkspaceScope,
-  type WorkspaceLedger,
-} from '../../apps/web/src/features/workspace/workspace-store';
+import { createAttachmentDraftItem } from '@moor/client/features/attachments/attachments';
+import { emptyInteractionSaved } from '@moor/client/features/interactions/interactions';
 import {
   WORKSPACE_RECENT_OPERATIONS,
   WORKSPACE_RECENT_OPERATION_BYTES,
   workspaceLedgerKey,
   workspaceRecordKey,
-} from '../../apps/web/src/features/workspace/workspace-records';
-import { createAttachmentDraftItem } from '../../apps/web/src/features/attachments/attachments';
-import { emptyInteractionSaved } from '../../apps/web/src/features/interactions/interactions';
+} from '@moor/client/features/workspace/workspace-records';
 import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
+import {
+  type WorkspaceLedger,
+  type WorkspaceScope,
+  createWorkspacePersistence,
+} from '@moor/client/operations/workspace/compose';
 import type { SessionOriginalOperation } from '@moor/protocol/session-control-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const scope: WorkspaceScope = {
   source: 'local',
@@ -91,7 +91,7 @@ class Memory implements StorageBackend {
 
 test('completed operations pass the former lifetime limit, keep a bounded hot index and preserve unknown originals', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const unknown = operation('unknown', 'other-session');
   await store.stage(scope, unknown, undefined, current);
   for (let index = 0; index < 530; index++) {
@@ -99,7 +99,7 @@ test('completed operations pass the former lifetime limit, keep a bounded hot in
     await store.stage(scope, original, undefined, current);
     await store.finish(scope, original, 'confirmed', current);
   }
-  const restored = new WorkspaceStore(memory),
+  const restored = createWorkspacePersistence(memory),
     ledger = await restored.read(scope, current);
   assert.equal(ledger.operations.length, WORKSPACE_RECENT_OPERATIONS + 1);
   assert.equal(ledger.operations.filter((value) => value.status === 'pending').length, 1);
@@ -123,7 +123,7 @@ test('completed operations pass the former lifetime limit, keep a bounded hot in
 
 test('a version-one ledger migrates atomically on its first write, preserving every completed and unknown request', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const original: WorkspaceLedger = {
     version: 1,
     scope,
@@ -151,7 +151,7 @@ test('a version-one ledger migrates atomically on its first write, preserving ev
       await store.operation(scope, expected.original.value.operationId, current),
       expected,
     );
-  const reopened = await new WorkspaceStore(memory).read(scope, current);
+  const reopened = await createWorkspacePersistence(memory).read(scope, current);
   assert.equal(reopened.operations.filter((value) => value.status === 'pending').length, 1);
   assert.equal(reopened.operations.length, WORKSPACE_RECENT_OPERATIONS + 1);
   await store.stage(scope, operation('after-migration'), undefined, current);
@@ -163,7 +163,7 @@ test('a version-one ledger migrates atomically on its first write, preserving ev
 
 test('a session transaction neither reads nor rewrites another session attachment bytes or archived history', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const item = await createAttachmentDraftItem(
     new File(['a'.repeat(512 * 1024)], 'synthetic.txt', { type: 'text/plain' }),
     'attachment-a',
@@ -196,7 +196,7 @@ test('a session transaction neither reads nor rewrites another session attachmen
 
 test('stale record versions abort an operation and its attachment transition as one transaction', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const item = await createAttachmentDraftItem(
     new File(['frozen'], 'synthetic.txt', { type: 'text/plain' }),
     'attachment',
@@ -226,7 +226,7 @@ test('stale record versions abort an operation and its attachment transition as 
   await assert.rejects(store.finish(scope, upload, 'confirmed', current), /transaction failure/);
   assert.deepEqual(memory.values, pending);
   memory.fail = false;
-  await new WorkspaceStore(memory).finish(scope, upload, 'confirmed', current);
+  await createWorkspacePersistence(memory).finish(scope, upload, 'confirmed', current);
   assert.equal((await store.operation(scope, 'upload', current))?.status, 'confirmed');
   const attachments = (await store.read(scope, current, 'session')).attachments!.session!;
   assert.equal(attachments.items[0]!.uploaded, true);
@@ -235,8 +235,8 @@ test('stale record versions abort an operation and its attachment transition as 
 
 test('two windows cannot overwrite the same feature revision and a changed head preserves the competing writer', async () => {
   const memory = new Memory(),
-    first = new WorkspaceStore(memory),
-    second = new WorkspaceStore(memory);
+    first = createWorkspacePersistence(memory),
+    second = createWorkspacePersistence(memory);
   const results = await Promise.allSettled([
     first.saveInteraction(scope, 'session', 0, emptyInteractionSaved(), current),
     second.saveInteraction(scope, 'session', 0, emptyInteractionSaved(), current),
@@ -258,7 +258,7 @@ test('two windows cannot overwrite the same feature revision and a changed head 
 
 test('draft confirmation survives hot-index eviction and never clears a later editable draft', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const draft = await store.saveDraft(scope, 'session', 0, 'Frozen prompt', {}, current);
   const send: SessionOriginalOperation = {
     kind: 'mutation',
@@ -295,7 +295,7 @@ test('draft confirmation survives hot-index eviction and never clears a later ed
 
 test('large completed requests leave the hot byte budget while their exact archived body remains readable', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const item = await createAttachmentDraftItem(
     new File(['x'.repeat(WORKSPACE_RECENT_OPERATION_BYTES)], 'large.txt', { type: 'text/plain' }),
     'large-attachment',
@@ -324,10 +324,10 @@ test('large completed requests leave the hot byte budget while their exact archi
 
 test('pending references have no count-based eviction and malformed cross-scope records fail closed', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   for (let index = 0; index < 515; index++)
     await store.stage(scope, operation('pending-' + index, 'session-' + index), undefined, current);
-  const restored = await new WorkspaceStore(memory).read(scope, current);
+  const restored = await createWorkspacePersistence(memory).read(scope, current);
   assert.equal(restored.operations.length, 515);
   assert(restored.operations.every((value) => value.status === 'pending'));
   const key = workspaceRecordKey(scope, 'operation', 'pending-0');
@@ -342,7 +342,7 @@ test('pending references have no count-based eviction and malformed cross-scope 
 
 test('semantic originals retain immutable attachment selection and atomically confirm without clearing newer drafts', async () => {
   const memory = new Memory(),
-    store = new WorkspaceStore(memory);
+    store = createWorkspacePersistence(memory);
   const sessionId = 'semantic-session';
   const item = await createAttachmentDraftItem(
     new File(['frozen bytes'], 'frozen.txt', { type: 'text/plain' }),
@@ -402,7 +402,7 @@ test('semantic originals retain immutable attachment selection and atomically co
     /附件草稿/,
   );
   await store.stage(scope, original, frozenDraft, current);
-  const restarted = new WorkspaceStore(memory);
+  const restarted = createWorkspacePersistence(memory);
   assert.deepEqual(
     (await restarted.operation(scope, original.value.operationId, current))!.original,
     original,

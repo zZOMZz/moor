@@ -1,8 +1,11 @@
 import { Dialog } from '@base-ui/react/dialog';
+import type {
+  NotificationController,
+  NotificationSubscriptionView,
+} from '@moor/client/features/notifications/notifications';
 import type { NotificationPreferences } from '@moor/protocol/notification-protocol';
 import { X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { NotificationController, NotificationSubscriptionView } from './notifications';
 export type NotificationPanelProps = {
   controller?: NotificationController;
   reason?: string;

@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { markdown } from '../../apps/web/src/components/content';
 test('Markdown makes code readable while HTML, scripts and unsafe links stay inert', () => {
   const html = markdown(

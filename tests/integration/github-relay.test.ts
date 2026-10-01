@@ -1,11 +1,11 @@
-import test from 'node:test';
+import type { Workspace } from '@moor/protocol/catalog';
+import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
+import test from 'node:test';
 import { WebSocket } from 'ws';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
-import type { Workspace } from '@moor/protocol/catalog';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 const version = 'sha256:' + 'a'.repeat(64),

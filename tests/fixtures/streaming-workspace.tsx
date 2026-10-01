@@ -1,10 +1,11 @@
-import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
-import { api } from '../../apps/web/src/platform/api';
-import { IndexedStorage } from '../../apps/web/src/platform/indexed-storage';
+import { createWorkspace } from '@moor/client/features/workspace/compose';
+import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
 import { createRoot } from 'react-dom/client';
 import { WorkspaceApp } from '../../apps/web/src/app/workspace-app';
-import { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
-import { WorkspaceStore } from '../../apps/web/src/features/workspace/workspace-store';
+import { beginSessionPerformanceRead } from '../../apps/web/src/features/performance/performance-signals';
+import { api } from '../../apps/web/src/platform/api';
+import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
+import { IndexedStorage } from '../../apps/web/src/platform/indexed-storage';
 
 const now = () => performance.timeOrigin + performance.now();
 type Sample = { at: number; kind: string; [key: string]: unknown };
@@ -56,8 +57,11 @@ IDBObjectStore.prototype.delete = function (key) {
   track(this.transaction).deletes++;
   return originalDelete.call(this, key);
 };
-const store = new WorkspaceStore(new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }));
-const controller = new WorkspaceController({
+const store = createWorkspacePersistence(
+  new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }),
+);
+const controller = createWorkspace({
+  sessionReceived: beginSessionPerformanceRead,
   store,
   request: async (input) => {
     const startedAt = now();

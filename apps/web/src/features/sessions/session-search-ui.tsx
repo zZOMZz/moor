@@ -1,8 +1,11 @@
 import { Dialog } from '@base-ui/react/dialog';
+import type {
+  SearchSession,
+  SessionSearchView,
+} from '@moor/client/features/sessions/session-search';
 import type { SearchHit } from '@moor/protocol/search-protocol';
 import { Search, X } from 'lucide-react';
 import { useState } from 'react';
-import type { SearchSession, SessionSearchView } from './session-search';
 
 export type SessionSearchPanelProps = {
   title: string;

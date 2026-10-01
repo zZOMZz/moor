@@ -1,6 +1,6 @@
-import { useNavigation } from '../../platform/ui-ports';
 import { memo, useState } from 'react';
 import { markdownInline, plainCode } from '../../components/content';
+import { useNavigation } from '../../platform/ui-ports';
 
 type Kind = 'paragraph' | 'ordered' | 'unordered' | 'heading' | 'quote' | 'code';
 type Block = {

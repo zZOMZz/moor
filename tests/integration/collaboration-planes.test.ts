@@ -1,28 +1,27 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import {
   CollaborationClient,
   collaborationSyncBatch,
   type CollaborationStorage,
-} from '@moor/client/collaboration-client';
-import { CollaborationStore } from '@moor/sync/store';
-import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
-import { CollaborationReplica } from '@moor/session/collaboration-replica';
-import { CollaborationExecutionPlane } from '@moor/host/sessions/collaboration';
+} from '@moor/client/features/collaboration/client';
 import { RuntimeStore } from '@moor/host/persistence/store';
+import { CollaborationExecutionPlane } from '@moor/host/sessions/collaboration';
+import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { mergeCollaborationOperations } from '@moor/session/collaboration-document';
 import { actorSchema } from '@moor/protocol/attention';
 import {
-  collaborationOperationSchema,
   COLLABORATION_LIMITS,
+  collaborationOperationSchema,
   validateCollaborationSyncResponse,
   type CollaborationScope,
   type TaskExecutionTarget,
 } from '@moor/protocol/collaboration-protocol';
+import { mergeCollaborationOperations } from '@moor/session/collaboration-document';
+import { CollaborationStore } from '@moor/sync/store';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 
 class MemoryStorage implements CollaborationStorage {

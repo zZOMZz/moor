@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test, { type TestContext } from 'node:test';
 import {
-  DesktopAccount,
   ACCOUNT_ERROR,
   ACCOUNT_LIMITS,
+  DesktopAccount,
 } from '../../apps/desktop/src/main/account.cjs';
-import { CLIENT_URL, CLIENT_ORIGIN } from '../../apps/desktop/src/main/client-assets.cjs';
+import { CLIENT_ORIGIN, CLIENT_URL } from '../../apps/desktop/src/main/client-assets.cjs';
 import * as accountManagement from '../../packages/protocol/src/account-management';
 
 const origin = 'https://relay.synthetic.invalid';

@@ -99,6 +99,6 @@ token 仅在执行电脑的私有配置中保存。远端写入计划保存范�
 
 REST 固定使用 `api.github.com`、API 版本 `2026-03-10`，不跟随重定向或正文链接；每次响应最多 2 MiB、10 秒。列表每页 20 项，手动翻页，最多第 100 页；补丁最多展示 65,536 字符，正文最多展示 16,000 字符，待发布正文最多 12,000 字符。部分页或截断内容始终不是全量结果。GitHub 的 PR files 接口本身最多返回 3,000 个文件，见[PR 文件接口](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files)。Git 推送使用固定 GitHub smart HTTPS，另有 pack、响应字节与执行时间上限。
 
-实现入口：[公共协议](../packages/protocol/src/github-write-protocol.ts)、[主机操作与核查](../packages/host/src/sessions/github-write.ts)、[REST provider](../packages/host/src/integrations/github/write-client.ts)、[本地提交与推送](../packages/host/src/projects/git-actions.ts)、[写入控制器](../apps/web/src/features/github/github-write.ts)、[共享会话控制器](../apps/web/src/features/github/github-session.ts)与[完整范围存储](../apps/web/src/features/workspace/workspace-store.ts)。
+实现入口：[公共协议](../packages/protocol/src/github-write-protocol.ts)、[主机操作与核查](../packages/host/src/sessions/github-write.ts)、[REST provider](../packages/host/src/integrations/github/write-client.ts)、[本地提交与推送](../packages/host/src/projects/git-actions.ts)、[写入控制器](../packages/client/src/features/github/github-write.ts)、[共享会话控制器](../packages/client/src/features/github/github-session.ts)与[完整范围存储](../packages/client/src/operations/workspace/compose.ts)。
 
 返回[GitHub 仓库与上下文](github.md) · [文档目录](README.md)。

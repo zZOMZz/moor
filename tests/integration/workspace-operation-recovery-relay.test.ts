@@ -1,20 +1,20 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import {
-  GIT_OPERATIONS_FEATURE,
-  gitRequestVersion,
-  type GitAction,
-} from '@moor/protocol/git-protocol';
+import { BrowserWorkspaceClient } from '@moor/client/adapters/browser/workspace-client';
+import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
 import {
   FORK_OPERATIONS_FEATURE,
   forkRequestVersion,
   type SessionFork,
 } from '@moor/protocol/fork-protocol';
-import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
-import { BrowserWorkspaceClient } from '@moor/client/adapters/browser/workspace-client';
+import {
+  GIT_OPERATIONS_FEATURE,
+  gitRequestVersion,
+  type GitAction,
+} from '@moor/protocol/git-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import { workspaceCatalogSchema } from '@moor/protocol/workspace-client-protocol';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 function gate() {

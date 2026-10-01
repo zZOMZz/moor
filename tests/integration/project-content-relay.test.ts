@@ -1,14 +1,14 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { createHash } from 'node:crypto';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import {
-  PROJECT_TREE_FEATURE,
-  PROJECT_DIFF_FEATURE,
-} from '@moor/protocol/project-content-protocol';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
 import type { Workspace } from '@moor/protocol/catalog';
+import {
+  PROJECT_DIFF_FEATURE,
+  PROJECT_TREE_FEATURE,
+} from '@moor/protocol/project-content-protocol';
+import { PROTOCOL } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import test from 'node:test';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 const routes = ['project-tree', 'turn-diff', 'diff-file'] as const;
 type Route = (typeof routes)[number];

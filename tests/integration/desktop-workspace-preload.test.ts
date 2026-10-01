@@ -1,6 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { snapshotJsonInput } from '../../apps/desktop/src/main/json-input.cjs';
 test('bounded JSON snapshots own parameters, count escaped UTF-8 and keep keys inert', () => {

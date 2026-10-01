@@ -1,14 +1,14 @@
 import { Dialog } from '@base-ui/react/dialog';
-import type { QuestionAnswer } from '@moor/protocol/interaction-protocol';
-import { X } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
 import {
   answerFromDraft,
   questionStatus,
   type PendingInteraction,
   type QuestionDraftValues,
   type QuestionItem,
-} from './interactions';
+} from '@moor/client/features/interactions/interactions';
+import type { QuestionAnswer } from '@moor/protocol/interaction-protocol';
+import { X } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
 function InteractionDialog({
   title,
   onClose,

@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, useImperativeHandle, type Ref } from 'react';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import { FORK_OPERATIONS_FEATURE, SESSION_FORK_FEATURE } from '@moor/protocol/fork-protocol';
+import { GIT_OPERATIONS_FEATURE, GIT_WORKTREE_FEATURE } from '@moor/protocol/git-protocol';
 import { GitFork } from 'lucide-react';
-import { SessionForkPanel } from './session-fork-ui';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { GitWorkspacePanel } from '../git/git-workspace-ui';
-import { SESSION_FORK_FEATURE, FORK_OPERATIONS_FEATURE } from '@moor/protocol/fork-protocol';
-import { GIT_WORKTREE_FEATURE, GIT_OPERATIONS_FEATURE } from '@moor/protocol/git-protocol';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
+import { SessionForkPanel } from './session-fork-ui';
 
 export type WorkspaceForkHandle = { open(turnId?: string): boolean };
 
@@ -16,7 +16,7 @@ export function WorkspaceForkUI({
   navigate,
   controlRef,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   controlRef?: Ref<WorkspaceForkHandle>;
   state: WorkspaceClientState;
   busy: boolean;
@@ -25,10 +25,10 @@ export function WorkspaceForkUI({
 }) {
   const [, render] = useState(0),
     [consent, setConsent] = useState('');
-  const panel = useRef<Awaited<ReturnType<WorkspaceController['openFork']>> | null>(null);
+  const panel = useRef<Awaited<ReturnType<Workspace['openFork']>> | null>(null);
   const resource = useRef<{
     id: string;
-    git: Awaited<ReturnType<WorkspaceController['openGit']>>;
+    git: Awaited<ReturnType<Workspace['openGit']>>;
   } | null>(null);
   const close = () => {
     panel.current?.close();

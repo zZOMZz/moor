@@ -1,13 +1,13 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import {
   GithubController,
   githubKey,
   safeGithubLink,
   type GithubTarget,
-} from '../../apps/web/src/features/github/github';
+} from '@moor/client/features/github/github';
+import type { GithubAction, GithubBinding, GithubRead } from '@moor/protocol/github-protocol';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import { ApiError } from '../../apps/web/src/platform/api';
-import type { GithubAction, GithubRead, GithubBinding } from '@moor/protocol/github-protocol';
 const target: GithubTarget = {
   owner: 'owner',
   deviceId: 'device',
@@ -110,7 +110,7 @@ function fixture() {
           if (controls.rejected) throw new ApiError('explicit rejection', 409, true);
           if (controls.undelivered) throw new Error('request never reached host');
           let receipt = receipts.get(body.operationId);
-          if (!receipt && path.endsWith('/abandon')) {
+          if (!receipt && path.endsWith('github-abandon')) {
             receipt = {
               ...scope,
               operationId: body.operationId,
@@ -281,10 +281,10 @@ test('abandon intent is durable and manual retries keep the exact original reque
   assert.equal(restored.blocked, false);
   assert.equal(restored.binding, undefined);
   assert.match(restored.error, /原请求未执行/);
-  const abandoned = f.calls.filter((value) => value.path.endsWith('/abandon'));
+  const abandoned = f.calls.filter((value) => value.path.endsWith('github-abandon'));
   assert.equal(abandoned.length, 3);
   assert.ok(abandoned.every((value) => JSON.stringify(value.body) === JSON.stringify(original)));
-  assert.equal(f.calls.filter((value) => value.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((value) => value.path.endsWith('github-action')).length, 1);
   assert.doesNotMatch(
     JSON.stringify([...f.cache.values()]),
     /Private synthetic body|example|title/,
@@ -359,10 +359,11 @@ test('GitHub binding outbox is durable, immutable across lost receipts and regro
   assert.equal(reload.binding, undefined);
   assert.equal(reload.detail, undefined);
   assert.match(reload.error, /确认原绑定操作/);
-  const actions = f.calls.filter((v) => v.path.endsWith('/action'));
+  const actions = f.calls.filter((v) => v.path.endsWith('github-action'));
   assert.equal(actions.length, 4);
   assert.ok(actions.slice(1).every((v) => JSON.stringify(v.body) === JSON.stringify(original)));
-  assert.match(actions.at(-1)!.path, /new-catalog\/replicas\/new-replica/);
+  assert.equal(reload.target.catalogWorkspaceId, 'new-catalog');
+  assert.equal(reload.target.replicaId, 'new-replica');
   f.controls.redacted = false;
   await reload.refresh();
   await reload.unbind();
@@ -383,14 +384,14 @@ test('first explicit rejection clears only that new binding; storage failures an
   f.controls.rejected = false;
   await assert.rejects(b.bind('main'), /其他页面/);
   assert.equal(b.blocked, true);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-action')).length, 1);
   const c = f.create();
   await c.load();
   await c.refresh();
   await c.loadBranches();
   f.controls.failWrite = true;
   await assert.rejects(c.bind('main'), /storage failed/);
-  assert.equal(f.calls.filter((v) => v.path.endsWith('/action')).length, 1);
+  assert.equal(f.calls.filter((v) => v.path.endsWith('github-action')).length, 1);
 });
 test('late private responses and receipts are discarded after scope invalidation; pending confirmation remains recoverable', async () => {
   const f = fixture(),

@@ -1,17 +1,17 @@
-import test, { type TestContext } from 'node:test';
+import { Store, token } from '@moor/gateway/accounts';
+import { createApp } from '@moor/gateway/http';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CliState } from '../../apps/cli/src/state';
+import test, { type TestContext } from 'node:test';
 import {
-  CliGoogleAuth,
   CLI_GOOGLE_FAILED,
   CLI_GOOGLE_FLOW_KEY,
+  CliGoogleAuth,
 } from '../../apps/cli/src/google-auth';
-import { Store, token } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { CliState } from '../../apps/cli/src/state';
 import type { GoogleIdentity, GoogleOidcProvider } from '../../apps/relay/src/google-oidc';
 
 const NOW = 1_900_000_000_000;

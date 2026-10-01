@@ -1,12 +1,12 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { WebSocket } from 'ws';
-import { PROTOCOL, AGENT_MODEL_OPTIONS_FEATURE } from '@moor/protocol/protocol';
 import { agentModelFailures } from '@moor/protocol/agent-errors';
 import type { Workspace } from '@moor/protocol/catalog';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
+import { AGENT_MODEL_OPTIONS_FEATURE, PROTOCOL } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
+import { WebSocket } from 'ws';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 function signal() {
   let resolve!: () => void;

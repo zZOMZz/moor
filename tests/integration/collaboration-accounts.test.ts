@@ -1,6 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import { Store } from '@moor/gateway/accounts';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 test('account invitations are hashed, expiring, single-use and grant no workspace access', async (t) => {
   let now = 1000;

@@ -1,11 +1,11 @@
-import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
-import test from 'node:test';
+import type { Workspace } from '@moor/client/features/workspace/compose';
+import type { WorkspaceScope } from '@moor/client/operations/workspace/compose';
+import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { JSDOM } from 'jsdom';
-import type { WorkspaceController } from '../../apps/web/src/features/workspace/workspace-controller';
-import type { WorkspaceScope } from '../../apps/web/src/features/workspace/workspace-store';
-import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import test from 'node:test';
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 
 test('shared browser attachment view escapes text and downloads only explicitly verified bytes', async (t) => {
   const dom = new JSDOM('<div id="app"></div>', { url: 'https://synthetic.invalid' });
@@ -92,7 +92,7 @@ test('shared browser attachment view escapes text and downloads only explicitly 
       reads++;
       return { source: 'cache', cacheSaved: true, data };
     },
-  } as unknown as WorkspaceController;
+  } as unknown as Workspace;
   const run = (task: () => Promise<unknown>) => {
     pending = task().catch((error) => errors.push(error.message));
   };

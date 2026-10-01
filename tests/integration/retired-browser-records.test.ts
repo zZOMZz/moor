@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { readRetiredSecureRecords } from '../../apps/web/src/platform/retired-records';
 
 test('retired-data inspection does not create a missing database', async (t) => {

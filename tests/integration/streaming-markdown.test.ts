@@ -1,8 +1,8 @@
-import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import { markdown, plainCode } from '../../apps/web/src/components/content';
+import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 
 test('streaming Markdown preserves safe formatting across arbitrary chunk boundaries, edits and long code', async () => {
   const dom = new JSDOM('<div id="app"></div>');

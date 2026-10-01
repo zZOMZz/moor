@@ -1,20 +1,20 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import {
+  projectContentKey,
+  readProjectDiffFile,
+  readProjectTurnDiff,
+  type ProjectContentTarget,
+} from '@moor/client/features/files/project-content';
 import {
   searchSessionContent,
   type SearchDependencies,
-} from '../../apps/web/src/features/sessions/session-search';
-import {
-  projectContentKey,
-  readProjectTurnDiff,
-  readProjectDiffFile,
-  type ProjectContentTarget,
-} from '../../apps/web/src/features/files/project-content';
+} from '@moor/client/features/sessions/session-search';
 import type {
-  ProjectDiffReference,
   ProjectDiffChange,
+  ProjectDiffReference,
 } from '@moor/protocol/project-content-protocol';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
 
 const target: ProjectContentTarget = {
   owner: 'owner',
@@ -94,7 +94,7 @@ test('online search validates exact context/query/range and does not fall back a
     partial: false,
   };
   f.respond(async (path, body) => {
-    assert.equal(path, '/api/workspaces/catalog/replicas/replica/session-search');
+    assert.equal(path, 'session-search');
     assert.deepEqual(body, {
       ...scope,
       searchVersion: 1,
@@ -224,7 +224,7 @@ test('offline diff search reads only validated frozen cached versions, never cur
   };
   f.histories.set(projectContentKey(target), [{ id: 'turn', items: [], fileDiff: ref }]);
   f.respond(async (path) =>
-    path.endsWith('turn-diff')
+    path.endsWith('read-turn-diff')
       ? { ...base, state: 'ready', changes: [change] }
       : {
           ...base,

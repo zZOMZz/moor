@@ -1,8 +1,8 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import { SESSION_PAGE_CACHE_LIMITS } from '@moor/client/features/workspace/workspace-session-pages';
 import { sessionPageRequestSchema, type SessionPageRequest } from '@moor/protocol/session-page';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
-import { SESSION_PAGE_CACHE_LIMITS } from '../../apps/web/src/features/workspace/workspace-session-pages';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import { paginationFixture } from '../fixtures/workspace-pagination';
 
 const revision = 'sha256:' + 'a'.repeat(64);

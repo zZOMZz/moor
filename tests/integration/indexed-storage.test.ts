@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { IndexedStorage } from '../../apps/web/src/platform/indexed-storage';
 function signal() {
   let resolve!: () => void;

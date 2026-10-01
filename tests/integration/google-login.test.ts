@@ -1,15 +1,15 @@
-import { UiPortsProvider } from '../../apps/web/src/platform/ui-ports';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { ReactNode } from 'react';
+import type { Identity } from '../../apps/web/src/platform/api';
+import { api } from '../../apps/web/src/platform/api';
 import { createBrowserUiPorts } from '../../apps/web/src/platform/browser/ui-ports';
 import {
   createDesktopUiPorts,
   type DesktopUiBridge,
 } from '../../apps/web/src/platform/desktop/ui-ports';
-import { api } from '../../apps/web/src/platform/api';
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { JSDOM } from 'jsdom';
-import type { ReactNode } from 'react';
-import type { Identity } from '../../apps/web/src/platform/api';
+import { UiPortsProvider } from '../../apps/web/src/platform/ui-ports';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

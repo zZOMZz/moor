@@ -1,4 +1,16 @@
-import test from 'node:test';
+import { prepareProjectWorktree, readProjectGit } from '@moor/host/projects/git';
+import {
+  commitProject,
+  GIT_ACTION_LIMITS,
+  inspectCommitCandidate,
+  inspectProjectCommit,
+  inspectProjectPush,
+  planProjectCommit,
+  pushProject,
+  type GitPushPlan,
+  type GitPushTransport,
+} from '@moor/host/projects/git-actions';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -15,19 +27,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AppError } from '@moor/protocol/protocol';
-import { readProjectGit, prepareProjectWorktree } from '@moor/host/projects/git';
-import {
-  GIT_ACTION_LIMITS,
-  inspectCommitCandidate,
-  planProjectCommit,
-  commitProject,
-  inspectProjectCommit,
-  pushProject,
-  inspectProjectPush,
-  type GitPushPlan,
-  type GitPushTransport,
-} from '@moor/host/projects/git-actions';
+import test from 'node:test';
 
 const author = { name: 'Synthetic Moor', email: 'synthetic@example.invalid' },
   timestamp = 1767225600000;

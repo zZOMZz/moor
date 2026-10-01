@@ -6,7 +6,7 @@ import {
   fileContentCacheKey,
   readProjectFile,
   type FileContentTarget,
-} from '../src/features/files/file-content';
+} from '@moor/client/features/files/file-content';
 import type { ProjectFileRead, ProjectFileResult } from '@moor/protocol/content-protocol';
 
 const target: FileContentTarget = {
@@ -72,9 +72,7 @@ test('host content is verified, cached by version, and revalidated only by an ex
   assert.equal(first.stale, false);
   assert.equal(first.text, '合成文件内容');
   assert.equal(first.cacheSaved, true);
-  assert.deepEqual(f.calls, [
-    { path: '/api/workspaces/product-a/replicas/replica-a/file-content', input: request },
-  ]);
+  assert.deepEqual(f.calls, [{ path: 'file-content', input: request }]);
   const { data: _data, encoding: _encoding, ...unchanged } = body;
   f.respond(async () => ({ ...unchanged, status: 'not-modified' }));
   const conditional = { ...request, knownVersion: body.content.version };

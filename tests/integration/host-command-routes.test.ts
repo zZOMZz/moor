@@ -1,7 +1,5 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import { once } from 'node:events';
-import { PROTOCOL } from '@moor/protocol/protocol';
+import { workspaceCommandRoute } from '@moor/client/adapters/shared/workspace-transport';
+import type { Workspace } from '@moor/protocol/catalog';
 import {
   HOST_COMMAND_METHODS,
   hostCommandSchema,
@@ -12,9 +10,11 @@ import {
   hostCommandFeatures,
   matchHostCommandRoute,
 } from '@moor/protocol/host-command-contract';
-import { workspaceCommandRoute } from '@moor/client/adapters/shared/workspace-transport';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
-import type { Workspace } from '@moor/protocol/catalog';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
 import { cases } from '../fixtures/host-command-cases';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 

@@ -29,9 +29,9 @@
 
 主要代码入口：
 
-- [会话副本](../packages/session/src/client-session-replica.ts)、[控制器](../apps/web/src/features/workspace/workspace-controller.ts)、[增量缓存](../apps/web/src/features/workspace/workspace-session-cache.ts)。
+- [会话副本](../packages/session/src/client-session-replica.ts)、[控制器](../packages/client/src/features/workspace/compose.ts)、[增量缓存](../packages/client/src/features/workspace/workspace-session-cache.ts)。
 - [时间线](../apps/web/src/features/sessions/session-timeline.tsx)、[Markdown](../apps/web/src/components/content.ts)、[会话与输入](../apps/web/src/app/workspace-app.tsx)。
-- [文件面板控制器](../apps/web/src/features/files/project-content-controller.ts)、[文件与 diff 视图](../apps/web/src/features/files/project-content-ui.tsx)、[布局](../apps/web/src/features/files/workspace-content-layout.tsx)。
+- [文件面板控制器](../packages/client/src/features/files/project-content-controller.ts)、[文件与 diff 视图](../apps/web/src/features/files/project-content-ui.tsx)、[布局](../apps/web/src/features/files/workspace-content-layout.tsx)。
 - [Host 会话](../packages/host/src/sessions/workspace.ts)、[Host 持久化](../packages/host/src/persistence/store.ts)。
 
 ## 基准与验收口径
@@ -120,7 +120,7 @@ Host 的单会话读取按元数据前缀取值和原始时钟，身份直接读
 
 ## 复现持续回放
 
-以下命令启动可见 Electron 窗口，使用独立进程按固定时间生产合成数据，经过实际 Host、SQLite、HTTP/WebSocket、WorkspaceController、IndexedDB 和 React。不会启动真实 Agent。每次使用独立目录；输出包含环境、源码指纹、原始采样、超时、最终校验和截图。
+以下命令启动可见 Electron 窗口，使用独立进程按固定时间生产合成数据，经过实际 Host、SQLite、HTTP/WebSocket、Workspace、IndexedDB 和 React。不会启动真实 Agent。每次使用独立目录；输出包含环境、源码指纹、原始采样、超时、最终校验和截图。
 
 ```sh
 env -u ELECTRON_RUN_AS_NODE \

@@ -1,4 +1,3 @@
-import { usePreferences, type PreferencePort } from '../../platform/ui-ports';
 import {
   useCallback,
   useEffect,
@@ -7,6 +6,7 @@ import {
   useState,
   type CSSProperties,
 } from 'react';
+import { usePreferences, type PreferencePort } from '../../platform/ui-ports';
 
 const widthKey = 'moor-content-dock-width-v1';
 const minimumWidth = 320;

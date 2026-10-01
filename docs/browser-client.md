@@ -1,6 +1,6 @@
 # 浏览器与桌面的统一工作区
 
-Web 和桌面使用同一个 `WorkspaceApp`、`WorkspaceController` 与按记录保存的 `WorkspaceStore`。桌面通过有限原生 IPC 访问执行主机；浏览器使用同源 HTTP。两者共用 `WorkspaceTransportClient` 的目录投影、固定路由、执行范围核对和响应校验，不向页面提供任意 URL、Cookie、shell 或 socket 代理。
+Web 和桌面使用同一个 `WorkspaceApp`、`Workspace` 与按记录保存的 `WorkspacePersistence`。桌面通过有限原生 IPC 访问执行主机；浏览器使用同源 HTTP。两者共用 `WorkspaceTransportClient` 的目录投影、固定路由、执行范围核对和响应校验，不向页面提供任意 URL、Cookie、shell 或 socket 代理。
 
 原 Web 总控 `app.ts` 和独立加密页面已经退出。账号状态、Google 登录与退出由独立账号组件负责。桌面主窗口不再要求 `moorSecure`，不创建加密连接；`moorWorkspace` 只公开普通工作区、账号、选择本机项目和用户明确触发的历史导出入口。只有一个工作区时直接显示名称；多个工作区仍可筛选，身份字段保持不变。
 

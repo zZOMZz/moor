@@ -1,11 +1,11 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { request } from 'node:http';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
 import {
   accountManagementPlan,
   validateAccountManagementResult,
 } from '@moor/protocol/account-management';
+import assert from 'node:assert/strict';
+import { request } from 'node:http';
+import test from 'node:test';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 test('finite account actions retain pairing and directory management without executing an Agent', async (t) => {
   const relay = await syntheticRelay();

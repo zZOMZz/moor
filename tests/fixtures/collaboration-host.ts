@@ -1,15 +1,15 @@
-import { once, EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { WebSocket } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { AppError, PROTOCOL } from '@moor/protocol/protocol';
-import { syntheticCapabilities } from './agent-capabilities';
 import type { Workspace } from '@moor/protocol/catalog';
+import { AppError, PROTOCOL } from '@moor/protocol/protocol';
+import { EventEmitter, once } from 'node:events';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { WebSocket } from 'ws';
+import { syntheticCapabilities } from './agent-capabilities';
 
 export async function syntheticCollaboration() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-collaboration-app-'))),

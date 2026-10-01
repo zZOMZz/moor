@@ -1,18 +1,18 @@
-import { syntheticCapabilities } from './agent-capabilities';
-import { once } from 'node:events';
-import { createHash } from 'node:crypto';
-import { WebSocket } from 'ws';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
-import { PROTOCOL, sessionActionSchema, type RuntimeWorkspace } from '@moor/protocol/protocol';
 import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
-import { Flock, LoroDoc, decode, delta, metas, mirror, putMeta } from '@moor/session/model';
 import {
   CONTENT_VERSION,
   FILE_CONTENT_FEATURE,
   projectFileReadSchema,
   type ProjectFileResult,
 } from '@moor/protocol/content-protocol';
+import { PROTOCOL, sessionActionSchema, type RuntimeWorkspace } from '@moor/protocol/protocol';
+import { Flock, LoroDoc, decode, delta, metas, mirror, putMeta } from '@moor/session/model';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { WebSocket } from 'ws';
+import { syntheticCapabilities } from './agent-capabilities';
 
 // In-memory integration fixture: never starts a runtime, reads a project, or contacts a model.
 // The real IPC delivery and mutation checks are exercised separately in host.test.ts.

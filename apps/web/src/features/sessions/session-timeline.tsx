@@ -1,3 +1,9 @@
+import { informationHtml } from '../interactions/information';
+import { sessionInformation } from '@moor/client/features/interactions/interactions';
+import { agentCommandText } from '@moor/client/features/skills/skills';
+import { projectDiffReferenceSchema } from '@moor/protocol/project-content-protocol';
+import { sessionEventSchema } from '@moor/protocol/session-events';
+import { ArrowDown, ChevronRight, Info, Terminal, X } from 'lucide-react';
 import {
   memo,
   useCallback,
@@ -8,12 +14,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { ArrowDown, ChevronRight, Info, Terminal, X } from 'lucide-react';
 import { StreamingMarkdown } from './streaming-markdown';
-import { informationHtml, sessionInformation } from '../interactions/interactions';
-import { sessionEventSchema } from '@moor/protocol/session-events';
-import { projectDiffReferenceSchema } from '@moor/protocol/project-content-protocol';
-import { agentCommandText } from '../skills/skills';
 
 export type TimelineTurn = {
   id: string;

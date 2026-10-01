@@ -1,17 +1,17 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readRunDefaults, readRunPreferences } from '@moor/host/agents/run-preferences';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
-import { readRunDefaults, readRunPreferences } from '@moor/host/agents/run-preferences';
 import {
   changeRunSelection,
   initializeRunSelection,
   resolveRunSelection,
   type RunCapabilities,
 } from '@moor/protocol/run-config';
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
 
 const caps: RunCapabilities = {
   defaultModelId: 'a',

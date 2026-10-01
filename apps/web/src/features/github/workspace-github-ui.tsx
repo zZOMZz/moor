@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { GitPullRequest } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { GithubSessionPanel } from './github-session-ui';
-import type { WorkspaceController, WorkspaceClientState } from '../workspace/workspace-controller';
 
 export function WorkspaceGithubUI({
   controller,
@@ -9,13 +9,13 @@ export function WorkspaceGithubUI({
   busy,
   run,
 }: {
-  controller: WorkspaceController;
+  controller: Workspace;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
-  type Panel = Awaited<ReturnType<WorkspaceController['openGithub']>>;
+  type Panel = Awaited<ReturnType<Workspace['openGithub']>>;
   const panel = useRef<Panel | null>(null);
   useEffect(
     () => () => {

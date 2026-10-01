@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { logoutBrowserAccount } from '../../apps/web/src/platform/browser-logout';
 
 const origin = 'https://synthetic.invalid';

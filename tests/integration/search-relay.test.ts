@@ -1,10 +1,10 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
+import type { Workspace } from '@moor/protocol/catalog';
 import { PROTOCOL } from '@moor/protocol/protocol';
 import { SESSION_SEARCH_FEATURE } from '@moor/protocol/search-protocol';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
-import type { Workspace } from '@moor/protocol/catalog';
 
 async function fixture() {
   const relay = await syntheticRelay();

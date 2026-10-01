@@ -1,17 +1,17 @@
-import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs/promises';
 import { constants } from 'node:fs';
+import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 import {
-  CLIENT_SCHEME,
-  CLIENT_ORIGIN,
-  CLIENT_URL,
-  CLIENT_PRIVILEGES,
   CLIENT_CSP,
-  isTrustedClientUrl,
+  CLIENT_ORIGIN,
+  CLIENT_PRIVILEGES,
+  CLIENT_SCHEME,
+  CLIENT_URL,
   createClientAssetHandler,
+  isTrustedClientUrl,
 } from '../../apps/desktop/src/main/client-assets.cjs';
 
 const unavailable = 'Moor 客户端资源不可用';

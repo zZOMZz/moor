@@ -1,22 +1,22 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import type { CreateElicitationRequest } from '@agentclientprotocol/sdk';
+import {
+  bridgeElicitation,
+  elicitationResponse,
+  normalizeElicitation,
+  type ElicitationBinding,
+} from '@moor/host/sessions/elicitation';
 import {
   INTERACTION_VERSION,
   QUESTION_LIMITS,
-  questionRequestSchema,
   questionAnswerSchema,
-  validateQuestionAnswer,
-  steerRequestSchema,
+  questionRequestSchema,
   steerReceiptSchema,
+  steerRequestSchema,
+  validateQuestionAnswer,
   type QuestionRequest,
 } from '@moor/protocol/interaction-protocol';
-import {
-  normalizeElicitation,
-  elicitationResponse,
-  bridgeElicitation,
-  type ElicitationBinding,
-} from '@moor/host/sessions/elicitation';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const binding: ElicitationBinding = {
   workspaceId: 'workspace',

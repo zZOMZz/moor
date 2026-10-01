@@ -1,13 +1,13 @@
-import test from 'node:test';
+import { GitHubConfig } from '@moor/host/integrations/github/config';
+import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { JSDOM } from 'jsdom';
 import { DesktopGitHubSettings } from '../../apps/desktop/src/main/github-settings.cjs';
-import { GitHubConfig } from '@moor/host/integrations/github/config';
 
 function transport() {
   const timers = new Map<number, () => void>(),

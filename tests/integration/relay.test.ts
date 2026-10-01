@@ -1,10 +1,10 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { WebSocket } from 'ws';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
 import type { Workspace } from '@moor/protocol/catalog';
 import { PROTOCOL } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import test from 'node:test';
+import { WebSocket } from 'ws';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 test('workspace HTTP routes bind a same-id session to the chosen replica and reject stale ownership', async (t) => {
   const f = await syntheticRelay();

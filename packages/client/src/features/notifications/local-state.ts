@@ -1,6 +1,6 @@
-import { z } from 'zod';
-import { id } from '@moor/protocol/protocol';
 import { notificationPreferencesSchema } from '@moor/protocol/notification-protocol';
+import { id } from '@moor/protocol/protocol';
+import { z } from 'zod';
 const owner = z
   .string()
   .min(1)

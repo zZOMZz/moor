@@ -1,13 +1,6 @@
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, copyFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { RuntimeStore } from '@moor/host/persistence/store';
 import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { AppError, mutationSchema, type Mutation } from '@moor/protocol/protocol';
-import { Flock, LoroDoc, delta, mirror, metas, putMeta, vv } from '@moor/session/model';
-import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 import {
   sessionControlActionSchema,
   sessionOperationSchema,
@@ -16,6 +9,13 @@ import {
   type SessionControlAction,
   type SessionOperation,
 } from '@moor/protocol/session-control-protocol';
+import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
+import assert from 'node:assert/strict';
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
+import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 function signal() {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => {

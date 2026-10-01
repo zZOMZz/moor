@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 import { paginationFixture, signal } from '../fixtures/workspace-pagination';
 
 test('modern clients request bounded summaries and exact cursors while preserving each cached page', async (t) => {

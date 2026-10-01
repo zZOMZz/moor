@@ -1,4 +1,10 @@
-import test from 'node:test';
+import {
+  captureProjectSnapshot,
+  compareProjectSnapshots,
+  enumerateProjectFiles,
+  type ProjectSnapshotOptions,
+} from '@moor/host/projects/snapshot';
+import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
 import strict from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -16,14 +22,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
+import test from 'node:test';
 import { writePrivateArtifacts, writePrivateDocument } from '../fixtures/private-documents';
-import {
-  captureProjectSnapshot,
-  compareProjectSnapshots,
-  enumerateProjectFiles,
-  type ProjectSnapshotOptions,
-} from '@moor/host/projects/snapshot';
 
 function project(t: { after(fn: () => void): void }) {
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), 'moor-project-snapshot-')));

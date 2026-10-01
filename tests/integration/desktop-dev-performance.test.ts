@@ -1,8 +1,8 @@
+import { transform } from 'esbuild';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { transform } from 'esbuild';
 import { registerDevPerformance } from '../../apps/desktop/src/main/dev-performance.cjs';
 
 function fixture(development = true) {

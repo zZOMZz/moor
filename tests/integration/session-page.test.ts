@@ -1,7 +1,6 @@
-import test, { afterEach } from 'node:test';
-import assert from 'node:assert/strict';
+import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import { readSessionPage } from '@moor/host/sessions/page';
 import { AppError, type RuntimeWorkspace } from '@moor/protocol/protocol';
-import type { SessionMetadata } from '@moor/protocol/session-responses';
 import {
   SESSION_PAGE_FEATURE,
   SESSION_PAGE_LIMITS,
@@ -9,8 +8,9 @@ import {
   validateSessionPageResult,
   type SessionPageRequest,
 } from '@moor/protocol/session-page';
-import { readSessionPage } from '@moor/host/sessions/page';
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import type { SessionMetadata } from '@moor/protocol/session-responses';
+import assert from 'node:assert/strict';
+import test, { afterEach } from 'node:test';
 import { syntheticSessionPageIndex } from '../fixtures/session-page-index';
 const opened: { close(): void }[] = [];
 afterEach(() => {

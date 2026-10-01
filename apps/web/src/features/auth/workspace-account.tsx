@@ -1,20 +1,20 @@
-import { useNavigation } from '../../platform/ui-ports';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { Account, AccountApi } from '../../platform/account';
+import type { WorkspaceScope } from '@moor/client/operations/workspace/compose';
 import type {
   AccountManagementRequest,
   AccountManagementValue,
 } from '@moor/protocol/account-management';
 import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
-import { CatalogManagement, type ManagedWorkspace } from './catalog-management';
-import type { WorkspaceScope } from '../workspace/workspace-store';
-import { GoogleStart } from './google-login';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { Account, AccountApi } from '../../platform/account';
 import {
+  exportRetiredRecords,
   readRetiredSecureRecords,
   readRetiredWebRecords,
-  exportRetiredRecords,
   type RetiredRecord,
 } from '../../platform/retired-records';
+import { useNavigation } from '../../platform/ui-ports';
+import { CatalogManagement, type ManagedWorkspace } from './catalog-management';
+import { GoogleStart } from './google-login';
 
 export function WorkspaceAccountPanel({
   accountApi,

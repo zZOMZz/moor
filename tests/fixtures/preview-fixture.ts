@@ -1,6 +1,6 @@
+import type { PreviewViewport } from '@moor/protocol/preview-protocol';
 import { createHash } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
-import type { PreviewFrame, PreviewViewport } from '@moor/protocol/preview-protocol';
 
 export const previewVersion = 'sha256:' + 'a'.repeat(64);
 export const previewViewport = { width: 390, height: 844 };
@@ -30,22 +30,5 @@ export function previewPng(viewport = previewViewport) {
     byteLength: bytes.length,
     version: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
     data: bytes.toString('base64'),
-  };
-}
-export function previewFrame(
-  previewId = 'preview',
-  frameId = 'frame',
-  viewport: PreviewViewport = previewViewport,
-): PreviewFrame {
-  return {
-    previewId,
-    frameId,
-    documentId: 'document',
-    revision: 1,
-    viewport,
-    path: '/',
-    title: 'SYNTHETIC_PRIVATE_PREVIEW_PAGE',
-    capturedAt: '2026-09-12T00:00:00Z',
-    image: previewPng(viewport),
   };
 }

@@ -1,4 +1,14 @@
-import test, { type TestContext } from 'node:test';
+import {
+  assertLocalCliConnectionPath,
+  localCliChallenge,
+  localCliConnectionSchema,
+  localCliProof,
+  publishLocalCliConnection,
+  readLocalCliConnection,
+  verifyLocalCliProof,
+  type LocalCliConnection,
+} from '@moor/local-state/private-connection';
+import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import fs, {
   chmodSync,
@@ -18,17 +28,7 @@ import fs, {
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AppError } from '@moor/protocol/protocol';
-import {
-  assertLocalCliConnectionPath,
-  localCliConnectionSchema,
-  publishLocalCliConnection,
-  readLocalCliConnection,
-  type LocalCliConnection,
-  localCliChallenge,
-  localCliProof,
-  verifyLocalCliProof,
-} from '@moor/local-state/private-connection';
+import test, { type TestContext } from 'node:test';
 
 const connection = (instanceId = 'instance-a'): LocalCliConnection => ({
   version: 1,

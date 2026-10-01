@@ -246,7 +246,7 @@ Agent 回调进入主机，由主机将内容写入 Moor 历史。`changed` 是�
 
 **理解检查：** 应该在写数据库之前还是之后启动 Agent？若反过来，写入失败会造成什么不可解释的状态？
 
-源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../apps/web/src/features/workspace/workspace-controller.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
+源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../packages/client/src/features/workspace/compose.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
 
 ## 7. 断线、重试与一致性
 
@@ -458,25 +458,25 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 
 先读短的数据定义，再跟一条请求，最后读专题模块。不要一开始顺序通读大型 UI 文件。
 
-| 顺序 | 入口                                                                                                                                                 | 本轮只找什么                                                         |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                                         | `history`、用户/助手关联、版本向量与增量                             |
-| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                                               | RuntimeWorkspace、Mutation、产品目标与本地目标的区别                 |
-| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                                                           | 导入前后比较、允许字段、`expectedTurnId`、历史不可改                 |
-| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts)                                     | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`            |
-| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                                                      | `sendTurn`、`acceptSessionCommand`、事务之后的 `execute`、审批与停止 |
-| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)                                               | `open/prompt/cancel/close`，new/load、能力与回调                     |
-| 7    | [WorkspaceController](../apps/web/src/features/workspace/workspace-controller.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
-| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                                         | 路由与响应范围、共同方法校验和分发                                   |
-| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                                           | 用断言核验自己对顺序与恢复的解释                                     |
-| 10   | [开发文档](development.md#e2e-入口与覆盖)                                                                                                            | 按感兴趣的功能查专门实现及测试                                       |
+| 顺序 | 入口                                                                                                                                 | 本轮只找什么                                                         |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                         | `history`、用户/助手关联、版本向量与增量                             |
+| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                               | RuntimeWorkspace、Mutation、产品目标与本地目标的区别                 |
+| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                                           | 导入前后比较、允许字段、`expectedTurnId`、历史不可改                 |
+| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts)                     | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`            |
+| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                                      | `sendTurn`、`acceptSessionCommand`、事务之后的 `execute`、审批与停止 |
+| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)                               | `open/prompt/cancel/close`，new/load、能力与回调                     |
+| 7    | [Workspace](../packages/client/src/features/workspace/compose.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
+| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                         | 路由与响应范围、共同方法校验和分发                                   |
+| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                           | 用断言核验自己对顺序与恢复的解释                                     |
+| 10   | [开发文档](development.md#e2e-入口与覆盖)                                                                                            | 按感兴趣的功能查专门实现及测试                                       |
 
 可在仓库根目录使用以下只读搜索。文件以符号定位，比记住容易变化的行号更可靠。
 
 ```sh
 rg -n 'acceptSessionCommand|transaction\(|journal\.accept|run.done = this.execute' packages/host/src/sessions/workspace.ts
 rg -n 'expectedTurnId|仅允许追加|原执行|不允许远程' packages/host/src/commands/validate-mutation.ts
-rg -n 'async (send|respondPermission|retry)\(' apps/web/src/features/workspace/workspace-controller.ts
+rg -n 'async (send|respondPermission|retry)\(' packages/client/src/features/workspace/compose.ts
 rg -n 'fingerprint|lookup\(|stage\(|accept\(' packages/host/src/persistence/journal.ts
 ```
 

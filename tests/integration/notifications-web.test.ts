@@ -1,11 +1,12 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
+import type { NotificationLocalState } from '@moor/client/features/notifications/local-state';
 import {
   NotificationController,
   pushEndpointHash,
   type NotificationBrowser,
-} from '../../apps/web/src/features/notifications/notifications';
-import type { NotificationLocalState } from '@moor/client/features/notifications/local-state';
+} from '@moor/client/features/notifications/notifications';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createNotificationRequests } from '../../apps/web/src/platform/browser/notifications';
 const preferences = { completed: true, failed: true, approvals: true };
 const payload = {
   endpoint: 'https://push.synthetic.invalid/endpoint',
@@ -104,7 +105,12 @@ async function fixture() {
       : { ...row, preferences: (body as any).preferences };
   };
   const create = () =>
-    new NotificationController('owner', { browser, request, current: () => current, changed() {} });
+    new NotificationController('owner', {
+      browser,
+      request: createNotificationRequests(request),
+      current: () => current,
+      changed() {},
+    });
   return {
     create,
     set registrationGate(value: (() => Promise<void>) | undefined) {

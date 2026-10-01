@@ -1,18 +1,18 @@
-import test from 'node:test';
+import { createAcpDriver } from '@moor/host/agents/acp/driver';
+import type { AgentCallbacks, AgentRunBinding } from '@moor/host/agents/driver';
+import type { SessionEvent } from '@moor/host/sessions/events';
+import {
+  INTERACTION_VERSION,
+  type QuestionAnswer,
+  type QuestionRequest,
+} from '@moor/protocol/interaction-protocol';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createAcpDriver } from '@moor/host/agents/acp/driver';
-import type { AgentCallbacks, AgentRunBinding } from '@moor/host/agents/driver';
-import {
-  INTERACTION_VERSION,
-  type QuestionAnswer,
-  type QuestionRequest,
-} from '@moor/protocol/interaction-protocol';
-import type { SessionEvent } from '@moor/host/sessions/events';
+import test from 'node:test';
 
 const binding: AgentRunBinding = {
   workspaceId: 'workspace',

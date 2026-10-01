@@ -1,17 +1,17 @@
-import test from 'node:test';
+import { Store } from '@moor/gateway/accounts';
+import { HostDeviceMetadata } from '@moor/host/persistence/device-metadata';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
+import { fork, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fork, type ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
+import test from 'node:test';
 import { WebSocket } from 'ws';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostDeviceMetadata } from '@moor/host/persistence/device-metadata';
-import { Store } from '@moor/gateway/accounts';
-import { PROTOCOL } from '@moor/protocol/protocol';
-import { syntheticRelay } from '../fixtures/synthetic-relay';
 import { DesktopDeviceMetadata } from '../../apps/desktop/src/main/device-metadata.cjs';
+import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 test(
   'real desktop host accepts private name IPC without restarting and restores host state over stale startup settings',

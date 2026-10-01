@@ -1,8 +1,8 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { type SessionForkController } from '@moor/client/features/fork/session-fork';
 import type { ForkCutoff, ForkDirectory } from '@moor/protocol/fork-protocol';
 import { X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
-import { type SessionForkController } from './session-fork';
 
 export type SessionForkPanelProps = {
   controller?: SessionForkController;

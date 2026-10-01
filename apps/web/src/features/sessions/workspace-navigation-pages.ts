@@ -1,14 +1,14 @@
-import { RequestFailure } from '@moor/protocol/request-failure';
-import { useEffect, useMemo, useState } from 'react';
-import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
-import type { SessionMetadata } from '@moor/protocol/session-responses';
-import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
 import {
   isWorkspaceListOfflineFailure,
-  type WorkspaceController,
+  type Workspace,
   type WorkspaceClientState,
   type WorkspaceSessionPage,
-} from '../workspace/workspace-controller';
+} from '@moor/client/features/workspace/compose';
+import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
+import { RequestFailure } from '@moor/protocol/request-failure';
+import type { SessionMetadata } from '@moor/protocol/session-responses';
+import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
+import { useEffect, useMemo, useState } from 'react';
 export type NavigationProject = NonNullable<WorkspaceClientState['project']> & {
   source: WorkspaceSource;
 };
@@ -100,7 +100,7 @@ export function appendNavigationPage(
 /** Metadata summaries only. Project bodies, drafts and unknown operations never
  * participate in this reader or its invalidation/caching lifecycle. */
 export function useNavigationSessions(
-  controller: WorkspaceController,
+  controller: Workspace,
   state: WorkspaceClientState,
   visible?: NavigationProject[],
   query = '',

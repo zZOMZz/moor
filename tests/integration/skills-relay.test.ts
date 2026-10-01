@@ -1,11 +1,11 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import { createHash } from 'node:crypto';
-import { WebSocket } from 'ws';
+import type { Workspace } from '@moor/protocol/catalog';
 import { PROTOCOL } from '@moor/protocol/protocol';
 import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
-import type { Workspace } from '@moor/protocol/catalog';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import test from 'node:test';
+import { WebSocket } from 'ws';
 import { syntheticRelay } from '../fixtures/synthetic-relay';
 
 const text = 'SYNTHETIC_SKILL_PRIVATE_BODY\n中文 !`never execute` <script>text only</script>';

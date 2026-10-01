@@ -1,16 +1,16 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { createRequire } from 'node:module';
-import { createHash } from 'node:crypto';
 import { RequestError } from '@agentclientprotocol/sdk';
 import { createAcpDriver } from '@moor/host/agents/acp/driver';
-import type { AgentConfig, AgentCallbacks, AgentRunBinding } from '@moor/host/agents/driver';
+import type { AgentCallbacks, AgentConfig, AgentRunBinding } from '@moor/host/agents/driver';
 import type { AgentForkAnchor } from '@moor/host/agents/fork';
 import { AppError } from '@moor/protocol/protocol';
+import assert from 'node:assert/strict';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import test from 'node:test';
 
 const binding: AgentRunBinding = {
   workspaceId: 'workspace',

@@ -1,11 +1,11 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
 import {
-  createAttachmentDraftItem,
+  attachmentInputReason,
   attachmentPreviewUrl,
   attachmentText,
-  attachmentInputReason,
-} from '../../apps/web/src/features/attachments/attachments';
+  createAttachmentDraftItem,
+} from '@moor/client/features/attachments/attachments';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 
 test('preview selection never embeds SVG, HTML, unsafe data or file paths; input capabilities gate media types', async () => {
   const { reference, data } = await createAttachmentDraftItem(

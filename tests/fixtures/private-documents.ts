@@ -1,5 +1,5 @@
-import { writeFileSync } from 'node:fs';
 import { PRIVATE_ENDPOINT_FILE_FORMAT } from '@moor/protocol/private-content';
+import { writeFileSync } from 'node:fs';
 
 /** Synthetic retained formats. No keys, credentials, accounts or security runtime are created. */
 export function writePrivateDocument(path: string, value: unknown) {

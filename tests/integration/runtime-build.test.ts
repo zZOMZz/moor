@@ -1,9 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import test from 'node:test';
 import { buildRuntime, removeRetiredRuntimeFiles } from '../../scripts/build/runtime-build.mjs';
 
 test('retired runtime cleanup removes only known program outputs and leaves data intact', async (t) => {

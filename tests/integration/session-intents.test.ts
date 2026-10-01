@@ -1,27 +1,27 @@
+import type { AgentCallbacks, AgentDriver } from '@moor/host/agents/driver';
+import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostWorkspace } from '@moor/host/sessions/workspace';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
-import test, { type TestContext } from 'node:test';
-import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { AppError } from '@moor/protocol/protocol';
-import {
-  sendTurnSchema,
-  respondPermissionSchema,
-  type SendTurn,
-  type RespondPermission,
-} from '@moor/protocol/session-intent-protocol';
-import type { SessionOriginalOperation } from '@moor/protocol/session-control-protocol';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import { AppError } from '@moor/protocol/protocol';
+import type { SessionOriginalOperation } from '@moor/protocol/session-control-protocol';
+import {
+  respondPermissionSchema,
+  sendTurnSchema,
+  type RespondPermission,
+  type SendTurn,
+} from '@moor/protocol/session-intent-protocol';
 import {
   buildSessionTurn,
   readClientSession,
   sessionPermissionReviews,
 } from '@moor/session/session-operations';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
-import type { AgentCallbacks, AgentDriver } from '@moor/host/agents/driver';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
 import { syntheticCapabilities } from '../fixtures/agent-capabilities';
 
 function signal() {
