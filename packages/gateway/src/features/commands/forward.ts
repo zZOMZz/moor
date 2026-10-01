@@ -1,6 +1,7 @@
+import { publicAgentFailure } from '@moor/protocol/agent-errors';
+import { RETIRED_SESSION_FEATURE } from '@moor/protocol/connection-authority';
 import {
   hostCommandSchema,
-  hostCommandSchemas,
   type HostCommand,
   type HostCommandMethod,
 } from '@moor/protocol/host-command';
@@ -11,8 +12,6 @@ import {
 } from '@moor/protocol/host-command-contract';
 import { validateHostResponse } from '@moor/protocol/host-response';
 import { AppError, assert, type RuntimeWorkspace } from '@moor/protocol/protocol';
-import { RETIRED_SESSION_FEATURE } from '@moor/protocol/connection-authority';
-import { publicAgentFailure } from '@moor/protocol/agent-errors';
 
 /** Constructed from an authenticated replica route, never from request fields.
  * Catalogue and execution workspace identities deliberately have different names. */
@@ -25,12 +24,7 @@ export type ReplicaCommandContext = {
   dispatch(command: HostCommand): Promise<unknown>;
   dispatched(): void;
 };
-type ReplicaCommandInput = {
-  method: HostCommandMethod;
-  segments: readonly string[];
-  query: URLSearchParams;
-  body(limit: number): Promise<unknown>;
-};
+export type ReplicaCommandInput = { method: HostCommandMethod; params: unknown };
 
 function agentCommand(command: HostCommand) {
   return command.method === 'agent-options' ||
@@ -92,27 +86,11 @@ export async function forwardReplicaCommand(
   )
     throw new AppError(410, RETIRED_SESSION_FEATURE);
   const contract = hostCommandContracts[input.method];
-  let params: unknown;
-  if (input.method === 'sessions') params = {};
-  else if (input.method === 'session') {
-    let sessionId: string;
-    try {
-      sessionId = decodeURIComponent(input.segments[1]!);
-    } catch {
-      throw new AppError(400, '会话编号无效');
-    }
-    params = { sessionId, version: input.query.get('version') ?? undefined };
-  } else {
-    params = await input.body(contract.requestBytes);
-    // The existing public mutation endpoint rejects unknown fields instead of
-    // stripping them; keep that compatibility boundary distinct from IPC parsing.
-    if (input.method === 'mutate') params = hostCommandSchemas.mutate.strict().parse(params);
-  }
   const command = hostCommandSchema.parse({
     method: input.method,
     workspaceId: context.runtimeWorkspaceId,
     localProjectId: context.localProjectId,
-    params,
+    params: input.params,
   });
   assertHostCommandActive(command);
   assert(context.workspace.id === context.runtimeWorkspaceId, 409, '执行工作区已变化');

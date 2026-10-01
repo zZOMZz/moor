@@ -154,11 +154,11 @@ test('tree and frozen diff reads target the selected host and relay never persis
       }
     }
   }
-  for (const table of f.store.db
+  for (const table of f.store.database
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all()) {
     assert.match(String(table.name), /^[a-z_]+$/u);
-    const rows = JSON.stringify(f.store.db.prepare(`SELECT * FROM ${table.name}`).all());
+    const rows = JSON.stringify(f.store.database.prepare(`SELECT * FROM ${table.name}`).all());
     for (const value of privateStrings) assert.equal(rows.includes(value), false);
     assert.doesNotMatch(rows, /created\.txt|project-snapshot|Frozen synthetic/);
   }

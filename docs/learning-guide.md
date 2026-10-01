@@ -77,7 +77,7 @@ flowchart LR
 
 **理解检查：** 新增一个平板客户端，应该复用哪一层？为什么它不能直接写主机数据库？
 
-源码入口：[中转 HTTP](../packages/gateway/src/http.ts)、[主机启动](../apps/host/src/main.ts)、[HostWorkspace](../packages/host/src/features/runtime/workspace.ts)、[AgentDriver](../packages/host/src/features/agents/driver.ts)。专题：[核心架构](core.md)。
+源码入口：[中转 HTTP](../packages/gateway/src/adapters/http/server.ts)、[主机启动](../apps/host/src/main.ts)、[HostWorkspace](../packages/host/src/features/runtime/workspace.ts)、[AgentDriver](../packages/host/src/features/agents/driver.ts)。专题：[核心架构](core.md)。
 
 ## 4. 身份模型：组织位置与执行位置
 
@@ -121,7 +121,7 @@ flowchart TD
 
 **理解检查：** 两台 Mac 有相同目录名，能否互相处理同一个会话的重试？把主机移入另一工作区后，哪些关系改变、哪些保持不变？
 
-源码入口：[产品目录类型](../packages/protocol/src/catalog.ts)、[中转目录](../packages/gateway/src/catalog.ts)、[运行协议](../packages/protocol/src/protocol.ts)。专题：[概念与身份](concepts.md)。
+源码入口：[产品目录类型](../packages/protocol/src/catalog.ts)、[中转目录](../packages/gateway/src/features/catalog/service.ts)、[运行协议](../packages/protocol/src/protocol.ts)。专题：[概念与身份](concepts.md)。
 
 ## 5. 数据模型：历史、元数据与活动状态
 
@@ -246,7 +246,7 @@ Agent 回调进入主机，由主机将内容写入 Moor 历史。`changed` 是�
 
 **理解检查：** 应该在写数据库之前还是之后启动 Agent？若反过来，写入失败会造成什么不可解释的状态？
 
-源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../packages/client/src/features/workspace/compose.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/features/runtime/workspace.ts)、[变更校验](../packages/host/src/features/sessions/validate-mutation.ts)、[Journal](../packages/host/src/adapters/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
+源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../packages/client/src/features/workspace/compose.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/adapters/http/server.ts)、[HostWorkspace](../packages/host/src/features/runtime/workspace.ts)、[变更校验](../packages/host/src/features/sessions/validate-mutation.ts)、[Journal](../packages/host/src/adapters/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
 
 ## 7. 断线、重试与一致性
 
@@ -467,7 +467,7 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 | 5    | [host-workspace.ts](../packages/host/src/features/runtime/workspace.ts)                                                                | `sendTurn`、`acceptSessionCommand`、事务之后的 `execute`、审批与停止 |
 | 6    | [agent.ts](../packages/host/src/features/agents/driver.ts)、[acp.ts](../packages/host/src/adapters/acp/driver.ts)                      | `open/prompt/cancel/close`，new/load、能力与回调                     |
 | 7    | [Workspace](../packages/client/src/features/workspace/compose.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts)   | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
-| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/features/commands/dispatcher.ts)                    | 路由与响应范围、共同方法校验和分发                                   |
+| 8    | [http.ts](../packages/gateway/src/adapters/http/server.ts)、[host-command.ts](../packages/host/src/features/commands/dispatcher.ts)    | 路由与响应范围、共同方法校验和分发                                   |
 | 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                             | 用断言核验自己对顺序与恢复的解释                                     |
 | 10   | [开发文档](development.md#e2e-入口与覆盖)                                                                                              | 按感兴趣的功能查专门实现及测试                                       |
 

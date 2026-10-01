@@ -183,7 +183,9 @@ test('real relay forwards exact project pagination and transfers bounded pages w
   );
   for (const name of ['session', 'session_delta', 'search_document'])
     assert.equal(
-      f.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name),
+      f.store.database
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(name),
       undefined,
     );
 });

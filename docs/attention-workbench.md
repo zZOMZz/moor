@@ -202,14 +202,14 @@ Moor 当前的 `deviceId` 是已配对的**执行设备**编号，不是手机�
 
 ## 8. 实现边界
 
-| 模块                                                          | 职责                                 |
-| ------------------------------------------------------------- | ------------------------------------ |
-| `packages/protocol/src/attention.ts`                          | 事项、观察状态、上下文和能力类型     |
-| `packages/host/src/persistence/attention-store.ts`            | 侧表迁移、投影、分页、观察与回执     |
-| `packages/host/src/sessions/workspace.ts`                     | 活跃审批、Actor/事件校验与接受事务   |
-| `packages/gateway/src/accounts.ts` 与 `apps/host/src/main.ts` | authority、配对固定与连接身份        |
-| `packages/gateway/src/http.ts`                                | 注入可信身份、范围校验与定向失效转发 |
-| `apps/web/src/features/attention/`                            | 聚合、详情、处置、草稿与窄屏交互     |
+| 模块                                                                           | 职责                                 |
+| ------------------------------------------------------------------------------ | ------------------------------------ |
+| `packages/protocol/src/attention.ts`                                           | 事项、观察状态、上下文和能力类型     |
+| `packages/host/src/persistence/attention-store.ts`                             | 侧表迁移、投影、分页、观察与回执     |
+| `packages/host/src/sessions/workspace.ts`                                      | 活跃审批、Actor/事件校验与接受事务   |
+| `packages/gateway/src/features/accounts/service.ts` 与 `apps/host/src/main.ts` | authority、配对固定与连接身份        |
+| `packages/gateway/src/adapters/http/server.ts`                                 | 注入可信身份、范围校验与定向失效转发 |
+| `apps/web/src/features/attention/`                                             | 聚合、详情、处置、草稿与窄屏交互     |
 
 用户观察记录与事项摘要只存在主机和授权访问端缓存。中转保存 authority、账号和组织元数据，不保存事项索引、摘录、处理记录或草稿。归档恢复仍走会话校验；通知复用稳定事项 ID，打开后重读。
 

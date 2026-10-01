@@ -1,6 +1,6 @@
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { Workspace } from '@moor/protocol/catalog';
@@ -16,7 +16,7 @@ export async function syntheticCollaboration() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-collaboration-app-'))),
     project = join(root, 'project');
   mkdirSync(project);
-  const accounts = new Store(':memory:');
+  const accounts = new SqliteAccounts(':memory:');
   const ownerSecret = await accounts.setup('owner@synthetic.invalid', 'synthetic-password-only');
   const memberSecret = await accounts.redeemAccountInvitation(
     accounts.inviteAccount(accounts.owner(ownerSecret)).invitation,

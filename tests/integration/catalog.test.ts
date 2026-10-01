@@ -1,4 +1,5 @@
-import { Store, hash } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { hash } from '@moor/gateway/adapters/crypto/credentials';
 import { projectSourceSchema } from '@moor/protocol/catalog';
 import type { RuntimeWorkspace } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ const runtime = (machineId: string): RuntimeWorkspace => ({
   agents: [],
 });
 async function fixture(file = ':memory:') {
-  const store = new Store(file);
+  const store = new SqliteAccounts(file);
   const login = await store.setup('synthetic@example.com', 'synthetic-password-only');
   const owner = store.owner(login);
   const a = store.redeem(store.pair(owner), 'Mac A');
@@ -62,7 +63,7 @@ test('topology survives restart and offline hosts; local paths, agents and sessi
   f.store.catalog.rename(f.owner, before.id, '个人开发');
   f.store.catalog.assign(f.owner, before.id, before.replicas[1].id, before.projects[0].id);
   f.store.close();
-  const restored = new Store(file);
+  const restored = new SqliteAccounts(file);
   t.after(() => restored.close());
   const after = restored.catalog.list(f.owner, () => [])[0];
   assert.equal(after.id, before.id);
@@ -72,7 +73,7 @@ test('topology survives restart and offline hosts; local paths, agents and sessi
   assert.ok(after.replicas.every((r) => !r.available && r.rootPath === undefined));
   assert.equal(after.replicas[1].projectId, before.projects[0].id);
   for (const table of ['workspace', 'host_binding', 'project', 'project_replica']) {
-    const rows = JSON.stringify(restored.db.prepare(`SELECT * FROM ${table}`).all());
+    const rows = JSON.stringify(restored.database.prepare(`SELECT * FROM ${table}`).all());
     assert.doesNotMatch(rows, /rootPath|\/synthetic\/moor|history|metaBundle|snapshot|agentConfig/);
   }
 });
@@ -166,7 +167,7 @@ test('existing relay schema and pair codes migrate in place without resetting cr
       'legacy-machine',
     );
   old.close();
-  const store = new Store(file, () => 1000);
+  const store = new SqliteAccounts(file, () => 1000);
   t.after(() => store.close());
   assert.equal(store.owner('legacy-login'), 'legacy-owner');
   assert.equal(store.deviceToken('legacy-device-token').machine_id, 'legacy-machine');
@@ -177,7 +178,7 @@ test('existing relay schema and pair codes migrate in place without resetting cr
   ]);
   assert.equal(store.catalog.list('legacy-owner', () => [])[0].hosts[0].deviceId, 'legacy-device');
   assert.equal(
-    store.db.prepare('SELECT salt FROM account WHERE id=?').get('legacy-owner')!.salt,
+    store.database.prepare('SELECT salt FROM account WHERE id=?').get('legacy-owner')!.salt,
     'unchanged-salt',
   );
 });

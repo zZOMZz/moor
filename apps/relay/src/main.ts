@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { Store, token } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { token } from '@moor/gateway/adapters/crypto/credentials';
 import { createGoogleOidcProvider } from './google-oidc';
 import {
   ACCOUNT_RECOVERY_FAILED,
@@ -64,7 +65,7 @@ async function main() {
       process.env.MOOR_ORIGIN ?? process.env.PERSONAL_ORIGIN ?? `http://localhost:${port}`,
     ),
     provider = googleProvider(origin);
-  const { createApp } = await import('@moor/gateway/http');
+  const { createApp } = await import('@moor/gateway/adapters/http/server');
   mkdirSync(data, { recursive: true, mode: 0o700 });
   let release: () => void;
   try {
@@ -73,7 +74,7 @@ async function main() {
     throw new StartupError('中转数据目录正被使用或无法安全打开，请先停止已有进程。');
   }
   process.once('exit', release);
-  let store: Store | undefined, app: ReturnType<typeof createApp> | undefined;
+  let store: SqliteAccounts | undefined, app: ReturnType<typeof createApp> | undefined;
   try {
     const setupFile = join(data, 'setup-token');
     let setupToken = process.env.MOOR_SETUP_TOKEN ?? process.env.PERSONAL_SETUP_TOKEN;
@@ -85,7 +86,7 @@ async function main() {
         writeFileSync(setupFile, setupToken + '\n', { mode: 0o600 });
       }
     }
-    store = new Store(join(data, 'accounts.sqlite'));
+    store = new SqliteAccounts(join(data, 'accounts.sqlite'));
     chmodSync(join(data, 'accounts.sqlite'), 0o600);
     const activeApp = (app = createApp(store, {
       origin,

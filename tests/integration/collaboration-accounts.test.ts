@@ -1,17 +1,17 @@
-import { Store } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 test('account invitations are hashed, expiring, single-use and grant no workspace access', async (t) => {
   let now = 1000;
-  const store = new Store(':memory:', () => now);
+  const store = new SqliteAccounts(':memory:', () => now);
   t.after(() => store.close());
   const login = await store.setup('owner@synthetic.invalid', 'synthetic-password-only'),
     owner = store.owner(login);
   const workspace = store.catalog.defaultWorkspace(owner),
     invitation = store.inviteAccount(owner);
   assert.notEqual(
-    store.db.prepare('SELECT token FROM account_invitation').get()!.token,
+    store.database.prepare('SELECT token FROM account_invitation').get()!.token,
     invitation.invitation,
   );
   const results = await Promise.allSettled([

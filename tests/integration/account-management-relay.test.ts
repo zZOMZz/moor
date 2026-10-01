@@ -80,8 +80,9 @@ test('the reviewed account binding refuses a switched browser cookie before crea
   });
   assert.equal(response.status, 403);
   assert.equal(
-    relay.store.db.prepare('SELECT COUNT(*) AS count FROM workspace WHERE owner=?').get(otherOwner)!
-      .count,
+    relay.store.database
+      .prepare('SELECT COUNT(*) AS count FROM workspace WHERE owner=?')
+      .get(otherOwner)!.count,
     0,
   );
 });
@@ -98,7 +99,8 @@ test('revocation while a directory request body is pending prevents the subseque
     if (secret === relay.secret && ++reads === 2) reached();
     return value;
   });
-  const before = relay.store.db.prepare('SELECT COUNT(*) AS count FROM workspace').get()!.count;
+  const before = relay.store.database.prepare('SELECT COUNT(*) AS count FROM workspace').get()!
+    .count;
   const plan = accountManagementPlan({
     action: 'create-workspace',
     owner: relay.owner,
@@ -130,7 +132,7 @@ test('revocation while a directory request body is pending prevents the subseque
   send.end(JSON.stringify(plan.body));
   assert.equal(await finished, 401);
   assert.equal(
-    relay.store.db.prepare('SELECT COUNT(*) AS count FROM workspace').get()!.count,
+    relay.store.database.prepare('SELECT COUNT(*) AS count FROM workspace').get()!.count,
     before,
   );
 });

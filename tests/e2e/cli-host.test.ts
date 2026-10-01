@@ -6,8 +6,8 @@ import { copyFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 
 for (const transport of ['local', 'relay'] as const)
   test(
@@ -46,7 +46,7 @@ for (const transport of ['local', 'relay'] as const)
       runtime.close();
       const children: { child: ChildProcess; closed: Promise<any> }[] = [];
       let relay: ReturnType<typeof createApp> | undefined;
-      let accounts: Store | undefined;
+      let accounts: SqliteAccounts | undefined;
       t.after(async () => {
         for (const item of children) {
           if (item.child.exitCode === null && item.child.signalCode === null)
@@ -64,7 +64,7 @@ for (const transport of ['local', 'relay'] as const)
         password: 'synthetic-e2e-password',
       };
       if (transport === 'relay') {
-        accounts = new Store(join(privateRoot, 'relay.sqlite'));
+        accounts = new SqliteAccounts(join(privateRoot, 'relay.sqlite'));
         const token = await accounts.setup(credentials.email, credentials.password);
         pairCode = accounts.pair(accounts.owner(token));
         relay = createApp(accounts, {

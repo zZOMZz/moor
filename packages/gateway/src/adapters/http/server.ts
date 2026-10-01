@@ -1,27 +1,13 @@
 import { hostCommandContracts, matchHostCommandRoute } from '@moor/protocol/host-command-contract';
-import { forwardReplicaCommand } from './replica-command';
-import { hostCommandSchema } from '@moor/protocol/host-command';
-import { validateHostResponse } from '@moor/protocol/host-response';
-import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
 import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
+import { GatewayAttention } from '../../features/attention/forward';
+import { GatewayRouting, type GatewayConnections } from '../../features/authority/routing';
+import { GatewayCollaboration } from '../../features/collaboration/forward';
+import { forwardHttpReplicaCommand } from './commands';
+
+import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
 
 import {
-  RETIRED_RECORDS_FEATURE,
-  RETIRED_SESSION_FEATURE,
-  HOST_UPGRADE_REQUIRED,
-} from '@moor/protocol/connection-authority';
-
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { resolve } from 'node:path';
-import { serveStatic } from './static';
-import { WebSocketServer, WebSocket } from 'ws';
-import { z } from 'zod';
-import { isDeepStrictEqual } from 'node:util';
-import { Store, hash as loginHash, type Device } from './accounts';
-import { createHash } from 'node:crypto';
-import { RelayNotifications, type WebPushTransport } from './notifications';
-import {
-  NOTIFICATIONS_FEATURE,
   NOTIFICATION_LIMITS,
   hostNotificationEventSchema,
   notificationEnvelopeSchema,
@@ -31,6 +17,7 @@ import {
   type HostNotificationEvent,
   type NotificationEnvelope,
 } from '@moor/protocol/notification-protocol';
+import type { RuntimeWorkspace } from '@moor/protocol/protocol';
 import {
   AppError,
   assert,
@@ -39,27 +26,27 @@ import {
   mutationSchema,
   sessionActionSchema,
 } from '@moor/protocol/protocol';
-import type { RuntimeWorkspace } from '@moor/protocol/protocol';
+import { createHash } from 'node:crypto';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { WebSocket, WebSocketServer } from 'ws';
+import { z } from 'zod';
+import { type Device } from '../../features/accounts/ports';
+import { type WebPushTransport } from '../../features/notifications/ports';
+import { SqliteAccounts } from '../composition/accounts';
+import { createRelayNotifications } from '../composition/notifications';
+import { hash as loginHash } from '../crypto/credentials';
+import { serveStatic } from './static';
 
-import { sessionBase64Schema, sessionCancelSchema } from '@moor/protocol/session-responses';
-import {
-  workspaceInputSchema,
-  projectInputSchema,
-  replicaAssignmentSchema,
-} from '@moor/protocol/catalog';
-import {
-  workspaceCatalogSnapshotSchema,
-  workspaceReplicaContextSchema,
-} from '@moor/protocol/workspace-catalog';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
   FOLLOWUP_FEATURE,
   actorKey,
   actorSchema,
-  attentionContextSchema,
-  attentionContinueSchema,
   attentionContinueInput,
+  attentionContinueSchema,
   attentionDispositionSchema,
   attentionListQuerySchema,
   attentionPermissionSchema,
@@ -67,27 +54,23 @@ import {
   type AttentionContext,
 } from '@moor/protocol/attention';
 import {
-  COLLABORATION_FEATURE,
-  COLLABORATION_LIMITS,
-  collaborationContextSchema,
-  collaborationKey,
-  collaborationMemberSchema,
-  collaborationOfferSchema,
-  collaborationOfferReceiptSchema,
-  collaborationReadResponseSchema,
-  collaborationSyncRequestSchema,
-  validateCollaborationSyncResponse,
-} from '@moor/protocol/collaboration-protocol';
+  projectInputSchema,
+  replicaAssignmentSchema,
+  workspaceInputSchema,
+} from '@moor/protocol/catalog';
+import { COLLABORATION_LIMITS } from '@moor/protocol/collaboration-protocol';
+import { sessionBase64Schema, sessionCancelSchema } from '@moor/protocol/session-responses';
+import { workspaceCatalogSnapshotSchema } from '@moor/protocol/workspace-catalog';
 
 import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
 
 import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
 
 import { MCP_FEATURE } from '@moor/protocol/mcp-protocol';
-import { GoogleAuth } from './google-auth';
-import type { GoogleOidcProvider } from './google-auth';
+import type { GoogleOidcProvider } from '../../features/auth/google';
+import { GoogleHttpAuth } from '../http/google';
 export function createApp(
-  store: Store,
+  store: SqliteAccounts,
   options: {
     origin: string;
     setupToken: string;
@@ -96,8 +79,8 @@ export function createApp(
     localInstanceId?: string;
     localInstanceProof?: (challenge: string) => string;
     pushTransport?: WebPushTransport;
-    validatePushSubscription?: ConstructorParameters<
-      typeof RelayNotifications
+    validatePushSubscription?: Parameters<
+      typeof createRelayNotifications
     >[1]['validateSubscription'];
     googleProvider?: GoogleOidcProvider;
   },
@@ -110,7 +93,7 @@ export function createApp(
     authorityId: store.authorityId,
     accountId,
   });
-  const googleAuth = new GoogleAuth(store, {
+  const googleAuth = new GoogleHttpAuth(store, {
     origin,
     setupToken: options.setupToken,
     provider: options.localOnly ? undefined : options.googleProvider,
@@ -149,99 +132,74 @@ export function createApp(
   const failures = new Map<string, { count: number; until: number }>();
   const online = (id: string) =>
     bridges.get(id)?.ready === true && bridges.get(id)?.socket.readyState === WebSocket.OPEN;
-  const connectionVersions = new WeakMap<WebSocket, string>();
-  function replicaContext(owner: string, workspaceId: string, replicaId: string) {
-    // All database and live-connection reads complete synchronously in one snapshot.
-    // The version describes this mapping, not a lease or permission to execute it.
-    store.db.exec('SAVEPOINT workspace_replica_context');
-    try {
-      const replica = store.catalog.replica(owner, workspaceId, replicaId);
-      const host = replica.host;
-      const device = store.device(owner, host.device_id);
-      const connection = bridges.get(host.device_id);
-      const runtime = connection?.workspaces.find((value) => value.id === host.runtime_id);
-      const project = runtime?.projects.find((value) => value.id === replica.local_id);
-      assert(
-        online(host.device_id) &&
-          connection &&
-          runtime &&
-          project &&
-          device.machine_id === runtime.machineId,
-        409,
-        '项目副本离线或执行身份已变化',
-      );
-      let connectionVersion = connectionVersions.get(connection.socket);
-      if (!connectionVersion) {
-        connectionVersion = crypto.randomUUID();
-        connectionVersions.set(connection.socket, connectionVersion);
-      }
-      const target = {
-        owner,
-        deviceId: host.device_id,
-        userId: runtime.userId,
-        machineId: runtime.machineId,
-        workspaceId: runtime.id,
-        localProjectId: replica.local_id,
-        catalogWorkspaceId: workspaceId,
-        catalogProjectId: replica.project_id,
-        replicaId: replica.id,
-      };
-      const result = workspaceReplicaContextSchema.parse({
-        version: 1,
-        identity: { owner, actor: actor(owner) },
-        target,
-        mappingVersion: createHash('sha256')
-          .update(JSON.stringify([target, host.id, project.rootPath, connectionVersion]))
-          .digest('hex'),
-        runtime: { ...runtime, projects: [project] },
-      });
-      store.db.exec('RELEASE workspace_replica_context');
-      return result;
-    } catch (error) {
-      store.db.exec('ROLLBACK TO workspace_replica_context; RELEASE workspace_replica_context');
-      throw error;
-    }
-  }
   let closing = false;
-  function notificationRoute(owner: string, deviceId: string, event: HostNotificationEvent) {
-    assert(!closing && online(deviceId), 409, '通知主机不在线');
-    const device = store.device(owner, deviceId);
-    const workspace = bridges
-      .get(deviceId)
-      ?.workspaces.find((workspace) => workspace.id === event.workspaceId);
-    assert(
-      workspace &&
-        workspace.userId === event.userId &&
-        workspace.machineId === event.machineId &&
-        device.machine_id === event.machineId &&
-        workspace.features?.includes(NOTIFICATIONS_FEATURE) &&
-        workspace.projects.some((project) => project.id === event.localProjectId),
-      403,
-      '通知执行范围不匹配',
-    );
-    const spaces = store.catalog.list(owner, (id) =>
-      online(id) ? bridges.get(id)!.workspaces : [],
-    );
-    for (const space of spaces) {
-      const host = space.hosts.find(
-        (host) =>
-          host.deviceId === deviceId &&
-          host.runtimeWorkspaceId === event.workspaceId &&
-          host.machineId === event.machineId,
-      );
-      const replica =
-        host &&
-        space.replicas.find(
-          (replica) =>
-            replica.hostId === host.id &&
-            replica.localProjectId === event.localProjectId &&
-            replica.available,
-        );
-      if (replica) return { catalogWorkspaceId: space.id, replicaId: replica.id };
-    }
-    throw new AppError(403, '通知项目副本已不可用');
-  }
-  const notifications = new RelayNotifications(store.db, {
+  const connectionVersions = new WeakMap<WebSocket, string>();
+  const liveConnections: GatewayConnections = {
+    connection(deviceId) {
+      const connection = bridges.get(deviceId);
+      if (!connection) return;
+      let version = connectionVersions.get(connection.socket);
+      if (!version) {
+        version = crypto.randomUUID();
+        connectionVersions.set(connection.socket, version);
+      }
+      return {
+        version,
+        attentionReady: connection.attentionReady,
+        workspaces: connection.workspaces,
+      };
+    },
+    online,
+    closed: () => closing,
+  };
+  const routing = new GatewayRouting(
+    store,
+    store.catalog,
+    liveConnections,
+    loginHash,
+    (device, command, owner) =>
+      request(
+        device,
+        command.method,
+        command.workspaceId,
+        command.params,
+        command.localProjectId,
+        owner,
+      ),
+    options.localOnly ? 'local' : 'relay',
+  );
+  const replicaContext = routing.replicaContext.bind(routing);
+  const notificationRoute = routing.notificationRoute.bind(routing);
+  const collaboration = new GatewayCollaboration(
+    store,
+    store.catalog,
+    liveConnections,
+    actor,
+    (device, command) =>
+      request(
+        device,
+        command.method,
+        command.workspaceId,
+        command.params,
+        command.localProjectId,
+        command.authorityOwner,
+        command.context,
+      ),
+    (owner, device, runtime, member) => {
+      changed(owner, device, runtime);
+      for (const [ws, viewer] of viewers)
+        if (viewer.owner === member) send(ws, { type: 'collaboration-changed', deviceId: '' });
+    },
+  );
+  const attention = new GatewayAttention(
+    store,
+    store.catalog,
+    liveConnections,
+    actor,
+    (device, method, workspace, params, project, context) =>
+      request(device, method, workspace, params, project, undefined, context),
+  );
+  const notifications = createRelayNotifications(store.database, {
     now: store.now,
     transport: options.pushTransport,
     validateSubscription: options.validatePushSubscription,
@@ -606,15 +564,10 @@ export function createApp(
       }
       if (path === '/api/logout' && req.method === 'POST') {
         const secret = cookie(req);
-        store.db.exec('SAVEPOINT moor_logout');
-        try {
+        store.snapshot('logout', () => {
           notifications.revokeLogin(loginHash(secret));
           store.logout(secret);
-          store.db.exec('RELEASE moor_logout');
-        } catch (error) {
-          store.db.exec('ROLLBACK TO moor_logout; RELEASE moor_logout');
-          throw error;
-        }
+        });
         for (const [ws, v] of viewers) if (v.secret === secret) ws.close(1000, 'logout');
         // Revoke this exact token. A delayed browser response must not overwrite
         // another tab's newer login cookie; an invalid cookie confers no identity.
@@ -660,12 +613,10 @@ export function createApp(
         return json(res, 200, { code: store.pair(owner!, input.workspaceId), expiresIn: 300 });
       }
       if (path === '/api/workspace-catalog' && req.method === 'GET') {
-        store.db.exec('SAVEPOINT workspace_catalog_snapshot');
-        let snapshot;
-        try {
+        const snapshot = store.snapshot('catalog', () => {
           const live = (deviceId: string) =>
             online(deviceId) ? bridges.get(deviceId)!.workspaces : [];
-          snapshot = workspaceCatalogSnapshotSchema.parse({
+          return workspaceCatalogSnapshotSchema.parse({
             version: 1,
             identity: { owner: owner!, actor: actor(owner!) },
             workspaces: store.catalog.list(owner!, live),
@@ -676,13 +627,7 @@ export function createApp(
               workspaces: live(String(device.id)),
             })),
           });
-          store.db.exec('RELEASE workspace_catalog_snapshot');
-        } catch (error) {
-          store.db.exec(
-            'ROLLBACK TO workspace_catalog_snapshot; RELEASE workspace_catalog_snapshot',
-          );
-          throw error;
-        }
+        });
         return json(res, 200, snapshot);
       }
       if (path === '/api/devices' && req.method === 'GET')
@@ -696,79 +641,20 @@ export function createApp(
             workspaces: bridges.get(d.id)?.workspaces ?? [],
           })),
         );
-      function sessionBoundary(
+      const sessionBoundary = (
         deviceId: string,
         runtime: RuntimeWorkspace,
         localProjectId?: string,
         catalogueCurrent?: () => void,
-      ) {
-        const snapshot = structuredClone(runtime),
-          socket = bridges.get(deviceId)?.socket;
-        // Legacy device and host-wide list requests have no single project route.
-        // Pin every registered project and its current catalogue assignment.
-        const mappings = () =>
-          store.catalog
-            .list(owner!, (device) => (online(device) ? bridges.get(device)!.workspaces : []))
-            .flatMap((space) =>
-              space.hosts
-                .filter(
-                  (host) => host.deviceId === deviceId && host.runtimeWorkspaceId === snapshot.id,
-                )
-                .flatMap((host) =>
-                  space.replicas
-                    .filter(
-                      (replica) =>
-                        replica.hostId === host.id &&
-                        (!localProjectId || replica.localProjectId === localProjectId),
-                    )
-                    .map((replica) => [
-                      space.id,
-                      host.id,
-                      replica.id,
-                      replica.projectId,
-                      replica.localProjectId,
-                    ]),
-                ),
-            );
-        // Replica routes already pin their exact mapping. Only the legacy
-        // device/host-wide route needs to enumerate all of its assignments.
-        const originalMappings = catalogueCurrent && localProjectId ? undefined : mappings();
-        const current = (feature?: string) => {
-          assert(!closing, 409, '执行服务正在关闭');
-          assert(store.owner(cookie(req)) === owner, 401, '请先登录');
-          assert(
-            online(deviceId) && bridges.get(deviceId)?.socket === socket,
-            409,
-            '执行主机连接已变化，请核查原操作',
-          );
-          const device = store.device(owner!, deviceId);
-          const active = bridges.get(deviceId)?.workspaces.find((w) => w.id === snapshot.id);
-          const projects = (w: RuntimeWorkspace) =>
-            w.projects.filter((p) => !localProjectId || p.id === localProjectId);
-          assert(
-            online(deviceId) &&
-              bridges.get(deviceId)?.socket === socket &&
-              active?.userId === snapshot.userId &&
-              active?.machineId === snapshot.machineId &&
-              device.machine_id === snapshot.machineId &&
-              isDeepStrictEqual(projects(active), projects(snapshot)) &&
-              (!localProjectId || active.projects.some((p) => p.id === localProjectId)) &&
-              (!feature || active.features?.includes(feature)),
-            409,
-            '会话请求的执行范围已变化，请重新读取',
-          );
-          catalogueCurrent?.();
-          if (originalMappings)
-            assert(
-              isDeepStrictEqual(mappings(), originalMappings),
-              409,
-              '会话请求的项目归属已变化，请重新读取',
-            );
-          return active;
-        };
-        current();
-        return { deviceId, runtime: snapshot, current };
-      }
+      ) =>
+        routing.sessionBoundary(
+          owner!,
+          cookie(req),
+          deviceId,
+          runtime,
+          localProjectId,
+          catalogueCurrent,
+        );
       function readSessionInput(sessionId: string) {
         id.parse(sessionId);
         const version = url.searchParams.get('version');
@@ -776,71 +662,12 @@ export function createApp(
           sessionBase64Schema.refine((value) => value.length <= 64 * 1024).parse(version);
         return { sessionId, version: version ?? undefined };
       }
-      async function sessionResponse(
+      const sessionResponse = (
         boundary: ReturnType<typeof sessionBoundary>,
         method: 'sessions' | 'sessions-page' | 'session' | 'mutate' | 'session-action' | 'cancel',
-        input: any,
+        input: unknown,
         localProjectId?: string,
-      ) {
-        const feature =
-          method === 'session-action'
-            ? 'session-actions'
-            : method === 'sessions-page'
-              ? SESSION_PAGE_FEATURE
-              : method === 'mutate' && input.kind === 'turn'
-                ? RETIRED_RECORDS_FEATURE
-                : undefined;
-        const command = hostCommandSchema.parse({
-          method,
-          workspaceId: boundary.runtime.id,
-          localProjectId,
-          params: input,
-        });
-        if (method === 'mutate' && input.kind === 'turn')
-          assert(
-            boundary.runtime.features?.includes(RETIRED_RECORDS_FEATURE),
-            409,
-            HOST_UPGRADE_REQUIRED,
-          );
-        boundary.current(feature);
-        let raw: unknown, failed: { error: unknown } | undefined;
-        try {
-          raw = await request(
-            boundary.deviceId,
-            method,
-            boundary.runtime.id,
-            input,
-            localProjectId,
-            owner!,
-          );
-        } catch (error) {
-          failed = { error };
-        }
-        // Errors are deliveries too: no raw host diagnostic crosses a revoked scope.
-        boundary.current(feature);
-        if (failed) {
-          const error = failed.error;
-          throw new AppError(
-            error instanceof AppError &&
-              [400, 401, 403, 404, 409, 410, 413, 429, 504].includes(error.status)
-              ? error.status
-              : 502,
-            error instanceof AppError && error.status === 410
-              ? RETIRED_SESSION_FEATURE
-              : method === 'session' || method === 'sessions' || method === 'sessions-page'
-                ? '会话读取失败，请手动重新读取'
-                : '会话操作未能确认，请手动查询或重试原操作',
-            method !== 'cancel' && error instanceof AppError && error.rejected,
-          );
-        }
-        const result = await validateHostResponse(raw, {
-          command,
-          workspace: boundary.runtime,
-          current: () => boundary.current(feature),
-        });
-        boundary.current(feature);
-        return result;
-      }
+      ) => routing.sessionResponse(owner!, boundary, method, input, localProjectId);
       const parts = path.split('/').filter(Boolean);
       if (
         parts[0] === 'api' &&
@@ -886,187 +713,29 @@ export function createApp(
         id.parse(workspaceId);
         id.parse(replicaId);
         id.parse(sessionId);
-        const access = store.catalog.collaborationAccess(owner!, workspaceId!),
-          replica = store.catalog.replica(access.owner, workspaceId!, replicaId!),
-          host = replica.host,
-          socket = bridges.get(host.device_id)?.socket,
-          runtime = bridges
-            .get(host.device_id)
-            ?.workspaces.find((entry) => entry.id === host.runtime_id);
-        assert(
-          runtime &&
-            online(host.device_id) &&
-            bridges.get(host.device_id)?.attentionReady &&
-            runtime.features?.includes(COLLABORATION_FEATURE),
-          409,
-          '共享会话主机离线或尚未支持协作',
+        const boundary = collaboration.prepare(
+          owner!,
+          cookie(req),
+          workspaceId!,
+          replicaId!,
+          sessionId!,
         );
-        const context = collaborationContextSchema.parse({
-          actor: actor(owner!),
-          ownerActor: actor(access.owner),
-          executionDeviceId: host.device_id,
-          machineId: runtime.machineId,
-          catalogWorkspaceId: workspaceId,
-          projectId: replica.project_id,
-          replicaId,
-          runtimeWorkspaceId: runtime.id,
-          localProjectId: replica.local_id,
-          sessionId,
-        });
-        const scope = {
-          authorityId: context.actor.authorityId,
-          workspaceId: workspaceId!,
-          projectId: replica.project_id,
-          sessionId: sessionId!,
-        };
-        const current = () => {
-          assert(!closing && store.owner(cookie(req)) === owner, 401, '协作登录已失效');
-          assert(
-            isDeepStrictEqual(store.catalog.collaborationAccess(owner!, workspaceId!), access),
-            403,
-            '协作权限已变化',
-          );
-          store.device(access.owner, host.device_id);
-          assert(
-            online(host.device_id) &&
-              bridges.get(host.device_id)?.socket === socket &&
-              isDeepStrictEqual(
-                store.catalog.replica(access.owner, workspaceId!, replicaId!),
-                replica,
-              ) &&
-              isDeepStrictEqual(
-                bridges.get(host.device_id)?.workspaces.find((entry) => entry.id === runtime.id),
-                runtime,
-              ),
-            409,
-            '协作请求的主机或项目绑定已变化',
-          );
-        };
-        current();
-        const method = 'collaboration-' + parts[5];
-        let input: unknown = {};
-        if (parts[5] === 'read') assert(req.method === 'GET', 405, '读取共享会话需要 GET');
-        else {
+        const action = parts[5] as 'read' | 'sync' | 'member' | 'enable' | 'offer';
+        if (action === 'read') assert(req.method === 'GET', 405, '读取共享会话需要 GET');
+        else
           assert(req.method === 'POST' && req.headers.origin === origin, 403, '协作请求来源不匹配');
-          if (parts[5] === 'sync') {
-            const sync = collaborationSyncRequestSchema.parse(
-              await body(req, COLLABORATION_LIMITS.requestBytes),
-            );
-            assert(
-              collaborationKey(sync.scope) === collaborationKey(scope),
-              400,
-              '同步范围与原路由不匹配',
-            );
-            input = sync;
-          } else if (parts[5] === 'offer') {
-            const offer = collaborationOfferSchema.parse(
-              await body(req, COLLABORATION_LIMITS.requestBytes),
-            );
-            assert(
-              collaborationKey(offer.scope) === collaborationKey(scope),
-              400,
-              'RPC 意图与原路由不匹配',
-            );
-            input = offer;
-          } else if (parts[5] === 'enable') {
-            assert(access.role === 'owner', 403, '只有所有者可以开启共享');
-            input = z
-              .object({})
-              .strict()
-              .parse(await body(req, 1024));
-          } else {
-            assert(access.role === 'owner', 403, '只有所有者可以管理协作成员');
-            const member = collaborationMemberSchema.parse(await body(req, 4096));
-            assert(
-              member.accountId !== owner &&
-                store.db.prepare('SELECT 1 FROM account WHERE id=?').get(member.accountId),
-              404,
-              '协作账号不可用',
-            );
-            input = member;
-          }
-        }
-        current();
-        let raw: unknown, failure: unknown;
-        try {
-          raw = await request(
-            host.device_id,
-            method,
-            runtime.id,
-            input,
-            replica.local_id,
-            access.owner,
-            context,
-          );
-        } catch (error) {
-          failure = error;
-        }
-        current();
-        if (failure) throw failure;
-        if (parts[5] === 'sync') {
-          return json(
-            res,
-            200,
-            validateCollaborationSyncResponse(raw, collaborationSyncRequestSchema.parse(input)),
-          );
-        }
-        if (parts[5] === 'member') {
-          const member = collaborationMemberSchema.parse(input),
-            result = z
-              .object({
-                confirmed: z.literal(true),
-                accountId: id,
-                role: collaborationMemberSchema.shape.role,
-              })
-              .strict()
-              .parse(raw);
-          assert(
-            result.accountId === member.accountId && result.role === member.role,
-            502,
-            '成员授权回执不匹配',
-          );
-          store.catalog.grantCollaboration(
-            access.owner,
-            workspaceId!,
-            member.accountId,
-            member.role,
-          );
-          changed(access.owner, host.device_id, runtime.id);
-          for (const [ws, viewer] of viewers)
-            if (viewer.owner === member.accountId)
-              send(ws, { type: 'collaboration-changed', deviceId: '' });
-          return json(res, 200, result);
-        }
-        if (parts[5] === 'offer') {
-          const offer = collaborationOfferSchema.parse(input),
-            receipt = collaborationOfferReceiptSchema.parse(raw);
-          assert(
-            receipt.operationId === offer.operationId &&
-              collaborationKey(receipt.scope) === collaborationKey(scope),
-            502,
-            'RPC 送达回执与原意图不匹配',
-          );
-          return json(res, 200, receipt);
-        }
-        const result = collaborationReadResponseSchema.parse(raw),
-          target = result.target;
-        assert(
-          collaborationKey(result.scope) === collaborationKey(scope) &&
-            target.executionDeviceId === host.device_id &&
-            target.workspaceId === runtime.id &&
-            target.machineId === runtime.machineId &&
-            target.userId === runtime.userId &&
-            target.localProjectId === replica.local_id &&
-            target.sessionId === sessionId &&
-            result.session.meta.id === sessionId &&
-            result.session.meta.userId === runtime.userId &&
-            result.session.meta.machineId === runtime.machineId &&
-            result.session.meta.project.localProjectId === replica.local_id &&
-            result.session.meta.agentConfigId === target.agentId,
-          502,
-          '共享会话响应不属于原执行范围',
-        );
-        return json(res, 200, result);
+        const input =
+          action === 'read'
+            ? {}
+            : await body(
+                req,
+                action === 'enable'
+                  ? 1024
+                  : action === 'member'
+                    ? 4096
+                    : COLLABORATION_LIMITS.requestBytes,
+              );
+        return json(res, 200, await collaboration.forward(boundary, action, input));
       }
       if (parts[0] === 'api' && parts[1] === 'workspaces' && parts[2]) {
         const workspaceId = parts[2];
@@ -1143,81 +812,22 @@ export function createApp(
             // Attention remains bound to the original login, socket and catalogue
             // assignment across request-body and Host waits. Bearers do not waive CSRF.
             if (req.method !== 'GET') assert(req.headers.origin === origin, 403, '请求来源不匹配');
-            const attentionSecret = cookie(req),
-              attentionGeneration = attentionOriginGeneration,
-              attentionSocket = bridges.get(host.device_id)?.socket;
-            let continueFeature = RETIRED_RECORDS_FEATURE;
-            const currentAttention = (method: string) => {
-              assert(
+            const attentionGeneration = attentionOriginGeneration;
+            const boundary = attention.prepare(
+              owner!,
+              cookie(req),
+              workspaceId,
+              replica.id,
+              parts[5] === 'sessions' ? decodeURIComponent(parts[6]) : undefined,
+              () =>
                 !closing && server.listening && attentionOriginGeneration === attentionGeneration,
-                409,
-                '待办请求所属服务已变化，请重新读取',
-              );
-              assert(store.owner(attentionSecret) === owner, 401, '待办请求所属登录已失效');
-              store.device(owner!, host.device_id);
-              const connected = bridges.get(host.device_id);
-              assert(
-                online(host.device_id) &&
-                  connected &&
-                  connected.socket === attentionSocket &&
-                  connected.attentionReady &&
-                  connected.workspaces.find((item) => item.id === host.runtime_id) === runtime &&
-                  runtime.features?.includes(ATTENTION_FEATURE) &&
-                  runtime.features?.includes(ACTOR_FEATURE) &&
-                  (method !== 'attention-continue' ||
-                    (runtime.features?.includes(FOLLOWUP_FEATURE) &&
-                      runtime.features.includes(continueFeature))),
-                409,
-                '待办请求所属执行连接已变化，请重新读取',
-              );
-              const currentReplica = store.catalog.replica(owner!, workspaceId, replica.id);
-              assert(
-                currentReplica.project_id === replica.project_id &&
-                  currentReplica.local_id === replica.local_id &&
-                  currentReplica.host.id === host.id &&
-                  currentReplica.host.workspace_id === host.workspace_id &&
-                  currentReplica.host.runtime_id === host.runtime_id &&
-                  currentReplica.host.device_id === host.device_id,
-                409,
-                '待办请求所属项目副本已变化，请重新读取',
-              );
-            };
-            assert(
-              bridges.get(host.device_id)?.attentionReady &&
-                runtime.features?.includes(ATTENTION_FEATURE) &&
-                runtime.features?.includes(ACTOR_FEATURE),
-              409,
-              '请先升级并连接支持待办工作台的执行电脑',
             );
-            const context = attentionContextSchema.parse({
-              actor: actor(owner!),
-              executionDeviceId: host.device_id,
-              machineId: runtime.machineId,
-              catalogWorkspaceId: workspaceId,
-              projectId: replica.project_id,
-              replicaId: replica.id,
-              runtimeWorkspaceId: host.runtime_id,
-              localProjectId: replica.local_id,
-              ...(parts[5] === 'sessions' ? { sessionId: decodeURIComponent(parts[6]) } : {}),
-            });
-            const respondAttention = async (method: string, params: unknown) => {
-              currentAttention(method);
-              let result: unknown;
-              try {
-                result = await request(
-                  host.device_id,
-                  method,
-                  host.runtime_id,
-                  params,
-                  replica.local_id,
-                  undefined,
-                  context,
-                );
-              } finally {
-                currentAttention(method);
-              }
-              return json(res, 200, result);
-            };
+            const context = boundary.context;
+            let continueFeature = RETIRED_RECORDS_FEATURE;
+            const respondAttention = async (
+              method: Parameters<GatewayAttention['respond']>[1],
+              params: unknown,
+            ) => json(res, 200, await attention.respond(boundary, method, params, continueFeature));
             if (
               ((parts[5] === 'attention' && parts.length === 6) ||
                 (parts[5] === 'sessions' && parts.length === 8)) &&
@@ -1235,7 +845,7 @@ export function createApp(
             }
             assert(parts[5] === 'sessions' && parts[8], 404, '未找到待办操作');
             const itemId = z.string().min(1).max(1024).parse(decodeURIComponent(parts[8]));
-            let method: string;
+            let method: Parameters<GatewayAttention['respond']>[1];
             let input: unknown;
             if (parts.length === 9 && req.method === 'GET') {
               method = 'attention-detail';
@@ -1299,7 +909,7 @@ export function createApp(
             return json(
               res,
               200,
-              await forwardReplicaCommand(
+              await forwardHttpReplicaCommand(
                 {
                   method: replicaCommand,
                   segments: parts.slice(5),

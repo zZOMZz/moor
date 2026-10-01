@@ -1,5 +1,6 @@
-import { Store, token } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { token } from '@moor/gateway/adapters/crypto/credentials';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
@@ -38,7 +39,7 @@ async function fixture(t: TestContext) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'moor-google-cli-')));
   let state = new CliState(directory),
     now = NOW;
-  const store = new Store(':memory:', () => now);
+  const store = new SqliteAccounts(':memory:', () => now);
   store.setupGoogle(identity, 'synthetic-owner');
   const provider: GoogleOidcProvider = {
     authorizationUrl(input) {

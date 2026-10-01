@@ -1,6 +1,6 @@
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { buildSendTurn } from '@moor/client/features/sessions/session-intent';
-import { Store } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
 import type { AgentDriver } from '@moor/host/features/agents/driver';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
@@ -196,14 +196,14 @@ function request(
   } as Mutation;
 }
 test('relay database contains only identity and organization records, never session bodies', async (t) => {
-  const store = new Store(':memory:');
+  const store = new SqliteAccounts(':memory:');
   t.after(() => store.close());
   const secret = await store.setup('synthetic@example.com', 'synthetic-password-only'),
     owner = store.owner(secret),
     device = store.redeem(store.pair(owner), 'Test Mac');
   store.bind(store.device(owner, device.id), ws.machineId, [ws]);
   strict.deepEqual(
-    store.db
+    store.database
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all()
       .map((r) => r.name),
@@ -229,7 +229,7 @@ test('relay database contains only identity and organization records, never sess
 });
 test('pairing codes expire, can only be used once, and cannot move an existing device to a different host', async (t) => {
   let now = 0;
-  const store = new Store(':memory:', () => now);
+  const store = new SqliteAccounts(':memory:', () => now);
   t.after(() => store.close());
   const secret = await store.setup('synthetic@example.com', 'synthetic-password-only'),
     owner = store.owner(secret),

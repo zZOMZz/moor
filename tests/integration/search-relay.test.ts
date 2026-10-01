@@ -99,12 +99,12 @@ test('host-only session search forwards the authorized project and never stores 
     assert.deepEqual(synthetic.messages.at(-1).params, f.input);
     assert.equal(synthetic.messages.at(-1).localProjectId, replica.localProjectId);
   }
-  for (const table of f.store.db
+  for (const table of f.store.database
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all()) {
     assert.match(String(table.name), /^[a-z_]+$/u);
     assert.doesNotMatch(
-      JSON.stringify(f.store.db.prepare(`SELECT * FROM ${table.name}`).all()),
+      JSON.stringify(f.store.database.prepare(`SELECT * FROM ${table.name}`).all()),
       /合成内容|Synthetic indexed output|host-index|search-turn/,
     );
   }

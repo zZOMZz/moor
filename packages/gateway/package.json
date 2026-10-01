@@ -4,14 +4,42 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./adapters/composition/accounts": {
+      "types": "./src/adapters/composition/accounts.ts",
+      "import": "./dist/adapters/composition/accounts.js"
+    },
+    "./adapters/composition/notifications": {
+      "types": "./src/adapters/composition/notifications.ts",
+      "import": "./dist/adapters/composition/notifications.js"
+    },
+    "./adapters/crypto/credentials": {
+      "types": "./src/adapters/crypto/credentials.ts",
+      "import": "./dist/adapters/crypto/credentials.js"
+    },
+    "./adapters/crypto/push-subscription": {
+      "types": "./src/adapters/crypto/push-subscription.ts",
+      "import": "./dist/adapters/crypto/push-subscription.js"
+    },
+    "./adapters/http/server": {
+      "types": "./src/adapters/http/server.ts",
+      "import": "./dist/adapters/http/server.js"
+    },
+    "./adapters/http/static": {
+      "types": "./src/adapters/http/static.ts",
+      "import": "./dist/adapters/http/static.js"
+    },
+    "./features/auth/google": {
+      "types": "./src/features/auth/google.ts",
+      "import": "./dist/features/auth/google.js"
+    },
+    "./features/notifications/ports": {
+      "types": "./src/features/notifications/ports.ts",
+      "import": "./dist/features/notifications/ports.js"
     }
   },
   "scripts": {
     "build": "node ../../scripts/build/build-package.mjs",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
     "test": "pnpm --filter @moor/gateway... run build && node ../../scripts/validation/test.mjs packages/gateway"
   },
   "dependencies": {

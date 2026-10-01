@@ -4,7 +4,7 @@ import {
   GOOGLE_ISSUER,
   type GoogleIdentity,
   type GoogleOidcProvider,
-} from '@moor/gateway/google-auth';
+} from '@moor/gateway/features/auth/google';
 
 export { GOOGLE_ISSUER };
 export const GOOGLE_OIDC_FAILED = 'Google 登录验证失败，请重新开始登录';

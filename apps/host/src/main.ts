@@ -12,8 +12,9 @@ import { acquireRuntimeLock } from '@moor/local-state/exclusive-lock';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { acpDriver } from '@moor/host/adapters/acp/driver';
 import { localCodexPath, withLocalCodex } from '@moor/host/adapters/acp/local-codex';
-import { Store, token } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { token } from '@moor/gateway/adapters/crypto/credentials';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import { AppError, assert, id, PROTOCOL } from '@moor/protocol/protocol';
 import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
 import {
@@ -847,7 +848,7 @@ async function connect(target: Target) {
     if (!stopped && !target.revoked) target.retry = setTimeout(() => void connect(target), 2000);
   });
 }
-let localApp: ReturnType<typeof createApp> | undefined, localStore: Store | undefined;
+let localApp: ReturnType<typeof createApp> | undefined, localStore: SqliteAccounts | undefined;
 let cliConnection: ReturnType<typeof publishLocalCliConnection> | undefined;
 if (values.desktop || values.local) {
   try {
@@ -890,9 +891,9 @@ if (values.desktop || values.local) {
       cliUnavailable();
     }
     const instanceId = 'instance_' + randomUUID();
-    localStore = new Store(configPath + '.catalog.sqlite');
+    localStore = new SqliteAccounts(configPath + '.catalog.sqlite');
     chmodSync(configPath + '.catalog.sqlite', 0o600);
-    localStore.db.prepare('DELETE FROM login').run();
+    localStore?.clearLogins();
     const secret = localStore.hasAccount()
       ? localStore.createLogin('local-desktop')
       : await localStore.setup('local@localhost.invalid', token(), 'local-desktop');
@@ -981,7 +982,7 @@ if (values.desktop || values.local) {
     // Startup has not connected a host socket or exposed the native credential.
     // Revoke every bootstrap login even if listening or publication failed.
     try {
-      localStore?.db.prepare('DELETE FROM login').run();
+      localStore?.clearLogins();
     } catch {}
     notifications.close();
     for (const workspace of workspaces.values()) workspace.close();

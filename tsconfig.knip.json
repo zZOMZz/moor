@@ -116,7 +116,24 @@
       "@moor/client/operations/workspace/compose": [
         "./packages/client/src/operations/workspace/compose.ts"
       ],
-      "@moor/gateway/*": ["./packages/gateway/src/*.ts"],
+      "@moor/gateway/adapters/composition/accounts": [
+        "./packages/gateway/src/adapters/composition/accounts.ts"
+      ],
+      "@moor/gateway/adapters/composition/notifications": [
+        "./packages/gateway/src/adapters/composition/notifications.ts"
+      ],
+      "@moor/gateway/adapters/crypto/credentials": [
+        "./packages/gateway/src/adapters/crypto/credentials.ts"
+      ],
+      "@moor/gateway/adapters/crypto/push-subscription": [
+        "./packages/gateway/src/adapters/crypto/push-subscription.ts"
+      ],
+      "@moor/gateway/adapters/http/server": ["./packages/gateway/src/adapters/http/server.ts"],
+      "@moor/gateway/adapters/http/static": ["./packages/gateway/src/adapters/http/static.ts"],
+      "@moor/gateway/features/auth/google": ["./packages/gateway/src/features/auth/google.ts"],
+      "@moor/gateway/features/notifications/ports": [
+        "./packages/gateway/src/features/notifications/ports.ts"
+      ],
       "@moor/host/adapters/acp/attachment-input": [
         "./packages/host/src/adapters/acp/attachment-input.ts"
       ],

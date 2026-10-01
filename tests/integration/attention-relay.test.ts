@@ -1,5 +1,5 @@
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import {
   ACTOR_FEATURE,
@@ -44,7 +44,7 @@ const nextMessage = (socket: WebSocket, matches: (message: any) => boolean) =>
 async function fixture(
   options: { localOnly?: boolean; authenticatedHello?: boolean; typed?: boolean } = {},
 ) {
-  const store = new Store(':memory:');
+  const store = new SqliteAccounts(':memory:');
   const secret = await store.setup('synthetic@example.invalid', 'synthetic-password-only');
   const accountId = store.owner(secret);
   const actor: AttentionActor = {
@@ -184,13 +184,13 @@ test('authority survives reopening and identity APIs separate local and remote a
   const directory = mkdtempSync(join(tmpdir(), 'moor-attention-authority-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const filename = join(directory, 'accounts.sqlite');
-  const first = new Store(filename);
+  const first = new SqliteAccounts(filename);
   const authority = first.authorityId;
   first.close();
-  const reopened = new Store(filename);
+  const reopened = new SqliteAccounts(filename);
   assert.equal(reopened.authorityId, authority);
   reopened.close();
-  const other = new Store(':memory:');
+  const other = new SqliteAccounts(':memory:');
   assert.notEqual(other.authorityId, authority);
   other.close();
   for (const localOnly of [false, true]) {

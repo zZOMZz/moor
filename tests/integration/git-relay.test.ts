@@ -168,12 +168,12 @@ test('Git reads and manual actions bind a replica and relay stores no Git status
       assert.deepEqual(message.params, input);
     }
   }
-  for (const row of f.store.db
+  for (const row of f.store.database
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all()) {
     assert.match(String(row.name), /^[a-z_]+$/);
     assert.doesNotMatch(
-      JSON.stringify(f.store.db.prepare(`SELECT * FROM ${row.name}`).all()),
+      JSON.stringify(f.store.database.prepare(`SELECT * FROM ${row.name}`).all()),
       /synthetic-git-private-path|synthetic-branch|execution-synthetic|synthetic-prepare/,
     );
   }

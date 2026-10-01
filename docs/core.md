@@ -91,7 +91,7 @@ CRDT 负责保存和同步文档操作；主机校验及持久接受决定输入
 
 普通 Host 命令的名称来自[请求 schema](../packages/protocol/src/host-command.ts)。[静态契约](../packages/protocol/src/host-command-contract.ts) 必须为每个名称声明固定 HTTP 方法与路径、请求和响应大小、能力以及结果不确定时的错误边界。客户端和 Relay 使用同一份路径描述；添加命令而漏掉 HTTP 契约会导致类型检查失败。没有接收任意方法名的 `/command` 代理，也没有运行时插件登记。
 
-[Relay 项目处理器](../packages/gateway/src/replica-command.ts) 只接收已认证路由解析出的上下文，其中 `catalogWorkspaceId` 表示产品分组、`runtimeWorkspaceId` 表示执行主机工作区。它核对请求范围，在读取请求体后、Host 返回成功或错误后以及响应验证结束后复核原账号、设备、连接、目录映射和执行身份。能力检查不能代替这些授权检查。
+[Relay 项目处理器](../packages/gateway/src/features/commands/forward.ts) 只接收已认证路由解析出的上下文，其中 `catalogWorkspaceId` 表示产品分组、`runtimeWorkspaceId` 表示执行主机工作区。它核对请求范围，在读取请求体后、Host 返回成功或错误后以及响应验证结束后复核原账号、设备、连接、目录映射和执行身份。能力检查不能代替这些授权检查。
 
 [Host 分发](../packages/host/src/features/commands/dispatcher.ts) 和[成功响应验证](../packages/protocol/src/host-response.ts) 都有编译期穷举检查。执行实现留在 Host，响应验证留在协议边界；协议包不导入执行服务。Agent 设置、退场功能和请求相关能力仍通过明确的业务函数判断，不用配置规则推断。Attention 的参与者上下文与旧设备级路由继续保留各自的入口。
 

@@ -217,7 +217,7 @@ test('Agent options withholds late success and error responses after identity, p
         if (error) f.controls.error = { status: 403, message: 'RAW_AGENT_SECRET' };
         const pending = f.api(f.path, f.old);
         await entered.promise;
-        if (change === 'logout') f.store.db.prepare('DELETE FROM login').run();
+        if (change === 'logout') f.store.database.prepare('DELETE FROM login').run();
         else if (change === 'device') f.store.revoke(f.owner, f.peer.device.id);
         else if (change === 'unavailable') {
           const pong = once(f.peer.socket, 'pong');

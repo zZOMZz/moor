@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createECDH, createHash } from 'node:crypto';
+import { createRelayNotifications } from '@moor/gateway/adapters/composition/notifications';
 import {
-  RelayNotifications,
   type WebPushResult,
   type WebPushTransport,
-} from '@moor/gateway/notifications';
+} from '@moor/gateway/features/notifications/ports';
 import type { NotificationEnvelope } from '@moor/protocol/notification-protocol';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -66,7 +66,7 @@ function fixture(t: { after(fn: () => void): void }) {
     },
   };
   const options = { now: () => clock, transport, authorize: () => authorized };
-  const relay = new RelayNotifications(db, options);
+  const relay = createRelayNotifications(db, options);
   const subscribe = (name = 'browser', token = loginHash, account = owner) =>
     relay.subscribe(account, token, {
       notificationVersion: 1,
@@ -240,7 +240,7 @@ test('staging is atomic and a restart marks unfinished delivery unknown instead 
   await Promise.resolve();
   assert.equal(f.sent.length, 1);
   assert.equal(f.db.prepare('SELECT status FROM push_delivery').get()!.status, 'staged');
-  const restarted = new RelayNotifications(f.db, f.options);
+  const restarted = createRelayNotifications(f.db, f.options);
   assert.equal(f.db.prepare('SELECT status FROM push_delivery').get()!.status, 'unknown');
   assert.equal((await restarted.deliver(event())).staged, 0);
   assert.equal(f.sent.length, 1);

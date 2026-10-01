@@ -94,7 +94,7 @@ test('collaboration routes authenticate distinct members and reject draft transm
   assert.deepEqual(replica.view().operations, []);
   replica.close();
   assert.equal(
-    f.accounts.db
+    f.accounts.database
       .prepare("SELECT name FROM sqlite_master WHERE name='collaboration_operation'")
       .get(),
     undefined,

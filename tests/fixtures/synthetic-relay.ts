@@ -1,5 +1,5 @@
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import { RETIRED_RECORDS_FEATURE } from '@moor/protocol/connection-authority';
 import {
   CONTENT_VERSION,
@@ -17,7 +17,7 @@ import { syntheticCapabilities } from './agent-capabilities';
 // In-memory integration fixture: never starts a runtime, reads a project, or contacts a model.
 // The real IPC delivery and mutation checks are exercised separately in host.test.ts.
 export async function syntheticRelay(port = 0) {
-  const store = new Store(':memory:');
+  const store = new SqliteAccounts(':memory:');
   const secret = await store.setup('synthetic@example.com', 'synthetic-password-only');
   const owner = store.owner(secret);
   const app = createApp(store, {

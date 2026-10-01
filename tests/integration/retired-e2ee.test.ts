@@ -1,5 +1,5 @@
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -182,8 +182,8 @@ test('retired execution commands fail before creating CLI state or touching Host
 });
 
 test('retired Relay routes reject without credentials or body handling and preserve public trust tables', async (t) => {
-  const store = new Store(':memory:');
-  store.db.exec(
+  const store = new SqliteAccounts(':memory:');
+  store.database.exec(
     "CREATE TABLE trust_publication_root(owner TEXT PRIMARY KEY,sentinel TEXT); CREATE TABLE trust_publication_entry(owner TEXT,epoch INTEGER,entry TEXT); INSERT INTO trust_publication_root VALUES('old-owner','retained-root'); INSERT INTO trust_publication_entry VALUES('old-owner',3,'retained-signed-entry')",
   );
   const app = createApp(store, { origin: 'http://127.0.0.1:0', setupToken: 'synthetic' });
@@ -219,11 +219,11 @@ test('retired Relay routes reject without credentials or body handling and prese
     assert.equal(await rejected, 410);
   }
   assert.equal(
-    store.db.prepare('SELECT sentinel FROM trust_publication_root').get()!.sentinel,
+    store.database.prepare('SELECT sentinel FROM trust_publication_root').get()!.sentinel,
     'retained-root',
   );
   assert.equal(
-    store.db.prepare('SELECT entry FROM trust_publication_entry').get()!.entry,
+    store.database.prepare('SELECT entry FROM trust_publication_entry').get()!.entry,
     'retained-signed-entry',
   );
 });

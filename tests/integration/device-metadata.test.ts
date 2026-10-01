@@ -1,4 +1,4 @@
-import { Store } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
 import { HostDeviceMetadata } from '@moor/host/adapters/persistence/device-metadata';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { PROTOCOL } from '@moor/protocol/protocol';
@@ -156,7 +156,7 @@ test('host name persists revisions across reopen and rejects stale edits, identi
 });
 
 test('relay device name and catalog binding commit together and survive revoked, stale or legacy publications', async (t) => {
-  const store = new Store(':memory:');
+  const store = new SqliteAccounts(':memory:');
   t.after(() => store.close());
   const login = await store.setup('synthetic-name@example.invalid', 'synthetic-password'),
     owner = store.owner(login);

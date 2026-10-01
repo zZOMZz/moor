@@ -1,5 +1,5 @@
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import type { Workspace } from '@moor/protocol/catalog';
 import { AppError, PROTOCOL } from '@moor/protocol/protocol';
 import { SESSION_CONTROL_FEATURE } from '@moor/protocol/session-control-protocol';
@@ -346,7 +346,7 @@ for (const route of ['replica', 'device', 'host'] as const)
           f.controls.error = { status: 400, message: 'PRIVATE_HOST_ERROR', rejected: true };
         const pending = f.call(method, route);
         await entered.promise;
-        f.store.db.prepare('DELETE FROM login').run();
+        f.store.database.prepare('DELETE FROM login').run();
         release.resolve();
         const response = await pending;
         assert.equal(response.status, 401);
@@ -488,7 +488,7 @@ test('Safe errors and bounded receipts never leak upstream diagnostics or manufa
 
 test('Local instance probe is local-only, unauthenticated, exact and pins credential-bearing requests', async (t) => {
   for (const localOnly of [false, true]) {
-    const store = new Store(':memory:');
+    const store = new SqliteAccounts(':memory:');
     const app = createApp(store, {
       origin: 'http://127.0.0.1:0',
       setupToken: 'unused',
@@ -526,7 +526,7 @@ test('Local challenge proofs bind the fresh challenge and instance without accep
       .update(JSON.stringify(['moor-cli-proof-v1', instanceId, challenge]))
       .digest('hex');
   };
-  const store = new Store(':memory:');
+  const store = new SqliteAccounts(':memory:');
   const app = createApp(store, {
     origin: 'http://127.0.0.1:0',
     setupToken: 'unused',
@@ -589,7 +589,7 @@ test('Local challenge proofs bind the fresh challenge and instance without accep
 
 test('Local challenge cannot expose a missing, invalid or failed private proof provider', async (t) => {
   for (const provider of ['missing', 'invalid', 'failed'] as const) {
-    const store = new Store(':memory:');
+    const store = new SqliteAccounts(':memory:');
     const app = createApp(store, {
       origin: 'http://127.0.0.1:0',
       setupToken: 'unused',

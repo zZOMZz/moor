@@ -58,12 +58,12 @@ test('file-content reads select the exact host despite identical runtime, sessio
   }
   assert.notEqual(results[0].data, results[1].data);
   assert.deepEqual(f.readCount(), [1, 1]);
-  const tables = f.store.db
+  const tables = f.store.database
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all();
   for (const { name } of tables) {
     assert.match(String(name), /^[a-z_]+$/);
-    const rows = JSON.stringify(f.store.db.prepare(`SELECT * FROM ${name}`).all());
+    const rows = JSON.stringify(f.store.database.prepare(`SELECT * FROM ${name}`).all());
     for (const result of results) {
       assert.equal(rows.includes(result.data), false);
       assert.equal(rows.includes(result.content.version), false);

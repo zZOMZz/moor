@@ -1,4 +1,4 @@
-import { Store } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -44,7 +44,7 @@ function fixture(t: TestContext) {
     data = join(root, 'data'),
     file = join(data, 'accounts.sqlite');
   mkdirSync(data);
-  const store = new Store(file),
+  const store = new SqliteAccounts(file),
     secret = store.setupGoogle(identity, 'synthetic-owner');
   const device = store.redeem(
     store.pair('synthetic-owner'),
@@ -83,12 +83,12 @@ async function run(
 }
 const failed = { code: 1, stdout: '', stderr: ACCOUNT_RECOVERY_FAILED + '\n' };
 function state(file: string) {
-  const store = new Store(file);
+  const store = new SqliteAccounts(file);
   try {
     return Object.fromEntries(
       ['account', 'external_identity', 'login', 'pair', 'device'].map((table) => [
         table,
-        store.db.prepare('SELECT * FROM ' + table).all(),
+        store.database.prepare('SELECT * FROM ' + table).all(),
       ]),
     );
   } finally {
@@ -107,16 +107,16 @@ test('operator recovery accepts only bounded stdin, preserves Google and devices
   assert.deepEqual(result, { code: 0, stdout: ACCOUNT_RECOVERY_SUCCESS + '\n', stderr: '' });
   assert.ok(!JSON.stringify(result).includes(password));
   assert.ok(!JSON.stringify(result).includes(email));
-  const store = new Store(f.file);
+  const store = new SqliteAccounts(f.file);
   try {
     assert.equal(store.owner(await store.login(email, password)), 'synthetic-owner');
     assert.deepEqual(store.googleIdentity('synthetic-owner'), { email: identity.email });
     assert.equal(store.deviceToken(f.device.token).owner, 'synthetic-owner');
     assert.throws(() => store.owner(f.secret), unauthorized);
     assert.throws(() => store.redeem(f.pair, 'Unexpected device'), unauthorized);
-    assert.deepEqual(store.db.prepare('SELECT * FROM device').all(), before.device);
+    assert.deepEqual(store.database.prepare('SELECT * FROM device').all(), before.device);
     assert.deepEqual(
-      store.db.prepare('SELECT * FROM external_identity').all(),
+      store.database.prepare('SELECT * FROM external_identity').all(),
       before.external_identity,
     );
   } finally {
@@ -178,7 +178,7 @@ test('recovery and the store reject login-incompatible email addresses without c
       failed,
     );
     assert.deepEqual(state(f.file), before);
-    const store = new Store(f.file);
+    const store = new SqliteAccounts(f.file);
     try {
       await assert.rejects(
         store.resetPassword(invalidEmail, password),
@@ -261,7 +261,7 @@ test('recovery refuses absent, linked, replaced or non-regular databases and uns
   }
   assert.deepEqual(state(f.file), before);
   const otherFile = join(f.root, 'replacement.sqlite'),
-    replacement = new Store(otherFile);
+    replacement = new SqliteAccounts(otherFile);
   replacement.setupGoogle({ ...identity, subject: 'ReplacementSubject' }, 'replacement-owner');
   replacement.close();
   const replacementBefore = state(otherFile);
@@ -282,8 +282,8 @@ test('a held relay lock or failed revocation refuses recovery without partial up
   assert.deepEqual(await run(f.data), failed);
   release();
   assert.deepEqual(state(f.file), before);
-  const store = new Store(f.file);
-  store.db.exec(
+  const store = new SqliteAccounts(f.file);
+  store.database.exec(
     "CREATE TRIGGER fail_pair BEFORE DELETE ON pair BEGIN SELECT RAISE(ABORT,'synthetic private failure'); END",
   );
   store.close();
@@ -391,7 +391,7 @@ test(
     assert.equal((await recovered.closed)[0], 0, recovered.output().stderr);
     assert.equal(recovered.output().stdout, ACCOUNT_RECOVERY_SUCCESS + '\n');
     assert.equal(recovered.output().stderr, '');
-    const store = new Store(f.file);
+    const store = new SqliteAccounts(f.file);
     try {
       assert.equal(store.owner(await store.login(email, password)), 'synthetic-owner');
     } finally {

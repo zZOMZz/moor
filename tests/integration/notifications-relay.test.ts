@@ -1,5 +1,5 @@
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import type { Workspace } from '@moor/protocol/catalog';
 import {
   NOTIFICATIONS_FEATURE,
@@ -60,7 +60,7 @@ function hostEvent(
 
 // Actual HTTP and WebSocket handlers, with no runtime or provider connection.
 async function fixture(t: TestContext, configured = true) {
-  const store = new Store(':memory:', () => now);
+  const store = new SqliteAccounts(':memory:', () => now);
   const secret = store.createLogin(owner);
   const sent: NotificationEnvelope[] = [];
   const started: { count: number; resolve: () => void }[] = [];
@@ -368,21 +368,22 @@ test(
       otherLogin = f.store.createLogin(owner);
     const sub = await f.subscribe(),
       otherSub = await f.subscribe('other-browser', otherLogin);
-    f.store.db.exec(
+    f.store.database.exec(
       "CREATE TEMP TRIGGER synthetic_logout_failure BEFORE DELETE ON login BEGIN SELECT RAISE(ABORT,'synthetic transaction failure'); END",
     );
     assert.equal((await f.api('/api/logout', {})).status, 500);
     assert.equal(f.store.owner(f.secret), owner);
     assert.equal((await f.api('/api/notifications')).body.subscriptions[0].enabled, true);
-    f.store.db.exec('DROP TRIGGER synthetic_logout_failure');
+    f.store.database.exec('DROP TRIGGER synthetic_logout_failure');
     assert.equal((await f.api('/api/logout', {})).status, 200);
     assert.equal((await f.api('/api/notifications')).status, 401);
     assert.equal(
-      f.store.db.prepare('SELECT 1 FROM login WHERE token=?').get(hash(f.secret)),
+      f.store.database.prepare('SELECT 1 FROM login WHERE token=?').get(hash(f.secret)),
       undefined,
     );
     assert.equal(
-      f.store.db.prepare('SELECT enabled FROM push_subscription WHERE id=?').get(sub.id)!.enabled,
+      f.store.database.prepare('SELECT enabled FROM push_subscription WHERE id=?').get(sub.id)!
+        .enabled,
       0,
     );
     assert.equal(
@@ -433,8 +434,8 @@ test(
     assert.equal((await host.ack(event)).status, 'handled');
     assert.equal(f.sent.length, 1);
     const persisted = JSON.stringify([
-      f.store.db.prepare('SELECT * FROM push_event').all(),
-      f.store.db.prepare('SELECT * FROM push_delivery').all(),
+      f.store.database.prepare('SELECT * FROM push_event').all(),
+      f.store.database.prepare('SELECT * FROM push_delivery').all(),
     ]);
     for (const privateValue of [
       event.userId,
@@ -443,7 +444,10 @@ test(
       '/synthetic/project',
     ])
       assert.equal(persisted.includes(privateValue), false);
-    assert.equal(f.store.db.prepare('SELECT status FROM push_delivery').get()!.status, 'sent');
+    assert.equal(
+      f.store.database.prepare('SELECT status FROM push_delivery').get()!.status,
+      'sent',
+    );
   },
 );
 
@@ -460,8 +464,9 @@ test(
       host.notify(event);
       assert.equal((await host.ack(event)).status, 'handled');
       assert.equal(
-        f.store.db.prepare('SELECT status FROM push_delivery WHERE event_id=?').get(event.eventId)!
-          .status,
+        f.store.database
+          .prepare('SELECT status FROM push_delivery WHERE event_id=?')
+          .get(event.eventId)!.status,
         status,
       );
       host.notify(event);
@@ -496,7 +501,7 @@ test(
     host.notify(unsupported);
     assert.equal((await host.ack(unsupported)).status, 'rejected');
     assert.equal(f.sent.length, 0);
-    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM push_event').get()!.n, 0);
+    assert.equal(f.store.database.prepare('SELECT count(*) AS n FROM push_event').get()!.n, 0);
   },
 );
 
@@ -516,7 +521,7 @@ test(
       assert.equal((await closed)[0], 1008);
     }
     assert.equal(f.sent.length, 0);
-    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM push_event').get()!.n, 0);
+    assert.equal(f.store.database.prepare('SELECT count(*) AS n FROM push_event').get()!.n, 0);
   },
 );
 
@@ -539,8 +544,9 @@ async function queued(t: TestContext) {
   await host.barrier();
   assert.equal(f.sent.length, 4);
   assert.equal(
-    f.store.db.prepare('SELECT status FROM push_delivery WHERE event_id=?').get(pending.eventId)!
-      .status,
+    f.store.database
+      .prepare('SELECT status FROM push_delivery WHERE event_id=?')
+      .get(pending.eventId)!.status,
     'staged',
   );
   return { ...f, host, gate, first, pending };
@@ -563,7 +569,7 @@ test(
       false,
     );
     assert.equal(
-      f.store.db
+      f.store.database
         .prepare('SELECT status FROM push_delivery WHERE event_id=?')
         .get(f.pending.eventId)!.status,
       'failed',
@@ -596,7 +602,7 @@ test(
     for (const event of f.first) assert.equal((await f.host.ack(event)).status, 'handled');
     assert.equal(f.sent.length, 4);
     assert.equal(
-      f.store.db
+      f.store.database
         .prepare('SELECT status FROM push_delivery WHERE event_id=?')
         .get(f.pending.eventId)!.status,
       'failed',
@@ -621,7 +627,7 @@ test(
     assert.equal((await f.host.ack(f.pending)).status, 'handled');
     assert.equal(f.sent.length, 4);
     assert.equal(
-      f.store.db
+      f.store.database
         .prepare('SELECT status FROM push_delivery WHERE event_id=?')
         .get(f.pending.eventId)!.status,
       'failed',

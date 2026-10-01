@@ -117,13 +117,13 @@ test('Skills relay forwards exact typed reads only, no-store, without persisting
       .length,
     0,
   );
-  for (const row of f.store.db
+  for (const row of f.store.database
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all()) {
     const table = String(row.name);
     assert.match(table, /^[a-z_]+$/);
     assert.doesNotMatch(
-      JSON.stringify(f.store.db.prepare(`SELECT * FROM ${table}`).all()),
+      JSON.stringify(f.store.database.prepare(`SELECT * FROM ${table}`).all()),
       /SYNTHETIC_SKILL_PRIVATE_BODY/,
     );
   }
@@ -187,7 +187,7 @@ test('Skills responses are withheld after logout, runtime scope changes or proje
       };
       const pending = f.api(f.path, f.detail);
       await entered.promise;
-      if (change === 'logout') f.store.db.prepare('DELETE FROM login').run();
+      if (change === 'logout') f.store.database.prepare('DELETE FROM login').run();
       else if (change === 'project') {
         const other = f.space.projects.find((p) => p.id !== f.replica.projectId)!;
         f.store.catalog.assign(f.owner, f.space.id, f.replica.id, other.id);
@@ -267,7 +267,7 @@ test('Skills configuration invalidation only broadcasts a scoped marker and vali
     room: { scope: 'skills' },
   });
   const closed = once(viewer, 'close');
-  f.store.db.prepare('DELETE FROM login').run();
+  f.store.database.prepare('DELETE FROM login').run();
   f.synthetic.socket.send(JSON.stringify(event));
   const [code] = await closed;
   assert.equal(code, 1008);

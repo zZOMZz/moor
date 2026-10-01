@@ -11,10 +11,15 @@ import {
   decodePushKey,
   validatePushEndpoint,
   validatePushSubscription,
+} from '@moor/gateway/adapters/crypto/push-subscription';
+import {
   type WebPushResult,
   type WebPushTransport,
-} from '@moor/gateway/notifications';
-export { validatePushEndpoint, validatePushSubscription } from '@moor/gateway/notifications';
+} from '@moor/gateway/features/notifications/ports';
+export {
+  validatePushEndpoint,
+  validatePushSubscription,
+} from '@moor/gateway/adapters/crypto/push-subscription';
 export type { WebPushResult, WebPushTransport };
 
 export type WebPushRequest = {

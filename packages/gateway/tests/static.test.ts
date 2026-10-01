@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
-import { serveStatic } from '@moor/gateway/static';
+import { serveStatic } from '@moor/gateway/adapters/http/static';
 
 test('static assets revalidate, compress and reuse content-addressed scripts without caching API data', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'moor-static-'));

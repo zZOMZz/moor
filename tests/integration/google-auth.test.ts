@@ -1,5 +1,6 @@
-import { Store, token } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { token } from '@moor/gateway/adapters/crypto/credentials';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
@@ -15,7 +16,7 @@ const identity: GoogleIdentity = {
 };
 async function fixture(t: TestContext, config: { enabled?: boolean; localOnly?: boolean } = {}) {
   let now = 1_800_000_000_000;
-  const store = new Store(':memory:', () => now);
+  const store = new SqliteAccounts(':memory:', () => now);
   const exchanges: Parameters<GoogleOidcProvider['exchangeAndVerify']>[0][] = [];
   let exchange = async (
     _input: Parameters<GoogleOidcProvider['exchangeAndVerify']>[0],
@@ -160,7 +161,7 @@ test('Google browser setup verifies, reviews and explicitly confirms once before
   assert.deepEqual(me.google.linked, { email: identity.email });
   assert.equal(me.google.hasPassword, false);
   assert.equal((await f.request(prefix + '/confirm', { flowId: flow.flowId })).status, 401);
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS n FROM login').get()!.n, 1);
+  assert.equal(f.store.database.prepare('SELECT COUNT(*) AS n FROM login').get()!.n, 1);
 });
 
 test('existing password account requires explicit binding; same Google email never auto-links', async (t) => {

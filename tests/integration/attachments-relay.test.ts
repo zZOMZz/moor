@@ -1,6 +1,6 @@
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
-import { Store } from '@moor/gateway/accounts';
-import { createApp } from '@moor/gateway/http';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
+import { createApp } from '@moor/gateway/adapters/http/server';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
@@ -60,7 +60,7 @@ function read(input: AttachmentAction) {
 
 async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'moor-attachment-relay-'));
-  const store = new Store(':memory:');
+  const store = new SqliteAccounts(':memory:');
   const secret = await store.setup('attachment@synthetic.invalid', 'synthetic-password-only');
   const owner = store.owner(secret);
   const app = createApp(store, { origin: 'http://127.0.0.1:0', setupToken: 'synthetic' });
@@ -71,7 +71,7 @@ async function fixture() {
   const origin = `http://127.0.0.1:${address.port}`;
   app.setOrigin(origin);
   const hosts: {
-    device: ReturnType<Store['redeem']>;
+    device: ReturnType<SqliteAccounts['redeem']>;
     runtime: RuntimeStore;
     host: HostWorkspace;
     socket: WebSocket;
@@ -247,11 +247,11 @@ test('canonical attachment routes persist only on the selected real host and ret
   assert.equal((await f.api(actionPath, remove)).status, 200);
   assert.equal((await f.api(readPath, read(input))).status, 404);
   assert.equal((await f.api(actionPath, remove)).status, 200);
-  for (const row of f.store.db
+  for (const row of f.store.database
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     .all()) {
     assert.match(String(row.name), /^[a-z_]+$/);
-    const stored = JSON.stringify(f.store.db.prepare(`SELECT * FROM ${row.name}`).all());
+    const stored = JSON.stringify(f.store.database.prepare(`SELECT * FROM ${row.name}`).all());
     assert.equal(input.action === 'upload' && stored.includes(input.data), false);
     assert.equal(stored.includes('private synthetic attachment'), false);
     assert.equal(stored.includes('sha256:'), false);

@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
-import { Store } from '@moor/gateway/accounts';
+import { SqliteAccounts } from '@moor/gateway/adapters/composition/accounts';
 import { acquireRuntimeLock } from '@moor/local-state/exclusive-lock';
 
 export const ACCOUNT_RECOVERY_SUCCESS = '账号密码已恢复；旧登录和配对码已失效。';
@@ -48,7 +48,7 @@ export async function recoverAccount(input: {
   stdout(value: string): void;
   stderr(value: string): void;
 }): Promise<number> {
-  let release: (() => void) | undefined, store: Store | undefined;
+  let release: (() => void) | undefined, store: SqliteAccounts | undefined;
   try {
     const file = join(directoryPath(input.dataDirectory), 'accounts.sqlite');
     const original = regularFile(file)!;
@@ -69,7 +69,7 @@ export async function recoverAccount(input: {
       throw new Error(ACCOUNT_RECOVERY_FAILED);
     // Recheck SQLite sidecars after reading stdin, before opening the actual account store.
     for (const suffix of ['-wal', '-shm']) regularFile(file + suffix, true);
-    store = new Store(file);
+    store = new SqliteAccounts(file);
     await store.resetPassword(request.email, request.password);
     store.close();
     store = undefined;
