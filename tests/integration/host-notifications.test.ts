@@ -1,7 +1,11 @@
-import type { AgentCallbacks } from '@moor/host/agents/driver';
-import { HostNotifications, notificationEventId } from '@moor/host/integrations/host-notifications';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import type { AgentCallbacks } from '@moor/host/features/agents/driver';
+import {
+  HostNotifications,
+  notificationEventId,
+} from '@moor/host/adapters/persistence/notifications';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   NOTIFICATION_LIMITS,
   hostNotificationEventSchema,
@@ -210,7 +214,7 @@ function hostFixture(t: { after(fn: () => unknown): void }) {
     blockAfter = false;
   let captures = 0;
   const open = () =>
-    new HostWorkspace(
+    createHostWorkspace(
       store,
       {
         async open(_agent, _path, _native, c) {

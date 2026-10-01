@@ -5,8 +5,8 @@ import {
   sessionPermissionReviews,
 } from '@moor/session/session-operations';
 import { ClientSessionReplica } from '@moor/session/client-session-replica';
-import { prepareSessionIntent } from '@moor/host/commands/prepare-session-intent';
-import { validateMutation } from '@moor/host/commands/validate-mutation';
+import { prepareSessionIntent } from '@moor/host/features/sessions/prepare-intent';
+import { validateMutation } from '@moor/host/features/sessions/validate-mutation';
 import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
 import { appendSessionText } from '@moor/session/session-output';
 import assert from 'node:assert/strict';

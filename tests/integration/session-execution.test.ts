@@ -1,15 +1,16 @@
-import type { HostCommand } from '@moor/host/commands/host-command';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { readProjectFileBytes } from '@moor/host/projects/files';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import type { HostCommand } from '@moor/host/features/commands/dispatcher';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { readProjectFileBytes } from '@moor/host/adapters/files/read';
 import {
   inspectProjectWorktree,
   prepareProjectWorktree,
   readProjectGit,
   removeProjectWorktree,
-  type ProjectGitOptions,
-} from '@moor/host/projects/git';
-import { captureProjectSnapshot, enumerateProjectFiles } from '@moor/host/projects/snapshot';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+} from '@moor/host/adapters/git/worktree';
+import { type ProjectGitOptions } from '@moor/host/features/git/model';
+import { captureProjectSnapshot, enumerateProjectFiles } from '@moor/host/adapters/files/snapshot';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
 import { gitActionReceiptSchema, gitStateResultSchema } from '@moor/protocol/git-protocol';
 import type { Mutation } from '@moor/protocol/protocol';
@@ -155,7 +156,7 @@ function fixture(t: { after(fn: () => unknown): void }, subproject = false) {
     },
   };
   const openHost = () =>
-    new HostWorkspace(
+    createHostWorkspace(
       store,
       driver,
       () => {},

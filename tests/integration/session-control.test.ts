@@ -1,5 +1,6 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { AppError, mutationSchema, type Mutation } from '@moor/protocol/protocol';
 import {
   sessionControlActionSchema,
@@ -43,7 +44,7 @@ function fixture(t: TestContext) {
     cancels = 0;
   const started = signal(),
     finished = signal();
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       open: async () => {
@@ -464,7 +465,7 @@ test('a stop interrupted by host restart is reported as interrupted, never redis
   const restoredFile = join(f.root, 'restored.sqlite');
   copyFileSync(f.file, restoredFile);
   const restored = new RuntimeStore(restoredFile),
-    host = new HostWorkspace(
+    host = createHostWorkspace(
       restored,
       {
         open: async () => {

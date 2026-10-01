@@ -1,5 +1,5 @@
-import { createAcpDriver } from '@moor/host/agents/acp/driver';
-import { readAcpUsage } from '@moor/host/agents/acp/usage';
+import { createAcpDriver } from '@moor/host/adapters/acp/driver';
+import { readAcpUsage } from '@moor/host/adapters/acp/usage';
 import { projectAccountUsage } from '@moor/protocol/agent-usage';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';

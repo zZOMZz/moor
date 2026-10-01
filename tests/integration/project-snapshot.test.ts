@@ -3,7 +3,7 @@ import {
   compareProjectSnapshots,
   enumerateProjectFiles,
   type ProjectSnapshotOptions,
-} from '@moor/host/projects/snapshot';
+} from '@moor/host/adapters/files/snapshot';
 import { CONTENT_LIMITS } from '@moor/protocol/content-protocol';
 import strict from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

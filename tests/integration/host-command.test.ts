@@ -1,5 +1,6 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { buildSessionTurn } from '@moor/session/session-operations';
-import type { AgentOpenOptions } from '@moor/host/agents/driver';
+import type { AgentOpenOptions } from '@moor/host/features/agents/driver';
 import {
   HOST_COMMAND_METHODS,
   HostCommandDispatcher,
@@ -7,9 +8,9 @@ import {
   hostCommandSchemas,
   type HostCommandMethod,
   type HostCommandWorkspace,
-} from '@moor/host/commands/host-command';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+} from '@moor/host/features/commands/dispatcher';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { assertHostCommandActive, hostCommandFeatures } from '@moor/protocol/host-command-contract';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
@@ -288,7 +289,7 @@ test('real Host keeps project and connection checks, rejects retired MCP, and ru
   const prompted = new Promise<void>((resolve) => {
     started = resolve;
   });
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open(_agent, _cwd, _native, _callbacks, input) {

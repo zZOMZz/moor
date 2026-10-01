@@ -1,11 +1,11 @@
-import { createGitHubClient, GITHUB_API_VERSION } from '@moor/host/integrations/github/client';
+import { githubOperationBody } from '@moor/host/features/github/operation-body';
+import { GithubWriteFailure } from '@moor/host/features/github/failure';
+import { createGitHubClient, GITHUB_API_VERSION } from '@moor/host/adapters/github/read-client';
 import {
   createGitHubWriteClient,
   GITHUB_WRITE_CLIENT_LIMITS,
-  githubOperationBody,
-  GitHubWriteClientError,
   type GitHubWriteClientOptions,
-} from '@moor/host/integrations/github/write-client';
+} from '@moor/host/adapters/github/write-client';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
@@ -93,7 +93,7 @@ function ordinary(value: unknown, status = 200) {
 }
 function error(expected: string, rejected: boolean) {
   return (e: unknown) =>
-    e instanceof GitHubWriteClientError && e.code === expected && e.rejected === rejected;
+    e instanceof GithubWriteFailure && e.code === expected && e.rejected === rejected;
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -377,7 +377,7 @@ test('all transport failures after dispatch are unknown and never retried or exp
           }),
     );
     await assert.rejects(f.client.createIssueComment(target, 2, { body: 'test' }), (e: unknown) => {
-      assert.ok(e instanceof GitHubWriteClientError);
+      assert.ok(e instanceof GithubWriteFailure);
       assert.equal(e.rejected, false);
       assert.equal(JSON.stringify(e).includes('PRIVATE_TOKEN_BODY'), false);
       return true;
@@ -392,7 +392,7 @@ test('all transport failures after dispatch are unknown and never retried or exp
   await assert.rejects(
     network.client.createIssueComment(target, 2, { body: 'test' }),
     (e: unknown) =>
-      e instanceof GitHubWriteClientError &&
+      e instanceof GithubWriteFailure &&
       !e.rejected &&
       !JSON.stringify(e).includes('synthetic-token'),
   );
@@ -455,7 +455,7 @@ test('known IDs survive result checkpoint failure, postflight repository changes
       },
     );
     await assert.rejects(f.client.createIssueComment(target, 2, { body: 'test' }), (e: unknown) => {
-      assert.ok(e instanceof GitHubWriteClientError);
+      assert.ok(e instanceof GithubWriteFailure);
       assert.equal(e.rejected, false);
       assert.deepEqual(e.knownResult, { id: 300, number: 2 });
       return true;
@@ -510,7 +510,7 @@ test('bounded malformed responses remain unknown after mutation and read revocat
     const f = fixture((url) => (url.pathname === path ? json(metadata) : response));
     await assert.rejects(
       f.client.createIssueComment(target, 2, { body: 'test' }),
-      (e: unknown) => e instanceof GitHubWriteClientError && !e.rejected && !e.knownResult,
+      (e: unknown) => e instanceof GithubWriteFailure && !e.rejected && !e.knownResult,
     );
     assert.equal(f.writes().length, 1);
   }

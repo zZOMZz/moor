@@ -24,4 +24,4 @@ node dist/cli.mjs session mcp SESSION_ID --json
 
 旧配置含敏感连接材料，应继续放在主机私有数据中；不自动删除，也不导入共享文档。无法确认的旧动作需要保留原文和主机回执分别核查，不能将“本次新请求被拒绝”当作以前的请求从未执行。
 
-实现：[历史摘要读取](../packages/host/src/sessions/retired.ts)、[输入接受边界](../packages/host/src/commands/validate-mutation.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。旧父子任务的工具服务与新的 TaskDoc 队列边界见[旧父子任务退场](session-tasks.md)。
+实现：[历史摘要读取](../packages/host/src/features/sessions/retired.ts)、[输入接受边界](../packages/host/src/features/sessions/validate-mutation.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。旧父子任务的工具服务与新的 TaskDoc 队列边界见[旧父子任务退场](session-tasks.md)。

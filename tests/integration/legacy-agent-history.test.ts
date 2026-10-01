@@ -1,20 +1,19 @@
 import { informationHtml } from '../../apps/web/src/features/interactions/information';
 import { sessionInformation } from '@moor/client/features/interactions/interactions';
-import type { AgentConfig } from '@moor/host/agents/driver';
+import type { AgentConfig } from '@moor/host/features/agents/driver';
+import { ForkAnchorObservation, validateForkInput } from '@moor/host/adapters/acp/fork';
 import {
   agentForkAnchorSchema,
   codexAgentForkAnchorSchema,
-  ForkAnchorObservation,
   pinnedForkAdapter,
-  validateForkInput,
   type AgentForkAnchor,
-} from '@moor/host/agents/fork';
-import { RuntimeStore } from '@moor/host/persistence/store';
+} from '@moor/host/features/agents/fork-model';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import {
   accountRateLimitSchema,
   normalizeSessionEvent,
   sessionEventSchema,
-} from '@moor/host/sessions/events';
+} from '@moor/host/adapters/acp/events';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import test from 'node:test';

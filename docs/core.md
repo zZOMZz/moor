@@ -93,7 +93,7 @@ CRDT 负责保存和同步文档操作；主机校验及持久接受决定输入
 
 [Relay 项目处理器](../packages/gateway/src/replica-command.ts) 只接收已认证路由解析出的上下文，其中 `catalogWorkspaceId` 表示产品分组、`runtimeWorkspaceId` 表示执行主机工作区。它核对请求范围，在读取请求体后、Host 返回成功或错误后以及响应验证结束后复核原账号、设备、连接、目录映射和执行身份。能力检查不能代替这些授权检查。
 
-[Host 分发](../packages/host/src/commands/host-command.ts) 和[成功响应验证](../packages/protocol/src/host-response.ts) 都有编译期穷举检查。执行实现留在 Host，响应验证留在协议边界；协议包不导入执行服务。Agent 设置、退场功能和请求相关能力仍通过明确的业务函数判断，不用配置规则推断。Attention 的参与者上下文与旧设备级路由继续保留各自的入口。
+[Host 分发](../packages/host/src/features/commands/dispatcher.ts) 和[成功响应验证](../packages/protocol/src/host-response.ts) 都有编译期穷举检查。执行实现留在 Host，响应验证留在协议边界；协议包不导入执行服务。Agent 设置、退场功能和请求相关能力仍通过明确的业务函数判断，不用配置规则推断。Attention 的参与者上下文与旧设备级路由继续保留各自的入口。
 
 契约中的操作和恢复分类只用于维护送达证据：请求已经派发后的断线、错误或迟到响应不证明未执行，核查失败也不能把原请求改成已拒绝。连接失效可以立即结束等待，但不会取消已经派发的副作用或自动重试。新增命令需要同时通过 Host 分发、响应验证和真实 Relay 固定路由回归；测试使用合成 Host，不调用真实 Agent、GitHub 或用户账号。
 

@@ -1,6 +1,7 @@
-import { HostCommandDispatcher, type HostCommand } from '@moor/host/commands/host-command';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { HostCommandDispatcher, type HostCommand } from '@moor/host/features/commands/dispatcher';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { attachmentActionSchema, type AttachmentAction } from '@moor/protocol/attachment-protocol';
 import { validateHostResponse } from '@moor/protocol/host-response';
 import {
@@ -25,7 +26,7 @@ function fixture(t: TestContext) {
     dispatcher: HostCommandDispatcher;
   const projectId = runtime.registerProject(project);
   const open = () => {
-    host = new HostWorkspace(
+    host = createHostWorkspace(
       runtime,
       {
         open: async () => {

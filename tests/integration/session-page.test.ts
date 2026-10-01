@@ -1,5 +1,6 @@
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import { readSessionPage } from '@moor/host/sessions/page';
+import { hostHash } from '@moor/host/adapters/composition/identity';
+import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
+import { readSessionPage } from '@moor/host/features/sessions/page';
 import { AppError, type RuntimeWorkspace } from '@moor/protocol/protocol';
 import {
   SESSION_PAGE_FEATURE,
@@ -48,7 +49,7 @@ function fixture(count = 85) {
   const calls: string[] = [];
   const projection = syntheticSessionPageIndex(rows);
   opened.push(projection);
-  const source = { workspace, index: projection.index };
+  const source = { workspace, hash: hostHash, index: projection.index };
   const readPage = (input: SessionPageRequest, project?: string) => {
     projection.sync();
     if (

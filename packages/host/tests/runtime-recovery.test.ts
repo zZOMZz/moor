@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { mirror, putMeta } from '@moor/session/model';
-import { RuntimeStore } from '../src/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 
 function database(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), 'moor-recovery-index-'));

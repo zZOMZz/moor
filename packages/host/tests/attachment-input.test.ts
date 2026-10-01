@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { promptContent } from '@moor/host/sessions/attachment-input';
+import { promptContent } from '@moor/host/adapters/acp/attachment-input';
 import { CONTENT_VERSION } from '@moor/protocol/content-protocol';
 import type { AgentAttachment, PromptInputCapabilities } from '@moor/protocol/attachment-protocol';
 

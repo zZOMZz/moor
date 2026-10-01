@@ -1,4 +1,4 @@
-import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
+import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/adapters/files/skills';
 import { AppError } from '@moor/protocol/protocol';
 import {
   SKILLS_LIMITS,

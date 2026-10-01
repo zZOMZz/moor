@@ -1,6 +1,7 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { readProjectFileBytes, type ProjectFileReadOptions } from '@moor/host/projects/files';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { readProjectFileBytes, type ProjectFileReadOptions } from '@moor/host/adapters/files/read';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   CONTENT_LIMITS,
   FILE_CONTENT_FEATURE,
@@ -60,7 +61,7 @@ function fixture(
     project: { kind: 'local', localProjectId: 'project-a' },
   });
   let dispatches = 0;
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open() {

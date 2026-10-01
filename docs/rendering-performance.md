@@ -32,7 +32,7 @@
 - [会话副本](../packages/session/src/client-session-replica.ts)、[控制器](../packages/client/src/features/workspace/compose.ts)、[增量缓存](../packages/client/src/features/workspace/workspace-session-cache.ts)。
 - [时间线](../apps/web/src/features/sessions/session-timeline.tsx)、[Markdown](../apps/web/src/components/content.ts)、[会话与输入](../apps/web/src/app/workspace-app.tsx)。
 - [文件面板控制器](../packages/client/src/features/files/project-content-controller.ts)、[文件与 diff 视图](../apps/web/src/features/files/project-content-ui.tsx)、[布局](../apps/web/src/features/files/workspace-content-layout.tsx)。
-- [Host 会话](../packages/host/src/sessions/workspace.ts)、[Host 持久化](../packages/host/src/persistence/store.ts)。
+- [Host 会话](../packages/host/src/features/runtime/workspace.ts)、[Host 持久化](../packages/host/src/adapters/persistence/workspace.ts)。
 
 ## 基准与验收口径
 

@@ -1,3 +1,4 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -6,15 +7,15 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, renameSync, unlinkSy
 import { resolve, dirname, join, basename } from 'node:path';
 import { z } from 'zod';
 import { WebSocket } from 'ws';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { acquireRuntimeLock } from '@moor/local-state/exclusive-lock';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { acpDriver } from '@moor/host/agents/acp/driver';
-import { localCodexPath, withLocalCodex } from '@moor/host/agents/acp/local-codex';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { acpDriver } from '@moor/host/adapters/acp/driver';
+import { localCodexPath, withLocalCodex } from '@moor/host/adapters/acp/local-codex';
 import { Store, token } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 import { AppError, assert, id, PROTOCOL } from '@moor/protocol/protocol';
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
+import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
@@ -33,12 +34,12 @@ import {
 import {
   NotificationDispatcher,
   relayNotificationChannel,
-} from '@moor/host/integrations/notification-dispatch';
-import { GitHubConfig } from '@moor/host/integrations/github/config';
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
-import { AgentSettings } from '@moor/host/agents/settings';
-import { registerDesktopProject } from '@moor/host/projects/registration';
-import { HostDeviceMetadata } from '@moor/host/persistence/device-metadata';
+} from '@moor/host/adapters/notifications/dispatch';
+import { GitHubConfig } from '@moor/host/adapters/config/github';
+import { SkillsConfig } from '@moor/host/adapters/config/skills';
+import { AgentSettings } from '@moor/host/adapters/config/agents';
+import { registerDesktopProject } from '@moor/host/adapters/files/registration';
+import { HostDeviceMetadata } from '@moor/host/adapters/persistence/device-metadata';
 import {
   deviceMetadataSchema,
   type DeviceMetadata,
@@ -420,7 +421,7 @@ async function refresh() {
   try {
     let host = workspaces.get(runtime.workspace.id);
     if (!host) {
-      host = new HostWorkspace(
+      host = createHostWorkspace(
         runtime,
         acpDriver,
         hello,

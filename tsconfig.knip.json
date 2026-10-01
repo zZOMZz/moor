@@ -117,7 +117,116 @@
         "./packages/client/src/operations/workspace/compose.ts"
       ],
       "@moor/gateway/*": ["./packages/gateway/src/*.ts"],
-      "@moor/host/*": ["./packages/host/src/*.ts"],
+      "@moor/host/adapters/acp/attachment-input": [
+        "./packages/host/src/adapters/acp/attachment-input.ts"
+      ],
+      "@moor/host/adapters/acp/driver": ["./packages/host/src/adapters/acp/driver.ts"],
+      "@moor/host/adapters/acp/elicitation": ["./packages/host/src/adapters/acp/elicitation.ts"],
+      "@moor/host/adapters/acp/events": ["./packages/host/src/adapters/acp/events.ts"],
+      "@moor/host/adapters/acp/fork": ["./packages/host/src/adapters/acp/fork.ts"],
+      "@moor/host/adapters/acp/local-codex": ["./packages/host/src/adapters/acp/local-codex.ts"],
+      "@moor/host/adapters/acp/program": ["./packages/host/src/adapters/acp/program.ts"],
+      "@moor/host/adapters/acp/usage": ["./packages/host/src/adapters/acp/usage.ts"],
+      "@moor/host/adapters/composition/collaboration": [
+        "./packages/host/src/adapters/composition/collaboration.ts"
+      ],
+      "@moor/host/adapters/composition/identity": [
+        "./packages/host/src/adapters/composition/identity.ts"
+      ],
+      "@moor/host/adapters/composition/workspace": [
+        "./packages/host/src/adapters/composition/workspace.ts"
+      ],
+      "@moor/host/adapters/config/agents": ["./packages/host/src/adapters/config/agents.ts"],
+      "@moor/host/adapters/config/github": ["./packages/host/src/adapters/config/github.ts"],
+      "@moor/host/adapters/config/skills": ["./packages/host/src/adapters/config/skills.ts"],
+      "@moor/host/adapters/files/read": ["./packages/host/src/adapters/files/read.ts"],
+      "@moor/host/adapters/files/registration": [
+        "./packages/host/src/adapters/files/registration.ts"
+      ],
+      "@moor/host/adapters/files/skills": ["./packages/host/src/adapters/files/skills.ts"],
+      "@moor/host/adapters/files/snapshot": ["./packages/host/src/adapters/files/snapshot.ts"],
+      "@moor/host/adapters/git/worktree": ["./packages/host/src/adapters/git/worktree.ts"],
+      "@moor/host/adapters/git/write": ["./packages/host/src/adapters/git/write.ts"],
+      "@moor/host/adapters/github/read-client": [
+        "./packages/host/src/adapters/github/read-client.ts"
+      ],
+      "@moor/host/adapters/github/write-client": [
+        "./packages/host/src/adapters/github/write-client.ts"
+      ],
+      "@moor/host/adapters/notifications/dispatch": [
+        "./packages/host/src/adapters/notifications/dispatch.ts"
+      ],
+      "@moor/host/adapters/persistence/agent": [
+        "./packages/host/src/adapters/persistence/agent.ts"
+      ],
+      "@moor/host/adapters/persistence/device-metadata": [
+        "./packages/host/src/adapters/persistence/device-metadata.ts"
+      ],
+      "@moor/host/adapters/persistence/journal": [
+        "./packages/host/src/adapters/persistence/journal.ts"
+      ],
+      "@moor/host/adapters/persistence/notifications": [
+        "./packages/host/src/adapters/persistence/notifications.ts"
+      ],
+      "@moor/host/adapters/persistence/project-history": [
+        "./packages/host/src/adapters/persistence/project-history.ts"
+      ],
+      "@moor/host/adapters/persistence/search-index": [
+        "./packages/host/src/adapters/persistence/search-index.ts"
+      ],
+      "@moor/host/adapters/persistence/session-metadata": [
+        "./packages/host/src/adapters/persistence/session-metadata.ts"
+      ],
+      "@moor/host/adapters/persistence/workspace": [
+        "./packages/host/src/adapters/persistence/workspace.ts"
+      ],
+      "@moor/host/features/agents/driver": ["./packages/host/src/features/agents/driver.ts"],
+      "@moor/host/features/agents/fork-model": [
+        "./packages/host/src/features/agents/fork-model.ts"
+      ],
+      "@moor/host/features/agents/run-preferences": [
+        "./packages/host/src/features/agents/run-preferences.ts"
+      ],
+      "@moor/host/features/agents/usage-cache": [
+        "./packages/host/src/features/agents/usage-cache.ts"
+      ],
+      "@moor/host/features/attachments/model": [
+        "./packages/host/src/features/attachments/model.ts"
+      ],
+      "@moor/host/features/collaboration/coordinator": [
+        "./packages/host/src/features/collaboration/coordinator.ts"
+      ],
+      "@moor/host/features/collaboration/execution": [
+        "./packages/host/src/features/collaboration/execution.ts"
+      ],
+      "@moor/host/features/commands/dispatcher": [
+        "./packages/host/src/features/commands/dispatcher.ts"
+      ],
+      "@moor/host/features/files/model": ["./packages/host/src/features/files/model.ts"],
+      "@moor/host/features/git/model": ["./packages/host/src/features/git/model.ts"],
+      "@moor/host/features/git/write-model": ["./packages/host/src/features/git/write-model.ts"],
+      "@moor/host/features/github/failure": ["./packages/host/src/features/github/failure.ts"],
+      "@moor/host/features/github/operation-body": [
+        "./packages/host/src/features/github/operation-body.ts"
+      ],
+      "@moor/host/features/github/session": ["./packages/host/src/features/github/session.ts"],
+      "@moor/host/features/github/write-session": [
+        "./packages/host/src/features/github/write-session.ts"
+      ],
+      "@moor/host/features/runtime/workspace": [
+        "./packages/host/src/features/runtime/workspace.ts"
+      ],
+      "@moor/host/features/sessions/interactions": [
+        "./packages/host/src/features/sessions/interactions.ts"
+      ],
+      "@moor/host/features/sessions/page": ["./packages/host/src/features/sessions/page.ts"],
+      "@moor/host/features/sessions/prepare-intent": [
+        "./packages/host/src/features/sessions/prepare-intent.ts"
+      ],
+      "@moor/host/features/sessions/search": ["./packages/host/src/features/sessions/search.ts"],
+      "@moor/host/features/sessions/validate-mutation": [
+        "./packages/host/src/features/sessions/validate-mutation.ts"
+      ],
       "@moor/local-state/exclusive-lock": ["./packages/local-state/src/exclusive-lock.ts"],
       "@moor/local-state/private-connection": ["./packages/local-state/src/private-connection.ts"],
       "@moor/local-state/private-project-path": [
@@ -130,6 +239,7 @@
       "@moor/protocol/attachment-protocol": ["./packages/protocol/src/attachment-protocol.ts"],
       "@moor/protocol/attention": ["./packages/protocol/src/attention.ts"],
       "@moor/protocol/attention-response": ["./packages/protocol/src/attention-response.ts"],
+      "@moor/protocol/binary": ["./packages/protocol/src/binary.ts"],
       "@moor/protocol/canonical-json": ["./packages/protocol/src/canonical-json.ts"],
       "@moor/protocol/catalog": ["./packages/protocol/src/catalog.ts"],
       "@moor/protocol/collaboration-protocol": [
@@ -170,6 +280,7 @@
       "@moor/protocol/session-responses": ["./packages/protocol/src/session-responses.ts"],
       "@moor/protocol/skills-protocol": ["./packages/protocol/src/skills-protocol.ts"],
       "@moor/protocol/task-protocol": ["./packages/protocol/src/task-protocol.ts"],
+      "@moor/protocol/value-equality": ["./packages/protocol/src/value-equality.ts"],
       "@moor/protocol/workspace-attention": ["./packages/protocol/src/workspace-attention.ts"],
       "@moor/protocol/workspace-catalog": ["./packages/protocol/src/workspace-catalog.ts"],
       "@moor/protocol/workspace-client-protocol": [
@@ -177,7 +288,8 @@
       ],
       "@moor/protocol/workspace-target": ["./packages/protocol/src/workspace-target.ts"],
       "@moor/session/*": ["./packages/session/src/*.ts"],
-      "@moor/sync/*": ["./packages/sync/src/*.ts"]
+      "@moor/sync/adapters/sqlite": ["./packages/sync/src/adapters/sqlite.ts"],
+      "@moor/sync/document/documents": ["./packages/sync/src/document/documents.ts"]
     }
   },
   "include": []

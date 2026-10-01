@@ -1,7 +1,8 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
-import type { ProjectSnapshot } from '@moor/host/projects/snapshot';
-import { searchHostSessions } from '@moor/host/sessions/search';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import type { ProjectSnapshot } from '@moor/host/features/files/model';
+import { searchHostSessions } from '@moor/host/features/sessions/search';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { SessionSearchRequest } from '@moor/protocol/search-protocol';
 import { mirror, putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';
@@ -26,7 +27,7 @@ function fixture(t: { after(fn: () => void): void }) {
   store.saveMachine();
   let opens = 0;
   const open = () =>
-    new HostWorkspace(
+    createHostWorkspace(
       store,
       {
         async open() {

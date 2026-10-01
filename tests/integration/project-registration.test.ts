@@ -1,5 +1,5 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { registerDesktopProject } from '@moor/host/projects/registration';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { registerDesktopProject } from '@moor/host/adapters/files/registration';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { createRequire as createLocalRequire } from 'node:module';

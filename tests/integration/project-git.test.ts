@@ -4,8 +4,8 @@ import {
   readProjectGit,
   removeProjectWorktree,
   validateManagedWorktreeRoot,
-  type WorktreePlan,
-} from '@moor/host/projects/git';
+} from '@moor/host/adapters/git/worktree';
+import { type WorktreePlan } from '@moor/host/features/git/model';
 import { gitRepositoryStateSchema } from '@moor/protocol/git-protocol';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';

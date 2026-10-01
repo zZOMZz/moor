@@ -1,0 +1,2805 @@
+import {
+  AGENT_CONTROLS_FEATURE,
+  AGENT_RUN_DEFAULTS_FEATURE,
+  type AgentUsageRequest,
+  type RunPreferencesRequest,
+} from '@moor/protocol/agent-controls';
+import { publicAgentFailure } from '@moor/protocol/agent-errors';
+import { AGENT_USAGE_FEATURE } from '@moor/protocol/agent-usage';
+import {
+  ATTACHMENTS_FEATURE,
+  MAX_SESSION_ATTACHMENT_BYTES,
+  attachmentActionSchema,
+  attachmentReadSchema,
+  promptInputCapabilitiesSchema,
+  type AttachmentAction,
+  type AttachmentContent,
+  type AttachmentRead,
+  type AttachmentReceipt,
+  type PromptInputCapabilities,
+} from '@moor/protocol/attachment-protocol';
+import {
+  ACTOR_FEATURE,
+  ATTENTION_FEATURE,
+  FOLLOWUP_FEATURE,
+  attentionContextSchema,
+  attentionContinueInput,
+  attentionContinueSchema,
+  attentionDispositionSchema,
+  attentionListQuerySchema,
+  attentionPermissionSchema,
+  attentionSeenSchema,
+  type AttentionActor,
+  type AttentionCause,
+  type AttentionContext,
+  type AttentionContinue,
+  type AttentionDetail,
+  type AttentionDisposition,
+  type AttentionListQuery,
+  type AttentionPermission,
+  type AttentionReceipt,
+  type AttentionSeen,
+} from '@moor/protocol/attention';
+import { decodeBase64, encodeBase64 } from '@moor/protocol/binary';
+import {
+  RETIRED_RECORDS_FEATURE,
+  RETIRED_SESSION_FEATURE,
+  type ConnectionAuthorityLease,
+} from '@moor/protocol/connection-authority';
+import {
+  CONTENT_VERSION,
+  FILE_CONTENT_FEATURE,
+  projectFileReadSchema,
+  type AttachmentReference,
+  type ContentScope,
+  type ProjectFileRead,
+  type ProjectFileResult,
+} from '@moor/protocol/content-protocol';
+import type { McpRead } from '@moor/protocol/mcp-protocol';
+import { PERMISSION_REVIEW_FEATURE } from '@moor/protocol/permission-review';
+import { isPrivateEndpointEnvelope } from '@moor/protocol/private-content';
+import {
+  AGENT_CATALOG_CACHE_FEATURE,
+  AGENT_MODEL_OPTIONS_FEATURE,
+  AGENT_VERSIONS_FEATURE,
+  AppError,
+  assert,
+  capabilityContextSchema,
+  sessionActionSchema,
+  type Mutation,
+  type SessionAction,
+} from '@moor/protocol/protocol';
+import { type RolesActionRequest, type RolesRead } from '@moor/protocol/role-protocol';
+import { resolveRunSelection, runCapabilitiesSchema } from '@moor/protocol/run-config';
+import {
+  ATTACHMENT_OPERATIONS_FEATURE,
+  SESSION_CONTROL_FEATURE,
+} from '@moor/protocol/session-control-protocol';
+import {
+  SESSION_INTENTS_FEATURE,
+  respondPermissionSchema,
+  sendTurnSchema,
+  type RespondPermission,
+  type SendTurn,
+  type SessionIntentCommand,
+} from '@moor/protocol/session-intent-protocol';
+import type { SessionPageRequest } from '@moor/protocol/session-page';
+import { SKILLS_FEATURE, type SkillsRead } from '@moor/protocol/skills-protocol';
+import type { TaskAction, TaskRead } from '@moor/protocol/task-protocol';
+import { sameValue as isDeepStrictEqual } from '@moor/protocol/value-equality';
+import {
+  Flock,
+  LoroDoc,
+  LoroList,
+  LoroMap,
+  delta,
+  metas,
+  mirror,
+  putMeta,
+  vv,
+} from '@moor/session/model';
+import { appendSessionText } from '@moor/session/session-output';
+import {
+  normalizeAgentContent,
+  normalizeAgentText,
+  normalizeAgentToolContent,
+  safeAgentMetadata,
+} from '../attachments/agent-output';
+import {
+  readRunDefaults,
+  readRunPreferences,
+  saveRunDefaults,
+  saveRunPreferences,
+} from '../agents/run-preferences';
+import { AgentUsageCache } from '../agents/usage-cache';
+import { assertSessionIntentScope, prepareSessionIntent } from '../sessions/prepare-intent';
+import { validateMutation } from '../sessions/validate-mutation';
+import {
+  LOCAL_CODEX_NOT_INSTALLED,
+  type AgentConfig,
+  type AgentDriver,
+  type AgentRunBinding,
+  type AgentSession,
+  type PermissionOutcome,
+} from '../agents/driver';
+import { type AttachmentScope } from '../attachments/model';
+import type { WorkspacePersistence } from '../persistence/workspace';
+import type { HostEnvironment, HostProjectFiles } from './environment';
+import { SessionControlManager } from '../sessions/control';
+import { readSessionPage } from '../sessions/page';
+import {
+  inspectRetiredPreview,
+  inspectRetiredRole,
+  inspectRetiredTask,
+  readRetiredMcp,
+  readRetiredRoles,
+  readRetiredTasks,
+} from '../sessions/retired';
+import { SessionSkillsManager, type SessionSkillsOptions } from '../skills/session';
+
+import { COLLABORATION_FEATURE } from '@moor/protocol/collaboration-protocol';
+import {
+  FORK_OPERATIONS_FEATURE,
+  SESSION_FORK_FEATURE,
+  type ForkOperation,
+  type ForkOptionsRead,
+  type SessionFork,
+} from '@moor/protocol/fork-protocol';
+import {
+  GIT_OPERATIONS_FEATURE,
+  GIT_WORKTREE_FEATURE,
+  type GitAction,
+  type GitOperation,
+  type GitStateRead,
+} from '@moor/protocol/git-protocol';
+import {
+  GITHUB_FEATURE,
+  SECURE_GITHUB_AUTHORITY_FEATURE,
+  type GithubAction,
+  type GithubRead,
+} from '@moor/protocol/github-protocol';
+import {
+  GITHUB_WRITE_FEATURE,
+  type GithubWriteAction,
+  type GithubWriteInspect,
+  type GithubWriteRead,
+} from '@moor/protocol/github-write-protocol';
+import {
+  QUESTIONS_FEATURE,
+  STEER_FEATURE,
+  questionRequestSchema,
+  type QuestionAnswer,
+  type SteerRequest,
+} from '@moor/protocol/interaction-protocol';
+import {
+  NOTIFICATIONS_FEATURE,
+  NOTIFICATION_LIMITS,
+  type HostNotificationEvent,
+} from '@moor/protocol/notification-protocol';
+import { type PreviewAction } from '@moor/protocol/preview-protocol';
+import {
+  PROJECT_DIFF_FEATURE,
+  PROJECT_TREE_FEATURE,
+  projectDiffFileReadSchema,
+  projectDiffFileResultSchema,
+  projectDiffReferenceSchema,
+  projectTreeReadSchema,
+  projectTreeResultSchema,
+  projectTurnDiffReadSchema,
+  projectTurnDiffResultSchema,
+  type ProjectContentIssue,
+  type ProjectDiffFileRead,
+  type ProjectDiffFileResult,
+  type ProjectDiffReference,
+  type ProjectTreeRead,
+  type ProjectTreeResult,
+  type ProjectTurnDiffRead,
+  type ProjectTurnDiffResult,
+} from '@moor/protocol/project-content-protocol';
+import { SESSION_SEARCH_FEATURE, type SessionSearchRequest } from '@moor/protocol/search-protocol';
+import {
+  runtimeFeatureReportSchema,
+  sessionEventSchema,
+  sessionEventStateSchema,
+  type SessionEvent,
+} from '@moor/protocol/session-events';
+import { type ProjectSnapshot } from '../files/model';
+import { type ExecutionLease } from '../git/execution-model';
+import type { ProjectHistoryScope } from '../persistence/history';
+import { HostCollaborationService } from '../collaboration/service';
+import { SessionExecutionManager } from '../git/execution';
+import { SessionForkManager } from '../fork/manager';
+import { SessionGithubManager, type SessionGithubOptions } from '../github/session';
+import { SessionGithubWriteManager, type SessionGithubWriteOptions } from '../github/write-session';
+import {
+  SessionInteractions,
+  cancelledQuestionAnswer,
+  expireSessionInteractions,
+  type InteractionTurn,
+} from '../sessions/interactions';
+import { searchHostSessions } from '../sessions/search';
+
+// Derive the wire version from the pinned Flock implementation without exporting
+// the workspace. Prefix scans retain each raw clock, metadata and tombstone.
+const metadataBundleVersion = new Flock().exportJson().version;
+function sessionMetadata(meta: Flock, sessionId: string) {
+  let value: Record<string, unknown> | undefined;
+  for (const row of meta.scan({ prefix: ['m', 'session-' + sessionId], includeRaw: false })) {
+    const field = row.key[2];
+    if (typeof field === 'string' && row.value !== undefined) (value ??= {})[field] = row.value;
+  }
+  return value;
+}
+function sessionMetadataBundle(meta: Flock, sessionId: string) {
+  const name = 'session-' + sessionId;
+  return {
+    version: metadataBundleVersion,
+    entries: Object.fromEntries(
+      ['e', 'm'].flatMap((kind) =>
+        meta.scan({ prefix: [kind, name] }).map(({ key, raw }) => [JSON.stringify(key), raw]),
+      ),
+    ),
+  };
+}
+
+// Replace a supplied tool field in full while retaining unchanged nested CRDT
+// values. A status/sequence update must not retransmit an unchanged large detail.
+function writeToolValue(parent: LoroMap | LoroList, key: string | number, value: any) {
+  // Mirror preserves array positions by persisting undefined entries as null.
+  if (parent instanceof LoroList && value === undefined) value = null;
+  const previous = parent instanceof LoroMap ? parent.get(String(key)) : parent.get(Number(key));
+  if (
+    !(previous instanceof LoroMap) &&
+    !(previous instanceof LoroList) &&
+    isDeepStrictEqual(previous, value)
+  )
+    return;
+  const attach = <T extends LoroMap | LoroList>(container: T): T => {
+    if (parent instanceof LoroMap) return parent.setContainer(String(key), container);
+    const index = Number(key);
+    if (index < parent.length) parent.delete(index, 1);
+    return parent.insertContainer(index, container);
+  };
+  if (Array.isArray(value)) {
+    const target = previous instanceof LoroList ? previous : attach(new LoroList());
+    for (let index = 0; index < value.length; index++) writeToolValue(target, index, value[index]);
+    if (target.length > value.length) target.delete(value.length, target.length - value.length);
+  } else if (value !== null && typeof value === 'object') {
+    const target = previous instanceof LoroMap ? previous : attach(new LoroMap());
+    for (const oldKey of target.keys()) if (!Object.hasOwn(value, oldKey)) target.delete(oldKey);
+    for (const [field, next] of Object.entries(value)) writeToolValue(target, field, next);
+  } else if (parent instanceof LoroMap) {
+    if (value === undefined) parent.delete(String(key));
+    else parent.set(String(key), value);
+  } else {
+    const index = Number(key);
+    if (index < parent.length) parent.delete(index, 1);
+    parent.insert(index, value);
+  }
+}
+
+/** Locate the live tool without decoding settled turns or unrelated tool bodies. */
+function activeTool(doc: LoroDoc, sessionId: string, turnId: string, toolCallId: string) {
+  assert(doc.getMap('session').get('id') === sessionId, 409, '输出会话身份不匹配');
+  const history = doc.getList('history');
+  let turn: LoroMap | undefined;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const candidate = history.get(index);
+    if (candidate instanceof LoroMap && candidate.get('id') === turnId) {
+      turn = candidate;
+      break;
+    }
+  }
+  assert(
+    turn?.get('role') === 'assistant' && turn.get('finished') === false,
+    409,
+    '输出不属于活动助手回合',
+  );
+  const previous = turn.get('items');
+  let items: LoroList;
+  if (previous === undefined || Array.isArray(previous)) {
+    items = turn.setContainer('items', new LoroList());
+    // A legacy JSON list is promoted once, preserving every existing item.
+    if (previous) for (const value of previous) items.push(value);
+  } else {
+    assert(previous instanceof LoroList, 409, '输出内容结构不可用');
+    items = previous;
+  }
+  for (let index = items.length - 1; index >= 0; index--) {
+    const value = items.get(index);
+    if (value instanceof LoroMap) {
+      if (value.get('type') === 'tool_call' && value.get('toolCallId') === toolCallId) return value;
+    } else if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      'type' in value &&
+      value.type === 'tool_call' &&
+      'toolCallId' in value &&
+      value.toolCallId === toolCallId
+    ) {
+      // schema.Any also accepts older inline JSON objects. Promote only the
+      // selected item and retain fields unknown to this Host version.
+      items.delete(index, 1);
+      const tool = items.insertContainer(index, new LoroMap());
+      for (const [key, field] of Object.entries(value)) tool.set(key, field);
+      return tool;
+    }
+  }
+  const tool = items.pushContainer(new LoroMap());
+  tool.set('type', 'tool_call');
+  if (toolCallId !== undefined) tool.set('toolCallId', toolCallId);
+  return tool;
+}
+
+type Active = {
+  turnId: string;
+  userTurnId: string;
+  doc: LoroDoc;
+  session?: AgentSession;
+  stopped: boolean;
+  done?: Promise<void>;
+  projectScope: ProjectHistoryScope;
+  rootPath: string;
+  execution: ExecutionLease;
+  agent: AgentConfig;
+  before?: ProjectSnapshot;
+  snapshotIssues: ProjectContentIssue[];
+  terminal?: { status: string; message?: string };
+  finalizing?: Promise<void>;
+  attentionSettlementFailed?: boolean;
+  permissions: Map<
+    string,
+    { options: any[]; toolCall: unknown; resolve: (value: { outcome: PermissionOutcome }) => void }
+  >;
+};
+export class HostWorkspace {
+  readonly collaboration: HostCollaborationService;
+  closed = false;
+  private capabilityAttempts = new Map<string, { revision: number; error?: unknown }>();
+  private capabilityRevision = 0;
+  private usageCache = new AgentUsageCache();
+  private attentionChanged: (actor: AttentionActor, sessionId: string) => void = () => {};
+  setAttentionListener(listener: (actor: AttentionActor, sessionId: string) => void) {
+    this.attentionChanged = listener;
+  }
+  locks = new Map<string, Promise<unknown>>();
+  active = new Map<string, Active>();
+  private outputDocuments = new Map<
+    Active,
+    { confirmed: LoroDoc; working: LoroDoc; version: Uint8Array }
+  >();
+  settlementFailures = new Map<string, LoroDoc>();
+  interactions: SessionInteractions<Active>;
+  executionManager: SessionExecutionManager;
+  forkManager: SessionForkManager;
+  githubManager: SessionGithubManager;
+  githubWriteManager: SessionGithubWriteManager;
+  skillsManager: SessionSkillsManager;
+  controlManager: SessionControlManager;
+  watches = new Set<string>();
+  get workspace() {
+    return this.store.workspace;
+  }
+  get meta() {
+    return this.store.meta;
+  }
+  get machine() {
+    return this.store.machine;
+  }
+  constructor(
+    public store: WorkspacePersistence,
+    private driver: AgentDriver,
+    private catalogue: () => void,
+    private changed: (sessionId?: string) => void,
+    private readonly environment: HostEnvironment,
+    private fileReader: HostProjectFiles['read'],
+    private projectContent: Pick<HostProjectFiles, 'capture' | 'tree'>,
+    git: ConstructorParameters<typeof SessionExecutionManager>[1],
+    github: SessionGithubOptions,
+    githubWrite: SessionGithubWriteOptions,
+    skills: SessionSkillsOptions,
+  ) {
+    this.collaboration = new HostCollaborationService(this, store.collaborationPlanes);
+    const notifyChanged = this.changed;
+    this.changed = (sessionId) => {
+      notifyChanged(sessionId);
+      this.collaboration.wake(sessionId);
+    };
+    this.executionManager = new SessionExecutionManager(this, git, environment);
+    this.forkManager = new SessionForkManager(this, driver, environment);
+    this.skillsManager = new SessionSkillsManager(this, skills);
+    this.controlManager = new SessionControlManager(this);
+    this.githubManager = new SessionGithubManager(this, github);
+    this.githubWriteManager = new SessionGithubWriteManager(this, githubWrite);
+    this.interactions = new SessionInteractions<Active>({
+      journal: store.journal,
+      uuid: () => this.environment.uuid(),
+      getRun: (sessionId) => this.active.get(sessionId),
+      serial: (sessionId, work) => this.serial(sessionId, work),
+      scopeCheck: (scope, localProjectId) => {
+        const lease = this.executionLease(scope, localProjectId);
+        return { userId: lease.userId, machineId: lease.machineId, rootPath: lease.rootPath };
+      },
+      persist: (sessionId, run, edit, write) =>
+        this.persistInteraction(sessionId, run, edit, write),
+    });
+    this.updateCatalogue();
+  }
+  hash(value: string | Uint8Array) {
+    return this.environment.hash(value);
+  }
+  yieldWork() {
+    return this.environment.yieldWork();
+  }
+  directoryIdentity(path: string) {
+    return this.environment.directory(path);
+  }
+  ensureConnected() {
+    assert(!this.closed, 409, '本机执行服务已停止，指令未送达');
+  }
+  async ready() {
+    this.ensureConnected();
+  }
+  private controlsContext(input: { agentId: string; sessionId?: string }, localProjectId?: string) {
+    this.ensureConnected();
+    const project = this.workspace.projects.find((p) => p.id === localProjectId);
+    assert(project, 404, 'Agent 设置的项目不可用');
+    const scope = {
+      workspaceId: this.workspace.id,
+      userId: this.workspace.userId,
+      machineId: this.workspace.machineId,
+      localProjectId: project.id,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      agentId: input.agentId,
+    };
+    const agent = input.sessionId
+      ? this.sessionAgent({ ...scope, sessionId: input.sessionId })
+      : this.store.agents.get(input.agentId);
+    assert(
+      agent?.id === input.agentId &&
+        agent.machineId === scope.machineId &&
+        (input.sessionId || this.workspace.agents.some((a) => a.id === agent.id)),
+      404,
+      'Agent 配置不可用',
+    );
+    const observed = this.capabilityScope(agent, project.id, input.sessionId);
+    const cwd = input.sessionId
+      ? this.executionLease({ ...scope, sessionId: input.sessionId }, project.id).rootPath
+      : project.rootPath;
+    const current = () => {
+      this.ensureConnected();
+      assert(
+        scope.userId === this.workspace.userId &&
+          scope.machineId === this.workspace.machineId &&
+          scope.workspaceId === this.workspace.id,
+        409,
+        'Agent 设置的账号或电脑已变化',
+      );
+      if (input.sessionId)
+        this.store.agents.assertCurrent({ ...scope, sessionId: input.sessionId }, agent);
+      else
+        assert(
+          this.workspace.agents.some((a) => a.id === agent.id),
+          409,
+          'Agent 配置已变化',
+        );
+      assert(
+        isDeepStrictEqual(observed, this.capabilityScope(agent, project.id, input.sessionId)),
+        409,
+        'Agent 设置的执行范围已变化',
+      );
+    };
+    current();
+    return {
+      scope,
+      agent,
+      cwd,
+      current,
+      key: JSON.stringify([
+        scope.userId,
+        scope.workspaceId,
+        scope.machineId,
+        scope.localProjectId,
+        agent.id,
+        observed.programFingerprint,
+        observed.directoryFingerprint,
+      ]),
+    };
+  }
+  private cachedUsage(agentId: string, sessionId: string, localProjectId: string) {
+    try {
+      return this.usageCache.peek(this.controlsContext({ agentId, sessionId }, localProjectId).key);
+    } catch {
+      return undefined;
+    } // Historical sessions remain readable after a directory is removed.
+  }
+  runPreferences(input: RunPreferencesRequest, localProjectId?: string) {
+    const context = this.controlsContext(input, localProjectId);
+    if (input.action === 'save') {
+      const choices = this.agentDescriptor(
+        context.agent,
+        context.scope.localProjectId,
+        input.sessionId,
+      ).runConfig;
+      assert(
+        (context.agent.agentType === 'codex' && !context.agent.customAcp) ||
+          choices?.modes.some((m) => m.id === input.modeId),
+        409,
+        '此 Agent 未提供该审批模式',
+      );
+    }
+    if (input.action === 'save-defaults') {
+      assert(
+        this.workspace.agents.some((agent) => agent.id === context.agent.id),
+        409,
+        '此 Agent 配置已退出新会话列表',
+      );
+      const choices = this.agentDescriptor(
+        context.agent,
+        context.scope.localProjectId,
+        input.sessionId,
+      ).runConfig;
+      assert(choices, 409, '请先刷新当前 Agent 的模型目录');
+      resolveRunSelection(input.selection, choices);
+    }
+    if (input.action === 'read-defaults' || input.action === 'save-defaults')
+      return {
+        scope: context.scope,
+        defaults:
+          input.action === 'save-defaults'
+            ? saveRunDefaults(this.store, context.agent.id, input.expectedRevision, input.selection)
+            : readRunDefaults(this.store, context.agent.id),
+      };
+    return {
+      scope: context.scope,
+      preferences:
+        input.action === 'save'
+          ? saveRunPreferences(this.store, input.expectedRevision, input.modeId)
+          : readRunPreferences(this.store),
+    };
+  }
+  async readAgentUsage(input: AgentUsageRequest, localProjectId?: string) {
+    const context = this.controlsContext(input, localProjectId);
+    const previous = this.usageCache.peek(context.key);
+    const usage = await this.usageCache.read(
+      context.key,
+      async () => {
+        const active = input.sessionId ? this.active.get(input.sessionId) : undefined;
+        if (active?.session?.readUsage) return active.session.readUsage();
+        return this.driver.readUsage
+          ? this.driver.readUsage(context.agent, context.cwd, context.current)
+          : { version: 1, sequence: 0, status: 'unsupported' };
+      },
+      context.current,
+      input.refresh,
+    );
+    context.current();
+    if (!isDeepStrictEqual(previous, usage)) this.changed();
+    return { scope: context.scope, usage };
+  }
+  updateCatalogue() {
+    this.workspace.features = [
+      'session-actions',
+      'session-page-v1',
+      PERMISSION_REVIEW_FEATURE,
+      FILE_CONTENT_FEATURE,
+      ATTACHMENTS_FEATURE,
+      ATTENTION_FEATURE,
+      ACTOR_FEATURE,
+      FOLLOWUP_FEATURE,
+      PROJECT_TREE_FEATURE,
+      PROJECT_DIFF_FEATURE,
+      SESSION_SEARCH_FEATURE,
+      QUESTIONS_FEATURE,
+      STEER_FEATURE,
+      NOTIFICATIONS_FEATURE,
+      GIT_WORKTREE_FEATURE,
+      GIT_OPERATIONS_FEATURE,
+      SESSION_FORK_FEATURE,
+      FORK_OPERATIONS_FEATURE,
+      GITHUB_FEATURE,
+      SECURE_GITHUB_AUTHORITY_FEATURE,
+      GITHUB_WRITE_FEATURE,
+      SKILLS_FEATURE,
+      AGENT_VERSIONS_FEATURE,
+      AGENT_MODEL_OPTIONS_FEATURE,
+      AGENT_CATALOG_CACHE_FEATURE,
+      AGENT_CONTROLS_FEATURE,
+      AGENT_RUN_DEFAULTS_FEATURE,
+      AGENT_USAGE_FEATURE,
+      SESSION_CONTROL_FEATURE,
+      ATTACHMENT_OPERATIONS_FEATURE,
+      COLLABORATION_FEATURE,
+      RETIRED_RECORDS_FEATURE,
+      SESSION_INTENTS_FEATURE,
+    ];
+    this.workspace.projects = this.machine
+      .scan({ prefix: ['localProject'] })
+      .map((r) => r.value as any);
+    this.workspace.agents = this.machine
+      .scan({ prefix: ['agentConfig'] })
+      .map((r) => r.value as AgentConfig)
+      .filter(
+        (a) =>
+          a.machineId === this.workspace.machineId &&
+          (a.customAcp !== undefined ||
+            (a.agentType === 'codex' && !!a.runtimeOverrides?.codexPath)) &&
+          this.machine.get(['retiredAgent', a.id]) !== true &&
+          this.machine.get(['disabledAgent', a.id]) !== true,
+      )
+      .map((a) => this.agentDescriptor(this.store.agents.remember(a)));
+    this.catalogue();
+  }
+  readMcp(input: McpRead, localProjectId?: string) {
+    return readRetiredMcp(this, input, localProjectId);
+  }
+  readTasks(input: TaskRead, localProjectId?: string) {
+    return readRetiredTasks(this, input, localProjectId);
+  }
+  inspectTask(input: TaskAction, localProjectId?: string) {
+    return inspectRetiredTask(this, input, localProjectId);
+  }
+  private capabilityScope(a: AgentConfig, localProjectId: string, sessionId?: string) {
+    const project = this.workspace.projects.find((p) => p.id === localProjectId);
+    assert(project, 404, '能力检查的项目不可用');
+    const scope = {
+      workspaceId: this.workspace.id,
+      userId: this.workspace.userId,
+      machineId: this.workspace.machineId,
+      localProjectId,
+      ...(sessionId ? { sessionId } : {}),
+    };
+    const cwd = sessionId
+      ? this.executionLease({ ...scope, sessionId }, localProjectId).rootPath
+      : project.rootPath;
+    const { path, dev, ino, isDirectory } = this.environment.directory(cwd);
+    assert(isDirectory, 409, '能力检查的执行目录不可用');
+    return {
+      ...scope,
+      programFingerprint: this.environment.programFingerprint(a),
+      directoryFingerprint: this.environment.hash(JSON.stringify([path, String(dev), String(ino)])),
+    };
+  }
+  agentDescriptor(a: AgentConfig, localProjectId?: string, sessionId?: string) {
+    let cached: any;
+    if (localProjectId) {
+      try {
+        const currentScope = this.capabilityScope(a, localProjectId, sessionId);
+        const saved: any = this.machine.get([
+          'capabilityCatalogs',
+          a.id,
+          localProjectId,
+          currentScope.directoryFingerprint,
+        ]);
+        const parsed = capabilityContextSchema.safeParse(saved?.context);
+        if (parsed.success) {
+          const { observedAt: _time, sessionId: _session, ...scope } = parsed.data;
+          const { sessionId: _selectedSession, ...expected } = currentScope;
+          if (isDeepStrictEqual(scope, expected))
+            cached = { ...saved, context: { ...currentScope, observedAt: parsed.data.observedAt } };
+        }
+      } catch {
+        /* Unavailable or replaced directories must not reuse old options. */
+      }
+    }
+    const options = runCapabilitiesSchema.safeParse(cached?.runConfig);
+    const input = promptInputCapabilitiesSchema.safeParse(
+      this.machine.get(['inputCapabilities', a.id]),
+    );
+    return {
+      id: a.id,
+      name: a.name,
+      cliType: a.cliType,
+      agentType: a.agentType,
+      runConfig: options.success ? options.data : undefined,
+      ...(options.success ? { capabilityContext: cached.context } : {}),
+      inputCapabilities: input.success ? input.data : undefined,
+    };
+  }
+  sessionAgent(scope: AttachmentScope) {
+    const agent = this.store.agents.binding(scope);
+    const meta = sessionMetadata(this.meta, scope.sessionId);
+    assert(
+      agent &&
+        agent.id === meta?.agentConfigId &&
+        agent.machineId === scope.machineId &&
+        agent.cliType === meta?.cliType &&
+        agent.agentType === meta?.agentType,
+      409,
+      '会话的 Agent 配置版本不可用',
+    );
+    return agent;
+  }
+  async refreshAgentOptions(
+    agentId: string,
+    localProjectId?: string,
+    sessionId?: string,
+    modelId?: string,
+    refresh = false,
+  ) {
+    const requestedAtRevision = this.capabilityRevision;
+    return this.serial('capabilities/' + agentId, async () => {
+      this.ensureConnected();
+      const selectedProject =
+        this.workspace.projects.find((p) => p.id === localProjectId) ??
+        (!localProjectId ? this.workspace.projects[0] : undefined);
+      assert(selectedProject, 404, '请先登记项目');
+      const project = structuredClone(selectedProject);
+      const identity = [this.workspace.id, this.workspace.userId, this.workspace.machineId];
+      const scope = {
+        workspaceId: this.workspace.id,
+        userId: this.workspace.userId,
+        machineId: this.workspace.machineId,
+        localProjectId: project.id,
+        sessionId: sessionId ?? '',
+      };
+      const execution = sessionId ? this.executionLease(scope, project.id) : undefined;
+      const agent = sessionId ? this.sessionAgent(scope) : this.store.agents.get(agentId);
+      assert(
+        agent?.id === agentId &&
+          agent.machineId === this.workspace.machineId &&
+          (sessionId || this.workspace.agents.some((a) => a.id === agentId)),
+        404,
+        'Agent 配置不可用',
+      );
+      const cwd = execution?.rootPath ?? project.rootPath;
+      const directoryIdentity = () => {
+        try {
+          const { path, dev, ino, isDirectory } = this.environment.directory(cwd);
+          assert(isDirectory, 409, '能力检查的执行目录不可用');
+          return { path, dev, ino };
+        } catch {
+          throw new AppError(409, '能力检查的执行目录已变化或不可用');
+        }
+      };
+      const directory = directoryIdentity();
+      const capabilityScope = this.capabilityScope(agent, project.id, sessionId);
+      const current = () => {
+        this.ensureConnected();
+        assert(
+          isDeepStrictEqual(identity, [
+            this.workspace.id,
+            this.workspace.userId,
+            this.workspace.machineId,
+          ]) &&
+            isDeepStrictEqual(
+              project,
+              this.workspace.projects.find((p) => p.id === project.id),
+            ),
+          409,
+          '能力检查的执行范围已变化',
+        );
+        assert(isDeepStrictEqual(directory, directoryIdentity()), 409, '能力检查的执行目录已变化');
+        assert(
+          isDeepStrictEqual(capabilityScope, this.capabilityScope(agent, project.id, sessionId)),
+          409,
+          '能力检查的程序或执行范围已变化，请重新读取',
+        );
+        if (execution) {
+          this.checkExecutionLease(execution);
+          this.store.agents.assertCurrent(scope, agent);
+        } else
+          assert(
+            this.workspace.agents.some((a) => a.id === agentId),
+            409,
+            'Agent 配置版本已退出新会话列表',
+          );
+      };
+      current();
+      const attemptKey = JSON.stringify([
+        ...identity,
+        agentId,
+        project.id,
+        capabilityScope.programFingerprint,
+        capabilityScope.directoryFingerprint,
+      ]);
+      const previous = this.capabilityAttempts.get(attemptKey);
+      if (previous && (!refresh || previous.revision > requestedAtRevision)) {
+        if (previous.error) throw previous.error;
+        const cached = this.agentDescriptor(agent, project.id, sessionId);
+        if (cached.runConfig) return cached;
+      }
+      const attempt = { revision: ++this.capabilityRevision } as {
+        revision: number;
+        error?: unknown;
+      };
+      this.capabilityAttempts.set(attemptKey, attempt);
+      // Bound process-local lifecycle records; durable catalogs remain scope checked.
+      if (this.capabilityAttempts.size > 1000)
+        this.capabilityAttempts.delete(this.capabilityAttempts.keys().next().value!);
+      let session: AgentSession;
+      try {
+        session = await this.driver.open(
+          agent,
+          cwd,
+          undefined,
+          { update: () => {}, permission: async () => ({ outcome: { outcome: 'cancelled' } }) },
+          { assertCurrent: current },
+        );
+      } catch (error) {
+        attempt.error = new AppError(
+          502,
+          publicAgentFailure(error, 'Agent 能力检查失败，请在设置中手动刷新'),
+        );
+        current();
+        if (error instanceof AppError && error.message === LOCAL_CODEX_NOT_INSTALLED) throw error;
+        throw new AppError(
+          502,
+          publicAgentFailure(error, 'Agent 能力检查失败，请在执行电脑检查本机配置'),
+        );
+      }
+      let runConfig;
+      try {
+        current();
+        runConfig = runCapabilitiesSchema.parse(session.capabilities);
+        // Older ACP agents expose efforts only for their currently selected model.
+        // Collect missing choices once in this temporary, prompt-free probe.
+        if (session.configureModel) {
+          for (const model of runConfig.models) {
+            if (model.efforts.length || model.id === runConfig.currentModelId) continue;
+            const observed = await session.configureModel(model.id);
+            current();
+            const choice = observed.models.find((m) => m.id === model.id);
+            if (choice) Object.assign(model, choice);
+            if (
+              observed.currentModelId === model.id &&
+              model.efforts.includes(observed.currentReasoningEffort ?? '')
+            )
+              model.defaultEffort ??= observed.currentReasoningEffort;
+          }
+        }
+      } catch (error) {
+        attempt.error = new AppError(
+          502,
+          publicAgentFailure(error, 'Agent 能力检查失败，请在设置中手动刷新'),
+        );
+        throw attempt.error;
+      } finally {
+        try {
+          await session.close();
+        } catch {}
+        current();
+      }
+      this.machine.set(
+        ['capabilityCatalogs', agentId, project.id, capabilityScope.directoryFingerprint],
+        {
+          context: { ...capabilityScope, observedAt: Date.now() },
+          runConfig,
+          ...(session.inputCapabilities ? { inputCapabilities: session.inputCapabilities } : {}),
+        } as never,
+      );
+      this.machine.set(['capabilities', agentId], runConfig as never);
+      this.machine.set(['inputCapabilities', agentId], session.inputCapabilities as never);
+      this.store.saveMachine();
+      this.updateCatalogue();
+      this.changed();
+      return this.agentDescriptor(agent, project.id, sessionId);
+    });
+  }
+  async watch(sessionId: string, on: boolean) {
+    this.ensureConnected();
+    if (on && metas(this.meta)['session-' + sessionId]?.machineId === this.workspace.machineId)
+      this.watches.add(sessionId);
+    else this.watches.delete(sessionId);
+  }
+  list(localProjectId?: string) {
+    this.ensureConnected();
+    return Object.entries(metas(this.meta))
+      .filter(
+        ([name, m]) =>
+          name.startsWith('session-') &&
+          m.id &&
+          m.machineId === this.workspace.machineId &&
+          m.userId === this.workspace.userId &&
+          (!localProjectId || (m.project as any)?.localProjectId === localProjectId),
+      )
+      .map(([, m]) => m)
+      .sort((a: any, b: any) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0));
+  }
+  readSessionPage(request: SessionPageRequest, localProjectId?: string) {
+    this.ensureConnected();
+    return readSessionPage(
+      { workspace: this.workspace, index: this.store.sessionPages, hash: this.environment.hash },
+      request,
+      localProjectId,
+    );
+  }
+  checkProject(sessionId: string, localProjectId?: string) {
+    const meta = sessionMetadata(this.meta, sessionId);
+    assert(
+      meta?.machineId === this.workspace.machineId && meta.userId === this.workspace.userId,
+      404,
+      '会话不属于这台电脑',
+    );
+    if (localProjectId)
+      assert((meta.project as any)?.localProjectId === localProjectId, 404, '会话不属于该项目副本');
+    return meta;
+  }
+  async read(sessionId: string, version?: string, localProjectId?: string) {
+    this.ensureConnected();
+    const metadata = this.checkProject(sessionId, localProjectId);
+    const scope = this.attachmentScope(
+      {
+        workspaceId: this.workspace.id,
+        sessionId,
+        localProjectId: (metadata.project as any).localProjectId,
+      },
+      localProjectId,
+    );
+    const agent = this.store.agents.binding(scope);
+    const activeDocument =
+      this.active.get(sessionId)?.doc ?? this.settlementFailures.get(sessionId);
+    const document = activeDocument ?? this.store.doc(sessionId);
+    let update: string;
+    try {
+      // Identity lives in the root map; constructing a Mirror here decodes the
+      // whole settled history even when this response contains only one delta.
+      const id = document.getMap('session').get('id');
+      assert(!id || id === sessionId, 409, '会话文档身份与主机记录不匹配');
+      assert(id, 409, '会话文档身份尚未迁移，请重启执行主机');
+      update = delta(document, version);
+    } finally {
+      if (!activeDocument) document.free();
+    }
+    return {
+      ...(agent &&
+      agent.id === metadata.agentConfigId &&
+      agent.cliType === metadata.cliType &&
+      agent.agentType === metadata.agentType
+        ? { agent: this.agentDescriptor(agent, scope.localProjectId, sessionId) }
+        : {}),
+      ...(agent
+        ? { accountUsage: this.cachedUsage(agent.id, sessionId, scope.localProjectId) }
+        : {}),
+      meta: metadata,
+      metaBundle: sessionMetadataBundle(this.meta, sessionId),
+      update,
+      synced: true,
+      persisted: !this.settlementFailures.has(sessionId),
+      ...(this.settlementFailures.has(sessionId)
+        ? { persistenceError: 'Agent 回合已停止，但结果尚未保存；请重启执行服务后再发送新的指令。' }
+        : {}),
+      online: true,
+    };
+  }
+  async sessionAction(input: SessionAction, localProjectId?: string) {
+    const action = sessionActionSchema.parse(input);
+    return this.serial(action.sessionId, async () => {
+      this.ensureConnected();
+      assert(action.workspaceId === this.workspace.id, 400, '会话执行目标不匹配');
+      assert(
+        this.workspace.projects.some((project) => project.id === action.localProjectId),
+        404,
+        '项目副本已从主机移除',
+      );
+      assert(
+        !localProjectId || action.localProjectId === localProjectId,
+        400,
+        '执行项目与副本不匹配',
+      );
+      // Scope is checked before looking up a receipt, including an accepted retry.
+      this.checkProject(action.sessionId, action.localProjectId);
+      const journal = this.store.journal;
+      const receipt = journal.lookup(this.workspace.id, action);
+      if (receipt && ['accepted', 'operation-abandoned'].includes(receipt.phase))
+        return JSON.parse(receipt.result);
+      const name = 'session-' + action.sessionId,
+        current = metas(this.meta)[name],
+        revision = current.metadataRevision ?? 0;
+      assert(revision === action.expectedRevision, 409, '会话信息已更新，请刷新后重试');
+      if (action.action === 'archive') {
+        const view = mirror(this.store.doc(action.sessionId), action.sessionId);
+        const pending = view
+          .getState()
+          .history.some(
+            (turn) =>
+              (turn.role === 'assistant' && !turn.finished) ||
+              (turn.role === 'user' && !turn.read && turn.status === 'pending'),
+          );
+        view.dispose();
+        assert(
+          !this.active.has(action.sessionId) &&
+            (current.status as any)?.type !== 'working' &&
+            (!current.latestUserMsgId ||
+              current.latestUserMsgId === current.lastHandledUserMsgId) &&
+            !pending,
+          409,
+          '请等待当前指令完成或停止后再归档',
+        );
+      }
+      const next = Flock.fromFile(this.meta.exportFile());
+      putMeta(next, name, {
+        isArchived: current.isArchived === true,
+        isPinned: current.isPinned === true,
+        metadataRevision: action.expectedRevision + 1,
+        ...(action.action === 'rename' ? { title: action.title, titleSource: 'user' } : {}),
+        ...(['archive', 'restore'].includes(action.action)
+          ? { isArchived: action.action === 'archive' }
+          : {}),
+        ...(['pin', 'unpin'].includes(action.action) ? { isPinned: action.action === 'pin' } : {}),
+      });
+      const result = this.store.transaction(() => {
+        this.store.saveMetadata(next, [action.sessionId]);
+        return journal.acceptSessionAction(this.workspace.id, action, metas(next)[name]);
+      });
+      this.store.meta = next;
+      this.changed(action.sessionId);
+      return result;
+    });
+  }
+  async readProjectFile(
+    input: ProjectFileRead,
+    localProjectId?: string,
+  ): Promise<ProjectFileResult> {
+    const request = projectFileReadSchema.parse(input);
+    const before = this.executionLease(request, localProjectId);
+    const { bytes, content } = await this.fileReader(before.rootPath, request.path);
+    this.checkExecutionLease(before);
+    const base: Omit<ProjectFileResult, 'status'> = {
+      contentVersion: CONTENT_VERSION,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      path: request.path,
+      content,
+      confirmed: true as const,
+    };
+    return request.knownVersion === content.version
+      ? { ...base, status: 'not-modified' }
+      : {
+          ...base,
+          status: 'content',
+          encoding: 'base64',
+          data: encodeBase64(bytes),
+        };
+  }
+  projectRootLease(input: ContentScope, localProjectId?: string) {
+    const scope = this.attachmentScope(input, localProjectId);
+    const rootPath = this.workspace.projects.find(
+      (project) => project.id === input.localProjectId,
+    )!.rootPath;
+    return { ...scope, rootPath };
+  }
+  // Historical authorization stays tied to the registered project even after a
+  // session worktree has been removed. Only live content uses executionLease.
+  projectLease(input: ContentScope, localProjectId?: string) {
+    const lease = this.projectRootLease(input, localProjectId);
+    this.checkProject(input.sessionId, input.localProjectId);
+    return lease;
+  }
+  checkProjectLease(lease: ProjectHistoryScope & { rootPath: string }) {
+    const current = this.projectLease(lease);
+    assert(isDeepStrictEqual(current, lease), 409, '项目执行范围已变化');
+  }
+  executionLease(input: ContentScope, localProjectId?: string, allowNew = false) {
+    const lease = allowNew
+      ? this.projectRootLease(input, localProjectId)
+      : this.projectLease(input, localProjectId);
+    return this.store.executions.lease(lease);
+  }
+  checkExecutionLease(lease: ExecutionLease) {
+    assert(isDeepStrictEqual(this.executionLease(lease), lease), 409, '会话执行目录已变化');
+  }
+  readGitState(input: GitStateRead, localProjectId?: string, checkpoint?: () => void) {
+    return this.executionManager.read(input, localProjectId, checkpoint);
+  }
+  readSkills(input: SkillsRead, localProjectId?: string) {
+    return this.skillsManager.read(input, localProjectId);
+  }
+  readRoles(input: RolesRead, localProjectId?: string) {
+    return readRetiredRoles(this, input, localProjectId);
+  }
+  roleAction(input: RolesActionRequest, localProjectId?: string) {
+    assert(input.action === 'inspect', 410, RETIRED_SESSION_FEATURE);
+    return inspectRetiredRole(this, input, localProjectId);
+  }
+  inspectPreview(
+    input: { request: PreviewAction },
+    localProjectId?: string,
+    authority?: ConnectionAuthorityLease,
+  ) {
+    authority?.current();
+    return inspectRetiredPreview(this, input, localProjectId);
+  }
+  async readGithub(input: GithubRead, localProjectId?: string, checkpoint?: () => void) {
+    try {
+      return await this.githubManager.read(input, localProjectId, checkpoint);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(502, 'GitHub 内容暂时不可读取，请重新检查执行电脑的授权');
+    }
+  }
+  async githubAction(input: GithubAction, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.githubManager.action(input, localProjectId, checkpoint);
+    this.changed(input.sessionId);
+    return result;
+  }
+  async abandonGithub(input: GithubAction, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.githubManager.abandon(input, localProjectId, checkpoint);
+    this.changed(input.sessionId);
+    return result;
+  }
+  async readGithubWrite(input: GithubWriteRead, localProjectId?: string, checkpoint?: () => void) {
+    try {
+      return await this.githubWriteManager.read(input, localProjectId, checkpoint);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(502, '写操作上下文暂时不可读取，请检查执行电脑');
+    }
+  }
+  async githubWriteAction(
+    input: GithubWriteAction,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    const result = await this.githubWriteManager.action(input, localProjectId, checkpoint);
+    this.changed(input.sessionId);
+    return result;
+  }
+  async inspectGithubWrite(
+    input: GithubWriteInspect,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    const result = await this.githubWriteManager.inspect(input, localProjectId, checkpoint);
+    this.changed(input.request.sessionId);
+    return result;
+  }
+  async abandonGithubWrite(
+    input: { request: GithubWriteAction },
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    const result = await this.githubWriteManager.abandon(input, localProjectId, checkpoint);
+    this.changed(input.request.sessionId);
+    return result;
+  }
+  async readForkOptions(input: ForkOptionsRead, localProjectId?: string, checkpoint?: () => void) {
+    try {
+      return await this.forkManager.options(input, localProjectId, checkpoint);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(409, 'Fork 来源状态不可读取，请重新检查执行电脑');
+    }
+  }
+  async forkSession(input: SessionFork, localProjectId?: string, checkpoint?: () => void) {
+    assert(
+      this.store.tasks.allows(input.sessionId) && this.store.tasks.allows(input.childSessionId),
+      409,
+      '协作子任务尚未结束或原操作需要核查，不能 Fork',
+    );
+    try {
+      const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
+        this.forkManager.action(input, localProjectId, checkpoint),
+      );
+      this.changed(input.childSessionId);
+      return result;
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(409, 'Fork 检查或保存失败，请重新读取原操作状态');
+    }
+  }
+  async gitAction(input: GitAction, localProjectId?: string, checkpoint?: () => void) {
+    assert(!this.forkManager.busy.has(input.sessionId), 409, '此会话正在处理 Fork，请等待原操作');
+    const result = await this.githubWriteManager.withExecutionTask(input, localProjectId, () =>
+      this.executionManager.action(input, localProjectId, checkpoint),
+    );
+    this.changed(input.sessionId);
+    return result;
+  }
+  async gitOperations(input: GitOperation, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.executionManager.operations(input, localProjectId, checkpoint);
+    this.changed(input.request.sessionId);
+    return result;
+  }
+  async forkOperations(input: ForkOperation, localProjectId?: string, checkpoint?: () => void) {
+    const result = await this.forkManager.operations(input, localProjectId, checkpoint);
+    this.changed(input.request.childSessionId);
+    return result;
+  }
+  searchSessions(input: SessionSearchRequest, localProjectId?: string) {
+    return searchHostSessions(this, input, localProjectId);
+  }
+  isNotificationCurrent(event: HostNotificationEvent) {
+    if (event.expiresAt <= this.store.notifications.now()) return false;
+    try {
+      const stored = this.store.notifications.get(event.eventId, true);
+      if (!stored || !isDeepStrictEqual(stored, event)) return false;
+      const lease = this.projectLease({
+        workspaceId: event.workspaceId,
+        localProjectId: event.localProjectId,
+        sessionId: event.sessionId,
+      });
+      if (
+        lease.userId !== event.userId ||
+        lease.machineId !== event.machineId ||
+        metas(this.meta)['session-' + event.sessionId]?.id !== event.sessionId
+      )
+        return false;
+      if (event.kind !== 'approval-required') return !!this.store.searchSource(event.sessionId);
+      const run = this.active.get(event.sessionId);
+      if (
+        !run ||
+        run.turnId !== event.turnId ||
+        run.stopped ||
+        !run.permissions.has(event.requestId!)
+      )
+        return false;
+      return this.boundRun(event.sessionId, run, this.runBinding(event.sessionId, run));
+    } catch {
+      return false;
+    }
+  }
+  pendingNotifications(channel: string, limit = 100): HostNotificationEvent[] {
+    this.ensureConnected();
+    assert(
+      Number.isInteger(limit) && limit > 0 && limit <= NOTIFICATION_LIMITS.events,
+      400,
+      '通知数量限制无效',
+    );
+    const result: HostNotificationEvent[] = [];
+    for (const event of this.store.notifications.pending(channel, NOTIFICATION_LIMITS.events)) {
+      if (!this.isNotificationCurrent(event)) this.store.notifications.discard(event.eventId);
+      else if (result.length < limit) result.push(event);
+    }
+    return result;
+  }
+  acknowledgeNotification(channel: string, eventId: string, status: 'submitted' | 'suppressed') {
+    const event = this.store.notifications.get(eventId);
+    if (!event) return;
+    if (this.isNotificationCurrent(event))
+      this.store.notifications.acknowledge(channel, eventId, status);
+    else this.store.notifications.discard(eventId);
+  }
+  retryNotification(channel: string, eventId: string, delayMs = 2000) {
+    const event = this.store.notifications.get(eventId);
+    if (!event) return;
+    if (this.isNotificationCurrent(event))
+      this.store.notifications.retry(channel, eventId, delayMs);
+    else this.store.notifications.discard(eventId);
+  }
+  answerQuestion(input: QuestionAnswer, localProjectId?: string) {
+    return this.interactions.answerQuestion(input, localProjectId);
+  }
+  steer(input: SteerRequest, localProjectId?: string) {
+    return this.interactions.steer(input, localProjectId);
+  }
+  persistInteraction(
+    id: string,
+    run: Active | undefined,
+    edit: ((turn: InteractionTurn) => void) | undefined,
+    write?: () => void,
+  ) {
+    this.ensureConnected();
+    assert(!run || this.active.get(id) === run, 409, '原交互回合已变化');
+    const from = run && edit ? run.doc.version() : undefined;
+    const doc = run && edit ? new LoroDoc() : undefined;
+    if (doc) doc.import(run!.doc.export({ mode: 'snapshot' }));
+    const view = doc ? mirror(doc, id) : undefined;
+    try {
+      this.store.transaction(() => {
+        if (view && doc) {
+          view.setState((state) => {
+            const turn = state.history.find((turn) => turn.id === run!.turnId);
+            assert(turn, 409, '原交互回合已变化');
+            edit!(turn);
+          });
+          this.store.persist(id, doc, from);
+        }
+        write?.();
+      });
+      if (doc) {
+        this.discardOutput(run!);
+        run!.doc = doc;
+      }
+    } finally {
+      view?.dispose();
+      from?.free();
+    }
+    if (doc) this.changed(id);
+  }
+  runBinding(id: string, run: Active): AgentRunBinding {
+    return {
+      workspaceId: run.projectScope.workspaceId,
+      localProjectId: run.projectScope.localProjectId,
+      sessionId: id,
+      expectedTurnId: run.turnId,
+    };
+  }
+  boundRun(id: string, run: Active, binding: AgentRunBinding) {
+    if (
+      this.closed ||
+      run.stopped ||
+      this.active.get(id) !== run ||
+      !isDeepStrictEqual(binding, this.runBinding(id, run))
+    )
+      return false;
+    try {
+      this.checkExecutionLease(run.execution);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  sessionEvent(id: string, run: Active, input: SessionEvent, binding: AgentRunBinding) {
+    if (!this.boundRun(id, run, binding)) return;
+    const parsed = sessionEventSchema.safeParse(input);
+    // account-rate-limit is accepted only while reading pre-Codex-only history.
+    // Current Agent callbacks cannot append new legacy Claude observations.
+    if (!parsed.success || parsed.data.kind === 'account-rate-limit') return;
+    this.edit(id, run, (turn) => this.applyTurnEvent(turn, parsed.data));
+  }
+  applyTurnEvent(turn: InteractionTurn, event: SessionEvent) {
+    const items = (turn.items ??= []);
+    // Each turn freezes its latest bounded observations. Replacing an existing
+    // observation keeps ordinary message/tool navigation indexes stable.
+    const key = (value: SessionEvent) =>
+      value.kind === 'plan' || value.kind === 'plan-removed'
+        ? ['plan', value.planId ?? null]
+        : [value.kind];
+    const existing = items.findIndex(
+      (item) => item?.type === 'session_event' && isDeepStrictEqual(key(item.event), key(event)),
+    );
+    const item = { type: 'session_event', event };
+    if (existing >= 0) items[existing] = item;
+    else if (items.filter((item) => item?.type === 'session_event').length < 111) items.push(item);
+    else if (!items.some((item) => item?.type === 'system_notice' && item.name === 'event_limit'))
+      items.push({
+        type: 'system_notice',
+        name: 'event_limit',
+        message: '运行事件数量达到历史保存上限；部分计划快照未保存。',
+      });
+  }
+  saveAgentFeatures(id: string, run: Active, session: AgentSession, agent: AgentConfig) {
+    const runtime = runtimeFeatureReportSchema.safeParse(session.runtimeFeatures);
+    const current = sessionEventStateSchema.safeParse(session.currentEvents);
+    const capabilities = session.interactionCapabilities;
+    this.edit(id, run, (turn) => {
+      if (session.forkCapabilities)
+        this.store.forks.saveCapabilities(
+          run.projectScope,
+          run.execution,
+          session.id,
+          session.forkCapabilities,
+          agent,
+        );
+      (turn.items ??= []).push({
+        type: 'agent_features',
+        ...(runtime.success ? { runtimeFeatures: runtime.data } : {}),
+        interactionCapabilities: {
+          questions: capabilities?.questions === true,
+          steer: capabilities?.steer === true && typeof session.steer === 'function',
+          ...(typeof capabilities?.steerUnavailableReason === 'string'
+            ? { steerUnavailableReason: capabilities.steerUnavailableReason.slice(0, 1000) }
+            : {}),
+        },
+      });
+      if (current.success) {
+        const state = current.data;
+        if (state.commands)
+          this.applyTurnEvent(turn, {
+            version: 1,
+            source: 'acp',
+            kind: 'commands',
+            commands: state.commands,
+          });
+        for (const plan of state.plans)
+          this.applyTurnEvent(turn, { version: 1, source: 'acp', kind: 'plan', ...plan });
+        if (state.contextUsage) this.applyTurnEvent(turn, state.contextUsage);
+        if (state.tokenUsage) this.applyTurnEvent(turn, state.tokenUsage);
+      }
+    });
+  }
+  projectTurn(input: ContentScope & { turnId: string }, localProjectId?: string) {
+    const lease = this.projectLease(input, localProjectId);
+    const view = mirror(
+      this.active.get(input.sessionId)?.doc ??
+        this.settlementFailures.get(input.sessionId) ??
+        this.store.doc(input.sessionId),
+      input.sessionId,
+    );
+    const turn = view
+      .getState()
+      .history.find((turn) => turn.id === input.turnId && turn.role === 'assistant');
+    const reference = projectDiffReferenceSchema.safeParse(turn?.fileDiff);
+    view.dispose();
+    assert(turn, 404, '回合不属于当前会话');
+    return { lease, reference: reference.success ? reference.data : undefined };
+  }
+  async readProjectTree(
+    input: ProjectTreeRead,
+    localProjectId?: string,
+  ): Promise<ProjectTreeResult> {
+    const request = projectTreeReadSchema.parse(input),
+      lease = this.executionLease(request, localProjectId);
+    const tree = await this.projectContent.tree(lease.rootPath);
+    this.checkExecutionLease(lease);
+    const version = 'sha256:' + this.environment.hash(JSON.stringify(tree));
+    assert(
+      !request.knownVersion || request.knownVersion === version,
+      409,
+      '项目文件树已变化，请从第一页刷新',
+    );
+    const offset = request.offset ?? 0,
+      limit = request.limit ?? 200;
+    assert(offset <= tree.entries.length, 409, '文件树分页已失效，请刷新');
+    const entries = tree.entries.slice(offset, offset + limit),
+      nextOffset = offset + entries.length;
+    return projectTreeResultSchema.parse({
+      contentVersion: 1,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      confirmed: true,
+      version,
+      source: tree.source,
+      entries,
+      offset,
+      total: tree.entries.length,
+      ...(nextOffset < tree.entries.length ? { nextOffset } : {}),
+      partial: tree.partial,
+      enumerationComplete: tree.enumerationComplete,
+      issues: tree.issues,
+    });
+  }
+  async readTurnDiff(
+    input: ProjectTurnDiffRead,
+    localProjectId?: string,
+  ): Promise<ProjectTurnDiffResult> {
+    const request = projectTurnDiffReadSchema.parse(input),
+      { lease, reference } = this.projectTurn(request, localProjectId);
+    const saved = this.store.projectHistory.read(lease, request.turnId);
+    const failedPersistence =
+      !!reference &&
+      (!saved || (reference.state === 'unavailable' && saved.reference.state === 'pending'));
+    return projectTurnDiffResultSchema.parse({
+      contentVersion: 1,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      confirmed: true,
+      turnId: request.turnId,
+      state: failedPersistence ? 'unavailable' : (saved?.reference.state ?? 'not-recorded'),
+      ...(failedPersistence
+        ? { reference: { ...reference!, state: 'unavailable', changeCount: 0 } }
+        : saved
+          ? { reference: saved.reference }
+          : {}),
+      changes: failedPersistence ? [] : (saved?.changes ?? []),
+      partial: failedPersistence || saved?.partial !== false,
+      issues: failedPersistence
+        ? [{ reason: 'persistence-failed' }]
+        : (saved?.issues ?? [{ reason: 'not-recorded' }]),
+      attribution: 'shared-project',
+    });
+  }
+  async readDiffFile(
+    input: ProjectDiffFileRead,
+    localProjectId?: string,
+  ): Promise<ProjectDiffFileResult> {
+    const request = projectDiffFileReadSchema.parse(input),
+      { lease } = this.projectTurn(request, localProjectId);
+    const content = this.store.projectHistory.readFile(
+      lease,
+      request.turnId,
+      request.path,
+      request.knownVersion,
+    );
+    return projectDiffFileResultSchema.parse({
+      contentVersion: 1,
+      workspaceId: request.workspaceId,
+      localProjectId: request.localProjectId,
+      sessionId: request.sessionId,
+      confirmed: true,
+      turnId: request.turnId,
+      path: request.path,
+      ...content,
+      attribution: 'shared-project',
+    });
+  }
+  attachmentScope(input: ContentScope, localProjectId?: string): AttachmentScope {
+    this.ensureConnected();
+    assert(input.workspaceId === this.workspace.id, 400, '附件执行目标不匹配');
+    assert(!localProjectId || input.localProjectId === localProjectId, 400, '附件项目与副本不匹配');
+    const project = this.machine.get(['localProject', input.localProjectId]) as
+      | { id: string; rootPath: string }
+      | undefined;
+    assert(
+      project?.id === input.localProjectId &&
+        this.workspace.projects.some((p) => p.id === project.id && p.rootPath === project.rootPath),
+      404,
+      '项目副本已从主机移除',
+    );
+    if (sessionMetadata(this.meta, input.sessionId))
+      this.checkProject(input.sessionId, input.localProjectId);
+    const scope = {
+      workspaceId: input.workspaceId,
+      localProjectId: input.localProjectId,
+      sessionId: input.sessionId,
+      userId: this.workspace.userId,
+      machineId: this.workspace.machineId,
+    };
+    assert(this.store.attachmentScopeMatches(scope), 404, '附件会话不属于该项目副本');
+    assert(this.store.executions.scopeMatches(scope), 404, '会话执行目录不属于该项目副本');
+    return scope;
+  }
+  async attachmentAction(
+    input: AttachmentAction,
+    localProjectId?: string,
+  ): Promise<AttachmentReceipt> {
+    const action = attachmentActionSchema.parse(input);
+    return this.serial(action.sessionId, async () => {
+      const scope = this.attachmentScope(action, localProjectId);
+      const journal = this.store.journal;
+      const receipt = journal.lookup(this.workspace.id, action);
+      if (receipt?.phase === 'accepted') return JSON.parse(receipt.result);
+      assert(!receipt, 409, '原附件操作已封存或尚无可验证结果，不能重新执行');
+      const id = action.action === 'upload' ? action.attachment.attachmentId : action.attachmentId;
+      const stored = this.store.attachment(scope, id);
+      let bytes: Uint8Array | undefined;
+      if (action.action === 'upload') {
+        assert(
+          metas(this.meta)['session-' + action.sessionId]?.isArchived !== true,
+          409,
+          '请先恢复已归档会话，再上传附件',
+        );
+        assert(!stored, 409, '附件编号已使用，请重新添加附件');
+        bytes = decodeBase64(action.data);
+        assert(!isPrivateEndpointEnvelope(bytes), 403, '附件属于 Moor 主机私有配置，不可共享');
+        assert(
+          bytes.length === action.attachment.content.byteLength &&
+            'sha256:' + this.environment.hash(bytes) === action.attachment.content.version,
+          400,
+          '附件内容摘要或字节数不匹配',
+        );
+        assert(
+          this.store.attachmentBytes(scope) + bytes.length <= MAX_SESSION_ATTACHMENT_BYTES,
+          413,
+          '会话附件总量超过 64 MiB，请移除未发送的附件',
+        );
+      } else {
+        assert(stored, 404, '附件不存在');
+        assert(!stored.referenced, 409, '历史回合使用的附件不能删除');
+      }
+      return this.store.transaction(() => {
+        this.store.reserveAttachmentScope(scope);
+        if (action.action === 'upload') this.store.saveAttachment(scope, action.attachment, bytes!);
+        else this.store.removeAttachment(scope, id);
+        const result: AttachmentReceipt = {
+          contentVersion: CONTENT_VERSION,
+          workspaceId: action.workspaceId,
+          localProjectId: action.localProjectId,
+          sessionId: action.sessionId,
+          operationId: action.operationId,
+          accepted: true,
+          delivered: true,
+          ...(action.action === 'upload'
+            ? { attachment: action.attachment }
+            : { removed: true as const }),
+        };
+        return journal.acceptAttachmentAction(this.workspace.id, action, result);
+      });
+    });
+  }
+  async readAttachment(input: AttachmentRead, localProjectId?: string): Promise<AttachmentContent> {
+    const request = attachmentReadSchema.parse(input);
+    return this.serial(request.sessionId, async () => {
+      const scope = this.attachmentScope(request, localProjectId);
+      const stored = this.store.attachment(scope, request.attachmentId);
+      assert(stored?.bytes, 404, '附件不存在或已删除');
+      assert(!isPrivateEndpointEnvelope(stored.bytes), 403, '附件属于 Moor 主机私有配置，不可读取');
+      return {
+        contentVersion: CONTENT_VERSION,
+        workspaceId: request.workspaceId,
+        localProjectId: request.localProjectId,
+        sessionId: request.sessionId,
+        confirmed: true,
+        attachment: stored.reference,
+        data: encodeBase64(stored.bytes),
+      };
+    });
+  }
+  attachmentData(scope: AttachmentScope, attachments: AttachmentReference[]) {
+    return attachments.map((reference) => {
+      const stored = this.store.attachment(scope, reference.attachmentId);
+      assert(
+        stored?.bytes && isDeepStrictEqual(stored.reference, reference),
+        400,
+        '附件尚未送达、已删除或不属于当前会话',
+      );
+      assert(!isPrivateEndpointEnvelope(stored.bytes), 403, '附件属于 Moor 主机私有配置，不可共享');
+      return { reference, data: encodeBase64(stored.bytes) };
+    });
+  }
+  assertAttachmentCapabilities(
+    attachments: AttachmentReference[],
+    capabilities?: PromptInputCapabilities,
+  ) {
+    for (const attachment of attachments) {
+      const category = attachment.content.mediaType.split('/')[0];
+      assert(
+        capabilities?.[
+          category === 'image' ? 'image' : category === 'audio' ? 'audio' : 'embeddedContext'
+        ] === true,
+        400,
+        '当前 Agent 不支持该附件类型，请刷新能力或移除附件',
+      );
+    }
+  }
+  private attentionTarget(input: AttentionContext, session = false) {
+    this.ensureConnected();
+    const context = attentionContextSchema.parse(input);
+    assert(
+      context.machineId === this.workspace.machineId &&
+        context.runtimeWorkspaceId === this.workspace.id,
+      404,
+      '待办不属于这台执行电脑',
+    );
+    assert(
+      this.workspace.projects.some((p) => p.id === context.localProjectId),
+      404,
+      '项目副本已从主机移除',
+    );
+    if (session) {
+      assert(context.sessionId, 400, '缺少待办会话');
+      this.checkProject(context.sessionId, context.localProjectId);
+    }
+    return context;
+  }
+  private reconcileAttention(localProjectId: string) {
+    this.store.attention.reconcilePermissions(localProjectId, (item) => {
+      const run = this.active.get(item.sessionId);
+      return (
+        !!run &&
+        !run.stopped &&
+        run.turnId === item.assistantTurnId &&
+        !!item.requestId &&
+        run.permissions.has(item.requestId)
+      );
+    });
+  }
+  attentionList(input: AttentionContext, query: AttentionListQuery) {
+    const context = this.attentionTarget(input);
+    this.reconcileAttention(context.localProjectId);
+    return this.store.attention.list(context, attentionListQuerySchema.parse(query));
+  }
+  attentionItems(input: AttentionContext, query: AttentionListQuery) {
+    const context = this.attentionTarget(input, true);
+    this.reconcileAttention(context.localProjectId);
+    return this.store.attention.sessionItems(context, attentionListQuerySchema.parse(query));
+  }
+  attentionDetail(input: AttentionContext, itemId: string): AttentionDetail {
+    const context = this.attentionTarget(input, true);
+    this.reconcileAttention(context.localProjectId);
+    const item = this.store.attention.get(context, itemId);
+    const run = this.active.get(item.sessionId);
+    const view = mirror(run?.doc ?? this.store.doc(item.sessionId), item.sessionId);
+    const state = view.getState();
+    const turn = state.history.find((t) => t.id === item.assistantTurnId);
+    const userTurn = state.history.find((t) => t.id === item.userTurnId);
+    view.dispose();
+    assert(turn, 404, '待办对应的回合不可用');
+    const meta = metas(this.meta)['session-' + item.sessionId];
+    const pending = item.requestId ? run?.permissions.get(item.requestId) : undefined;
+    const tool = turn.items?.find((i: any) => i.permissionRequest?.requestId === item.requestId);
+    return {
+      item,
+      title: String(meta.title ?? '未命名会话'),
+      isArchived: meta.isArchived === true,
+      turn,
+      userTurn,
+      permission:
+        item.kind === 'permission' &&
+        item.lifecycle === 'active' &&
+        run &&
+        !run.stopped &&
+        run.turnId === item.assistantTurnId &&
+        pending &&
+        tool
+          ? {
+              requestId: item.requestId!,
+              expectedTurnId: run.userTurnId,
+              options: pending.options,
+              toolCall: pending.toolCall,
+            }
+          : undefined,
+    };
+  }
+  async attentionSeen(input: AttentionContext, itemId: string, inputRequest: AttentionSeen) {
+    const request = attentionSeenSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      const result = this.store.attention.seen(context, itemId, request);
+      this.attentionChanged(context.actor, context.sessionId!);
+      return result;
+    });
+  }
+  async attentionDisposition(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionDisposition,
+  ) {
+    const request = attentionDispositionSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      const result = this.store.attention.disposition(context, itemId, request);
+      this.attentionChanged(context.actor, context.sessionId!);
+      return result;
+    });
+  }
+  private attentionBinding(
+    context: AttentionContext,
+    itemId: string,
+    method: string,
+    request: unknown,
+  ) {
+    return {
+      method,
+      actor: context.actor,
+      executionDeviceId: context.executionDeviceId,
+      machineId: context.machineId,
+      runtimeWorkspaceId: context.runtimeWorkspaceId,
+      localProjectId: context.localProjectId,
+      sessionId: context.sessionId,
+      itemId,
+      request,
+    };
+  }
+  async attentionContinue(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionContinue,
+    authority?: ConnectionAuthorityLease,
+  ) {
+    const request = attentionContinueSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    this.checkExecutionIdle(context.sessionId!);
+    this.checkAttentionAuthority(context, authority);
+    const checkTurnIdentity = () => {
+      if ('turn' in request)
+        assert(
+          request.turn.userId === this.workspace.userId &&
+            request.turn.machineId === this.workspace.machineId &&
+            request.turn.localProjectId === context.localProjectId,
+          400,
+          '后续指令与原待办执行身份不匹配',
+        );
+    };
+    checkTurnIdentity();
+    assert(
+      attentionContinueInput(request).sessionId === context.sessionId &&
+        attentionContinueInput(request).workspaceId === context.runtimeWorkspaceId,
+      400,
+      '后续指令与原待办执行目标不匹配',
+    );
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      this.checkAttentionAuthority(context, authority);
+      checkTurnIdentity();
+      const previous = this.store.attention.lookupReceipt(
+        context,
+        itemId,
+        'continue',
+        request,
+        attentionContinueInput(request).operationId,
+      );
+      if (previous) return previous;
+      this.store.attention.prepareContinue(context, itemId, request);
+      const result = await this.acceptSessionCommand(
+        'turn' in request ? { kind: 'send-turn', value: request.turn } : request.mutation,
+        context.localProjectId,
+        {
+          binding: this.attentionBinding(context, itemId, 'continue', request),
+          commit: (userTurnId) =>
+            this.store.attention.continue(context, itemId, request, userTurnId),
+        },
+        authority,
+      );
+      this.attentionChanged(context.actor, context.sessionId!);
+      return result;
+    });
+  }
+  async attentionPermission(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionPermission,
+    authority?: ConnectionAuthorityLease,
+  ) {
+    const request = attentionPermissionSchema.parse(inputRequest);
+    const context = this.attentionTarget(input, true);
+    this.checkExecutionIdle(context.sessionId!);
+    this.checkAttentionAuthority(context, authority);
+    return this.serial(context.sessionId!, async () => {
+      this.attentionTarget(context, true);
+      this.checkAttentionAuthority(context, authority);
+      const previous = this.store.attention.lookupReceipt(
+        context,
+        itemId,
+        'permission',
+        request,
+        request.operationId,
+      );
+      if (previous) return previous;
+      const detail = this.attentionDetail(context, itemId);
+      assert(
+        detail.item.eventRevision === request.eventRevision &&
+          detail.permission?.requestId === request.requestId &&
+          detail.permission.expectedTurnId === request.expectedTurnId,
+        409,
+        '审批请求已更新或失效',
+      );
+      assert(
+        request.optionId === null ||
+          detail.permission.options.some((o) => o.optionId === request.optionId),
+        400,
+        '审批选项无效',
+      );
+      const run = this.active.get(context.sessionId!)!;
+      const candidate = new LoroDoc();
+      candidate.import(run.doc.export({ mode: 'snapshot' }));
+      const before = vv(candidate),
+        view = mirror(candidate, context.sessionId!);
+      view.setState((s) => {
+        const turn = s.history.find((t) => t.id === detail.item.assistantTurnId)!;
+        const tool = turn.items?.find(
+          (i: any) => i.permissionRequest?.requestId === request.requestId,
+        ) as any;
+        tool.permissionRequest.outcome =
+          request.optionId === null
+            ? { outcome: 'cancelled' }
+            : { outcome: 'selected', optionId: request.optionId };
+      });
+      view.dispose();
+      const mutation: Mutation = {
+        operationId: request.operationId,
+        workspaceId: context.runtimeWorkspaceId,
+        sessionId: context.sessionId!,
+        kind: 'permission',
+        expectedTurnId: request.expectedTurnId,
+        requestId: request.requestId,
+        update: delta(candidate, before),
+      };
+      return this.acceptSessionCommand(
+        mutation,
+        context.localProjectId,
+        {
+          binding: this.attentionBinding(context, itemId, 'permission', request),
+          commit: () =>
+            this.store.attention.acceptReceipt(
+              context,
+              itemId,
+              'permission',
+              request,
+              request.operationId,
+            ),
+        },
+        authority,
+      );
+    });
+  }
+  private checkAttentionAuthority(context: AttentionContext, authority?: ConnectionAuthorityLease) {
+    if (!authority) return;
+    assert(
+      authority.ownerId === context.actor.accountId &&
+        authority.deviceId === context.executionDeviceId,
+      403,
+      '协作授权不属于当前待办账号或设备',
+    );
+    authority.current();
+  }
+  private checkExecutionIdle(sessionId: string) {
+    assert(
+      !this.forkManager.busy.has(sessionId) && !this.store.forks.blocked(sessionId),
+      409,
+      '此会话的 Fork 尚未确认，请先处理原操作',
+    );
+    assert(!this.executionManager.busy.has(sessionId), 409, '此会话正在处理 Git 操作，指令未送达');
+  }
+  async sendTurn(input: SendTurn, localProjectId?: string, authority?: ConnectionAuthorityLease) {
+    const value = sendTurnSchema.parse(input);
+    return this.serial(value.sessionId, () =>
+      this.acceptSessionCommand({ kind: 'send-turn', value }, localProjectId, undefined, authority),
+    );
+  }
+  async respondPermission(
+    input: RespondPermission,
+    localProjectId?: string,
+    authority?: ConnectionAuthorityLease,
+  ) {
+    const value = respondPermissionSchema.parse(input);
+    return this.serial(value.sessionId, () =>
+      this.acceptSessionCommand(
+        { kind: 'respond-permission', value },
+        localProjectId,
+        undefined,
+        authority,
+      ),
+    );
+  }
+  async mutate(m: Mutation, localProjectId?: string, authority?: ConnectionAuthorityLease) {
+    this.checkExecutionIdle(m.sessionId);
+    return this.serial(m.sessionId, () =>
+      this.acceptSessionCommand(m, localProjectId, undefined, authority),
+    );
+  }
+  private async acceptSessionCommand(
+    input: Mutation | SessionIntentCommand,
+    localProjectId?: string,
+    effect?: {
+      binding: unknown;
+      commit: (userTurnId: string) => AttentionReceipt;
+    },
+    authority?: ConnectionAuthorityLease,
+  ) {
+    const intent = 'value' in input ? input : undefined;
+    const originalInput = intent ? intent.value : (input as Mutation);
+    const m: Pick<
+      Mutation,
+      'operationId' | 'workspaceId' | 'sessionId' | 'kind' | 'expectedTurnId' | 'requestId'
+    > = intent
+      ? {
+          operationId: intent.value.operationId,
+          workspaceId: intent.value.workspaceId,
+          sessionId: intent.value.sessionId,
+          expectedTurnId: intent.value.expectedTurnId,
+          kind: intent.kind === 'send-turn' ? 'turn' : 'permission',
+          ...(intent.kind === 'respond-permission' ? { requestId: intent.value.requestId } : {}),
+        }
+      : (input as Mutation);
+    if (intent) assertSessionIntentScope(this.workspace, intent.value, localProjectId);
+    this.ensureConnected();
+    authority?.current();
+    this.checkExecutionIdle(m.sessionId);
+    assert(
+      m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
+      400,
+      '会话执行目标不匹配',
+    );
+    const currentMeta = metas(this.meta)['session-' + m.sessionId];
+    if (currentMeta)
+      this.attachmentScope(
+        {
+          workspaceId: m.workspaceId,
+          sessionId: m.sessionId,
+          localProjectId: (currentMeta.project as any)?.localProjectId,
+        },
+        localProjectId,
+      );
+    const journal = this.store.journal;
+    const record = journal.lookup(this.workspace.id, originalInput, effect?.binding);
+    if (metas(this.meta)['session-' + m.sessionId] || record)
+      this.checkProject(m.sessionId, localProjectId);
+    if (record && ['accepted', 'operation-abandoned'].includes(record.phase))
+      return JSON.parse(record.result);
+    if (m.kind === 'turn')
+      assert(
+        this.store.tasks.allows(m.sessionId),
+        409,
+        '协作子任务的原操作或授权尚未结束，请先核查',
+      );
+    assert(
+      !this.settlementFailures.has(m.sessionId),
+      409,
+      '上次回合结果尚未保存，请重启执行服务后再发送新的指令',
+    );
+    const active = this.active.get(m.sessionId);
+    const original = active?.doc ?? this.store.doc(m.sessionId);
+    const boundAgent = currentMeta
+      ? this.sessionAgent(
+          this.attachmentScope(
+            {
+              workspaceId: m.workspaceId,
+              sessionId: m.sessionId,
+              localProjectId: (currentMeta.project as any)?.localProjectId,
+            },
+            localProjectId,
+          ),
+        )
+      : undefined;
+    const validationWorkspace = boundAgent
+      ? { ...this.workspace, agents: [this.agentDescriptor(boundAgent)] }
+      : this.workspace;
+    const validated = intent
+      ? prepareSessionIntent(
+          original,
+          this.meta,
+          currentMeta ?? {},
+          {
+            ...validationWorkspace,
+            agents: boundAgent
+              ? [this.agentDescriptor(boundAgent, intent.value.localProjectId, m.sessionId)]
+              : [],
+          },
+          intent,
+          new Date().toISOString(),
+        )
+      : validateMutation(
+          original,
+          this.meta,
+          validationWorkspace,
+          input as Mutation,
+          (agentId, projectId, boundSessionId) => {
+            const config = boundAgent ?? this.store.agents.get(agentId);
+            assert(config?.id === agentId, 409, 'Agent 配置版本不可用');
+            return this.agentDescriptor(config, projectId, boundSessionId).runConfig;
+          },
+        );
+    const meta = metas(validated.flock)['session-' + m.sessionId];
+    if (!metas(this.meta)['session-' + m.sessionId])
+      putMeta(validated.flock, 'session-' + m.sessionId, {
+        metadataRevision: 0,
+        isPinned: false,
+        isArchived: false,
+      });
+    if (localProjectId)
+      assert((meta.project as any)?.localProjectId === localProjectId, 400, '执行项目与副本不匹配');
+    const attachmentScope = this.attachmentScope(
+      {
+        workspaceId: m.workspaceId,
+        sessionId: m.sessionId,
+        localProjectId: (meta.project as any).localProjectId,
+      },
+      localProjectId,
+    );
+    const execution = this.executionLease(attachmentScope, localProjectId, true);
+    const agent = boundAgent ?? this.store.agents.get(String(meta.agentConfigId));
+    assert(
+      agent && agent.id === meta.agentConfigId && agent.machineId === attachmentScope.machineId,
+      409,
+      'Agent 配置版本不可用',
+    );
+    // Freeze the default at acceptance for legacy clients that create on first send.
+    if (
+      !metas(this.meta)['session-' + m.sessionId] &&
+      agent.agentType === 'codex' &&
+      !agent.customAcp
+    ) {
+      meta.initialModeId = readRunPreferences(this.store).modeId;
+      putMeta(validated.flock, 'session-' + m.sessionId, { initialModeId: meta.initialModeId });
+    }
+    if (!metas(this.meta)['session-' + m.sessionId]) {
+      const defaults = readRunDefaults(this.store, agent.id).selection;
+      if (defaults) {
+        meta.initialModelId = defaults.modelId;
+        if (defaults.reasoningEffort) meta.initialReasoningEffort = defaults.reasoningEffort;
+        putMeta(validated.flock, 'session-' + m.sessionId, {
+          initialModelId: meta.initialModelId,
+          ...(meta.initialReasoningEffort
+            ? { initialReasoningEffort: meta.initialReasoningEffort }
+            : {}),
+        });
+      }
+    }
+    if (m.kind === 'turn') this.githubWriteManager.assertExecutionAvailable(execution);
+    // Reject a mismatched restored context before confirming a new turn.
+    this.store.nativeSession(m.sessionId, execution, agent.id);
+    const inputView = mirror(validated.doc, m.sessionId);
+    const inputConfig =
+      m.kind === 'turn'
+        ? (inputView.getState().history.at(-1)!.inputConfig as {
+            attachments?: AttachmentReference[];
+          })
+        : undefined;
+    const attachments = inputConfig?.attachments ?? [];
+    inputView.dispose();
+    if (attachments.length) {
+      this.attachmentData(attachmentScope, attachments);
+      const capabilities = validationWorkspace.agents.find(
+        (agent) => agent.id === meta.agentConfigId,
+      )?.inputCapabilities;
+      this.assertAttachmentCapabilities(attachments, capabilities);
+    }
+    const turnId = String(meta.latestUserMsgId);
+    let permission: Active['permissions'] extends Map<string, infer V> ? V : never;
+    let outcome: PermissionOutcome | undefined;
+    if (m.kind === 'permission') {
+      assert(active && !active.stopped, 409, '审批回合已失效');
+      const pending = active.permissions.get(m.requestId!);
+      assert(pending, 409, '审批请求已失效');
+      permission = pending;
+      const view = mirror(validated.doc, m.sessionId);
+      const turn = view.getState().history.find((t) => t.id === active.turnId);
+      outcome = (
+        turn?.items?.find((i: any) => i.permissionRequest?.requestId === m.requestId) as any
+      )?.permissionRequest.outcome;
+      view.dispose();
+      assert(outcome, 409, '审批不属于当前回合');
+    } else assert(!active && this.active.size < 32, 409, 'Agent 正在运行或并发会话过多');
+    const previousMeta = this.store.meta;
+    let result: ReturnType<typeof journal.accept>;
+    const assistantId = this.environment.uuid();
+    if (m.kind === 'turn') {
+      const view = mirror(validated.doc, m.sessionId);
+      view.setState((s) => {
+        assert(!s.session.id || s.session.id === m.sessionId, 409, '会话文档身份不匹配');
+        s.session.id = m.sessionId;
+        const user = s.history.find((t) => t.id === turnId)!;
+        user.read = true;
+        user.status = 'processing';
+        s.history.push({
+          userId: undefined,
+          status: undefined,
+          read: undefined,
+          inputConfig: undefined,
+          id: assistantId,
+          userTurnId: turnId,
+          role: 'assistant',
+          timestamp: new Date().toISOString(),
+          finished: false,
+          items: [],
+          fileDiff: null,
+        });
+      });
+      view.dispose();
+      putMeta(validated.flock, 'session-' + m.sessionId, {
+        lastHandledUserMsgId: turnId,
+        status: { type: 'working' },
+      });
+    }
+    const from = original.version();
+    try {
+      result = this.store.transaction(() => {
+        authority?.current();
+        journal.stage(this.workspace.id, originalInput, turnId, undefined, effect?.binding);
+        this.store.agents.bind(attachmentScope, agent);
+        this.store.reserveAttachmentScope(attachmentScope);
+        for (const attachment of attachments)
+          this.store.referenceAttachment(attachmentScope, attachment.attachmentId);
+        this.store.meta = validated.flock;
+        if (m.kind === 'turn') {
+          const reference = this.store.projectHistory.begin(attachmentScope, assistantId);
+          const view = mirror(validated.doc, m.sessionId);
+          view.setState((state) => {
+            state.history.find((turn) => turn.id === assistantId)!.fileDiff = reference;
+          });
+          view.dispose();
+        }
+        this.store.persist(m.sessionId, validated.doc, from);
+        if (m.kind === 'permission')
+          this.store.notifications.resolveApprovals(
+            { ...attachmentScope, turnId: active!.turnId },
+            m.requestId,
+          );
+        if (m.kind === 'permission')
+          this.store.attention.resolvePermission(
+            m.sessionId,
+            active!.turnId,
+            m.requestId!,
+            'resolved',
+          );
+        const accepted = journal.accept(originalInput);
+        return effect?.commit(turnId) ?? accepted;
+      });
+    } catch (error) {
+      this.store.meta = previousMeta;
+      throw error;
+    } finally {
+      from.free();
+    }
+    if (m.kind === 'permission') {
+      this.discardOutput(active!);
+      active!.doc = validated.doc;
+      active!.permissions.delete(m.requestId!);
+      permission!.resolve({ outcome: outcome! });
+    } else {
+      const run: Active = {
+        turnId: assistantId,
+        userTurnId: turnId,
+        doc: validated.doc,
+        stopped: false,
+        projectScope: attachmentScope,
+        rootPath: execution.rootPath,
+        execution,
+        agent,
+        snapshotIssues: [],
+        permissions: new Map(),
+      };
+      this.active.set(m.sessionId, run);
+      run.done = this.execute(m.sessionId, run).catch((error) => {
+        // A background run has no awaiting HTTP caller after delivery. If its
+        // final state cannot be persisted, stop accepting work and close owned
+        // Agents instead of leaking an unhandled rejection or reporting idle.
+        console.error('执行回合状态无法保存，已停止本机工作区', error);
+        try {
+          this.close();
+        } catch (closeError) {
+          console.error(closeError);
+        }
+        this.catalogue();
+      });
+    }
+    this.changed(m.sessionId);
+    return result;
+  }
+  edit(
+    id: string,
+    run: Active,
+    edit: (turn: any) => void,
+    terminal = false,
+    persist?: (turn: any) => void,
+  ) {
+    if ((run.stopped && !terminal) || this.closed) return;
+    this.discardOutput(run);
+    const previous = run.doc;
+    const from = previous.version();
+    const candidate = previous.fork();
+    candidate.setPeerId(previous.peerIdStr);
+    const view = mirror(candidate, id);
+    try {
+      this.store.transaction(() => {
+        // Content callbacks may also persist generated attachment bytes. Their
+        // records, document references and attention facts commit together.
+        view.setState((s) => edit(s.history.find((t) => t.id === run.turnId)!));
+        const turn = view.getState().history.find((t) => t.id === run.turnId)!;
+        this.store.persist(id, candidate, from);
+        persist?.(turn);
+      });
+      run.doc = candidate;
+      // A failed output publication may retain the live document for reads.
+      // Retire that reference only after the terminal transaction commits,
+      // before freeing the old document or notifying readers.
+      if (terminal && this.settlementFailures.get(id) === previous)
+        this.settlementFailures.delete(id);
+    } catch (error) {
+      this.store.meta = this.store.loadFlock('meta');
+      throw error;
+    } finally {
+      view.dispose();
+      from.free();
+      if (run.doc === candidate) previous.free();
+      else candidate.free();
+    }
+    this.changed(id);
+  }
+  private saveAgentAttachment(
+    scope: AttachmentScope,
+    reference: AttachmentReference,
+    bytes: Uint8Array,
+  ) {
+    const existing = this.store.generatedAttachment(scope, reference);
+    if (existing) return existing;
+    assert(
+      this.store.attachmentBytes(scope) + bytes.length <= MAX_SESSION_ATTACHMENT_BYTES,
+      413,
+      '会话附件容量不足',
+    );
+    this.store.reserveAttachmentScope(scope);
+    this.store.saveAttachment(scope, reference, bytes);
+    this.store.referenceAttachment(scope, reference.attachmentId);
+    return reference;
+  }
+  private discardOutput(run: Active) {
+    const output = this.outputDocuments.get(run);
+    if (!output) return;
+    this.outputDocuments.delete(run);
+    output.working.free();
+  }
+  private writeOutput(
+    id: string,
+    run: Active,
+    change: (doc: LoroDoc) => void,
+    withAttachments = false,
+  ) {
+    // There is no completion hook for transactions opened by external callers.
+    // Never expose their uncommitted output or retain a potentially rolled-back writer.
+    assert(!this.store.inTransaction(), 409, '输出必须使用独立持久事务');
+    const confirmed = run.doc;
+    const from = confirmed.version();
+    try {
+      const version = from.encode();
+      let output = this.outputDocuments.get(run);
+      if (
+        output &&
+        (output.confirmed !== confirmed ||
+          output.working.peerIdStr !== confirmed.peerIdStr ||
+          !isDeepStrictEqual(output.version, version))
+      ) {
+        this.discardOutput(run);
+        output = undefined;
+      }
+      if (!output) {
+        const working = confirmed.fork();
+        working.setPeerId(confirmed.peerIdStr);
+        output = { confirmed, working, version };
+        this.outputDocuments.set(run, output);
+      }
+      const working = output.working;
+      const persist = () => {
+        change(working);
+        return this.store.persistOutput(id, working, from);
+      };
+      const update = withAttachments ? this.store.transaction(persist) : persist();
+      const next = working.version();
+      try {
+        output.version = next.encode();
+      } finally {
+        next.free();
+      }
+      if (update) {
+        try {
+          this.store.confirmOutput(id, confirmed, from, update, output.version);
+        } catch (error) {
+          // The transaction is already durable. A failed publication must never
+          // continue on a partial import or a competing same-peer branch.
+          run.stopped = true;
+          run.terminal = { status: 'failed', message: '已保存的输出无法发布，本轮执行已停止。' };
+          try {
+            run.doc = this.store.doc(id);
+            confirmed.free();
+          } catch (recoveryError) {
+            this.settlementFailures.set(id, confirmed);
+            throw new AggregateError([error, recoveryError], '已保存输出无法重新读取，执行已停止');
+          } finally {
+            void Promise.resolve()
+              .then(() => run.session?.close())
+              .catch((closeError) => console.error(closeError));
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      this.discardOutput(run);
+      throw error;
+    } finally {
+      from.free();
+    }
+    this.changed(id);
+  }
+  private updateTool(id: string, run: Active, update: any) {
+    if (run.stopped || this.closed || this.active.get(id) !== run) return;
+    assert(this.meta.get(['m', 'session-' + id, 'id']) === id, 409, '输出会话已变化');
+    const scope = this.attachmentScope(run.projectScope);
+    this.writeOutput(
+      id,
+      run,
+      (candidate) => {
+        const tool = activeTool(candidate, id, run.turnId, update.toolCallId);
+        for (const key of ['title', 'kind', 'status'])
+          if (update[key] !== undefined) writeToolValue(tool, key, update[key]);
+        if (update.content !== undefined)
+          writeToolValue(
+            tool,
+            'content',
+            normalizeAgentToolContent(
+              update.content,
+              (reference, bytes) => this.saveAgentAttachment(scope, reference, bytes),
+              this.environment,
+            ),
+          );
+        for (const key of ['rawInput', 'rawOutput'])
+          if (update[key] !== undefined) writeToolValue(tool, key, safeAgentMetadata(update[key]));
+        // Artifact bytes/references, exact output operations and recovery/search
+        // indexes commit together before either memory or notifications advance.
+      },
+      true,
+    );
+  }
+  update(id: string, run: Active, update: any) {
+    if (
+      ['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate) &&
+      update.content?.type === 'text'
+    ) {
+      if (run.stopped || this.closed || this.active.get(id) !== run) return;
+      assert(this.meta.get(['m', 'session-' + id, 'id']) === id, 409, '输出会话已变化');
+      this.attachmentScope(run.projectScope);
+      this.writeOutput(id, run, (candidate) => {
+        appendSessionText(
+          candidate,
+          id,
+          run.turnId,
+          update.sessionUpdate === 'agent_message_chunk' ? 'text' : 'thought',
+          normalizeAgentText(update.content.text).text,
+        );
+      });
+      return;
+    }
+    if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
+      this.updateTool(id, run, update);
+      return;
+    }
+    this.edit(id, run, (turn) => {
+      const items = (turn.items ??= []);
+      const meta = sessionMetadata(this.meta, id)!;
+      const scope = this.attachmentScope({
+        workspaceId: this.workspace.id,
+        localProjectId: (meta.project as any).localProjectId,
+        sessionId: id,
+      });
+      if (['agent_message_chunk', 'agent_thought_chunk'].includes(update.sessionUpdate))
+        items.push(
+          normalizeAgentContent(
+            update.content,
+            (reference, bytes) => this.saveAgentAttachment(scope, reference, bytes),
+            this.environment,
+          ),
+        );
+    });
+  }
+
+  async execute(id: string, run: Active) {
+    try {
+      try {
+        const before = await this.projectContent.capture(run.rootPath);
+        if (this.closed) return;
+        this.checkExecutionLease(run.execution);
+        run.before = before;
+        this.store.transaction(() =>
+          this.store.projectHistory.saveBefore(run.projectScope, run.turnId, before),
+        );
+      } catch {
+        if (!this.closed) run.snapshotIssues.push({ reason: 'capture-failed' });
+      }
+      if (run.stopped || this.closed) return;
+      this.checkExecutionLease(run.execution);
+      const meta = metas(this.meta)['session-' + id];
+      const agent = run.agent;
+      this.store.agents.assertCurrent(run.projectScope, agent);
+      assert(meta.agentConfigId === agent.id, 409, '会话的 Agent 配置版本已变化');
+      const project = this.workspace.projects.find(
+        (p) => p.id === (meta.project as any).localProjectId,
+      )!;
+      const session = await this.driver
+        .open(agent, run.rootPath, this.store.nativeSession(id, run.execution, agent.id), {
+          update: (value) => this.update(id, run, value),
+          usage: (update) => {
+            if (!this.boundRun(id, run, this.runBinding(id, run))) return;
+            try {
+              const context = this.controlsContext(
+                { agentId: agent.id, sessionId: id },
+                run.projectScope.localProjectId,
+              );
+              this.usageCache.update(context.key, update);
+              this.changed();
+            } catch {
+              /* Revoked scopes and invalid telemetry cannot change the visible account. */
+            }
+          },
+          event: (event, binding) => this.sessionEvent(id, run, event, binding),
+          forkAnchor: (anchor, binding) => {
+            if (!this.boundRun(id, run, binding)) return;
+            try {
+              if (anchor.sourceNativeId === this.store.nativeSession(id, run.execution))
+                this.store.transaction(() =>
+                  this.store.forks.saveAnchor(
+                    run.projectScope,
+                    run.execution,
+                    run.turnId,
+                    anchor,
+                    agent,
+                  ),
+                );
+            } catch {
+              /* Missing or unpersisted anchors remain unavailable for a turn cutoff. */
+            }
+          },
+          question: (input) => {
+            const request = questionRequestSchema.parse(input);
+            const { workspaceId, localProjectId, sessionId, expectedTurnId } = request;
+            return this.boundRun(id, run, {
+              workspaceId,
+              localProjectId,
+              sessionId,
+              expectedTurnId,
+            })
+              ? this.interactions.receiveQuestion(request)
+              : Promise.resolve(cancelledQuestionAnswer(request, this.environment.uuid()));
+          },
+          permission: (value) => {
+            if (!this.boundRun(id, run, this.runBinding(id, run)))
+              return Promise.resolve({ outcome: { outcome: 'cancelled' } });
+            const requestId = this.environment.uuid();
+            return new Promise((resolve) => {
+              const request = structuredClone(value);
+              run.permissions.set(requestId, {
+                options: request.options,
+                toolCall: request.toolCall,
+                resolve,
+              });
+              try {
+                this.edit(
+                  id,
+                  run,
+                  (turn) => {
+                    let item = turn.items.findLast(
+                      (i: any) =>
+                        i.type === 'tool_call' && i.toolCallId === request.toolCall.toolCallId,
+                    );
+                    // A tool may ask again or have concurrent permission requests.
+                    // Keep every request addressable by its own immutable id.
+                    if (!item || item.permissionRequest) turn.items.push((item = {}));
+                    Object.assign(item, request.toolCall, {
+                      type: 'tool_call',
+                      permissionRequest: { requestId, options: request.options },
+                    });
+                  },
+                  false,
+                  () => {
+                    this.store.notifications.record(
+                      { ...run.projectScope, turnId: run.turnId },
+                      'approval-required',
+                      requestId,
+                    );
+                    this.store.attention.recordPermission({
+                      sessionId: id,
+                      assistantTurnId: run.turnId,
+                      userTurnId: run.userTurnId,
+                      localProjectId: project.id,
+                      requestId,
+                      summary: String(request.toolCall.title ?? '等待审批').slice(0, 240),
+                    });
+                  },
+                );
+              } catch (error) {
+                run.permissions.delete(requestId);
+                resolve({ outcome: { outcome: 'cancelled' } });
+                throw error;
+              }
+            });
+          },
+        })
+        .catch((error) => {
+          throw new AppError(
+            502,
+            publicAgentFailure(error, 'Agent 启动或恢复失败，请在执行电脑检查本机配置'),
+          );
+        });
+      run.session = session;
+      if (run.stopped || this.closed) {
+        await session.close();
+        return;
+      }
+      this.checkExecutionLease(run.execution);
+      this.store.agents.assertCurrent(run.projectScope, agent);
+      this.store.setNativeSession(id, session.id, run.execution, agent.id);
+      this.saveAgentFeatures(id, run, session, agent);
+      const view = mirror(run.doc, id),
+        input = view.getState().history.find((t) => t.id === run.userTurnId)!.inputConfig as Record<
+          string,
+          unknown
+        > & { attachments?: AttachmentReference[] };
+      view.dispose();
+      const attachmentScope = this.attachmentScope({
+        workspaceId: this.workspace.id,
+        localProjectId: project.id,
+        sessionId: id,
+      });
+      const attachmentData = this.attachmentData(attachmentScope, input.attachments ?? []);
+      this.assertAttachmentCapabilities(input.attachments ?? [], session.inputCapabilities);
+      const initialModeId = metas(this.meta)['session-' + id]?.initialModeId;
+      if (!input.modeId && initialModeId) input.modeId = initialModeId;
+      const initialModelId = metas(this.meta)['session-' + id]?.initialModelId;
+      if (!input.modelId && initialModelId) input.modelId = initialModelId;
+      const initialReasoningEffort = metas(this.meta)['session-' + id]?.initialReasoningEffort;
+      if (input.modelId === initialModelId && initialReasoningEffort) {
+        const effortConfigId = session.capabilities.effortConfigId;
+        const values =
+          input.configOptionValues &&
+          typeof input.configOptionValues === 'object' &&
+          !Array.isArray(input.configOptionValues)
+            ? (input.configOptionValues as Record<string, unknown>)
+            : {};
+        if (effortConfigId && typeof values[effortConfigId] !== 'string')
+          input.configOptionValues = { ...values, [effortConfigId]: initialReasoningEffort };
+      }
+      const effectiveInput = input;
+      await session.prompt(
+        attachmentData.length ? { ...effectiveInput, attachmentData } : effectiveInput,
+        this.runBinding(id, run),
+      );
+      run.terminal ??= { status: 'handled' };
+    } catch (error) {
+      run.terminal ??= {
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Agent 执行失败',
+      };
+    } finally {
+      for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
+      run.permissions.clear();
+      run.stopped = true;
+      this.discardOutput(run);
+      this.interactions.cancelPending(id, run);
+      await Promise.resolve(run.session?.close()).catch(() => {});
+      if (!this.closed) {
+        try {
+          await this.finalizeProjectTurn(id, run);
+        } catch (error) {
+          if (run.attentionSettlementFailed) throw error;
+          const view = mirror(run.doc, id);
+          view.setState((state) => {
+            const turn = state.history.find((turn) => turn.id === run.turnId)!;
+            turn.finished = true;
+            turn.status = 'failed';
+            expireSessionInteractions(turn, 'stopped');
+            const reference = projectDiffReferenceSchema.safeParse(turn.fileDiff);
+            if (reference.success)
+              turn.fileDiff = { ...reference.data, state: 'unavailable', changeCount: 0 };
+            (turn.items ??= []).push({
+              type: 'system_notice',
+              name: 'chat_failed',
+              message: 'Agent 回合已停止，但结果未能保存；请重启执行服务后再发送新的指令。',
+            });
+          });
+          view.dispose();
+          putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+          this.settlementFailures.set(id, run.doc);
+          this.changed(id);
+        } finally {
+          if (this.active.get(id) === run) this.active.delete(id);
+          this.collaboration.wake();
+        }
+      }
+    }
+  }
+  async finalizeProjectTurn(id: string, run: Active) {
+    return (run.finalizing ??= (async () => {
+      let after: ProjectSnapshot | undefined;
+      try {
+        this.checkExecutionLease(run.execution);
+        const capturedAfter = await this.projectContent.capture(run.rootPath);
+        if (this.closed) return;
+        this.checkExecutionLease(run.execution);
+        after = capturedAfter;
+      } catch {
+        run.snapshotIssues.push({ reason: 'capture-failed' });
+      }
+      if (this.closed) return;
+      const terminal = run.terminal ?? { status: 'canceled' };
+      try {
+        this.finish(id, run, terminal.status, terminal.message, () =>
+          this.store.projectHistory.finish(
+            run.projectScope,
+            run.turnId,
+            run.before,
+            after,
+            run.snapshotIssues,
+          ),
+        );
+      } catch {
+        const saved = this.store.projectHistory.read(run.projectScope, run.turnId);
+        this.finish(
+          id,
+          run,
+          terminal.status,
+          terminal.message,
+          saved ? { ...saved.reference, state: 'unavailable', changeCount: 0 } : undefined,
+        );
+      }
+    })());
+  }
+  finish(
+    id: string,
+    run: Active,
+    status: string,
+    message?: string,
+    reference?: ProjectDiffReference | (() => ProjectDiffReference | undefined),
+    cause?: AttentionCause,
+  ) {
+    if (this.closed) return;
+    this.interactions.cancelPending(id, run);
+    run.attentionSettlementFailed = false;
+    const previous = this.store.meta;
+    this.store.meta = Flock.fromFile(previous.exportFile());
+    putMeta(this.meta, 'session-' + id, { status: { type: 'idle' } });
+    try {
+      this.edit(
+        id,
+        run,
+        (turn) => {
+          turn.finished = true;
+          turn.status = status;
+          expireSessionInteractions(turn, 'stopped');
+          if (reference) turn.fileDiff = typeof reference === 'function' ? reference() : reference;
+          if (message) turn.items.push({ type: 'system_notice', name: 'chat_failed', message });
+          const scope = { ...run.projectScope, turnId: run.turnId };
+          this.store.notifications.resolveApprovals(scope);
+          if (status === 'handled' || status === 'failed')
+            this.store.notifications.record(scope, status === 'handled' ? 'completed' : 'failed');
+        },
+        true,
+        (turn) => {
+          const project = metas(this.meta)['session-' + id]?.project as { localProjectId: string };
+          const text = [...(turn.items ?? [])].reverse().find((i: any) => i.type === 'text')?.text;
+          try {
+            this.store.attention.recordOutcome({
+              sessionId: id,
+              assistantTurnId: run.turnId,
+              userTurnId: run.userTurnId,
+              localProjectId: project.localProjectId,
+              cause:
+                cause ??
+                (status === 'handled'
+                  ? 'agent_returned'
+                  : status === 'canceled'
+                    ? 'user_canceled'
+                    : 'execution_failed'),
+              summary: String(
+                message ?? text ?? (status === 'handled' ? '本轮执行结束' : '本轮执行未完成'),
+              ).slice(0, 240),
+            });
+          } catch (error) {
+            run.attentionSettlementFailed = true;
+            throw error;
+          }
+        },
+      );
+    } catch (error) {
+      this.store.meta = previous;
+      throw error;
+    }
+    run.stopped = true;
+  }
+  async cancel(sessionId: string, turnId: string, localProjectId?: string) {
+    return this.serial(sessionId, () => this.cancelLocked(sessionId, turnId, localProjectId));
+  }
+  sessionChanged(sessionId: string) {
+    this.changed(sessionId);
+  }
+  // Called only while holding the session serial lock, including durable control.
+  async cancelLocked(sessionId: string, turnId: string, localProjectId?: string) {
+    this.ensureConnected();
+    this.checkProject(sessionId, localProjectId);
+    const run = this.active.get(sessionId);
+    assert(run && !run.stopped && run.turnId === turnId, 409, '该回合已经结束');
+    run.terminal = { status: 'canceled' };
+    run.stopped = true;
+    this.discardOutput(run);
+    this.interactions.cancelPending(sessionId, run);
+    for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
+    await run.session?.cancel().catch(() => {});
+    await run.session?.close();
+    await run.done;
+    return { success: true };
+  }
+  async serial<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(id) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(fn);
+    this.locks.set(id, next);
+    try {
+      return await next;
+    } finally {
+      if (this.locks.get(id) === next) this.locks.delete(id);
+    }
+  }
+  close() {
+    if (this.closed) return;
+    this.collaboration.close();
+    const errors: unknown[] = [];
+    for (const [id, run] of this.active) {
+      try {
+        const terminal = run.terminal ?? {
+          status: 'failed',
+          message: '执行主机已停止；请手动发送新的指令。',
+        };
+        this.finish(
+          id,
+          run,
+          terminal.status,
+          terminal.message,
+          () => this.store.projectHistory.interrupt(run.projectScope, run.turnId),
+          run.terminal ? undefined : 'host_stopped',
+        );
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        // Failure to persist the terminal fact must never keep our Agent alive.
+        // The unfinished persisted turn is recovered on the next host startup.
+        run.stopped = true;
+        for (const p of run.permissions.values()) p.resolve({ outcome: { outcome: 'cancelled' } });
+        run.permissions.clear();
+        try {
+          void Promise.resolve(run.session?.close()).catch((error) => console.error(error));
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    this.closed = true;
+    for (const run of this.outputDocuments.keys()) this.discardOutput(run);
+    this.active.clear();
+    this.watches.clear();
+    if (errors.length) throw new AggregateError(errors, '主机已停止，但部分回合状态未能保存');
+  }
+}

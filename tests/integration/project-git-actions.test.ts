@@ -1,4 +1,4 @@
-import { prepareProjectWorktree, readProjectGit } from '@moor/host/projects/git';
+import { prepareProjectWorktree, readProjectGit } from '@moor/host/adapters/git/worktree';
 import {
   commitProject,
   GIT_ACTION_LIMITS,
@@ -7,9 +7,8 @@ import {
   inspectProjectPush,
   planProjectCommit,
   pushProject,
-  type GitPushPlan,
-  type GitPushTransport,
-} from '@moor/host/projects/git-actions';
+} from '@moor/host/adapters/git/write';
+import { type GitPushPlan, type GitPushTransport } from '@moor/host/features/git/write-model';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -84,7 +83,7 @@ function fixture(t: { after(fn: () => unknown): void }, sha256 = false) {
     },
     async receive(body) {
       receives++;
-      return raw(bare, ['receive-pack', '--stateless-rpc', bare], body);
+      return raw(bare, ['receive-pack', '--stateless-rpc', bare], Buffer.from(body));
     },
   };
   const plan = async (paths = ['selected.txt'], cwd = root) =>

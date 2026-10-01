@@ -77,7 +77,7 @@ flowchart LR
 
 **理解检查：** 新增一个平板客户端，应该复用哪一层？为什么它不能直接写主机数据库？
 
-源码入口：[中转 HTTP](../packages/gateway/src/http.ts)、[主机启动](../apps/host/src/main.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[AgentDriver](../packages/host/src/agents/driver.ts)。专题：[核心架构](core.md)。
+源码入口：[中转 HTTP](../packages/gateway/src/http.ts)、[主机启动](../apps/host/src/main.ts)、[HostWorkspace](../packages/host/src/features/runtime/workspace.ts)、[AgentDriver](../packages/host/src/features/agents/driver.ts)。专题：[核心架构](core.md)。
 
 ## 4. 身份模型：组织位置与执行位置
 
@@ -168,7 +168,7 @@ CRDT 可以使文档副本合并，但不会判断一条指令是否应该运行
 
 **理解检查：** 历史里仍有审批卡片，为什么重启后不能直接批准？只备份中转，能恢复哪些东西？
 
-源码入口：[会话 schema](../packages/session/src/session-schema.ts)、[文档操作](../packages/session/src/model.ts)、[RuntimeStore](../packages/host/src/persistence/store.ts)。专题：[会话与回合](session.md)、[核心架构](core.md)。
+源码入口：[会话 schema](../packages/session/src/session-schema.ts)、[文档操作](../packages/session/src/model.ts)、[RuntimeStore](../packages/host/src/adapters/persistence/workspace.ts)。专题：[会话与回合](session.md)、[核心架构](core.md)。
 
 ## 6. 一条指令的完整路径
 
@@ -246,7 +246,7 @@ Agent 回调进入主机，由主机将内容写入 Moor 历史。`changed` 是�
 
 **理解检查：** 应该在写数据库之前还是之后启动 Agent？若反过来，写入失败会造成什么不可解释的状态？
 
-源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../packages/client/src/features/workspace/compose.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/sessions/workspace.ts)、[变更校验](../packages/host/src/commands/validate-mutation.ts)、[Journal](../packages/host/src/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
+源码入口：[共享客户端的 `send`、`respondPermission`、`retry`](../packages/client/src/features/workspace/compose.ts)、[共享会话构造器](../packages/session/src/session-operations.ts)、[HTTP](../packages/gateway/src/http.ts)、[HostWorkspace](../packages/host/src/features/runtime/workspace.ts)、[变更校验](../packages/host/src/features/sessions/validate-mutation.ts)、[Journal](../packages/host/src/adapters/persistence/journal.ts)。专题：[同步、送达与重试](sync.md)。
 
 ## 7. 断线、重试与一致性
 
@@ -331,7 +331,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 
 **理解检查：** 为什么不能从 Moor 历史复制文本就宣称恢复了原生上下文？为什么改变审批模式不能回应旧审批？
 
-源码入口：[AgentDriver](../packages/host/src/agents/driver.ts)、[ACP](../packages/host/src/agents/acp/driver.ts)、[固定 Agent 绑定](../packages/host/src/sessions/agent.ts)。证据：[主机会话测试](../tests/integration/runtime.test.ts)、[CLI/Host E2E](../tests/e2e/cli-host.test.ts)。
+源码入口：[AgentDriver](../packages/host/src/features/agents/driver.ts)、[ACP](../packages/host/src/adapters/acp/driver.ts)、[固定 Agent 绑定](../packages/host/src/features/agents/config.ts)。证据：[主机会话测试](../tests/integration/runtime.test.ts)、[CLI/Host E2E](../tests/e2e/cli-host.test.ts)。
 
 ## 9. 进程恢复与任务恢复
 
@@ -351,7 +351,7 @@ Agent 配置固定的是本机登记的版本。它不冻结可执行文件字�
 
 理解恢复时分别问：服务能否访问？原操作是否接受？本轮是否结束？文件是什么状态？不要用一个“已恢复”覆盖所有答案。
 
-源码入口：[主机存储恢复](../packages/host/src/persistence/store.ts)、[所有权锁](../packages/local-state/src/exclusive-lock.ts)、[桌面恢复控制](../apps/desktop/src/main/recovery.cjs)。专题：[运行与恢复](runtime.md)。
+源码入口：[主机存储恢复](../packages/host/src/adapters/persistence/workspace.ts)、[所有权锁](../packages/local-state/src/exclusive-lock.ts)、[桌面恢复控制](../apps/desktop/src/main/recovery.cjs)。专题：[运行与恢复](runtime.md)。
 
 ## 10. 扩展功能怎样接回核心流程
 
@@ -398,7 +398,7 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 
 当前 TaskDoc、同步和用户明确提交的持久任务意图继续存在，与这些旧父子任务表使用不同的执行链。可编辑草稿不会因重连执行，明确提交的持久任务则可以在授权有效后进入队列。升级不把旧记录转换为新任务。
 
-专题：[旧父子任务退场](session-tasks.md)、[当前接口语义](interface-semantics.md)。实现：[只读旧任务记录](../packages/host/src/persistence/retired-tasks.ts)、[历史核查](../packages/host/src/sessions/retired.ts)。
+专题：[旧父子任务退场](session-tasks.md)、[当前接口语义](interface-semantics.md)。实现：[只读旧任务记录](../packages/host/src/adapters/persistence/retired-tasks.ts)、[历史核查](../packages/host/src/features/sessions/retired.ts)。
 
 **理解检查：** 用“读取、草稿、接受、执行、核查”描述一个扩展功能。哪些步骤可以安全重读，哪些步骤可能首次产生副作用？
 
@@ -458,18 +458,18 @@ Skills 继续发现已授权文件，用户可以把审阅的说明加入草稿�
 
 先读短的数据定义，再跟一条请求，最后读专题模块。不要一开始顺序通读大型 UI 文件。
 
-| 顺序 | 入口                                                                                                                                 | 本轮只找什么                                                         |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                         | `history`、用户/助手关联、版本向量与增量                             |
-| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                               | RuntimeWorkspace、Mutation、产品目标与本地目标的区别                 |
-| 3    | [validate-mutation.ts](../packages/host/src/commands/validate-mutation.ts)                                                           | 导入前后比较、允许字段、`expectedTurnId`、历史不可改                 |
-| 4    | [journal.ts](../packages/host/src/persistence/journal.ts)、[store.ts](../packages/host/src/persistence/store.ts)                     | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`            |
-| 5    | [host-workspace.ts](../packages/host/src/sessions/workspace.ts)                                                                      | `sendTurn`、`acceptSessionCommand`、事务之后的 `execute`、审批与停止 |
-| 6    | [agent.ts](../packages/host/src/agents/driver.ts)、[acp.ts](../packages/host/src/agents/acp/driver.ts)                               | `open/prompt/cancel/close`，new/load、能力与回调                     |
-| 7    | [Workspace](../packages/client/src/features/workspace/compose.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts) | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
-| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/commands/host-command.ts)                         | 路由与响应范围、共同方法校验和分发                                   |
-| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                           | 用断言核验自己对顺序与恢复的解释                                     |
-| 10   | [开发文档](development.md#e2e-入口与覆盖)                                                                                            | 按感兴趣的功能查专门实现及测试                                       |
+| 顺序 | 入口                                                                                                                                   | 本轮只找什么                                                         |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 1    | [session-schema.ts](../packages/session/src/session-schema.ts)、[model.ts](../packages/session/src/model.ts)                           | `history`、用户/助手关联、版本向量与增量                             |
+| 2    | [protocol.ts](../packages/protocol/src/protocol.ts)、[catalog.ts](../packages/protocol/src/catalog.ts)                                 | RuntimeWorkspace、Mutation、产品目标与本地目标的区别                 |
+| 3    | [validate-mutation.ts](../packages/host/src/features/sessions/validate-mutation.ts)                                                    | 导入前后比较、允许字段、`expectedTurnId`、历史不可改                 |
+| 4    | [journal.ts](../packages/host/src/adapters/persistence/journal.ts)、[store.ts](../packages/host/src/adapters/persistence/workspace.ts) | `fingerprint`、`lookup`、`stage`、`accept`、`transaction`            |
+| 5    | [host-workspace.ts](../packages/host/src/features/runtime/workspace.ts)                                                                | `sendTurn`、`acceptSessionCommand`、事务之后的 `execute`、审批与停止 |
+| 6    | [agent.ts](../packages/host/src/features/agents/driver.ts)、[acp.ts](../packages/host/src/adapters/acp/driver.ts)                      | `open/prompt/cancel/close`，new/load、能力与回调                     |
+| 7    | [Workspace](../packages/client/src/features/workspace/compose.ts)、[indexed-storage.ts](../apps/web/src/platform/indexed-storage.ts)   | `send`、`respondPermission`、`retry`，先存原请求再发网络             |
+| 8    | [http.ts](../packages/gateway/src/http.ts)、[host-command.ts](../packages/host/src/features/commands/dispatcher.ts)                    | 路由与响应范围、共同方法校验和分发                                   |
+| 9    | [host.test.ts](../tests/integration/host.test.ts)、[runtime.test.ts](../tests/integration/runtime.test.ts)                             | 用断言核验自己对顺序与恢复的解释                                     |
+| 10   | [开发文档](development.md#e2e-入口与覆盖)                                                                                              | 按感兴趣的功能查专门实现及测试                                       |
 
 可在仓库根目录使用以下只读搜索。文件以符号定位，比记住容易变化的行号更可靠。
 

@@ -1,10 +1,10 @@
-import { HostNotifications } from '@moor/host/integrations/host-notifications';
+import { HostNotifications } from '@moor/host/adapters/persistence/notifications';
 import {
   NOTIFICATION_DISPATCH_LIMITS,
   NotificationDispatcher,
   relayNotificationChannel,
   type NotificationHost,
-} from '@moor/host/integrations/notification-dispatch';
+} from '@moor/host/adapters/notifications/dispatch';
 import {
   NOTIFICATION_LIMITS,
   type HostNotificationEvent,

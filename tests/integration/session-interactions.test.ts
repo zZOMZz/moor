@@ -1,12 +1,13 @@
-import type { AgentSteerResult } from '@moor/host/agents/driver';
-import { Journal } from '@moor/host/persistence/journal';
+import { hostUuid } from '@moor/host/adapters/composition/identity';
+import type { AgentSteerResult } from '@moor/host/features/agents/driver';
+import { Journal } from '@moor/host/adapters/persistence/journal';
 import {
   SessionInteractions,
   expireSessionInteractions,
   type InteractionOwner,
   type InteractionRun,
   type InteractionTurn,
-} from '@moor/host/sessions/interactions';
+} from '@moor/host/features/sessions/interactions';
 import {
   INTERACTION_VERSION,
   type QuestionAnswer,
@@ -106,6 +107,7 @@ function fixture(t: { after: (callback: () => unknown) => void }) {
   };
   const dependencies = {
     journal,
+    uuid: hostUuid,
     getRun: () => run,
     scopeCheck: (input: typeof scope, localProjectId?: string) => {
       if (
@@ -156,6 +158,7 @@ function fixture(t: { after: (callback: () => unknown) => void }) {
   };
   return {
     journal,
+    uuid: hostUuid,
     interactions,
     dependencies,
     read,

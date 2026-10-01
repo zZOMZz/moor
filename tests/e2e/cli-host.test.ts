@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { copyFileSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
 

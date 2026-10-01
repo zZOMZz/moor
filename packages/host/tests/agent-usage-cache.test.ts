@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AgentUsageCache } from '../src/agents/usage-cache';
+import { AgentUsageCache } from '@moor/host/features/agents/usage-cache';
 import { agentUsageUpdateSchema, type AgentUsageUpdate } from '@moor/protocol/agent-usage';
 
 const current = () => {};

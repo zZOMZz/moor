@@ -1,4 +1,4 @@
-import { GitHubConfig, type GitHubConfigVerifier } from '@moor/host/integrations/github/config';
+import { GitHubConfig, type GitHubConfigVerifier } from '@moor/host/adapters/config/github';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import {

@@ -4,7 +4,7 @@ import {
   elicitationResponse,
   normalizeElicitation,
   type ElicitationBinding,
-} from '@moor/host/sessions/elicitation';
+} from '@moor/host/adapters/acp/elicitation';
 import {
   INTERACTION_VERSION,
   QUESTION_LIMITS,

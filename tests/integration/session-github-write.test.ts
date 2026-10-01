@@ -1,11 +1,12 @@
-import { createGitHubClient } from '@moor/host/integrations/github/client';
-import { type GitHubProjectConfig } from '@moor/host/integrations/github/config';
-import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { readProjectGit } from '@moor/host/projects/git';
-import * as gitActions from '@moor/host/projects/git-actions';
-import type { SessionGithubWriteOptions } from '@moor/host/sessions/github-write';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { createGitHubClient } from '@moor/host/adapters/github/read-client';
+import { type GitHubProjectConfig } from '@moor/host/adapters/config/github';
+import { createGitHubWriteClient } from '@moor/host/adapters/github/write-client';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { readProjectGit } from '@moor/host/adapters/git/worktree';
+import * as gitActions from '@moor/host/adapters/git/write';
+import type { SessionGithubWriteOptions } from '@moor/host/features/github/write-session';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   githubPatchLines,
   githubWriteActionSchema,
@@ -220,7 +221,7 @@ function fixture(
   const writer: typeof createGitHubWriteClient = (options) =>
     createGitHubWriteClient({ ...options, fetch });
   const makeHost = () =>
-    new HostWorkspace(
+    createHostWorkspace(
       store,
       {
         async open() {

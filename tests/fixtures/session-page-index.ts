@@ -1,4 +1,4 @@
-import { SessionMetadataIndex } from '@moor/host/persistence/session-metadata';
+import { SessionMetadataIndex } from '@moor/host/adapters/persistence/session-metadata';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
 import { Flock, putMeta } from '@moor/session/model';
 import { DatabaseSync } from 'node:sqlite';

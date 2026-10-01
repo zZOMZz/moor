@@ -1,8 +1,9 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 // Actual Host persistence and command reads; ACP-shaped updates are synthetic.
 // Agent startup/handshake and a remote Relay are deliberately outside this fixture.
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { workspaceRequestSchema } from '@moor/protocol/workspace-client-protocol';
 import { LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
@@ -85,7 +86,7 @@ let sequence = 0;
 const events: unknown[] = [];
 const requests: unknown[] = [];
 const failures: unknown[] = [];
-const host = new HostWorkspace(
+const host = createHostWorkspace(
   store,
   {
     async open() {

@@ -1,6 +1,6 @@
 import { Store } from '@moor/gateway/accounts';
-import { HostDeviceMetadata } from '@moor/host/persistence/device-metadata';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { HostDeviceMetadata } from '@moor/host/adapters/persistence/device-metadata';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { PROTOCOL } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';

@@ -1,5 +1,5 @@
-import { GitHubConfig } from '@moor/host/integrations/github/config';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { GitHubConfig } from '@moor/host/adapters/config/github';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import assert from 'node:assert/strict';
 import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';

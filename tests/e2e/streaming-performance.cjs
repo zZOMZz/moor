@@ -54,7 +54,7 @@ const report = {
       'apps/web/src/features/sessions/session-timeline.tsx',
       'apps/web/src/features/sessions/streaming-markdown.tsx',
       'packages/client/src/features/workspace/compose.ts',
-      'packages/host/src/sessions/workspace.ts',
+      'packages/host/src/features/runtime/workspace.ts',
       'packages/session/src/client-session-replica.ts',
       'pnpm-lock.yaml',
     ]

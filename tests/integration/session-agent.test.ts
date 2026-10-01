@@ -1,6 +1,6 @@
-import type { AgentConfig } from '@moor/host/agents/driver';
-import type { AttachmentScope } from '@moor/host/persistence/store';
-import { SessionAgentStore } from '@moor/host/sessions/agent';
+import type { AgentConfig } from '@moor/host/features/agents/driver';
+import type { AttachmentScope } from '@moor/host/features/attachments/model';
+import { SessionAgentStore } from '@moor/host/adapters/persistence/agent';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';

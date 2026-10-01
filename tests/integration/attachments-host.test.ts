@@ -1,6 +1,7 @@
-import type { AgentDriver } from '@moor/host/agents/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import type { AgentDriver } from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type {
   AttachmentAction,
   AttachmentRead,
@@ -90,7 +91,7 @@ function fixture(file = ':memory:', inputCapabilities: PromptInputCapabilities |
       };
     },
   };
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     driver,
     () => {},

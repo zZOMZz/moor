@@ -1,7 +1,8 @@
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/projects/skills';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { SkillsConfig } from '@moor/host/adapters/config/skills';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { discoverSkills, type SkillDiscoveryOptions } from '@moor/host/adapters/files/skills';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   SKILLS_FEATURE,
   type SkillDetail,
@@ -47,7 +48,7 @@ function fixture(t: TestContext) {
   });
   let opens = 0;
   const controls: { checkpoint?: SkillDiscoveryOptions['checkpoint']; after?: () => void } = {};
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open() {

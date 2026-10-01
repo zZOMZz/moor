@@ -10,7 +10,7 @@ import {
   sessionEventStateSchema,
   type SessionEvent,
   type SessionEventState,
-} from '@moor/host/sessions/events';
+} from '@moor/host/adapters/acp/events';
 
 function event(value: unknown): SessionEvent {
   const result = normalizeSessionEvent(value);

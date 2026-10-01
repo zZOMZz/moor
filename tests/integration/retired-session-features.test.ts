@@ -1,7 +1,8 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { NodeWorkspaceClient } from '@moor/client/adapters/node/workspace-client';
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   RETIRED_RECORDS_FEATURE,
   RETIRED_SESSION_FEATURE,
@@ -41,7 +42,7 @@ async function fixture(t: TestContext) {
   });
   store.saveMachine();
   let opened = 0;
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open() {

@@ -1,4 +1,4 @@
-import { localCodexPath, withLocalCodex } from '@moor/host/agents/acp/local-codex';
+import { localCodexPath, withLocalCodex } from '@moor/host/adapters/acp/local-codex';
 import assert from 'node:assert/strict';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';

@@ -4,9 +4,213 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./adapters/acp/attachment-input": {
+      "types": "./src/adapters/acp/attachment-input.ts",
+      "import": "./dist/adapters/acp/attachment-input.js"
+    },
+    "./adapters/acp/driver": {
+      "types": "./src/adapters/acp/driver.ts",
+      "import": "./dist/adapters/acp/driver.js"
+    },
+    "./adapters/acp/elicitation": {
+      "types": "./src/adapters/acp/elicitation.ts",
+      "import": "./dist/adapters/acp/elicitation.js"
+    },
+    "./adapters/acp/events": {
+      "types": "./src/adapters/acp/events.ts",
+      "import": "./dist/adapters/acp/events.js"
+    },
+    "./adapters/acp/fork": {
+      "types": "./src/adapters/acp/fork.ts",
+      "import": "./dist/adapters/acp/fork.js"
+    },
+    "./adapters/acp/local-codex": {
+      "types": "./src/adapters/acp/local-codex.ts",
+      "import": "./dist/adapters/acp/local-codex.js"
+    },
+    "./adapters/acp/program": {
+      "types": "./src/adapters/acp/program.ts",
+      "import": "./dist/adapters/acp/program.js"
+    },
+    "./adapters/acp/usage": {
+      "types": "./src/adapters/acp/usage.ts",
+      "import": "./dist/adapters/acp/usage.js"
+    },
+    "./adapters/composition/collaboration": {
+      "types": "./src/adapters/composition/collaboration.ts",
+      "import": "./dist/adapters/composition/collaboration.js"
+    },
+    "./adapters/composition/identity": {
+      "types": "./src/adapters/composition/identity.ts",
+      "import": "./dist/adapters/composition/identity.js"
+    },
+    "./adapters/composition/workspace": {
+      "types": "./src/adapters/composition/workspace.ts",
+      "import": "./dist/adapters/composition/workspace.js"
+    },
+    "./adapters/config/agents": {
+      "types": "./src/adapters/config/agents.ts",
+      "import": "./dist/adapters/config/agents.js"
+    },
+    "./adapters/config/github": {
+      "types": "./src/adapters/config/github.ts",
+      "import": "./dist/adapters/config/github.js"
+    },
+    "./adapters/config/skills": {
+      "types": "./src/adapters/config/skills.ts",
+      "import": "./dist/adapters/config/skills.js"
+    },
+    "./adapters/files/read": {
+      "types": "./src/adapters/files/read.ts",
+      "import": "./dist/adapters/files/read.js"
+    },
+    "./adapters/files/registration": {
+      "types": "./src/adapters/files/registration.ts",
+      "import": "./dist/adapters/files/registration.js"
+    },
+    "./adapters/files/skills": {
+      "types": "./src/adapters/files/skills.ts",
+      "import": "./dist/adapters/files/skills.js"
+    },
+    "./adapters/files/snapshot": {
+      "types": "./src/adapters/files/snapshot.ts",
+      "import": "./dist/adapters/files/snapshot.js"
+    },
+    "./adapters/git/worktree": {
+      "types": "./src/adapters/git/worktree.ts",
+      "import": "./dist/adapters/git/worktree.js"
+    },
+    "./adapters/git/write": {
+      "types": "./src/adapters/git/write.ts",
+      "import": "./dist/adapters/git/write.js"
+    },
+    "./adapters/github/read-client": {
+      "types": "./src/adapters/github/read-client.ts",
+      "import": "./dist/adapters/github/read-client.js"
+    },
+    "./adapters/github/write-client": {
+      "types": "./src/adapters/github/write-client.ts",
+      "import": "./dist/adapters/github/write-client.js"
+    },
+    "./adapters/notifications/dispatch": {
+      "types": "./src/adapters/notifications/dispatch.ts",
+      "import": "./dist/adapters/notifications/dispatch.js"
+    },
+    "./adapters/persistence/agent": {
+      "types": "./src/adapters/persistence/agent.ts",
+      "import": "./dist/adapters/persistence/agent.js"
+    },
+    "./adapters/persistence/device-metadata": {
+      "types": "./src/adapters/persistence/device-metadata.ts",
+      "import": "./dist/adapters/persistence/device-metadata.js"
+    },
+    "./adapters/persistence/journal": {
+      "types": "./src/adapters/persistence/journal.ts",
+      "import": "./dist/adapters/persistence/journal.js"
+    },
+    "./adapters/persistence/notifications": {
+      "types": "./src/adapters/persistence/notifications.ts",
+      "import": "./dist/adapters/persistence/notifications.js"
+    },
+    "./adapters/persistence/project-history": {
+      "types": "./src/adapters/persistence/project-history.ts",
+      "import": "./dist/adapters/persistence/project-history.js"
+    },
+    "./adapters/persistence/search-index": {
+      "types": "./src/adapters/persistence/search-index.ts",
+      "import": "./dist/adapters/persistence/search-index.js"
+    },
+    "./adapters/persistence/session-metadata": {
+      "types": "./src/adapters/persistence/session-metadata.ts",
+      "import": "./dist/adapters/persistence/session-metadata.js"
+    },
+    "./adapters/persistence/workspace": {
+      "types": "./src/adapters/persistence/workspace.ts",
+      "import": "./dist/adapters/persistence/workspace.js"
+    },
+    "./features/agents/driver": {
+      "types": "./src/features/agents/driver.ts",
+      "import": "./dist/features/agents/driver.js"
+    },
+    "./features/agents/fork-model": {
+      "types": "./src/features/agents/fork-model.ts",
+      "import": "./dist/features/agents/fork-model.js"
+    },
+    "./features/agents/run-preferences": {
+      "types": "./src/features/agents/run-preferences.ts",
+      "import": "./dist/features/agents/run-preferences.js"
+    },
+    "./features/agents/usage-cache": {
+      "types": "./src/features/agents/usage-cache.ts",
+      "import": "./dist/features/agents/usage-cache.js"
+    },
+    "./features/attachments/model": {
+      "types": "./src/features/attachments/model.ts",
+      "import": "./dist/features/attachments/model.js"
+    },
+    "./features/collaboration/coordinator": {
+      "types": "./src/features/collaboration/coordinator.ts",
+      "import": "./dist/features/collaboration/coordinator.js"
+    },
+    "./features/collaboration/execution": {
+      "types": "./src/features/collaboration/execution.ts",
+      "import": "./dist/features/collaboration/execution.js"
+    },
+    "./features/commands/dispatcher": {
+      "types": "./src/features/commands/dispatcher.ts",
+      "import": "./dist/features/commands/dispatcher.js"
+    },
+    "./features/files/model": {
+      "types": "./src/features/files/model.ts",
+      "import": "./dist/features/files/model.js"
+    },
+    "./features/git/model": {
+      "types": "./src/features/git/model.ts",
+      "import": "./dist/features/git/model.js"
+    },
+    "./features/git/write-model": {
+      "types": "./src/features/git/write-model.ts",
+      "import": "./dist/features/git/write-model.js"
+    },
+    "./features/github/failure": {
+      "types": "./src/features/github/failure.ts",
+      "import": "./dist/features/github/failure.js"
+    },
+    "./features/github/operation-body": {
+      "types": "./src/features/github/operation-body.ts",
+      "import": "./dist/features/github/operation-body.js"
+    },
+    "./features/github/session": {
+      "types": "./src/features/github/session.ts",
+      "import": "./dist/features/github/session.js"
+    },
+    "./features/github/write-session": {
+      "types": "./src/features/github/write-session.ts",
+      "import": "./dist/features/github/write-session.js"
+    },
+    "./features/runtime/workspace": {
+      "types": "./src/features/runtime/workspace.ts",
+      "import": "./dist/features/runtime/workspace.js"
+    },
+    "./features/sessions/interactions": {
+      "types": "./src/features/sessions/interactions.ts",
+      "import": "./dist/features/sessions/interactions.js"
+    },
+    "./features/sessions/page": {
+      "types": "./src/features/sessions/page.ts",
+      "import": "./dist/features/sessions/page.js"
+    },
+    "./features/sessions/prepare-intent": {
+      "types": "./src/features/sessions/prepare-intent.ts",
+      "import": "./dist/features/sessions/prepare-intent.js"
+    },
+    "./features/sessions/search": {
+      "types": "./src/features/sessions/search.ts",
+      "import": "./dist/features/sessions/search.js"
+    },
+    "./features/sessions/validate-mutation": {
+      "types": "./src/features/sessions/validate-mutation.ts",
+      "import": "./dist/features/sessions/validate-mutation.js"
     }
   },
   "scripts": {

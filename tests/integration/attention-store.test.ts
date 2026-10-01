@@ -1,4 +1,4 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import type { AttentionContext, AttentionContinue } from '@moor/protocol/attention';
 import { mirror, putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';

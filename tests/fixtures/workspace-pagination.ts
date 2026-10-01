@@ -1,7 +1,8 @@
+import { hostHash } from '@moor/host/adapters/composition/identity';
 import { createWorkspace } from '@moor/client/features/workspace/compose';
 import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
 import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
-import { readSessionPage } from '@moor/host/sessions/page';
+import { readSessionPage } from '@moor/host/features/sessions/page';
 import { AppError } from '@moor/protocol/protocol';
 import { SESSION_PAGE_FEATURE } from '@moor/protocol/session-page';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
@@ -141,6 +142,7 @@ export async function paginationFixture(
           value = readSessionPage(
             {
               workspace: entry.runtime,
+              hash: hostHash,
               index: projection.index,
             },
             input.command.params,

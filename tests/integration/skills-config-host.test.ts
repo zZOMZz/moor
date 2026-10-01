@@ -1,4 +1,4 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import assert from 'node:assert/strict';
 import { fork, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';

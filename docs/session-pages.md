@@ -48,4 +48,4 @@ Host 现在使用运行数据库中的私有会话元数据投影。默认第一
 
 客户端验证还覆盖真实 React 导航的摘要请求量、原游标续读、搜索未加载的会话、归档、查询切换后的迟到响应、离线部分结果、无关项目不重刷，以及缓存容量、恶意引用头、物理删除失败的原子回滚和草稿/未知操作保留。真实 Relay 与生产分页 helper 的联测确认转发范围、返回身份和撤权/重连期间的迟到响应保护。
 
-实现入口：[分页协议](../packages/protocol/src/session-page.ts)、[Host 分页](../packages/host/src/sessions/page.ts)、[可重建元数据投影](../packages/host/src/persistence/session-metadata.ts)、[共用响应校验](../packages/protocol/src/host-response.ts)。返回[会话与回合](session.md)。
+实现入口：[分页协议](../packages/protocol/src/session-page.ts)、[Host 分页](../packages/host/src/features/sessions/page.ts)、[可重建元数据投影](../packages/host/src/adapters/persistence/session-metadata.ts)、[共用响应校验](../packages/protocol/src/host-response.ts)。返回[会话与回合](session.md)。

@@ -1,4 +1,4 @@
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
+import { SkillsConfig } from '@moor/host/adapters/config/skills';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm } from 'node:fs/promises';

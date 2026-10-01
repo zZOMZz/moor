@@ -155,8 +155,9 @@ for (const workspace of workspaces) {
         );
       if (
         productionSource &&
-        workspace.manifest.name === '@moor/client' &&
-        (file.includes('/src/operations/') || file.includes('/src/features/')) &&
+        ((['@moor/client', '@moor/host', '@moor/gateway'].includes(workspace.manifest.name) &&
+          (file.includes('/src/operations/') || file.includes('/src/features/'))) ||
+          (workspace.manifest.name === '@moor/sync' && file.includes('/src/document/'))) &&
         (specifier.startsWith('node:') ||
           specifier.includes('/adapters/') ||
           ['electron', 'react', 'react-dom', '@moor/local-state'].some(
@@ -164,7 +165,7 @@ for (const workspace of workspaces) {
           ))
       )
         errors.push(
-          `${relative(root, file)} imports a runtime adapter into client business: ${specifier}`,
+          `${relative(root, file)} imports a runtime adapter into business: ${specifier}`,
         );
       if (!specifier.startsWith('.') && (specifier.includes('/src/') || specifier.endsWith('/src')))
         errors.push(`${relative(root, file)} imports private source path ${specifier}`);

@@ -4,7 +4,7 @@ import {
   SessionSearchIndex,
   type FrozenSearchDiff,
   type SearchScope,
-} from '@moor/host/sessions/search-index';
+} from '@moor/host/adapters/persistence/search-index';
 import {
   SEARCH_LIMITS,
   searchEntrySchema,

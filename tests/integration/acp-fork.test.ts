@@ -1,7 +1,11 @@
 import { RequestError } from '@agentclientprotocol/sdk';
-import { createAcpDriver } from '@moor/host/agents/acp/driver';
-import type { AgentCallbacks, AgentConfig, AgentRunBinding } from '@moor/host/agents/driver';
-import type { AgentForkAnchor } from '@moor/host/agents/fork';
+import { createAcpDriver } from '@moor/host/adapters/acp/driver';
+import type {
+  AgentCallbacks,
+  AgentConfig,
+  AgentRunBinding,
+} from '@moor/host/features/agents/driver';
+import type { AgentForkAnchor } from '@moor/host/features/agents/fork-model';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';

@@ -1,9 +1,11 @@
+import { hostHash } from '@moor/host/adapters/composition/identity';
+import { createCollaborationTaskQueue } from '@moor/host/adapters/composition/collaboration';
 import {
   CollaborationClient,
   type CollaborationStorage,
 } from '@moor/client/features/collaboration/client';
-import { CollaborationExecutionPlane } from '@moor/host/sessions/collaboration';
-import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
+import { CollaborationExecutionPlane } from '@moor/host/features/collaboration/execution';
+import { CollaborationCoordinator } from '@moor/host/features/collaboration/coordinator';
 import {
   collaborationKey,
   type CollaborationOffer,
@@ -14,7 +16,7 @@ import {
 import { CollaborationReplica } from '@moor/session/collaboration-replica';
 import { LoroDoc, encode } from '@moor/session/model';
 import { buildSessionTurn } from '@moor/session/session-operations';
-import { CollaborationStore } from '@moor/sync/store';
+import { SqliteCollaboration } from '@moor/sync/adapters/sqlite';
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { syntheticCollaboration } from '../fixtures/collaboration-host';
@@ -62,7 +64,7 @@ function inputs(s = scope, t = target, account = actor, suffix = '') {
   };
 }
 function stateFixture(t: TestContext) {
-  const state = new CollaborationStore(':memory:', actor.authorityId, () => 1000);
+  const state = new SqliteCollaboration(':memory:', actor.authorityId, () => 1000);
   state.createWorkspace(actor, scope.workspaceId);
   state.registerSession(actor, scope, target);
   t.after(() => state.close());
@@ -100,14 +102,21 @@ test('State sync persists a Loro document but cannot accept, withdraw or recover
   assert.equal(document.operations.length, 1);
   assert.deepEqual(document.tasks, []);
   assert.equal(
-    state.db.prepare("SELECT 1 FROM sqlite_master WHERE name='collaboration_execution'").get(),
+    state.database
+      .prepare("SELECT 1 FROM sqlite_master WHERE name='collaboration_execution'")
+      .get(),
     undefined,
   );
   assert.equal(
-    state.db.prepare("SELECT 1 FROM sqlite_master WHERE name='collaboration_operation'").get(),
+    state.database
+      .prepare("SELECT 1 FROM sqlite_master WHERE name='collaboration_operation'")
+      .get(),
     undefined,
   );
-  const coordinator = new CollaborationCoordinator(state);
+  const coordinator = new CollaborationCoordinator(
+    state,
+    createCollaborationTaskQueue(state.database, state, state.now),
+  );
   coordinator.reconcile(scope);
   assert.equal(state.projection(scope).tasks[0].phase, 'queued');
   state.sync(actor, {
@@ -133,18 +142,24 @@ test('State sync persists a Loro document but cannot accept, withdraw or recover
 
 test('execution ledger and Loro status projection roll back together, while the already-stored intent survives', (t) => {
   const state = stateFixture(t),
-    coordinator = new CollaborationCoordinator(state),
+    coordinator = new CollaborationCoordinator(
+      state,
+      createCollaborationTaskQueue(state.database, state, state.now),
+    ),
     { intent } = inputs();
   state.sync(actor, { version: 3, scope, after: 0, operations: [intent] });
-  state.db.exec(
+  state.database.exec(
     "CREATE TRIGGER fail_projection BEFORE UPDATE ON collaboration_document BEGIN SELECT RAISE(ABORT,'synthetic projection failure'); END",
   );
   assert.throws(() => coordinator.reconcile(scope), /projection failure/);
-  assert.equal(state.db.prepare('SELECT count(*) AS n FROM collaboration_execution').get()!.n, 0);
+  assert.equal(
+    state.database.prepare('SELECT count(*) AS n FROM collaboration_execution').get()!.n,
+    0,
+  );
   assert.equal(coordinator.queue.through(scope), 0);
   assert.equal(state.projection(scope).operations.length, 1);
   assert.deepEqual(state.projection(scope).tasks, []);
-  state.db.exec('DROP TRIGGER fail_projection');
+  state.database.exec('DROP TRIGGER fail_projection');
   coordinator.reconcile(scope);
   const first = state.read(actor, scope);
   coordinator.reconcile(scope);
@@ -154,7 +169,10 @@ test('execution ledger and Loro status projection roll back together, while the 
 
 test('Loro incremental reads converge and contain execution projections without a second queue response', (t) => {
   const state = stateFixture(t),
-    coordinator = new CollaborationCoordinator(state),
+    coordinator = new CollaborationCoordinator(
+      state,
+      createCollaborationTaskQueue(state.database, state, state.now),
+    ),
     { intent } = inputs();
   const initial = state.read(actor, scope),
     replica = new CollaborationReplica(scope, initial.document.update);
@@ -166,9 +184,9 @@ test('Loro incremental reads converge and contain execution projections without 
   replica.import(delta.document.update);
   assert.deepEqual(replica.view(), state.projection(scope));
   assert.equal(replica.view().tasks[0].phase, 'queued');
-  const before = Number(state.db.prepare('SELECT total_changes() AS n').get()!.n);
+  const before = Number(state.database.prepare('SELECT total_changes() AS n').get()!.n);
   state.read(actor, scope, delta.document.version);
-  assert.equal(Number(state.db.prepare('SELECT total_changes() AS n').get()!.n), before);
+  assert.equal(Number(state.database.prepare('SELECT total_changes() AS n').get()!.n), before);
 });
 
 test('reading an unopened collaboration session never enables sharing or starts a coordinator', async (t) => {
@@ -203,11 +221,14 @@ test('a read cannot recover an existing claimed task or promote pending intent i
     authorityId: f.accounts.authorityId,
     accountId: f.ownerId,
   };
-  const state = new CollaborationStore(f.runtime.journal.db, author.authorityId, () => 1000);
+  const state = new SqliteCollaboration(f.runtime.journal.db, author.authorityId, () => 1000);
   state.createWorkspace(author, read.scope.workspaceId);
   state.registerSession(author, read.scope, read.target);
   const { intent } = inputs(read.scope, read.target, author),
-    coordinator = new CollaborationCoordinator(state);
+    coordinator = new CollaborationCoordinator(
+      state,
+      createCollaborationTaskQueue(state.database, state, state.now),
+    );
   state.append(author, read.scope, [intent]);
   coordinator.reconcile(read.scope);
   assert.ok(coordinator.queue.claim(read.scope, read.target, 'claimed-before-read'));
@@ -302,7 +323,10 @@ for (const order of ['rpc-first', 'doc-first'] as const) {
 
 test('RPC acknowledgement loss leaves the durable outbox intact and sync recovers the same intent', async (t) => {
   const state = stateFixture(t),
-    coordinator = new CollaborationCoordinator(state),
+    coordinator = new CollaborationCoordinator(
+      state,
+      createCollaborationTaskQueue(state.database, state, state.now),
+    ),
     storage = new Memory();
   let next = 0,
     received!: () => void;
@@ -344,7 +368,10 @@ test('RPC acknowledgement loss leaves the durable outbox intact and sync recover
 
 test('a later RPC preserves its writer preceding intents when messages arrive in reverse order', async (t) => {
   const state = stateFixture(t),
-    coordinator = new CollaborationCoordinator(state),
+    coordinator = new CollaborationCoordinator(
+      state,
+      createCollaborationTaskQueue(state.database, state, state.now),
+    ),
     offers: CollaborationOffer[] = [],
     storage = new Memory();
   let next = 0,
@@ -402,7 +429,7 @@ test('legacy local records migrate to Loro without changing frozen intent or sen
     author: { actor, clientId: 'client' },
     storage,
     transport: {
-      sync: async (request: Parameters<CollaborationStore['sync']>[1]) =>
+      sync: async (request: Parameters<SqliteCollaboration['sync']>[1]) =>
         state.sync(actor, request),
     },
     current: () => {},
@@ -459,18 +486,22 @@ test(
       authorityId: f.accounts.authorityId,
       accountId: f.ownerId,
     };
-    const state = new CollaborationStore(f.runtime.journal.db, author.authorityId, () => 1000);
+    const state = new SqliteCollaboration(f.runtime.journal.db, author.authorityId, () => 1000);
     state.createWorkspace(author, read.scope.workspaceId);
     state.registerSession(author, read.scope, read.target);
     const first = inputs(read.scope, read.target, author, '-1'),
       second = inputs(read.scope, read.target, author, '-2');
     state.append(author, read.scope, [...first.offer.operations, ...second.offer.operations]);
-    const coordinator = new CollaborationCoordinator(state),
+    const coordinator = new CollaborationCoordinator(
+        state,
+        createCollaborationTaskQueue(state.database, state, state.now),
+      ),
       hold = f.pauseNextPrompt();
     let connected = true,
       counter = 0;
     const worker = new CollaborationExecutionPlane({
       host: f.host,
+      hash: hostHash,
       queue: coordinator.queue,
       scope: read.scope,
       target: read.target,
@@ -507,13 +538,14 @@ test(
 );
 
 test('legacy Host state migrates once and interrupted execution is not re-enqueued', (t) => {
-  const state = new CollaborationStore(':memory:', actor.authorityId, () => 1000);
+  const state = new SqliteCollaboration(':memory:', actor.authorityId, () => 1000);
   t.after(() => state.close());
   state.createWorkspace(actor, scope.workspaceId);
-  state.db
+  state.database
     .prepare('INSERT INTO collaboration_session VALUES(?,?)')
     .run(collaborationKey(scope), JSON.stringify(target));
-  state.db.exec(`CREATE TABLE collaboration_operation(id TEXT PRIMARY KEY,scope TEXT,body TEXT);
+  state.database
+    .exec(`CREATE TABLE collaboration_operation(id TEXT PRIMARY KEY,scope TEXT,body TEXT);
     CREATE TABLE collaboration_task(id TEXT PRIMARY KEY,scope TEXT,sequence INTEGER,intent TEXT,state TEXT,claim TEXT,command TEXT);`);
   const { intent, oldIntent, draft } = legacySnapshot(),
     task = {
@@ -526,10 +558,10 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
       executionOperationId: 'original-command',
     };
   for (const operation of [draft, oldIntent])
-    state.db
+    state.database
       .prepare('INSERT INTO collaboration_operation VALUES(?,?,?)')
       .run(operation.operationId, collaborationKey(scope), JSON.stringify(operation));
-  state.db
+  state.database
     .prepare('INSERT INTO collaboration_task VALUES(?,?,?,?,?,?,?)')
     .run(
       intent.operationId,
@@ -541,7 +573,10 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
       '{"operationId":"original-command"}',
     );
   state.migrate(scope);
-  const coordinator = new CollaborationCoordinator(state);
+  const coordinator = new CollaborationCoordinator(
+    state,
+    createCollaborationTaskQueue(state.database, state, state.now),
+  );
   coordinator.queue.interruptExecution(scope, target);
   coordinator.reconcile(scope);
   assert.equal(coordinator.queue.claim(scope, target, 'never-replay'), undefined);
@@ -555,7 +590,7 @@ test('legacy Host state migrates once and interrupted execution is not re-enqueu
   coordinator.reconcile(scope);
   assert.deepEqual(state.read(actor, scope).document, before);
   assert.equal(
-    state.db.prepare('SELECT command FROM collaboration_execution').get()!.command,
+    state.database.prepare('SELECT command FROM collaboration_execution').get()!.command,
     '{"operationId":"original-command"}',
   );
 });
@@ -598,7 +633,7 @@ function legacySnapshot() {
 test('Host rebuilds TaskDoc v1 without drafts or their CRDT history and preserves admitted task identity', (t) => {
   const state = stateFixture(t),
     old = legacySnapshot();
-  state.db
+  state.database
     .prepare(
       'UPDATE collaboration_document SET snapshot=?,peer=?,revision=12,sequence=2 WHERE scope=?',
     )
@@ -622,7 +657,10 @@ test('Host rebuilds TaskDoc v1 without drafts or their CRDT history and preserve
   }
   state.migrate(scope);
   assert.deepEqual(state.read(actor, scope), read);
-  const coordinator = new CollaborationCoordinator(state);
+  const coordinator = new CollaborationCoordinator(
+    state,
+    createCollaborationTaskQueue(state.database, state, state.now),
+  );
   coordinator.reconcile(scope);
   assert.equal(
     coordinator.queue.claim(scope, target, 'migrated')?.intent.operationId,

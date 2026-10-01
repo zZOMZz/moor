@@ -1,11 +1,9 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { readProjectFileBytes } from '@moor/host/projects/files';
-import {
-  captureProjectSnapshot,
-  enumerateProjectFiles,
-  type ProjectSnapshot,
-} from '@moor/host/projects/snapshot';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { readProjectFileBytes } from '@moor/host/adapters/files/read';
+import { captureProjectSnapshot, enumerateProjectFiles } from '@moor/host/adapters/files/snapshot';
+import { type ProjectSnapshot } from '@moor/host/features/files/model';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   projectDiffFileResultSchema,
   projectDiffReferenceSchema,
@@ -80,7 +78,7 @@ function fixture(
     release: (() => void) | undefined,
     closed = false;
   const started = deferred();
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open() {

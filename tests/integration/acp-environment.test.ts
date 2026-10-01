@@ -1,5 +1,5 @@
-import { acpDriver, createAcpDriver } from '@moor/host/agents/acp/driver';
-import { LOCAL_CODEX_NOT_INSTALLED } from '@moor/host/agents/driver';
+import { acpDriver, createAcpDriver } from '@moor/host/adapters/acp/driver';
+import { LOCAL_CODEX_NOT_INSTALLED } from '@moor/host/features/agents/driver';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

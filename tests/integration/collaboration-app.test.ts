@@ -6,7 +6,7 @@ import {
   collaborationReadResponseSchema,
   type CollaborationSyncRequest,
 } from '@moor/protocol/collaboration-protocol';
-import { CollaborationStore } from '@moor/sync/store';
+import { SqliteCollaboration } from '@moor/sync/adapters/sqlite';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -39,7 +39,7 @@ test('collaboration composer restores local text and never transmits edits on re
     authorityId: f.accounts.authorityId,
     accountId: f.ownerId,
   };
-  const host = new CollaborationStore(':memory:', actor.authorityId, () => 1000);
+  const host = new SqliteCollaboration(':memory:', actor.authorityId, () => 1000);
   t.after(() => host.close());
   host.createWorkspace(actor, initial.scope.workspaceId);
   host.registerSession(actor, initial.scope, initial.target);

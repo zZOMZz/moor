@@ -1,16 +1,17 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import type {
   AgentCallbacks,
   AgentRunBinding,
   AgentSession,
   AgentSteerResult,
-} from '@moor/host/agents/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
+} from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import {
   runtimeFeatureReport,
   type SessionEvent,
   type SessionEventState,
-} from '@moor/host/sessions/events';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+} from '@moor/host/adapters/acp/events';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { QuestionAnswer, QuestionRequest } from '@moor/protocol/interaction-protocol';
 import { Flock, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
@@ -64,7 +65,7 @@ function fixture(
   let started = signal<AgentRunBinding>(),
     release = signal();
   let onSteer = async (): Promise<AgentSteerResult> => ({ outcome: 'injected' });
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open(_config, _root, _native, value) {

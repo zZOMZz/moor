@@ -1,3 +1,4 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
@@ -6,8 +7,8 @@ import { join } from 'node:path';
 import { Flock, metas, mirror, putMeta, vv } from '@moor/session/model';
 import { appendSessionText } from '@moor/session/session-output';
 import { sessionPageRequestSchema } from '@moor/protocol/session-page';
-import { RuntimeStore } from '../src/persistence/store';
-import { HostWorkspace } from '../src/sessions/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 
 function fixture(t: TestContext) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'moor-session-index-')));
@@ -25,7 +26,7 @@ function fixture(t: TestContext) {
     runtimeOverrides: { codexPath: process.execPath },
   });
   store.saveMachine();
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open() {
@@ -154,7 +155,7 @@ test('legacy metadata is projected once without importing bodies; later startup 
   assert.equal(metadataScans, 0);
   assert.equal(importedBodies, 0);
   assert.deepEqual(reopened.sessionPages.version(f.scope), migratedVersion);
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     reopened,
     {
       async open() {

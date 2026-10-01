@@ -1,3 +1,4 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { createAttachmentDraftItem } from '@moor/client/features/attachments/attachments';
 import {
   attentionPendingKey,
@@ -17,15 +18,15 @@ import {
   createWorkspacePersistence,
   type WorkspacePersistence,
 } from '@moor/client/operations/workspace/compose';
-import type { AgentCallbacks, AgentOpenOptions } from '@moor/host/agents/driver';
-import type { AgentForkInput } from '@moor/host/agents/fork';
-import { HostCommandDispatcher } from '@moor/host/commands/host-command';
-import { createGitHubClient } from '@moor/host/integrations/github/client';
-import { createGitHubWriteClient } from '@moor/host/integrations/github/write-client';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import type { SessionGithubOptions } from '@moor/host/sessions/github';
-import type { SessionGithubWriteOptions } from '@moor/host/sessions/github-write';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import type { AgentCallbacks, AgentOpenOptions } from '@moor/host/features/agents/driver';
+import type { AgentForkInput } from '@moor/host/features/agents/fork-model';
+import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
+import { createGitHubClient } from '@moor/host/adapters/github/read-client';
+import { createGitHubWriteClient } from '@moor/host/adapters/github/write-client';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import type { SessionGithubOptions } from '@moor/host/features/github/session';
+import type { SessionGithubWriteOptions } from '@moor/host/features/github/write-session';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { STEER_FEATURE, type QuestionRequest } from '@moor/protocol/interaction-protocol';
 import { isRequestRejected } from '@moor/protocol/request-failure';
 import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
@@ -130,8 +131,8 @@ async function fixture(
   config: {
     nativeFork?: boolean;
     attention?: boolean;
-    github?: (projectId: string) => SessionGithubOptions;
-    githubWrite?: (projectId: string) => SessionGithubWriteOptions;
+    github?: (projectId: string) => Partial<SessionGithubOptions>;
+    githubWrite?: (projectId: string) => Partial<SessionGithubWriteOptions>;
     schedule?: (ms: number, work: () => void) => () => void;
     yieldCache?: () => Promise<void>;
     sessionReceived?: Parameters<typeof createWorkspace>[0]['sessionReceived'];
@@ -163,7 +164,7 @@ async function fixture(
   let openOptions: AgentOpenOptions | undefined;
   let callbacks!: AgentCallbacks,
     steerCalls = 0;
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     runtime,
     {
       open: async (_config, _root, _native, value, options) => {

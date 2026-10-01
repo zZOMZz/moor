@@ -1,9 +1,10 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { NodeHttp } from '@moor/client/adapters/node/http';
 import { replicaBase } from '@moor/client/adapters/node/targets';
 import { buildSessionTurn } from '@moor/session/session-operations';
-import type { AgentOpenOptions } from '@moor/host/agents/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import type { AgentOpenOptions } from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { localCliProof, type LocalCliConnectionLease } from '@moor/local-state/private-connection';
 import { AppError } from '@moor/protocol/protocol';
 import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
@@ -44,7 +45,7 @@ async function fixture(t: TestContext) {
   let agentOptions: AgentOpenOptions | undefined;
   let completion = signal(),
     started = signal();
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       open: async (_agent, _cwd, _nativeId, _callbacks, options) => {

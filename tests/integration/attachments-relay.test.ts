@@ -1,7 +1,8 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   ATTACHMENTS_FEATURE,
   attachmentActionSchema,
@@ -101,7 +102,7 @@ async function fixture() {
       project: { kind: 'local', localProjectId: 'project-a' },
     });
     let launches = 0;
-    const host = new HostWorkspace(
+    const host = createHostWorkspace(
       runtime,
       {
         async open() {

@@ -4,7 +4,7 @@ import {
   GITHUB_CLIENT_LIMITS,
   GitHubClientError,
   type GitHubClientOptions,
-} from '@moor/host/integrations/github/client';
+} from '@moor/host/adapters/github/read-client';
 import {
   githubIssueSchema,
   githubPullSchema,

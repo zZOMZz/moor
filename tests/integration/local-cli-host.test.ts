@@ -1,4 +1,4 @@
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import {
   localCliChallenge,
   readLocalCliConnection,

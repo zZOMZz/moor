@@ -32,7 +32,7 @@ corepack pnpm exec tsx --test --test-name-pattern='delivery commits document' te
 
 **观察点：** 回执 `delivered=true`；已保存历史包含用户与助手两个条目；Journal 中 phase 为 `accepted`；确定性 `started` 信号之后派发计数为 1；再提交相同请求，返回原结果且计数仍为 1。
 
-**解释：** 送达确认主机持久接受。它不要求 Agent 已完成，更不证明输出正确。沿 [HostWorkspace](../packages/host/src/sessions/workspace.ts) 找到事务后的 `this.execute`，将测试断言与实现顺序对应起来。
+**解释：** 送达确认主机持久接受。它不要求 Agent 已完成，更不证明输出正确。沿 [HostWorkspace](../packages/host/src/features/runtime/workspace.ts) 找到事务后的 `this.execute`，将测试断言与实现顺序对应起来。
 
 **完成产出：** 自己画一条时间线，明确标出持久接受、开始执行、正常结束三个时刻。
 
@@ -48,7 +48,7 @@ corepack pnpm exec tsx --test --test-name-pattern='failed persistence rolls back
 
 测试在自己的合成 SQLite 上创建 `fail_snapshot` 触发器，让保存操作确定性失败。不要把触发器复制到真实主机数据库。
 
-**观察点：** Mutation 被拒绝，Journal 没有该编号，会话元数据不存在，派发计数为 0。阅读 [RuntimeStore.transaction](../packages/host/src/persistence/store.ts) 的 `BEGIN IMMEDIATE/COMMIT/ROLLBACK` 和主机异常路径，解释数据库回滚与内存元数据恢复。
+**观察点：** Mutation 被拒绝，Journal 没有该编号，会话元数据不存在，派发计数为 0。阅读 [RuntimeStore.transaction](../packages/host/src/adapters/persistence/workspace.ts) 的 `BEGIN IMMEDIATE/COMMIT/ROLLBACK` 和主机异常路径，解释数据库回滚与内存元数据恢复。
 
 **解释：** 事务失败不能留下“收到送达凭据但没有会话”的局部结果，也不能派发 Agent。若把执行放在事务前，数据库失败时已经发生的文件修改无法由 SQLite 撤回。
 

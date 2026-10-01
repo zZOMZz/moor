@@ -1,5 +1,6 @@
-import type { AgentConfig } from '@moor/host/agents/driver';
-import { RuntimeStore, type AttachmentScope } from '@moor/host/persistence/store';
+import type { AgentConfig } from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { type AttachmentScope } from '@moor/host/features/attachments/model';
 import { AppError } from '@moor/protocol/protocol';
 import { Flock, LoroDoc, metas, mirror, putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';

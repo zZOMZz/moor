@@ -1,5 +1,5 @@
-import { createAcpDriver } from '@moor/host/agents/acp/driver';
-import type { AgentSession } from '@moor/host/agents/driver';
+import { createAcpDriver } from '@moor/host/adapters/acp/driver';
+import type { AgentSession } from '@moor/host/features/agents/driver';
 import { agentModelFailures } from '@moor/protocol/agent-errors';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';

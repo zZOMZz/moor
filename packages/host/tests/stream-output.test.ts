@@ -1,3 +1,4 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -12,11 +13,11 @@ import {
   readClientSession,
   sessionPermissionReviews,
 } from '@moor/session/session-operations';
-import { validateMutation } from '../src/commands/validate-mutation';
-import { RuntimeStore } from '../src/persistence/store';
-import { HostWorkspace } from '../src/sessions/workspace';
-import { safeAgentMetadata } from '../src/agents/attachments';
-import { searchHostSessions } from '../src/sessions/search';
+import { validateMutation } from '@moor/host/features/sessions/validate-mutation';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
+import { safeAgentMetadata } from '../src/features/attachments/agent-output';
+import { searchHostSessions } from '@moor/host/features/sessions/search';
 
 function fixture(
   t: TestContext,
@@ -94,7 +95,7 @@ function fixture(
   let published = 0,
     opened = 0,
     closed = false;
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open() {

@@ -1,7 +1,8 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { Workspace } from '@moor/protocol/catalog';
 import { AppError, PROTOCOL } from '@moor/protocol/protocol';
 import { EventEmitter, once } from 'node:events';
@@ -55,7 +56,7 @@ export async function syntheticCollaboration() {
   const prompts: unknown[] = [];
   const promptEvents = new EventEmitter();
   let holdPrompt: { gate: Promise<void>; started(): void; release(): void } | undefined;
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     runtime,
     {
       open: async () => ({

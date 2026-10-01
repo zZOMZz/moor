@@ -14,4 +14,4 @@ Moor 内置网页预览的配置、浏览器实例、截图/定位及点击、�
 
 旧 `preview-read`、`preview-action`、`preview-close` 路由返回 410。关闭旧界面或重启不能代替原动作的送达确认。需要归档时保留完整私有 Host 数据和客户端数据，不将其放进项目或分发包。
 
-实现：[历史核查](../packages/host/src/sessions/retired.ts)、[只读协议格式](../packages/protocol/src/preview-protocol.ts)、[保留历史标注验证](../tests/integration/project-preview-compatibility.test.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。
+实现：[历史核查](../packages/host/src/features/sessions/retired.ts)、[只读协议格式](../packages/protocol/src/preview-protocol.ts)、[保留历史标注验证](../tests/integration/project-preview-compatibility.test.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。

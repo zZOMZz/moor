@@ -1,8 +1,10 @@
-import type { AgentDriver } from '@moor/host/agents/driver';
-import { createGitHubClient } from '@moor/host/integrations/github/client';
-import type { GitHubProjectConfig } from '@moor/host/integrations/github/config';
-import { RuntimeStore, type AttachmentScope } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import type { AgentDriver } from '@moor/host/features/agents/driver';
+import { createGitHubClient } from '@moor/host/adapters/github/read-client';
+import type { GitHubProjectConfig } from '@moor/host/adapters/config/github';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { type AttachmentScope } from '@moor/host/features/attachments/model';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   githubReadResultSchema,
   githubReceiptSchema,
@@ -168,7 +170,7 @@ function fixture(t: { after(fn: () => unknown): void }) {
     return new Response('Synthetic missing resource', { status: 404 });
   };
   const makeHost = () =>
-    new HostWorkspace(
+    createHostWorkspace(
       store,
       driver,
       () => {},

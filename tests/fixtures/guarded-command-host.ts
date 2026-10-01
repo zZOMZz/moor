@@ -1,5 +1,5 @@
-import { HostCommandDispatcher, type HostCommand } from '@moor/host/commands/host-command';
-import type { HostWorkspace } from '@moor/host/sessions/workspace';
+import { HostCommandDispatcher, type HostCommand } from '@moor/host/features/commands/dispatcher';
+import type { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { validateHostResponse } from '@moor/protocol/host-response';
 import { AppError } from '@moor/protocol/protocol';
 import type { TestContext } from 'node:test';

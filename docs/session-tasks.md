@@ -22,4 +22,4 @@ Moor 原有的父回合任务计划、`moor_tasks` 工具服务、子会话自�
 
 只读核查不会解除此保护。需要处理无法核实的旧工作时，保留完整原记录和工作目录，不把旧 operation ID、子会话 ID 或正文自动改投新的任务。后续人工处置必须作为独立、可核对的操作设计，不能用升级、启动或后台清理代替。
 
-实现入口：[只读任务记录](../packages/host/src/persistence/retired-tasks.ts)、[历史核查](../packages/host/src/sessions/retired.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。
+实现入口：[只读任务记录](../packages/host/src/adapters/persistence/retired-tasks.ts)、[历史核查](../packages/host/src/features/sessions/retired.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。

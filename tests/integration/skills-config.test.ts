@@ -1,4 +1,4 @@
-import { SkillsConfig } from '@moor/host/integrations/skills-config';
+import { SkillsConfig } from '@moor/host/adapters/config/skills';
 import assert from 'node:assert/strict';
 import {
   chmodSync,

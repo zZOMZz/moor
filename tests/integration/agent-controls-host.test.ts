@@ -1,6 +1,7 @@
-import { readRunDefaults, readRunPreferences } from '@moor/host/agents/run-preferences';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { readRunDefaults, readRunPreferences } from '@moor/host/features/agents/run-preferences';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
   changeRunSelection,
   initializeRunSelection,
@@ -59,7 +60,7 @@ test('approval defaults persist through restart, are frozen per new session, and
       };
     },
   };
-  host = new HostWorkspace(
+  host = createHostWorkspace(
     store,
     driver,
     () => {},
@@ -157,7 +158,7 @@ test('approval defaults persist through restart, are frozen per new session, and
   host.close();
   store.close();
   store = new RuntimeStore(file);
-  host = new HostWorkspace(
+  host = createHostWorkspace(
     store,
     driver,
     () => {},

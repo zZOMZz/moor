@@ -1,6 +1,7 @@
-import type { AgentConfig, AgentDriver } from '@moor/host/agents/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import type { AgentConfig, AgentDriver } from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { Mutation } from '@moor/protocol/protocol';
 import { Flock, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
@@ -43,7 +44,7 @@ function fixture(t: { after(fn: () => unknown): void }, realProgram = false) {
     onPrompt = async () => {},
     closes = 0;
   let callbacks: Parameters<AgentDriver['open']>[3];
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     {
       async open(agent, cwd, nativeId, value) {

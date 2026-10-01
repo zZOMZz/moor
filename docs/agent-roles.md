@@ -69,4 +69,4 @@ JSON
 
 `save`、`remove`、`abandon` 均明确返回功能退场。升级或只读查询不把未知请求改成已拒绝、成功或封存。历史角色说明可能包含私有内容，只能通过当前已授权的项目范围读取。
 
-实现：[历史目录与回执](../packages/host/src/sessions/retired.ts)、[角色历史格式](../packages/protocol/src/role-protocol.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。
+实现：[历史目录与回执](../packages/host/src/features/sessions/retired.ts)、[角色历史格式](../packages/protocol/src/role-protocol.ts)、[退场回归](../tests/integration/retired-session-features.test.ts)。

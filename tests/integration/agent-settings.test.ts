@@ -1,7 +1,7 @@
-import type { AgentDriver, AgentSession } from '@moor/host/agents/driver';
-import { inspectAgentProgram } from '@moor/host/agents/program';
-import { AgentSettings } from '@moor/host/agents/settings';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import type { AgentDriver, AgentSession } from '@moor/host/features/agents/driver';
+import { inspectAgentProgram } from '@moor/host/adapters/acp/program';
+import { AgentSettings } from '@moor/host/adapters/config/agents';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { AppError } from '@moor/protocol/protocol';
 import assert from 'node:assert/strict';
 import {

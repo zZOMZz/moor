@@ -1,12 +1,15 @@
+import { hostHash } from '@moor/host/adapters/composition/identity';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { createCollaborationTaskQueue } from '@moor/host/adapters/composition/collaboration';
 import {
   CollaborationClient,
   collaborationSyncBatch,
   type CollaborationStorage,
 } from '@moor/client/features/collaboration/client';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { CollaborationExecutionPlane } from '@moor/host/sessions/collaboration';
-import { CollaborationCoordinator } from '@moor/host/sessions/collaboration-coordinator';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { CollaborationExecutionPlane } from '@moor/host/features/collaboration/execution';
+import { CollaborationCoordinator } from '@moor/host/features/collaboration/coordinator';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { actorSchema } from '@moor/protocol/attention';
 import {
   COLLABORATION_LIMITS,
@@ -16,7 +19,7 @@ import {
   type TaskExecutionTarget,
 } from '@moor/protocol/collaboration-protocol';
 import { mergeCollaborationOperations } from '@moor/session/collaboration-document';
-import { CollaborationStore } from '@moor/sync/store';
+import { SqliteCollaboration } from '@moor/sync/adapters/sqlite';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -74,12 +77,15 @@ function fixture(t: TestContext, execution = target) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'moor-collaboration-')));
   let now = 1000;
   const path = join(root, 'sync.sqlite'),
-    store = new CollaborationStore(path, scope.authorityId, () => now);
+    store = new SqliteCollaboration(path, scope.authorityId, () => now);
   store.createWorkspace(actor('owner'), scope.workspaceId);
   store.setMember(actor('owner'), scope.workspaceId, actor('b'), 'operator');
   store.setMember(actor('owner'), scope.workspaceId, actor('c'), 'operator');
   store.registerSession(actor('owner'), scope, execution);
-  const coordinator = new CollaborationCoordinator(store);
+  const coordinator = new CollaborationCoordinator(
+    store,
+    createCollaborationTaskQueue(store.database, store, store.now),
+  );
   store.subscribe(({ scope, authored }) => {
     if (authored) coordinator.reconcile(scope);
   });
@@ -98,7 +104,7 @@ function fixture(t: TestContext, execution = target) {
       author: { actor: actor(account), clientId: account + '-client' },
       storage,
       transport: {
-        sync: async (request: Parameters<CollaborationStore['sync']>[1]) => {
+        sync: async (request: Parameters<SqliteCollaboration['sync']>[1]) => {
           calls++;
           if (!online) throw Error('offline');
           const result = store.sync(actor(account), request);
@@ -365,7 +371,7 @@ test('queued authorized work is drained through actual Host acceptance once and 
     customAcp: { command: '/synthetic/not-executed', args: [] },
   });
   const prompts: string[] = [];
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     runtime,
     {
       open: async () => ({
@@ -419,6 +425,7 @@ test('queued authorized work is drained through actual Host acceptance once and 
   let counter = 0;
   const worker = new CollaborationExecutionPlane({
     host,
+    hash: hostHash,
     queue: f.queue,
     scope,
     target: execution,
@@ -445,9 +452,12 @@ test('queued authorized work is drained through actual Host acceptance once and 
   });
   await b.value.state.sync();
   assert.ok(f.queue.claim(scope, execution, 'crashed-claim'));
-  const reopened = new CollaborationStore(f.path, scope.authorityId, () => 1000);
+  const reopened = new SqliteCollaboration(f.path, scope.authorityId, () => 1000);
   try {
-    const restoredQueue = new CollaborationCoordinator(reopened).queue;
+    const restoredQueue = new CollaborationCoordinator(
+      reopened,
+      createCollaborationTaskQueue(reopened.database, reopened, reopened.now),
+    ).queue;
     restoredQueue.interruptExecution(scope, execution);
     assert.equal(restoredQueue.claim(scope, execution, 'do-not-replay'), undefined);
   } finally {

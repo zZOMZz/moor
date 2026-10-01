@@ -2,8 +2,11 @@ import test from 'node:test';
 import strict from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { ProjectHistoryStore, type ProjectHistoryScope } from '../src/projects/history';
-import type { ProjectSnapshot } from '../src/projects/snapshot';
+import {
+  ProjectHistoryStore,
+  type ProjectHistoryScope,
+} from '@moor/host/adapters/persistence/project-history';
+import type { ProjectSnapshot } from '@moor/host/features/files/model';
 
 const scope: ProjectHistoryScope = {
   workspaceId: 'host-a',

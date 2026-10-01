@@ -1,4 +1,5 @@
-import { readSessionPage } from '@moor/host/sessions/page';
+import { hostHash } from '@moor/host/adapters/composition/identity';
+import { readSessionPage } from '@moor/host/features/sessions/page';
 import type { Workspace } from '@moor/protocol/catalog';
 import { AppError, PROTOCOL } from '@moor/protocol/protocol';
 import {
@@ -75,6 +76,7 @@ async function fixture() {
         const page = readSessionPage(
           {
             workspace: peer.runtime,
+            hash: hostHash,
             index: projection.index,
           },
           sessionPageRequestSchema.parse(message.params),

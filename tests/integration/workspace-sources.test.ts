@@ -14,7 +14,7 @@ test('workspace source resolution bundles sync source instead of its generated d
   const result = await build({
     absWorkingDir: repository,
     stdin: {
-      contents: "export { CollaborationStore } from '@moor/sync/store';",
+      contents: "export { SqliteCollaboration } from '@moor/sync/adapters/sqlite';",
       resolveDir: repository,
     },
     bundle: true,
@@ -26,7 +26,7 @@ test('workspace source resolution bundles sync source instead of its generated d
     plugins: [workspaceSources],
   });
   const inputs = Object.keys(result.metafile!.inputs);
-  assert.ok(inputs.includes('packages/sync/src/store.ts'));
+  assert.ok(inputs.includes('packages/sync/src/adapters/sqlite.ts'));
   assert.equal(
     inputs.some((path) => /^packages\/[^/]+\/dist\//.test(path)),
     false,

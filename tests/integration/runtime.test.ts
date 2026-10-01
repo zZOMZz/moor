@@ -1,6 +1,7 @@
-import { acpDriver } from '@moor/host/agents/acp/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import { acpDriver } from '@moor/host/adapters/acp/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { Mutation } from '@moor/protocol/protocol';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';
@@ -27,7 +28,7 @@ test('Moor host persists and resumes a complete ACP conversation with exact perm
   });
   store.saveMachine();
   let observe = () => {};
-  let host = new HostWorkspace(
+  let host = createHostWorkspace(
     store,
     acpDriver,
     () => {},
@@ -156,7 +157,7 @@ test('Moor host persists and resumes a complete ACP conversation with exact perm
     store.close();
     store = new RuntimeStore(file);
     assert.equal(store.nativeSession(sessionId), nativeId);
-    host = new HostWorkspace(
+    host = createHostWorkspace(
       store,
       acpDriver,
       () => {},

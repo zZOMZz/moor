@@ -1,6 +1,7 @@
-import type { AgentCallbacks, AgentDriver } from '@moor/host/agents/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
+import type { AgentCallbacks, AgentDriver } from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import { AppError } from '@moor/protocol/protocol';
@@ -90,7 +91,7 @@ async function fixture(t: TestContext) {
     },
   };
   const makeHost = () =>
-    new HostWorkspace(
+    createHostWorkspace(
       store,
       driver,
       () => {},

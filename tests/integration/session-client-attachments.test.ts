@@ -1,7 +1,7 @@
 import { buildSendTurn } from '@moor/client/features/sessions/session-intent';
 import { buildSessionTurn } from '@moor/session/session-operations';
-import { prepareSessionIntent } from '@moor/host/commands/prepare-session-intent';
-import { validateMutation } from '@moor/host/commands/validate-mutation';
+import { prepareSessionIntent } from '@moor/host/features/sessions/prepare-intent';
+import { validateMutation } from '@moor/host/features/sessions/validate-mutation';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import { Flock, LoroDoc, delta, mirror, putMeta } from '@moor/session/model';
 import assert from 'node:assert/strict';

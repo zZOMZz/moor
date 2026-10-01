@@ -7,8 +7,8 @@ import {
   inspectAgentProgram,
   localAgentProgram,
   agentProgramFingerprint,
-} from '@moor/host/agents/program';
-import type { AgentConfig } from '@moor/host/agents/driver';
+} from '@moor/host/adapters/acp/program';
+import type { AgentConfig } from '@moor/host/features/agents/driver';
 import { agentSchema } from '@moor/protocol/protocol';
 
 function fixture(t: { after(fn: () => void): void }) {

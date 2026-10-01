@@ -1,8 +1,9 @@
+import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { buildSendTurn } from '@moor/client/features/sessions/session-intent';
 import { Store } from '@moor/gateway/accounts';
-import type { AgentDriver } from '@moor/host/agents/driver';
-import { RuntimeStore } from '@moor/host/persistence/store';
-import { HostWorkspace } from '@moor/host/sessions/workspace';
+import type { AgentDriver } from '@moor/host/features/agents/driver';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { AttentionContext, AttentionListQuery } from '@moor/protocol/attention';
 import {
   runtimeWorkspaceSchema,
@@ -68,7 +69,7 @@ function fixture(file = ':memory:') {
       };
     },
   };
-  const host = new HostWorkspace(
+  const host = createHostWorkspace(
     store,
     driver,
     () => {},

@@ -1,4 +1,4 @@
-import { GitHubConfig } from '@moor/host/integrations/github/config';
+import { GitHubConfig } from '@moor/host/adapters/config/github';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';

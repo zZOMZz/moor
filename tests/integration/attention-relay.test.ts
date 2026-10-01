@@ -1,6 +1,6 @@
 import { Store } from '@moor/gateway/accounts';
 import { createApp } from '@moor/gateway/http';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,

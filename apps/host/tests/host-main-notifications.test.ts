@@ -6,9 +6,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { RuntimeStore } from '@moor/host/persistence/store';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { LoroDoc, mirror, putMeta } from '@moor/session/model';
-import { relayNotificationChannel } from '@moor/host/integrations/notification-dispatch';
+import { relayNotificationChannel } from '@moor/host/adapters/notifications/dispatch';
 import {
   hostNotificationEventSchema,
   type HostNotificationEvent,

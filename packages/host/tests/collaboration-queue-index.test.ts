@@ -1,7 +1,7 @@
+import { createCollaborationTaskQueue } from '@moor/host/adapters/composition/collaboration';
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { CollaborationStore } from '@moor/sync/store';
-import { CollaborationExecutionStore } from '../src/persistence/collaboration-execution-store';
+import { SqliteCollaboration } from '@moor/sync/adapters/sqlite';
 import {
   collaborationKey,
   taskIntentSchema,
@@ -39,11 +39,11 @@ const intent = (id: string, expiresAt = 100000) =>
   });
 function fixture(t: TestContext) {
   let now = 1000;
-  const state = new CollaborationStore(':memory:', scope.authorityId, () => now);
+  const state = new SqliteCollaboration(':memory:', scope.authorityId, () => now);
   t.after(() => state.close());
   state.createWorkspace(owner, scope.workspaceId);
   state.registerSession(owner, scope, target);
-  const queue = new CollaborationExecutionStore(state);
+  const queue = createCollaborationTaskQueue(state.database, state, state.now);
   const enqueue = (id: string, sequence: number, expiresAt?: number) => {
     const next = intent(id, expiresAt);
     state.append(owner, scope, [next]);
@@ -56,7 +56,7 @@ test('claiming and restart use a phase index despite ten thousand terminal ledge
   const { state, queue, enqueue } = fixture(t);
   // Seed only the private archive to isolate queue-selection work. The current
   // queued task still uses the real authorized document and public projection.
-  const insert = state.db.prepare(
+  const insert = state.database.prepare(
     'INSERT INTO collaboration_execution VALUES(?,?,?,?,?,NULL,NULL)',
   );
   state.atomic(() => {
@@ -81,10 +81,10 @@ test('claiming and restart use a phase index despite ten thousand terminal ledge
   enqueue('next', 10001);
 
   const sql: string[] = [];
-  const prepare = state.db.prepare;
-  t.mock.method(state.db, 'prepare', function (query: string) {
+  const prepare = state.database.prepare;
+  t.mock.method(state.database, 'prepare', function (query: string) {
     sql.push(query);
-    return prepare.call(state.db, query);
+    return prepare.call(state.database, query);
   });
   const claim = queue.claim(scope, target, 'claim');
   assert.equal(claim?.intent.operationId, 'next');
@@ -95,7 +95,7 @@ test('claiming and restart use a phase index despite ten thousand terminal ledge
     'interrupted',
   );
   assert.equal(
-    state.db
+    state.database
       .prepare(
         "SELECT COUNT(*) AS count FROM collaboration_execution WHERE json_extract(state,'$.phase')='completed'",
       )
@@ -111,7 +111,9 @@ test('claiming and restart use a phase index despite ten thousand terminal ledge
   );
   assert.ok(selections.length >= 3);
   for (const query of selections) {
-    const plan = prepare.call(state.db, 'EXPLAIN QUERY PLAN ' + query).all(collaborationKey(scope));
+    const plan = prepare
+      .call(state.database, 'EXPLAIN QUERY PLAN ' + query)
+      .all(collaborationKey(scope));
     assert.ok(
       plan.some((row) => String(row.detail).includes('collaboration_execution_phase')),
       query,
@@ -125,14 +127,15 @@ test('indexed selection preserves order, blocks expired input and rolls back fai
   enqueue('first-valid', 2);
   enqueue('second-valid', 3);
   clock(2000);
-  state.db.exec(`CREATE TRIGGER synthetic_projection_failure BEFORE UPDATE ON collaboration_document
+  state.database
+    .exec(`CREATE TRIGGER synthetic_projection_failure BEFORE UPDATE ON collaboration_document
     BEGIN SELECT RAISE(ABORT,'synthetic projection failure'); END`);
   assert.throws(() => queue.claim(scope, target, 'failed-claim'), /synthetic projection failure/);
   assert.deepEqual(
     state.projection(scope).tasks.map((task) => task.phase),
     ['queued', 'queued', 'queued'],
   );
-  state.db.exec('DROP TRIGGER synthetic_projection_failure');
+  state.database.exec('DROP TRIGGER synthetic_projection_failure');
 
   const first = queue.claim(scope, target, 'first-claim')!;
   assert.equal(first.intent.operationId, 'first-valid');

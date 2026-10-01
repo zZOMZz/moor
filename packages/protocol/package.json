@@ -32,6 +32,10 @@
       "types": "./src/attention-response.ts",
       "import": "./dist/attention-response.js"
     },
+    "./binary": {
+      "types": "./src/binary.ts",
+      "import": "./dist/binary.js"
+    },
     "./canonical-json": {
       "types": "./src/canonical-json.ts",
       "import": "./dist/canonical-json.js"
@@ -159,6 +163,10 @@
     "./task-protocol": {
       "types": "./src/task-protocol.ts",
       "import": "./dist/task-protocol.js"
+    },
+    "./value-equality": {
+      "types": "./src/value-equality.ts",
+      "import": "./dist/value-equality.js"
     },
     "./workspace-attention": {
       "types": "./src/workspace-attention.ts",
