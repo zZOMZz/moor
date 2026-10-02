@@ -48,7 +48,6 @@ test('new packages use their declared source exports without a second package-na
       exports: {
         '.': { types: './src/api.ts', import: './dist/api.js' },
         './adapters/http': { types: './src/adapters/http.ts', import: './dist/adapters/http.js' },
-        './*': { types: './src/*.ts', import: './dist/*.js' },
       },
     }),
   );
@@ -59,8 +58,16 @@ test('new packages use their declared source exports without a second package-na
   };
   assert.equal(resolve('@moor/synthetic'), join(directory, 'src/api.ts'));
   assert.equal(resolve('@moor/synthetic/adapters/http'), join(directory, 'src/adapters/http.ts'));
-  assert.equal(resolve('@moor/synthetic/node/worker'), join(directory, 'src/node/worker.ts'));
+  assert.equal(resolve('@moor/synthetic/node/worker'), undefined);
   assert.equal(resolve('@moor/synthetic-other'), undefined);
+  writeFileSync(
+    join(directory, 'package.json'),
+    JSON.stringify({
+      name: '@moor/synthetic',
+      exports: { './*': { types: './src/*.ts', import: './dist/*.js' } },
+    }),
+  );
+  assert.throws(() => workspaceSourceAliases(root), /Unsupported source export/);
 });
 
 test('explicit source exports do not resolve removed or undeclared entrypoints', (t) => {

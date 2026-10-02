@@ -431,7 +431,7 @@ export class GithubWriteController {
     id?: string,
   ) {
     const draft = {
-      id: id ?? this.deps.uuid?.() ?? crypto.randomUUID(),
+      id: id ?? this.deps.uuid(),
       kind,
       values: kind === 'commit' ? values : { ...values, repositoryId: this.remote().repositoryId },
     };
@@ -446,7 +446,7 @@ export class GithubWriteController {
       const v = draft.values;
       let values: Record<string, unknown> = {
         ...this.scope(),
-        operationId: this.deps.uuid?.() ?? crypto.randomUUID(),
+        operationId: this.deps.uuid(),
         confirmed: true,
         action: draft.kind,
       };

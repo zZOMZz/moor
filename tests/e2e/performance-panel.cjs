@@ -49,12 +49,12 @@ app
                   items: [{type: 'text', text: 'Synthetic committed update ' + performanceVersion}]
                 }]
               };
-              mark?.(controller, state.sessionId, version);
+              mark?.(controller.view.identity, state.sessionId, version);
               emit();
             },
             __moorPerformanceVersion(mark, version, expectedVersion) {
               state.session = { ...state.session, version };
-              mark?.(controller, state.sessionId, expectedVersion);
+              mark?.(controller.view.identity, state.sessionId, expectedVersion);
               emit();
             }
           });

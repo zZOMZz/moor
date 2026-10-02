@@ -1,6 +1,6 @@
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { IndexedStorage } from './indexed-storage';
-import { readLegacyWebRecord } from './retired-records';
+import { readLegacyWebRecord } from './browser/retired-records';
 export const browserOwnerKey = (origin: string) => canonical(['moor-browser-owner-v1', origin]);
 export async function browserCachedOwner(origin: string): Promise<string | undefined> {
   const storage = new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' });

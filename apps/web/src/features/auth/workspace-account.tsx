@@ -1,3 +1,4 @@
+import type { RetiredRecord } from '@moor/client/features/workspace/retired-records';
 import type { WorkspaceScope } from '@moor/client/operations/workspace/compose';
 import type {
   AccountManagementRequest,
@@ -6,13 +7,7 @@ import type {
 import type { WorkspaceProjectTarget } from '@moor/protocol/workspace-client-protocol';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Account, AccountApi } from '../../platform/account';
-import {
-  exportRetiredRecords,
-  readRetiredSecureRecords,
-  readRetiredWebRecords,
-  type RetiredRecord,
-} from '../../platform/retired-records';
-import { useNavigation } from '../../platform/ui-ports';
+import { useNavigation, useRetiredRecords } from '../../platform/ui-ports';
 import { CatalogManagement, type ManagedWorkspace } from './catalog-management';
 import { GoogleStart } from './google-login';
 
@@ -42,6 +37,7 @@ export function WorkspaceAccountPanel({
   pairingScope?: WorkspaceScope;
 }) {
   const navigation = useNavigation();
+  const retired = useRetiredRecords();
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true),
     [busy, setBusy] = useState(false),
@@ -343,7 +339,8 @@ export function WorkspaceAccountPanel({
           onClick={() =>
             void run(async () => {
               setRecordKind('moor-retired-secure-v1');
-              setRecords(await readRetiredSecureRecords());
+              const value = await retired.read('moor-retired-secure-v1');
+              if (latest.current.active && latest.current.visible) setRecords(value);
             })
           }
         >
@@ -354,7 +351,8 @@ export function WorkspaceAccountPanel({
           onClick={() =>
             void run(async () => {
               setRecordKind('moor-retired-web-v1');
-              setRecords(await readRetiredWebRecords());
+              const value = await retired.read('moor-retired-web-v1');
+              if (latest.current.active && latest.current.visible) setRecords(value);
             })
           }
         >
@@ -368,7 +366,14 @@ export function WorkspaceAccountPanel({
             {records.length > 0 && (
               <button
                 disabled={busy}
-                onClick={() => void run(() => exportRetiredRecords(records, recordKind))}
+                onClick={() =>
+                  void run(() =>
+                    retired.export(
+                      { records, format: recordKind },
+                      () => latest.current.active && latest.current.visible,
+                    ),
+                  )
+                }
               >
                 导出历史记录
               </button>

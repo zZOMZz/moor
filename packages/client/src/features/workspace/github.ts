@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import { GITHUB_FEATURE } from '@moor/protocol/github-protocol';
 import { GITHUB_WRITE_FEATURE } from '@moor/protocol/github-write-protocol';
 import { workspaceProjectTargetSchema } from '@moor/protocol/workspace-client-protocol';
@@ -6,15 +7,22 @@ import { githubKey } from '../github/github';
 import { GithubSessionController, type GithubSessionMode } from '../github/github-session';
 import { githubWriteKey } from '../github/github-write';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { same } from './model';
 /** Capabilities consumed by github use cases; supplied only by the workspace composition root. */
 export interface WorkspaceGithubPorts {
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger'>;
-  context: Pick<
-    WorkspaceContextService,
-    'context' | 'contextRevision' | 'value' | 'uuid' | 'execute' | 'command'
+  context: FeatureContext<
+    'context' | 'contextRevision' | 'value' | 'uuid' | 'execute' | 'command',
+    'catalogs' | 'draft' | 'offline' | 'project' | 'session',
+    | 'github-read'
+    | 'github-action'
+    | 'github-abandon'
+    | 'github-write-read'
+    | 'github-write-action'
+    | 'github-write-inspect'
+    | 'github-write-abandon',
+    never
   >;
   store: Pick<
     WorkspacePersistence,

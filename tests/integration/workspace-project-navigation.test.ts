@@ -8,7 +8,7 @@ import { paginationFixture } from '../fixtures/workspace-pagination';
 
 test('logical project grouping requires the exact source, account, service and workspace identity', async (t) => {
   const f = await paginationFixture(t);
-  const [a, b] = navigationProjects(f.controller.state);
+  const [a, b] = navigationProjects(f.controller.view.state);
   const first = { ...a!, projectName: 'Same name', hostName: 'Mac A' };
   const second = {
     ...b!,

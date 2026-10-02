@@ -1,3 +1,4 @@
+import { syntheticClientRuntime } from '../fixtures/client-runtime';
 import { informationHtml } from '../../apps/web/src/features/interactions/information';
 import {
   answerFromDraft,
@@ -142,6 +143,8 @@ test('delivery callbacks require an exact receipt and confirmed cleanup failure 
     const f = fixture();
     f.setMode(mode);
     const controller = new InteractionController(target, {
+      ...syntheticClientRuntime,
+
       ...f.deps,
       request: async (path, body) => {
         const result = await f.deps.request(path, body);
@@ -203,6 +206,8 @@ test('receipt cleanup failure retains pending so original delivered operation ca
   await c.load();
   let writeCount = 0;
   const guarded = new InteractionController(target, {
+    ...syntheticClientRuntime,
+
     ...f.deps,
     write: async (key, value) => {
       if (++writeCount === 2) throw new Error('Cleanup failed');

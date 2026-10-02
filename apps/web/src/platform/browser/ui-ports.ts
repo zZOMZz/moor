@@ -1,6 +1,7 @@
 import type { UiPorts, Appearance } from '../ui-ports';
 import type { api } from '../api';
 import { assertCatalogDataSettled } from '../catalog-data-guard';
+import { readRetiredSecureRecords, readRetiredWebRecords } from './retired-records';
 
 export type BrowserUiEnvironment = {
   window: Window;
@@ -36,6 +37,25 @@ export function createBrowserUiPorts({
   return {
     preferences,
     catalog: { assertSettled: assertCatalogDataSettled },
+    retired: {
+      read: (format) =>
+        format === 'moor-retired-secure-v1' ? readRetiredSecureRecords() : readRetiredWebRecords(),
+      async export(value, current) {
+        if (!current()) return { status: 'cancelled' };
+        const url = URL.createObjectURL(
+          new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }),
+        );
+        try {
+          const anchor = win.document.createElement('a');
+          anchor.href = url;
+          anchor.download = value.format + '.json';
+          anchor.click();
+          return { status: 'handed-off' };
+        } finally {
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+        }
+      },
+    },
     navigation: {
       reload: () => location.reload(),
       confirm: (message) => win.confirm(message),

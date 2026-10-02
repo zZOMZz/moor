@@ -1,12 +1,17 @@
+import type { FeatureContext } from './feature-context';
 import { type RunSelection } from '@moor/protocol/run-config';
 import { WorkspacePersistence } from '../../operations/workspace/compose';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceInteractionsService } from './interactions';
 import { BufferedDraft, Context, DRAFT_SAVE_DELAY_MS, same } from './model';
 import type { WorkspaceSessionsService } from './sessions';
 /** Capabilities consumed by drafts use cases; supplied only by the workspace composition root. */
 export interface WorkspaceDraftsPorts {
-  context: Pick<WorkspaceContextService, 'value' | 'schedule' | 'closed' | 'current' | 'emit'>;
+  context: FeatureContext<
+    'value' | 'schedule' | 'closed' | 'current' | 'emit',
+    'catalogs' | 'draft' | 'ledger' | 'scope' | 'sessionId',
+    never,
+    never
+  >;
   interactions: Pick<WorkspaceInteractionsService, 'interactionWrites'>;
   store: Pick<WorkspacePersistence, 'saveDraft' | 'read' | 'readDraft'>;
   sessions: Pick<WorkspaceSessionsService, 'rememberSessionDraft'>;

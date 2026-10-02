@@ -309,7 +309,7 @@ export class SessionForkController {
             )
       )
         throw new Error('所选目录或 Git 基线目前不可用，请重新选择。');
-      const uuid = this.dependencies.uuid ?? (() => crypto.randomUUID());
+      const uuid = this.dependencies.uuid;
       const request = sessionForkSchema.parse({
         ...this.scope(),
         operationId: uuid(),

@@ -560,6 +560,7 @@ export function createApp(
         z.object({})
           .strict()
           .parse(await body(req, 1024));
+        accountCurrent();
         return json(res, 200, store.inviteAccount(owner!));
       }
       if (path === '/api/logout' && req.method === 'POST') {

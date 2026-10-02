@@ -23,7 +23,6 @@ export const previewViewportSchema = z
     height: z.number().int().min(240).max(PREVIEW_LIMITS.height),
   })
   .strict();
-export type PreviewViewport = z.infer<typeof previewViewportSchema>;
 export const previewPathSchema = z
   .string()
   .min(1)

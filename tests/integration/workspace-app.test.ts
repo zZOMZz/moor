@@ -1,3 +1,4 @@
+import { bindWorkspaceNavigationPagesPort } from '../../apps/web/src/features/sessions/workspace-navigation-pages';
 import { createAttachmentDraftItem } from '@moor/client/features/attachments/attachments';
 import { AttentionController } from '@moor/client/features/attention/attention';
 import {
@@ -5,7 +6,7 @@ import {
   questionDraftKey,
   type QuestionDraftValues,
 } from '@moor/client/features/interactions/interactions';
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceGraph, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import {
   ACTOR_FEATURE,
   ATTENTION_FEATURE,
@@ -118,7 +119,9 @@ test('packaged workspace opens local projects without an account and preserves d
     },
     cancelAttachmentSave: async () => {},
   };
-  ports.attachments = createDesktopUiPorts(environment, bridge).attachments;
+  ports.attachments = createDesktopUiPorts(environment, bridge, async () => ({
+    canceled: true,
+  })).attachments;
 
   const catalog = workspaceCatalogSchema.parse({
     source: 'local',
@@ -229,581 +232,609 @@ test('packaged workspace opens local projects without an account and preserves d
     draft.saved?.();
   };
   const controller = {
-    async readGitContext() {
-      return undefined;
-    },
-    async listProjectSessions() {
-      return state.sessions;
-    },
-    get contextRevision() {
-      return contextRevision;
-    },
-    get state() {
-      return structuredClone(state);
-    },
-    subscribe(listener: () => void) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    async refreshCatalog(source: string) {
-      calls.push('catalog:' + source);
-      if (source === 'remote') return;
-      assert.equal(source, 'local');
-      state.catalogs.local = catalog;
-      emit();
-    },
-    async createSession(agentId: string) {
-      assert(state.project!.runtime.agents.some((agent) => agent.id === agentId));
-      calls.push('create');
-      calls.push('create-agent:' + agentId);
-      return 'session';
-    },
-    async refreshSessions() {
-      calls.push('sessions');
-      emit();
-    },
-    async selectProject(_source: string, target: (typeof catalog.targets)[number]['target']) {
-      calls.push('project');
-      state.project = catalog.targets.find(
-        (entry) => entry.target.localProjectId === target.localProjectId,
-      )!;
-      state.scope = { source: 'local', target: state.project.target };
-      state.sessions = [meta];
-      emit();
-    },
-    async openSession(id: string) {
-      calls.push('session:' + id);
-      state.sessionId = id;
-      state.sessionLoad = { status: 'loading-cache' };
-      emit();
-      state.draft = { revision: 0, text: '', selection: {} };
-      state.session = {
-        meta,
-        metaBundle: { version: 1, entries: {} },
-        online: true,
-        synced: true,
-        persisted: true,
-        agent: catalog.targets[0]!.runtime.agents[0],
-        history: [
-          {
-            id: 'assistant',
-            role: 'assistant',
-            timestamp: '2026-01-01T00:00:00.000Z',
-            finished: true,
-            userId: undefined,
-            userTurnId: undefined,
-            read: undefined,
-            inputConfig: undefined,
-            items: [
-              { type: 'text', text: 'Hello <script>unsafe()</script>' },
-              {
-                type: 'session_event',
-                event: {
-                  version: 1,
-                  source: 'acp',
-                  kind: 'commands',
-                  commands: [{ name: 'review', description: 'Review the project' }],
-                },
-              },
-              {
-                type: 'session_event',
-                event: { version: 1, source: 'acp', kind: 'context-usage', used: 32, size: 256 },
-              },
-            ],
-            status: 'completed',
-            fileDiff: null,
-          },
-        ],
-      } as NonNullable<WorkspaceClientState['session']>;
-      if (id === 'synthetic-child') {
-        state.session.meta = { ...meta, id, forkOrigin };
-        state.session.history = [];
-      }
-      if (id === 'task-child') {
-        state.session.meta = {
-          ...meta,
-          id,
-          taskOrigin: {
-            version: 1,
-            grantId: 'grant',
-            parentSessionId: 'session',
-            parentUserTurnId: 'parent-user',
-            parentAssistantTurnId: 'parent-assistant',
-            taskId: 'task-one',
-            completion: 'Human verifies synthetic result',
+    git: {
+      async readGitContext() {
+        return undefined;
+      },
+      async openGit(changed: () => void) {
+        const oid = 'a'.repeat(40);
+        const value = {
+          busy: false,
+          loaded: true,
+          loadError: '',
+          error: '',
+          source: 'host',
+          state: {
+            execution: { mode: 'shared', status: 'ready', revision: 0 },
+            canPrepare: true,
+            canRemove: false,
+            repository: {
+              kind: 'git',
+              branch: 'main',
+              headOid: oid,
+              branches: [{ name: 'main', oid }],
+              changes: [],
+              dirty: false,
+              partial: false,
+              outsideProjectChanges: false,
+              issues: [],
+              version: 'sha256:' + 'a'.repeat(64),
+              writeSupported: true,
+            },
+          } as any,
+          get execution() {
+            return value.state.execution;
           },
         };
-        state.session.history = [];
-      }
-      state.sessionLoad = { status: 'refreshing', source: 'cache' };
-      emit();
-      await sessionRefresh;
-      state.offline = false;
-      state.sessionLoad = { status: 'ready', source: 'host' };
-      emit();
-    },
-    queueDraft(
-      text: string,
-      selection: object,
-      _failed?: (error: unknown) => void,
-      saved?: () => void,
-    ) {
-      bufferedDraft = { text, selection, saved };
-    },
-    flushDraft: flushBufferedDraft,
-    async saveDraft(text: string, selection: object) {
-      bufferedDraft = { text, selection };
-      await flushBufferedDraft();
-    },
-    async send() {
-      await flushBufferedDraft();
-      calls.push('send');
-      state.draft = { ...state.draft!, revision: state.draft!.revision + 1, text: '' };
-      emit();
-    },
-    async refreshAgentOptions() {
-      calls.push('models');
-    },
-    async readUsage() {
-      calls.push('usage:read');
-      state.usageLoading = true;
-      emit();
-      await usageRead;
-      state.usageLoading = false;
-      emit();
-    },
-    async openFork(changed: () => void) {
-      const value = {
-        loaded: true,
-        busy: false,
-        loadError: '',
-        error: '',
-        source: 'host',
-        options: undefined as any,
-        receipt: undefined as any,
-        resources: [],
-      };
-      return {
-        controller: value,
-        close() {
-          calls.push('fork:close');
-        },
-        async refresh() {
-          calls.push('fork:read');
-          value.options = {
-            sourceVersion: forkOrigin.sourceVersion,
-            execution: { mode: 'shared', status: 'ready', revision: 0 },
-            agent: { id: 'agent', name: 'Synthetic', agentType: 'synthetic' },
-            currentAvailable: true,
-            capabilities: { sameDirectory: true, worktree: false, turnCutoff: true },
-            turns: [{ turnId: 'assistant', ordinal: 1, timestamp: '2026-09-14', available: true }],
-            partial: false,
-          };
-          changed();
-        },
-        async create(cutoff: unknown, directory: unknown) {
-          assert.deepEqual(cutoff, { kind: 'current' });
-          assert.deepEqual(directory, { kind: 'same-directory' });
-          calls.push('fork:create');
-          value.receipt = {
-            phase: 'accepted',
-            childSessionId: 'synthetic-child',
-            origin: forkOrigin,
-            execution: { mode: 'shared', status: 'ready', revision: 0 },
-          };
-          changed();
-        },
-      };
-    },
-    async openGit(changed: () => void) {
-      const oid = 'a'.repeat(40);
-      const value = {
-        busy: false,
-        loaded: true,
-        loadError: '',
-        error: '',
-        source: 'host',
-        state: {
-          execution: { mode: 'shared', status: 'ready', revision: 0 },
-          canPrepare: true,
-          canRemove: false,
-          repository: {
-            kind: 'git',
-            branch: 'main',
-            headOid: oid,
-            branches: [{ name: 'main', oid }],
-            changes: [],
-            dirty: false,
-            partial: false,
-            outsideProjectChanges: false,
-            issues: [],
-            version: 'sha256:' + 'a'.repeat(64),
-            writeSupported: true,
+        return {
+          controller: value,
+          close() {
+            calls.push('git:close');
           },
-        } as any,
-        get execution() {
-          return value.state.execution;
-        },
-      };
-      return {
-        controller: value,
-        close() {
-          calls.push('git:close');
-        },
-        async refresh() {
-          calls.push('git:read');
-          changed();
-        },
-        async prepare(branch: string, base: string, name: string) {
-          assert.deepEqual([branch, base, name], ['main', oid, 'feature/ui']);
-          calls.push('git:prepare');
-          value.state.execution = {
-            mode: 'worktree',
-            status: 'ready',
-            revision: 1,
-            executionId: 'execution',
-            branch: name,
-            baseOid: oid,
-          };
-          value.state.canPrepare = false;
-          changed();
-        },
-      };
-    },
-    async openAttention(changed: () => void) {
-      calls.push('attention:open');
-      const t = catalog.targets[0]!.target;
-      const route = {
-        origin: catalog.origin,
-        actor: catalog.actor!,
-        catalogWorkspaceId: t.catalogWorkspaceId,
-        projectId: t.catalogProjectId,
-        replicaId: t.replicaId,
-        executionDeviceId: t.deviceId,
-        machineId: t.machineId,
-        runtimeWorkspaceId: t.workspaceId,
-        localProjectId: t.localProjectId,
-      };
-      const item: AttentionItem = {
-        itemId: 'synthetic-outcome',
-        sessionId: state.sessionId!,
-        localProjectId: t.localProjectId,
-        assistantTurnId: state.session!.history[0]!.id,
-        userTurnId: 'synthetic-user-turn',
-        kind: 'outcome',
-        lifecycle: 'ended',
-        eventRevision: 1,
-        observationRevision: 0,
-        sequence: 1,
-        occurredAt: 1,
-        summary: 'Synthetic attention outcome',
-        seenRevision: 0,
-        disposition: 'pending',
-        cause: 'agent_returned',
-      };
-      const values = new Map<string, unknown>();
-      let sequence = 0;
-      const attention = new AttentionController({
-        changed,
-        now: () => 100,
-        uuid: () => 'attention-' + ++sequence,
-        read: async <T>(key: string) => values.get(key) as T | undefined,
-        write: async (key, value) => {
-          values.set(key, structuredClone(value));
-        },
-        compareAndSet: async (key, expected, value) => {
-          if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
-          values.set(key, structuredClone(value));
-          return true;
-        },
-        readSessionDraft: async () => '',
-        prepareTurn: async () => {
-          throw Error('Not expected in navigation test');
-        },
-        continued: async () => {
-          throw Error('Not expected in navigation test');
-        },
-        request: async (_route, command) => {
-          const body = 'input' in command ? command.input : undefined;
-          if (body) {
-            calls.push('attention:seen');
-            assert.equal(command.kind, 'seen');
-            const input = body as { operationId: string; eventRevision: number };
-            item.seenRevision = input.eventRevision;
-            return { accepted: true, delivered: true, operationId: input.operationId, item };
-          }
-          if (command.kind === 'detail')
-            return {
-              item,
-              title: 'Synthetic attention session',
-              isArchived: false,
-              turn: { items: [{ type: 'text', text: 'Synthetic attention details' }] },
-              userTurn: null,
+          async refresh() {
+            calls.push('git:read');
+            changed();
+          },
+          async prepare(branch: string, base: string, name: string) {
+            assert.deepEqual([branch, base, name], ['main', oid, 'feature/ui']);
+            calls.push('git:prepare');
+            value.state.execution = {
+              mode: 'worktree',
+              status: 'ready',
+              revision: 1,
+              executionId: 'execution',
+              branch: name,
+              baseOid: oid,
             };
-          return {
-            sessions: [
-              {
-                sessionId: item.sessionId,
+            value.state.canPrepare = false;
+            changed();
+          },
+        };
+      },
+    },
+    catalog: {
+      async listProjectSessions() {
+        return state.sessions;
+      },
+      async refreshCatalog(source: string) {
+        calls.push('catalog:' + source);
+        if (source === 'remote') return;
+        assert.equal(source, 'local');
+        state.catalogs.local = catalog;
+        emit();
+      },
+      async refreshSessions() {
+        calls.push('sessions');
+        emit();
+      },
+      async selectProject(_source: string, target: (typeof catalog.targets)[number]['target']) {
+        calls.push('project');
+        state.project = catalog.targets.find(
+          (entry) => entry.target.localProjectId === target.localProjectId,
+        )!;
+        state.scope = { source: 'local', target: state.project.target };
+        state.sessions = [meta];
+        emit();
+      },
+    },
+    view: {
+      get contextRevision() {
+        return contextRevision;
+      },
+      get state() {
+        return structuredClone(state);
+      },
+      subscribe(listener: () => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    sessions: {
+      async createSession(agentId: string) {
+        assert(state.project!.runtime.agents.some((agent) => agent.id === agentId));
+        calls.push('create');
+        calls.push('create-agent:' + agentId);
+        return 'session';
+      },
+      async openSession(id: string) {
+        calls.push('session:' + id);
+        state.sessionId = id;
+        state.sessionLoad = { status: 'loading-cache' };
+        emit();
+        state.draft = { revision: 0, text: '', selection: {} };
+        state.session = {
+          meta,
+          metaBundle: { version: 1, entries: {} },
+          online: true,
+          synced: true,
+          persisted: true,
+          agent: catalog.targets[0]!.runtime.agents[0],
+          history: [
+            {
+              id: 'assistant',
+              role: 'assistant',
+              timestamp: '2026-01-01T00:00:00.000Z',
+              finished: true,
+              userId: undefined,
+              userTurnId: undefined,
+              read: undefined,
+              inputConfig: undefined,
+              items: [
+                { type: 'text', text: 'Hello <script>unsafe()</script>' },
+                {
+                  type: 'session_event',
+                  event: {
+                    version: 1,
+                    source: 'acp',
+                    kind: 'commands',
+                    commands: [{ name: 'review', description: 'Review the project' }],
+                  },
+                },
+                {
+                  type: 'session_event',
+                  event: { version: 1, source: 'acp', kind: 'context-usage', used: 32, size: 256 },
+                },
+              ],
+              status: 'completed',
+              fileDiff: null,
+            },
+          ],
+        } as NonNullable<WorkspaceClientState['session']>;
+        if (id === 'synthetic-child') {
+          state.session.meta = { ...meta, id, forkOrigin };
+          state.session.history = [];
+        }
+        if (id === 'task-child') {
+          state.session.meta = {
+            ...meta,
+            id,
+            taskOrigin: {
+              version: 1,
+              grantId: 'grant',
+              parentSessionId: 'session',
+              parentUserTurnId: 'parent-user',
+              parentAssistantTurnId: 'parent-assistant',
+              taskId: 'task-one',
+              completion: 'Human verifies synthetic result',
+            },
+          };
+          state.session.history = [];
+        }
+        state.sessionLoad = { status: 'refreshing', source: 'cache' };
+        emit();
+        await sessionRefresh;
+        state.offline = false;
+        state.sessionLoad = { status: 'ready', source: 'host' };
+        emit();
+      },
+      async send() {
+        await flushBufferedDraft();
+        calls.push('send');
+        state.draft = { ...state.draft!, revision: state.draft!.revision + 1, text: '' };
+        emit();
+      },
+      async refreshAgentOptions() {
+        calls.push('models');
+      },
+      async readUsage() {
+        calls.push('usage:read');
+        state.usageLoading = true;
+        emit();
+        await usageRead;
+        state.usageLoading = false;
+        emit();
+      },
+    },
+    drafts: {
+      queueDraft(
+        text: string,
+        selection: object,
+        _failed?: (error: unknown) => void,
+        saved?: () => void,
+      ) {
+        bufferedDraft = { text, selection, saved };
+      },
+      flushDraft: flushBufferedDraft,
+      async saveDraft(text: string, selection: object) {
+        bufferedDraft = { text, selection };
+        await flushBufferedDraft();
+      },
+    },
+    fork: {
+      async openFork(changed: () => void) {
+        const value = {
+          loaded: true,
+          busy: false,
+          loadError: '',
+          error: '',
+          source: 'host',
+          options: undefined as any,
+          receipt: undefined as any,
+          resources: [],
+        };
+        return {
+          controller: value,
+          close() {
+            calls.push('fork:close');
+          },
+          async refresh() {
+            calls.push('fork:read');
+            value.options = {
+              sourceVersion: forkOrigin.sourceVersion,
+              execution: { mode: 'shared', status: 'ready', revision: 0 },
+              agent: { id: 'agent', name: 'Synthetic', agentType: 'synthetic' },
+              currentAvailable: true,
+              capabilities: { sameDirectory: true, worktree: false, turnCutoff: true },
+              turns: [
+                { turnId: 'assistant', ordinal: 1, timestamp: '2026-09-14', available: true },
+              ],
+              partial: false,
+            };
+            changed();
+          },
+          async create(cutoff: unknown, directory: unknown) {
+            assert.deepEqual(cutoff, { kind: 'current' });
+            assert.deepEqual(directory, { kind: 'same-directory' });
+            calls.push('fork:create');
+            value.receipt = {
+              phase: 'accepted',
+              childSessionId: 'synthetic-child',
+              origin: forkOrigin,
+              execution: { mode: 'shared', status: 'ready', revision: 0 },
+            };
+            changed();
+          },
+        };
+      },
+    },
+    attention: {
+      async openAttention(changed: () => void) {
+        calls.push('attention:open');
+        const t = catalog.targets[0]!.target;
+        const route = {
+          origin: catalog.origin,
+          actor: catalog.actor!,
+          catalogWorkspaceId: t.catalogWorkspaceId,
+          projectId: t.catalogProjectId,
+          replicaId: t.replicaId,
+          executionDeviceId: t.deviceId,
+          machineId: t.machineId,
+          runtimeWorkspaceId: t.workspaceId,
+          localProjectId: t.localProjectId,
+        };
+        const item: AttentionItem = {
+          itemId: 'synthetic-outcome',
+          sessionId: state.sessionId!,
+          localProjectId: t.localProjectId,
+          assistantTurnId: state.session!.history[0]!.id,
+          userTurnId: 'synthetic-user-turn',
+          kind: 'outcome',
+          lifecycle: 'ended',
+          eventRevision: 1,
+          observationRevision: 0,
+          sequence: 1,
+          occurredAt: 1,
+          summary: 'Synthetic attention outcome',
+          seenRevision: 0,
+          disposition: 'pending',
+          cause: 'agent_returned',
+        };
+        const values = new Map<string, unknown>();
+        let sequence = 0;
+        const attention = new AttentionController({
+          changed,
+          now: () => 100,
+          uuid: () => 'attention-' + ++sequence,
+          read: async <T>(key: string) => values.get(key) as T | undefined,
+          write: async (key, value) => {
+            values.set(key, structuredClone(value));
+          },
+          compareAndSet: async (key, expected, value) => {
+            if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
+            values.set(key, structuredClone(value));
+            return true;
+          },
+          readSessionDraft: async () => '',
+          prepareTurn: async () => {
+            throw Error('Not expected in navigation test');
+          },
+          continued: async () => {
+            throw Error('Not expected in navigation test');
+          },
+          request: async (_route, command) => {
+            const body = 'input' in command ? command.input : undefined;
+            if (body) {
+              calls.push('attention:seen');
+              assert.equal(command.kind, 'seen');
+              const input = body as { operationId: string; eventRevision: number };
+              item.seenRevision = input.eventRevision;
+              return { accepted: true, delivered: true, operationId: input.operationId, item };
+            }
+            if (command.kind === 'detail')
+              return {
+                item,
                 title: 'Synthetic attention session',
                 isArchived: false,
-                items: [item],
-                itemCount: 1,
-              },
-            ],
-            total: 1,
-            version: 1,
-          };
-        },
-      });
-      attention.configure({
-        origin: catalog.origin,
-        actor: catalog.actor!,
-        workspaceId: t.catalogWorkspaceId,
-        workspaceName: 'Synthetic workspace',
-        connected: true,
-        targets: [
-          {
-            ...route,
-            hostName: 'My Mac',
-            projectName: 'Local project',
-            online: true,
-            features: [ACTOR_FEATURE, ATTENTION_FEATURE, FOLLOWUP_FEATURE],
+                turn: { items: [{ type: 'text', text: 'Synthetic attention details' }] },
+                userTurn: null,
+              };
+            return {
+              sessions: [
+                {
+                  sessionId: item.sessionId,
+                  title: 'Synthetic attention session',
+                  isArchived: false,
+                  items: [item],
+                  itemCount: 1,
+                },
+              ],
+              total: 1,
+              version: 1,
+            };
           },
-        ],
-      });
-      await attention.refresh();
-      return {
-        controller: attention,
-        close: () => calls.push('attention:close'),
-        openSession: async (value: unknown, sessionId: string) => {
-          assert.deepEqual(value, attention.state.lists[0]!.target);
-          assert.equal(sessionId, state.sessionId);
-          calls.push('attention:navigate');
-        },
-      };
+        });
+        attention.configure({
+          origin: catalog.origin,
+          actor: catalog.actor!,
+          workspaceId: t.catalogWorkspaceId,
+          workspaceName: 'Synthetic workspace',
+          connected: true,
+          targets: [
+            {
+              ...route,
+              hostName: 'My Mac',
+              projectName: 'Local project',
+              online: true,
+              features: [ACTOR_FEATURE, ATTENTION_FEATURE, FOLLOWUP_FEATURE],
+            },
+          ],
+        });
+        await attention.refresh();
+        return {
+          controller: attention,
+          close: () => calls.push('attention:close'),
+          openSession: async (value: unknown, sessionId: string) => {
+            assert.deepEqual(value, attention.state.lists[0]!.target);
+            assert.equal(sessionId, state.sessionId);
+            calls.push('attention:navigate');
+          },
+        };
+      },
     },
-    openSearch() {
-      return {
-        close() {
-          calls.push('search:close');
-        },
-        async search(query: string, scope: 'session' | 'project') {
-          calls.push('search:' + query);
-          return {
-            source: 'host-index' as const,
-            query,
-            scope,
-            partial: false,
-            more: false,
-            hits: [
-              {
-                sessionId: state.sessionId!,
-                turnId: state.session!.history[0]!.id,
-                itemIndex: 0,
-                kind: 'message' as const,
-                excerpt: 'Synthetic result',
-              },
-            ],
-          };
-        },
-        async openHit(hit: any) {
-          calls.push('search:open');
-          state.searchFocus = hit;
-          emit();
-        },
-      };
-    },
-    async projectMetadata(
-      source: string,
-      target: (typeof catalog.targets)[number]['target'],
-      shown: typeof meta,
-      action: string,
-      title?: string,
-    ) {
-      calls.push(`sidebar:${source}:${target.localProjectId}:${shown.id}:${action}`);
-      if (title === 'conflict') throw Error('Synthetic metadata conflict');
-      state.sessions = state.sessions.map((session) =>
-        session.id === shown.id
-          ? {
-              ...session,
-              ...(action === 'pin' || action === 'unpin' ? { isPinned: action === 'pin' } : {}),
-              ...(action === 'rename' ? { title } : {}),
-            }
-          : session,
-      );
-      emit();
-    },
-    async metadata(action: string, title?: string) {
-      calls.push('metadata:' + action);
-      if (action === 'rename') state.session!.meta.title = title;
-      if (action === 'pin') state.session!.meta.isPinned = true;
-      emit();
-    },
-    async openGithub(changed: () => void) {
-      const fixture = githubFixture();
-      fixture.controller.subscribe(changed);
-      await fixture.controller.open(githubTarget);
-      calls.push('github:open');
-      return fixture.controller;
-    },
-    openSkills(changed: () => void) {
-      const source = {
-        id: 'project-skills',
-        label: '.agents/skills',
-        scope: 'project',
-        status: 'available',
-      };
-      const skill = {
-        id: 'skill',
-        name: 'Synthetic skill',
-        sourceId: source.id,
-        path: 'synthetic/SKILL.md',
-        version: 'sha256:synthetic',
-        byteLength: 30,
-      };
-      const value = {
-        busy: false,
-        error: '',
-        list: undefined as any,
-        detail: undefined as any,
-        async refresh() {
-          calls.push('skills:read');
-          value.list = { sources: [source], skills: [skill], issues: [], truncated: false };
+    files: {
+      openSearch() {
+        return {
+          close() {
+            calls.push('search:close');
+          },
+          async search(query: string, scope: 'session' | 'project') {
+            calls.push('search:' + query);
+            return {
+              source: 'host-index' as const,
+              query,
+              scope,
+              partial: false,
+              more: false,
+              hits: [
+                {
+                  sessionId: state.sessionId!,
+                  turnId: state.session!.history[0]!.id,
+                  itemIndex: 0,
+                  kind: 'message' as const,
+                  excerpt: 'Synthetic result',
+                },
+              ],
+            };
+          },
+          async openHit(hit: any) {
+            calls.push('search:open');
+            state.searchFocus = hit;
+            emit();
+          },
+        };
+      },
+      async openProjectContent(changed: () => void, mode: 'tree' | 'changes' = 'tree') {
+        calls.push('content:open:' + mode);
+        const listeners = new Set<() => void>();
+        const notify = () => {
           changed();
-        },
-        async select(id: string) {
-          assert.equal(id, skill.id);
-          calls.push('skills:detail');
-          value.detail = { source, skill, text: 'Reviewed skill <script>unsafe()</script>' };
-          changed();
-        },
-      };
-      return {
-        controller: value,
-        close() {
-          value.list = value.detail = undefined;
-          calls.push('skills:close');
-          changed();
-        },
-        async addToDraft() {
-          assert(value.detail);
-          calls.push('skills:add');
-          state.draft = {
-            ...state.draft!,
-            revision: state.draft!.revision + 1,
-            text: 'Reviewed skill',
-          };
-          emit();
-        },
-      };
+          for (const listener of listeners) listener();
+        };
+        let value: { title: string; mode: 'tree' | 'changes'; turns: [] } | null = {
+          title: 'Synthetic project files',
+          mode,
+          turns: [],
+        };
+        return {
+          get state() {
+            return value;
+          },
+          subscribe(listener: () => void) {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          async setMode(next: 'tree' | 'changes') {
+            calls.push('content:mode:' + next);
+            value = { ...value!, mode: next };
+            notify();
+          },
+          async treeMore() {},
+          async file() {},
+          async turn() {},
+          async diffFile() {},
+          async refresh() {
+            calls.push('content:refresh');
+          },
+          close() {
+            calls.push('content:close');
+            value = null;
+            notify();
+          },
+          dispose() {
+            calls.push('content:dispose');
+            value = null;
+            listeners.clear();
+          },
+        };
+      },
     },
-    async saveQuestionDraft(request: QuestionRequest, values: QuestionDraftValues) {
-      calls.push('question:draft');
-      const document = (state.ledger!.interactions ??= {});
-      document[request.sessionId] ??= { revision: 0, value: emptyInteractionSaved() };
-      document[request.sessionId]!.value.drafts[questionDraftKey(request)] = values;
-      document[request.sessionId]!.revision++;
-      emit();
+    metadata: {
+      async projectMetadata(
+        source: string,
+        target: (typeof catalog.targets)[number]['target'],
+        shown: typeof meta,
+        action: string,
+        title?: string,
+      ) {
+        calls.push(`sidebar:${source}:${target.localProjectId}:${shown.id}:${action}`);
+        if (title === 'conflict') throw Error('Synthetic metadata conflict');
+        state.sessions = state.sessions.map((session) =>
+          session.id === shown.id
+            ? {
+                ...session,
+                ...(action === 'pin' || action === 'unpin' ? { isPinned: action === 'pin' } : {}),
+                ...(action === 'rename' ? { title } : {}),
+              }
+            : session,
+        );
+        emit();
+      },
+      async metadata(action: string, title?: string) {
+        calls.push('metadata:' + action);
+        if (action === 'rename') state.session!.meta.title = title;
+        if (action === 'pin') state.session!.meta.isPinned = true;
+        emit();
+      },
     },
-    async answerQuestion(request: QuestionRequest, answer: QuestionAnswer['answer']) {
-      calls.push('question:answer');
-      assert.equal(request.expectedTurnId, 'assistant');
-      assert.deepEqual(answer, { action: 'accept', values: { color: 'green' } });
-      const item = (state.session!.history[0]!.items as any[]).find(
-        (item) => item.type === 'question',
-      );
-      item.status = 'answered';
-      item.answer = answer;
-      emit();
+    github: {
+      async openGithub(changed: () => void) {
+        const fixture = githubFixture();
+        fixture.controller.subscribe(changed);
+        await fixture.controller.open(githubTarget);
+        calls.push('github:open');
+        return fixture.controller;
+      },
     },
-    async saveSteerDraft(prompt: string) {
-      state.ledger!.interactions![state.sessionId!]!.value.steerDraft = prompt;
-      emit();
+    skills: {
+      openSkills(changed: () => void) {
+        const source = {
+          id: 'project-skills',
+          label: '.agents/skills',
+          scope: 'project',
+          status: 'available',
+        };
+        const skill = {
+          id: 'skill',
+          name: 'Synthetic skill',
+          sourceId: source.id,
+          path: 'synthetic/SKILL.md',
+          version: 'sha256:synthetic',
+          byteLength: 30,
+        };
+        const value = {
+          busy: false,
+          error: '',
+          list: undefined as any,
+          detail: undefined as any,
+          async refresh() {
+            calls.push('skills:read');
+            value.list = { sources: [source], skills: [skill], issues: [], truncated: false };
+            changed();
+          },
+          async select(id: string) {
+            assert.equal(id, skill.id);
+            calls.push('skills:detail');
+            value.detail = { source, skill, text: 'Reviewed skill <script>unsafe()</script>' };
+            changed();
+          },
+        };
+        return {
+          controller: value,
+          close() {
+            value.list = value.detail = undefined;
+            calls.push('skills:close');
+            changed();
+          },
+          async addToDraft() {
+            assert(value.detail);
+            calls.push('skills:add');
+            state.draft = {
+              ...state.draft!,
+              revision: state.draft!.revision + 1,
+              text: 'Reviewed skill',
+            };
+            emit();
+          },
+        };
+      },
     },
-    async steer(turnId: string, prompt: string) {
-      calls.push('steer:' + turnId + ':' + prompt);
+    interactions: {
+      async saveQuestionDraft(request: QuestionRequest, values: QuestionDraftValues) {
+        calls.push('question:draft');
+        const document = (state.ledger!.interactions ??= {});
+        document[request.sessionId] ??= { revision: 0, value: emptyInteractionSaved() };
+        document[request.sessionId]!.value.drafts[questionDraftKey(request)] = values;
+        document[request.sessionId]!.revision++;
+        emit();
+      },
+      async answerQuestion(request: QuestionRequest, answer: QuestionAnswer['answer']) {
+        calls.push('question:answer');
+        assert.equal(request.expectedTurnId, 'assistant');
+        assert.deepEqual(answer, { action: 'accept', values: { color: 'green' } });
+        const item = (state.session!.history[0]!.items as any[]).find(
+          (item) => item.type === 'question',
+        );
+        item.status = 'answered';
+        item.answer = answer;
+        emit();
+      },
+      async saveSteerDraft(prompt: string) {
+        state.ledger!.interactions![state.sessionId!]!.value.steerDraft = prompt;
+        emit();
+      },
+      async steer(turnId: string, prompt: string) {
+        calls.push('steer:' + turnId + ':' + prompt);
+      },
+      async steerDraft(turnId: string, prompt: string) {
+        calls.push('composer-steer:' + turnId + ':' + prompt);
+        await flushBufferedDraft();
+        state.draft = { ...state.draft!, revision: state.draft!.revision + 1, text: '' };
+        emit();
+        return { delivered: true, draftCleared: true };
+      },
     },
-    async steerDraft(turnId: string, prompt: string) {
-      calls.push('composer-steer:' + turnId + ':' + prompt);
-      await flushBufferedDraft();
-      state.draft = { ...state.draft!, revision: state.draft!.revision + 1, text: '' };
-      emit();
-      return { delivered: true, draftCleared: true };
+    attachments: {
+      async addAttachments(files: File[]) {
+        calls.push('attachments:add');
+        const items = await Promise.all(
+          files.map((file, index) => createAttachmentDraftItem(file, 'synthetic-file-' + index)),
+        );
+        state.ledger ??= { version: 1, scope: state.scope!, revision: 1, operations: [] };
+        state.ledger.attachments = { [state.sessionId!]: { revision: 1, items } };
+        emit();
+        attachmentsSaved();
+      },
+      async uploadAttachment(id: string) {
+        calls.push('attachment:upload:' + id);
+        const draft = state.ledger!.attachments![state.sessionId!]!;
+        draft.items[0]!.uploaded = true;
+        draft.revision++;
+        emit();
+      },
+      async removeAttachment(id: string) {
+        calls.push('attachment:remove:' + id);
+        state.ledger!.attachments![state.sessionId!]!.items = [];
+        emit();
+      },
+      async readAttachment(reference: AttachmentReference) {
+        calls.push('attachment:read:' + reference.attachmentId);
+        const item = state.ledger!.attachments![state.sessionId!]!.items.find(
+          (item) => item.reference.attachmentId === reference.attachmentId,
+        )!;
+        return { reference: item.reference, data: item.data, source: 'host', cacheSaved: true };
+      },
     },
-    async addAttachments(files: File[]) {
-      calls.push('attachments:add');
-      const items = await Promise.all(
-        files.map((file, index) => createAttachmentDraftItem(file, 'synthetic-file-' + index)),
-      );
-      state.ledger ??= { version: 1, scope: state.scope!, revision: 1, operations: [] };
-      state.ledger.attachments = { [state.sessionId!]: { revision: 1, items } };
-      emit();
-      attachmentsSaved();
-    },
-    async uploadAttachment(id: string) {
-      calls.push('attachment:upload:' + id);
-      const draft = state.ledger!.attachments![state.sessionId!]!;
-      draft.items[0]!.uploaded = true;
-      draft.revision++;
-      emit();
-    },
-    async removeAttachment(id: string) {
-      calls.push('attachment:remove:' + id);
-      state.ledger!.attachments![state.sessionId!]!.items = [];
-      emit();
-    },
-    async readAttachment(reference: AttachmentReference) {
-      calls.push('attachment:read:' + reference.attachmentId);
-      const item = state.ledger!.attachments![state.sessionId!]!.items.find(
-        (item) => item.reference.attachmentId === reference.attachmentId,
-      )!;
-      return { reference: item.reference, data: item.data, source: 'host', cacheSaved: true };
-    },
-    async openProjectContent(changed: () => void, mode: 'tree' | 'changes' = 'tree') {
-      calls.push('content:open:' + mode);
-      const listeners = new Set<() => void>();
-      const notify = () => {
-        changed();
-        for (const listener of listeners) listener();
-      };
-      let value: { title: string; mode: 'tree' | 'changes'; turns: [] } | null = {
-        title: 'Synthetic project files',
-        mode,
-        turns: [],
-      };
-      return {
-        get state() {
-          return value;
-        },
-        subscribe(listener: () => void) {
-          listeners.add(listener);
-          return () => listeners.delete(listener);
-        },
-        async setMode(next: 'tree' | 'changes') {
-          calls.push('content:mode:' + next);
-          value = { ...value!, mode: next };
-          notify();
-        },
-        async treeMore() {},
-        async file() {},
-        async turn() {},
-        async diffFile() {},
-        async refresh() {
-          calls.push('content:refresh');
-        },
-        close() {
-          calls.push('content:close');
-          value = null;
-          notify();
-        },
-        dispose() {
-          calls.push('content:dispose');
-          value = null;
-          listeners.clear();
-        },
-      };
-    },
-  } as unknown as Workspace;
+  } as unknown as WorkspaceGraph;
   const visibleButton = (label: string) => {
     const result = [...dom.window.document.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) =>
@@ -962,7 +993,7 @@ test('packaged workspace opens local projects without an account and preserves d
       '/review',
     );
     assert.equal(calls.filter((call) => call === 'send').length, sendsBeforeCommand);
-    await act(async () => controller.saveDraft('', {}));
+    await act(async () => controller.drafts.saveDraft('', {}));
     await act(async () => {
       const toggled = new Promise<void>((resolve) =>
         information.addEventListener('toggle', () => resolve(), { once: true }),
@@ -994,7 +1025,7 @@ test('packaged workspace opens local projects without an account and preserves d
       );
       textarea.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     });
-    await act(async () => controller.refreshSessions());
+    await act(async () => controller.catalog.refreshSessions());
     assert.equal(
       textarea.value,
       'Keep this draft',
@@ -1619,7 +1650,7 @@ test('packaged workspace opens local projects without an account and preserves d
       await usageRead;
     });
     usageRead = undefined;
-    await act(async () => controller.saveSteerDraft('Keep working'));
+    await act(async () => controller.interactions.saveSteerDraft('Keep working'));
     assert.equal(
       visibleButton('回合内追加').hidden,
       false,
@@ -1842,18 +1873,20 @@ test('packaged workspace opens local projects without an account and preserves d
     });
     const listReads: number[] = [];
     const listing = {
-      get navigationRevision() {
-        return listRevision;
+      catalog: {
+        get navigationRevision() {
+          return listRevision;
+        },
+        async listProjectSessions(_source: string, target: typeof secondProject.target) {
+          const version = listRevision;
+          listReads.push(version);
+          if (listReads.length <= 2) await listGate;
+          return [{ ...meta, id: target.localProjectId, title: 'revision-' + version }];
+        },
       },
-      async listProjectSessions(_source: string, target: typeof secondProject.target) {
-        const version = listRevision;
-        listReads.push(version);
-        if (listReads.length <= 2) await listGate;
-        return [{ ...meta, id: target.localProjectId, title: 'revision-' + version }];
-      },
-    } as unknown as Workspace;
+    } as unknown as WorkspaceGraph;
     function NavigationProbe() {
-      const value = useNavigationSessions(listing, {
+      const value = useNavigationSessions(bindWorkspaceNavigationPagesPort(listing), {
         ...state,
         project: undefined,
         scope: undefined,

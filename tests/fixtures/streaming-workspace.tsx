@@ -1,3 +1,4 @@
+import { syntheticClientRuntime } from './client-runtime';
 import { createWorkspace } from '@moor/client/features/workspace/compose';
 import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
 import { createRoot } from 'react-dom/client';
@@ -61,6 +62,8 @@ const store = createWorkspacePersistence(
   new IndexedStorage({ databaseName: 'moor-desktop-workspace-v1' }),
 );
 const controller = createWorkspace({
+  ...syntheticClientRuntime,
+
   sessionReceived: beginSessionPerformanceRead,
   store,
   request: async (input) => {
@@ -86,8 +89,8 @@ const controller = createWorkspace({
   },
 });
 let publishedVersion = '';
-controller.subscribe(() => {
-  const version = controller.state.session?.version;
+controller.view.subscribe(() => {
+  const version = controller.view.state.session?.version;
   if (version && version !== publishedVersion) {
     publishedVersion = version;
     record('published', { version, sequence: versionSequence.get(version) });
@@ -151,7 +154,7 @@ document.addEventListener(
   true,
 );
 const text = () =>
-  controller.state.session?.history
+  controller.view.state.session?.history
     .at(-1)
     ?.items?.filter((value: any) => value.type === 'text')
     .map((value: any) => value.text)
@@ -257,10 +260,10 @@ Object.assign(window, {
       committedVersion,
       inputSequence,
       visibility: document.visibilityState,
-      cacheStatus: controller.state.sessionCache,
+      cacheStatus: controller.view.state.sessionCache,
       geometry: geometry(),
     }),
-    ready: () => socket.readyState === WebSocket.OPEN && !!controller.state.session?.version,
+    ready: () => socket.readyState === WebSocket.OPEN && !!controller.view.state.session?.version,
     start() {
       measuring = true;
       lastFrame = 0;
@@ -329,8 +332,8 @@ Object.assign(window, {
       });
     },
     async finish() {
-      await controller.flushDraft();
-      const state = controller.state;
+      await controller.drafts.flushDraft();
+      const state = controller.view.state;
       const restored = await store.cachedSession(state.scope!, state.sessionId!, () => {});
       const cachedText = restored?.history
         .at(-1)

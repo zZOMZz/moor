@@ -1,8 +1,4 @@
-export type RetiredRecord = { key: string; value: unknown };
-export type RetiredRecordExport = {
-  format: 'moor-retired-secure-v1' | 'moor-retired-web-v1';
-  records: RetiredRecord[];
-};
+import type { RetiredRecord } from '@moor/client/features/workspace/retired-records';
 const MAX_BYTES = 96 * 1024 * 1024;
 export async function readLegacyWebRecord<T>(key: string): Promise<T | undefined> {
   if (
@@ -93,26 +89,3 @@ async function readRetiredRecords(
 export const readRetiredSecureRecords = () =>
   readRetiredRecords('moor-secure-workspace-v1', 'state');
 export const readRetiredWebRecords = () => readRetiredRecords('moor-runtime-v1', 'cache');
-export async function exportRetiredRecords(
-  records: RetiredRecord[],
-  format: RetiredRecordExport['format'] = 'moor-retired-secure-v1',
-) {
-  const value: RetiredRecordExport = { format, records };
-  const bridge = (
-    window as unknown as {
-      moorWorkspace?: {
-        exportRetiredData?: (value: RetiredRecordExport) => Promise<{ canceled: boolean }>;
-      };
-    }
-  ).moorWorkspace;
-  if (bridge?.exportRetiredData) return bridge.exportRetiredData(value);
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }),
-  );
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = format + '.json';
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-  return { canceled: false };
-}

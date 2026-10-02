@@ -15,6 +15,21 @@ const developmentMetrics = 'apps/web/src/features/performance/performance-metric
 const developmentImplementations = new Set([developmentPanel, developmentMetrics]);
 const developmentFlag = '__MOOR_DEV_PERFORMANCE__';
 const retired = [
+  'packages/protocol/src/node/',
+  'packages/client/src/node/',
+  'packages/client/src/http.ts',
+  'packages/client/src/session-client.ts',
+  'apps/web/src/app/entry.ts',
+  'apps/web/src/features/workspace/workspace-controller.ts',
+  'apps/web/src/platform/workspace-store.ts',
+  'packages/gateway/src/accounts.ts',
+  'packages/gateway/src/catalog.ts',
+  'packages/gateway/src/google-auth.ts',
+  'packages/gateway/src/notifications.ts',
+  'packages/gateway/src/http.ts',
+  'packages/gateway/src/replica-command.ts',
+  'packages/gateway/src/static.ts',
+  'packages/sync/src/store.ts',
   'packages/e2ee/',
   'packages/host/src/transport/encrypted-host.ts',
   'packages/host/src/commands/encrypted-host-command.ts',

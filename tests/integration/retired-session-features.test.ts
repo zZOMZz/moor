@@ -272,12 +272,15 @@ test('roles and previews expose only original scoped receipts and never create o
           ? { request: preview }
           : { ...f.content, previewVersion: 1, view: 'options' };
     await assert.rejects(
-      f.dispatcher.execute({
-        method,
-        workspaceId: f.scope.workspaceId,
-        localProjectId: f.project,
-        params,
-      }),
+      f.dispatcher.execute(
+        {
+          method,
+          workspaceId: f.scope.workspaceId,
+          localProjectId: f.project,
+          params,
+        },
+        { current: () => {} },
+      ),
       (error: any) => error.status === 410,
     );
   }

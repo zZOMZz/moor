@@ -1,8 +1,17 @@
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState, WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import { GIT_OPERATIONS_FEATURE, GIT_WORKTREE_FEATURE } from '@moor/protocol/git-protocol';
 import { GitBranch } from 'lucide-react';
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { GitWorkspacePanel } from './git-workspace-ui';
+const workspaceGitUiPortSelection = {
+  view: ['contextRevision'],
+  git: ['openGit'],
+  sessions: ['createSession', 'openSession'],
+} as const;
+export type WorkspaceGitUiPort = WorkspacePort<typeof workspaceGitUiPortSelection>;
+export const bindWorkspaceGitUiPort = (graph: WorkspaceGitUiPort) =>
+  bindWorkspacePort(graph, workspaceGitUiPortSelection);
 
 export function WorkspaceGitUI({
   controller,
@@ -12,7 +21,7 @@ export function WorkspaceGitUI({
   controlRef,
   onChanged,
 }: {
-  controller: Workspace;
+  controller: WorkspaceGitUiPort;
   state: WorkspaceClientState;
   busy: boolean;
   controlRef?: Ref<{ open(): boolean }>;
@@ -20,13 +29,13 @@ export function WorkspaceGitUI({
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
-  const panel = useRef<Awaited<ReturnType<Workspace['openGit']>> | null>(null);
+  const panel = useRef<Awaited<ReturnType<WorkspaceGraph['git']['openGit']>> | null>(null);
   const close = () => {
     panel.current?.close();
     panel.current = null;
     render((n) => n + 1);
   };
-  useEffect(() => close, [controller, controller.contextRevision]);
+  useEffect(() => close, [controller, controller.view.contextRevision]);
   const syncing = ['loading-cache', 'refreshing'].includes(state.sessionLoad.status);
   const reason = syncing
     ? '会话正在同步，完成后可读取 Git 工作目录。'
@@ -40,7 +49,7 @@ export function WorkspaceGitUI({
   const open = () =>
     run(async () => {
       panel.current?.close();
-      panel.current = await controller.openGit(() => render((n) => n + 1));
+      panel.current = await controller.git.openGit(() => render((n) => n + 1));
       render((n) => n + 1);
       if (!reason) await panel.current.refresh();
       onChanged?.();
@@ -91,8 +100,8 @@ export function WorkspaceGitUI({
           onDetach={() => update(() => panel.current!.detach())}
           onNewDraft={() =>
             run(async () => {
-              const id = await controller.createSession(state.session!.meta.agentConfigId);
-              await controller.openSession(id);
+              const id = await controller.sessions.createSession(state.session!.meta.agentConfigId);
+              await controller.sessions.openSession(id);
             })
           }
         />

@@ -1,11 +1,20 @@
 import { Dialog } from '@base-ui/react/dialog';
 import type { SessionSearchView } from '@moor/client/features/sessions/session-search';
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState, WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import type { SessionAction } from '@moor/protocol/protocol';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
 import { Ellipsis, Search } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { SessionSearchPanel } from '../sessions/session-search-ui';
+const workspaceSessionToolsPortSelection = {
+  view: ['contextRevision'],
+  metadata: ['metadata'],
+  files: ['openSearch'],
+} as const;
+export type WorkspaceSessionToolsPort = WorkspacePort<typeof workspaceSessionToolsPortSelection>;
+export const bindWorkspaceSessionToolsPort = (graph: WorkspaceSessionToolsPort) =>
+  bindWorkspacePort(graph, workspaceSessionToolsPortSelection);
 
 export function WorkspaceSessionTools({
   controller,
@@ -14,7 +23,7 @@ export function WorkspaceSessionTools({
   run,
   navigate,
 }: {
-  controller: Workspace;
+  controller: WorkspaceSessionToolsPort;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
@@ -23,7 +32,7 @@ export function WorkspaceSessionTools({
   const [searching, setSearching] = useState(false),
     [result, setResult] = useState<SessionSearchView>();
   const [error, setError] = useState('');
-  const search = useRef<ReturnType<Workspace['openSearch']> | null>(null);
+  const search = useRef<ReturnType<WorkspaceGraph['files']['openSearch']> | null>(null);
   const [metadata, setMetadata] = useState<SessionMetadata>(),
     [title, setTitle] = useState('');
   const sessionWritable = state.sessionLoad.status === 'ready' && !state.offline;
@@ -39,11 +48,11 @@ export function WorkspaceSessionTools({
       search.current?.close();
       search.current = null;
     },
-    [controller, controller.contextRevision],
+    [controller, controller.view.contextRevision],
   );
   const action = (kind: SessionAction['action']) =>
     run(async () => {
-      await controller.metadata(kind, kind === 'rename' ? title : undefined, metadata);
+      await controller.metadata.metadata(kind, kind === 'rename' ? title : undefined, metadata);
       setMetadata(undefined);
     });
   return (
@@ -55,7 +64,7 @@ export function WorkspaceSessionTools({
         disabled={busy}
         onClick={() => {
           closeSearch();
-          search.current = controller.openSearch();
+          search.current = controller.files.openSearch();
           setSearching(true);
         }}
       >

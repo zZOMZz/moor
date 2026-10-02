@@ -77,7 +77,7 @@ export class SessionForkManager {
   constructor(
     private host: Host,
     private driver: AgentDriver,
-    private readonly environment: Pick<HostEnvironment, 'hash' | 'directory'>,
+    private readonly environment: Pick<HostEnvironment, 'hash' | 'directory' | 'now'>,
   ) {}
   private hash(value: string) {
     return 'sha256:' + this.environment.hash(value);
@@ -509,7 +509,7 @@ export class SessionForkManager {
             sourceTitle: String(source.meta.title ?? '').slice(0, 200),
             cutoff: request.cutoff,
             directory: request.directory.kind,
-            createdAt: new Date().toISOString(),
+            createdAt: new Date(this.environment.now()).toISOString(),
             ...(request.directory.kind === 'worktree'
               ? { baseOid: request.directory.expectedOid, branch: request.directory.newBranch }
               : {}),

@@ -1,4 +1,3 @@
-import { informationHtml } from '../interactions/information';
 import { sessionInformation } from '@moor/client/features/interactions/interactions';
 import { agentCommandText } from '@moor/client/features/skills/skills';
 import { projectDiffReferenceSchema } from '@moor/protocol/project-content-protocol';
@@ -14,6 +13,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { informationHtml } from '../interactions/information';
 import { StreamingMarkdown } from './streaming-markdown';
 
 export type TimelineTurn = {

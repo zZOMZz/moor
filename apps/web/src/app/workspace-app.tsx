@@ -1,5 +1,5 @@
 import { Popover } from '@base-ui/react/popover';
-import { Workspace, type WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import { WorkspaceGraph, type WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { sessionPendingOperations } from '@moor/client/operations/workspace/compose';
 import { AGENT_RUN_DEFAULTS_FEATURE } from '@moor/protocol/agent-controls';
 import { SESSION_FORK_FEATURE } from '@moor/protocol/fork-protocol';
@@ -43,14 +43,25 @@ import {
 } from 'react';
 import { AppearanceSettings } from '../components/appearance';
 import { UsagePanel, latestContextUsage } from '../components/usage-panel';
-import { WorkspaceAttentionUI } from '../features/attention/workspace-attention-ui';
+import { bindWorkspaceAttachmentViewPort } from '../features/attachments/workspace-attachment-view';
+import {
+  WorkspaceAttentionUI,
+  bindWorkspaceAttentionUiPort,
+} from '../features/attention/workspace-attention-ui';
 import { WorkspaceAccountPanel } from '../features/auth/workspace-account';
 import { useContentDockLayout } from '../features/files/workspace-content-layout';
 import {
   WorkspaceContentUI,
+  bindWorkspaceContentUiPort,
   type WorkspaceContentHandle,
 } from '../features/files/workspace-content-ui';
-import { WorkspaceGithubUI } from '../features/github/workspace-github-ui';
+import { bindWorkspaceForkUiPort } from '../features/fork/workspace-fork-ui';
+import { bindWorkspaceGitUiPort } from '../features/git/workspace-git-ui';
+import {
+  WorkspaceGithubUI,
+  bindWorkspaceGithubUiPort,
+} from '../features/github/workspace-github-ui';
+import { bindWorkspaceInteractionUiPort } from '../features/interactions/workspace-interaction-ui';
 import { sessionPerformanceCommitted } from '../features/performance/performance-signals';
 import { ComposerInput } from '../features/sessions/composer-input';
 import {
@@ -63,6 +74,7 @@ import {
 import {
   NavigationProjectGroup,
   NavigationSessions,
+  bindWorkspaceNavigationPort,
   logicalProjectGroups,
   navigationProjects,
   navigationSessionQuery,
@@ -71,14 +83,66 @@ import {
   workspaceKey,
   type NavigationProject,
 } from '../features/sessions/workspace-navigation';
+import { bindWorkspaceNavigationPagesPort } from '../features/sessions/workspace-navigation-pages';
+import { bindWorkspaceSkillsUiPort } from '../features/skills/workspace-skills-ui';
 import {
   SidebarSizer,
   WorkspaceToolMenu,
   useWorkspaceLayout,
 } from '../features/workspace/workspace-layout';
-import { WorkspaceSessionTools } from '../features/workspace/workspace-session-tools';
+import {
+  WorkspaceSessionTools,
+  bindWorkspaceSessionToolsPort,
+} from '../features/workspace/workspace-session-tools';
 import type { Account, AccountApi } from '../platform/account';
 import { UiPortsProvider, type UiPorts } from '../platform/ui-ports';
+import { bindWorkspacePort, type WorkspacePort } from './workspace-port';
+const WorkspaceConversationHistoryPortSelection = {
+  attachments: ['readAttachment'],
+  sessions: ['respondPermission'],
+} as const;
+type WorkspaceConversationHistoryPort = WorkspacePort<
+  typeof WorkspaceConversationHistoryPortSelection
+>;
+const bindWorkspaceConversationHistoryPort = (graph: WorkspaceConversationHistoryPort) =>
+  bindWorkspacePort(graph, WorkspaceConversationHistoryPortSelection);
+
+const WorkspaceConversationPortSelection = {
+  view: ['contextRevision', 'identity', 'state'],
+  git: ['openGit', 'readGitContext'],
+  drafts: ['queueDraft', 'reloadDraft'],
+  metadata: ['metadata'],
+  files: ['openProjectContent', 'openSearch'],
+  sessions: [
+    'createSession',
+    'openSession',
+    'readUsage',
+    'refreshAgentOptions',
+    'refreshSession',
+    'respondPermission',
+    'saveApprovalDefault',
+    'saveRunDefaults',
+    'send',
+    'stop',
+  ],
+  fork: ['openFork'],
+  github: ['openGithub'],
+  attachments: ['addAttachments', 'readAttachment', 'removeAttachment', 'uploadAttachment'],
+  operations: ['abandon', 'inspect', 'recoverRetiredTask', 'retry'],
+  interactions: [
+    'answerQuestion',
+    'dismissInteraction',
+    'retryInteraction',
+    'saveQuestionDraft',
+    'saveSteerDraft',
+    'steer',
+    'steerDraft',
+  ],
+  skills: ['openSkills'],
+} as const;
+type WorkspaceConversationPort = WorkspacePort<typeof WorkspaceConversationPortSelection>;
+const bindWorkspaceConversationPort = (graph: WorkspaceConversationPort) =>
+  bindWorkspacePort(graph, WorkspaceConversationPortSelection);
 
 import {
   attachmentInputReason,
@@ -87,10 +151,6 @@ import {
   formatAttachmentSize,
 } from '@moor/client/features/attachments/attachments';
 import { workspaceInteractionSnapshot } from '@moor/client/features/interactions/workspace-interactions';
-import {
-  sessionPermissionReviews,
-  type SessionPermissionReview,
-} from '@moor/session/session-operations';
 import { ATTACHMENTS_FEATURE } from '@moor/protocol/attachment-protocol';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import { attachmentReferenceSchema } from '@moor/protocol/content-protocol';
@@ -100,6 +160,10 @@ import {
   addProjectResultSchema,
   workspaceContextSchema,
 } from '@moor/protocol/workspace-client-protocol';
+import {
+  sessionPermissionReviews,
+  type SessionPermissionReview,
+} from '@moor/session/session-operations';
 import type { z } from 'zod';
 import { markdown } from '../components/content';
 import { RunControls } from '../components/ui';
@@ -164,7 +228,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
   history: NonNullable<WorkspaceClientState['session']>['history'];
   scope: NonNullable<WorkspaceClientState['scope']>;
   sessionId: string;
-  controller: Workspace;
+  controller: WorkspaceConversationHistoryPort;
   busy: boolean;
   live: boolean;
   confirmed: boolean;
@@ -186,7 +250,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
           return (
             <WorkspaceAttachmentView
               key={index}
-              controller={controller}
+              controller={bindWorkspaceAttachmentViewPort(controller)}
               scope={scope}
               sessionId={sessionId}
               reference={reference.data}
@@ -228,7 +292,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
                 disabled={busy || !live}
                 onClick={() =>
                   run(() =>
-                    controller.respondPermission(review, {
+                    controller.sessions.respondPermission(review, {
                       outcome: 'selected',
                       optionId: option.optionId,
                     }),
@@ -241,7 +305,7 @@ const WorkspaceConversationHistory = memo(function WorkspaceConversationHistory(
             <button
               disabled={busy || !live}
               onClick={() =>
-                run(() => controller.respondPermission(review, { outcome: 'cancelled' }))
+                run(() => controller.sessions.respondPermission(review, { outcome: 'cancelled' }))
               }
             >
               取消操作
@@ -303,7 +367,7 @@ function WorkspaceConversation({
   projects,
   onProjectChange,
 }: {
-  controller: Workspace;
+  controller: WorkspaceConversationPort;
   state: WorkspaceClientState;
   busy: boolean;
   run: Run;
@@ -334,7 +398,7 @@ function WorkspaceConversation({
   const composerInput = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     sessionPerformanceCommitted(
-      controller,
+      controller.view.identity,
       state.sessionId,
       state.session?.version,
       composerInput.current,
@@ -347,7 +411,7 @@ function WorkspaceConversation({
       setBranch(undefined);
       return () => {};
     }
-    void controller
+    void controller.git
       .readGitContext()
       .then((value) => {
         if (active) setBranch(value?.execution.branch ?? value?.repository.branch);
@@ -381,7 +445,7 @@ function WorkspaceConversation({
     setSubmissionNotice(undefined);
     draftDirty.current = true;
     const version = ++draftVersion.current;
-    controller.queueDraft(
+    controller.drafts.queueDraft(
       nextText,
       nextSelection,
       (error) => {
@@ -644,14 +708,14 @@ function WorkspaceConversation({
             )}
             <WorkspaceToolMenu>
               <WorkspaceSessionTools
-                controller={controller}
+                controller={bindWorkspaceSessionToolsPort(controller)}
                 state={state}
                 busy={busy}
                 run={run}
                 navigate={navigate}
               />
               <WorkspaceForkUI
-                controller={controller}
+                controller={bindWorkspaceForkUiPort(controller)}
                 state={state}
                 busy={busy || !sessionWritable}
                 run={run}
@@ -672,7 +736,7 @@ function WorkspaceConversation({
               />
               <button
                 disabled={busy || sessionRefreshing}
-                onClick={() => navigate(() => controller.refreshSession())}
+                onClick={() => navigate(() => controller.sessions.refreshSession())}
                 aria-label="刷新会话"
               >
                 <RefreshCw size={16} />
@@ -686,7 +750,7 @@ function WorkspaceConversation({
                 <small>{sessionRefreshing ? '同步中' : state.offline ? '离线' : '已连接'}</small>
               </div>
               <WorkspaceGitUI
-                controller={controller}
+                controller={bindWorkspaceGitUiPort(controller)}
                 state={state}
                 busy={busy}
                 run={run}
@@ -694,7 +758,7 @@ function WorkspaceConversation({
                 onChanged={readBranch}
               />
               <WorkspaceGithubUI
-                controller={controller}
+                controller={bindWorkspaceGithubUiPort(controller)}
                 state={state}
                 busy={busy || !sessionWritable}
                 run={run}
@@ -703,7 +767,7 @@ function WorkspaceConversation({
           </div>
         </header>
         <WorkspaceContentUI
-          controller={controller}
+          controller={bindWorkspaceContentUiPort(controller)}
           busy={busy}
           run={run}
           controlRef={contentPanel}
@@ -783,7 +847,9 @@ function WorkspaceConversation({
             <button
               disabled={busy}
               onClick={() =>
-                navigate(() => controller.openSession(session.meta.forkOrigin!.sourceSessionId))
+                navigate(() =>
+                  controller.sessions.openSession(session.meta.forkOrigin!.sourceSessionId),
+                )
               }
             >
               打开源会话
@@ -808,7 +874,7 @@ function WorkspaceConversation({
           history={session.history}
           scope={state.scope}
           sessionId={state.sessionId}
-          controller={controller}
+          controller={bindWorkspaceConversationHistoryPort(controller)}
           busy={busy}
           live={sessionWritable}
           confirmed={session.persisted !== false && !session.persistenceError}
@@ -836,19 +902,25 @@ function WorkspaceConversation({
                 <small>{entry.original.value.operationId}</small>
                 <button
                   disabled={busy || !sessionWritable}
-                  onClick={() => run(() => controller.inspect(entry.original.value.operationId))}
+                  onClick={() =>
+                    run(() => controller.operations.inspect(entry.original.value.operationId))
+                  }
                 >
                   核查结果
                 </button>
                 <button
                   disabled={busy || !sessionWritable}
-                  onClick={() => run(() => controller.retry(entry.original.value.operationId))}
+                  onClick={() =>
+                    run(() => controller.operations.retry(entry.original.value.operationId))
+                  }
                 >
                   重试原操作
                 </button>
                 <button
                   disabled={busy || !sessionWritable}
-                  onClick={() => run(() => controller.abandon(entry.original.value.operationId))}
+                  onClick={() =>
+                    run(() => controller.operations.abandon(entry.original.value.operationId))
+                  }
                 >
                   结束原操作
                 </button>
@@ -863,20 +935,24 @@ function WorkspaceConversation({
             <code>{retiredTask.operationId}</code>
             <button
               disabled={busy || !sessionWritable}
-              onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'inspect'))}
+              onClick={() =>
+                run(() => controller.operations.recoverRetiredTask(retiredTask, 'inspect'))
+              }
             >
               核查旧版操作
             </button>
             <button
               disabled={busy || !sessionWritable}
-              onClick={() => run(() => controller.recoverRetiredTask(retiredTask, 'retry'))}
+              onClick={() =>
+                run(() => controller.operations.recoverRetiredTask(retiredTask, 'retry'))
+              }
             >
               重试旧版原操作
             </button>
           </details>
         )}
         <WorkspaceInteractionUI
-          controller={controller}
+          controller={bindWorkspaceInteractionUiPort(controller)}
           state={state}
           busy={busy}
           run={run}
@@ -892,17 +968,17 @@ function WorkspaceConversation({
               if (canSteer) {
                 const turnId = interactions.activeId;
                 const prompt = text;
-                const contextRevision = controller.contextRevision;
+                const contextRevision = controller.view.contextRevision;
                 run(async () => {
-                  const result = await controller.steerDraft(turnId, prompt);
-                  if (active.current && controller.contextRevision === contextRevision)
+                  const result = await controller.interactions.steerDraft(turnId, prompt);
+                  if (active.current && controller.view.contextRevision === contextRevision)
                     setSubmissionNotice({
                       message: result.warning ?? '已追加到当前任务',
                       warning: !!result.warning,
                     });
                 });
               }
-            } else if (canSend) run(() => controller.send());
+            } else if (canSend) run(() => controller.sessions.send());
           }}
         >
           <div className="workspace-composer-context" aria-label="执行上下文">
@@ -1058,7 +1134,7 @@ function WorkspaceConversation({
                 const files = [...event.clipboardData.files];
                 if (files.length && !busy) {
                   event.preventDefault();
-                  run(() => controller.addAttachments(files));
+                  run(() => controller.attachments.addAttachments(files));
                 }
               }}
             />
@@ -1067,7 +1143,7 @@ function WorkspaceConversation({
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => run(() => controller.reloadDraft())}
+                  onClick={() => run(() => controller.drafts.reloadDraft())}
                 >
                   重新读取附件
                 </button>
@@ -1114,7 +1190,9 @@ function WorkspaceConversation({
                           type="button"
                           disabled={busy || !sessionWritable}
                           onClick={() =>
-                            run(() => controller.retry(item.pending!.request.operationId))
+                            run(() =>
+                              controller.operations.retry(item.pending!.request.operationId),
+                            )
                           }
                         >
                           重试附件原操作
@@ -1126,7 +1204,11 @@ function WorkspaceConversation({
                               type="button"
                               disabled={busy || !sessionWritable || !!reason}
                               onClick={() =>
-                                run(() => controller.uploadAttachment(item.reference.attachmentId))
+                                run(() =>
+                                  controller.attachments.uploadAttachment(
+                                    item.reference.attachmentId,
+                                  ),
+                                )
                               }
                             >
                               上传附件
@@ -1138,7 +1220,11 @@ function WorkspaceConversation({
                               busy || (item.uploaded && (!sessionWritable || !attachmentSupported))
                             }
                             onClick={() =>
-                              run(() => controller.removeAttachment(item.reference.attachmentId))
+                              run(() =>
+                                controller.attachments.removeAttachment(
+                                  item.reference.attachmentId,
+                                ),
+                              )
                             }
                           >
                             移除附件
@@ -1157,9 +1243,9 @@ function WorkspaceConversation({
                   type="button"
                   onClick={() =>
                     run(async () => {
-                      await controller.reloadDraft();
-                      setText(controller.state.draft?.text ?? '');
-                      setSelection(controller.state.draft?.selection ?? {});
+                      await controller.drafts.reloadDraft();
+                      setText(controller.view.state.draft?.text ?? '');
+                      setSelection(controller.view.state.draft?.selection ?? {});
                       draftVersion.current++;
                       draftDirty.current = false;
                       setSaveError('');
@@ -1183,12 +1269,12 @@ function WorkspaceConversation({
                     onChange={(event) => {
                       const files = [...(event.currentTarget.files ?? [])];
                       event.currentTarget.value = '';
-                      if (files.length) run(() => controller.addAttachments(files));
+                      if (files.length) run(() => controller.attachments.addAttachments(files));
                     }}
                   />
                 </label>
                 <WorkspaceSkillsUI
-                  controller={controller}
+                  controller={bindWorkspaceSkillsUiPort(controller)}
                   state={state}
                   busy={busy || !sessionWritable}
                   run={run}
@@ -1200,7 +1286,7 @@ function WorkspaceConversation({
                     usage={session.accountUsage}
                     loading={state.usageLoading}
                     onRead={() => {
-                      if (sessionWritable) void controller.readUsage().catch(() => {});
+                      if (sessionWritable) void controller.sessions.readUsage().catch(() => {});
                     }}
                     triggerLabel="上下文与账号额度"
                   />
@@ -1222,16 +1308,16 @@ function WorkspaceConversation({
                   const next = changeRunSelection(selection, key, value, session.agent?.runConfig);
                   if (key === 'modeId')
                     run(async () => {
-                      await controller.saveApprovalDefault(value);
+                      await controller.sessions.saveApprovalDefault(value);
                       const latest = latestComposer.current;
                       save(latest.text, { ...latest.selection, modeId: value });
                     });
                   else save(text, next);
                 }}
-                onRefresh={() => run(() => controller.refreshAgentOptions())}
+                onRefresh={() => run(() => controller.sessions.refreshAgentOptions())}
                 onSaveDefaults={
                   state.project?.runtime.features?.includes(AGENT_RUN_DEFAULTS_FEATURE)
-                    ? (defaults) => controller.saveRunDefaults(defaults)
+                    ? (defaults) => controller.sessions.saveRunDefaults(defaults)
                     : undefined
                 }
               />
@@ -1242,7 +1328,7 @@ function WorkspaceConversation({
                     className="workspace-compose-submit"
                     title="停止当前执行"
                     disabled={busy || !sessionWritable}
-                    onClick={() => run(() => controller.stop(activeTurns[0]!.id))}
+                    onClick={() => run(() => controller.sessions.stop(activeTurns[0]!.id))}
                   >
                     <Square size={14} fill="currentColor" />
                     <span className="sr-only">停止</span>
@@ -1307,7 +1393,7 @@ function WorkspaceView({
   localAvailable,
   accountExtras,
 }: {
-  controller: Workspace;
+  controller: WorkspaceGraph;
   accountApi: AccountApi;
   onAccountVerified?: (account: Account | null) => void;
   openSettings?: () => Promise<unknown>;
@@ -1318,7 +1404,7 @@ function WorkspaceView({
   localAvailable: boolean;
   accountExtras?: ReactNode;
 }) {
-  const [state, setState] = useState(() => controller.state);
+  const [state, setState] = useState(() => controller.view.state);
   const [view, setView] = useState<'plain' | 'connections'>('plain');
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
@@ -1358,10 +1444,15 @@ function WorkspaceView({
   }, [searchOpen, navigationOpen]);
   const [pinnedShown, setPinnedShown] = useState(30),
     [recentShown, setRecentShown] = useState(30);
-  const navigation = useNavigationSessions(controller, state, projects, sessionQuery);
+  const navigation = useNavigationSessions(
+    bindWorkspaceNavigationPagesPort(controller),
+    state,
+    projects,
+    sessionQuery,
+  );
   useEffect(() => {
     const refresh = () => {
-      void controller.refreshCatalog('remote').catch(() => {});
+      void controller.catalog.refreshCatalog('remote').catch(() => {});
     };
     window.addEventListener('moor:catalog-changed', refresh);
     return () => window.removeEventListener('moor:catalog-changed', refresh);
@@ -1434,7 +1525,7 @@ function WorkspaceView({
     mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
-    const unsubscribe = controller.subscribe(() => setState(controller.state));
+    const unsubscribe = controller.view.subscribe(() => setState(controller.view.state));
     return () => {
       mounted.current = false;
       unsubscribe();
@@ -1442,9 +1533,9 @@ function WorkspaceView({
   }, [controller]);
   useEffect(() => {
     const catchUp = () => {
-      if (document.visibilityState !== 'hidden') controller.scheduleSync?.();
+      if (document.visibilityState !== 'hidden') controller.sync.scheduleSync?.();
     };
-    const unsubscribe = subscribeSessionChanges?.((notice) => controller.scheduleSync(notice));
+    const unsubscribe = subscribeSessionChanges?.((notice) => controller.sync.scheduleSync(notice));
     window.addEventListener('online', catchUp);
     window.addEventListener('focus', catchUp);
     document.addEventListener('visibilitychange', catchUp);
@@ -1457,7 +1548,7 @@ function WorkspaceView({
   }, [controller, subscribeSessionChanges]);
   useEffect(() => {
     if (readRuntimeContext || !localAvailable) return;
-    void controller.refreshCatalog('local').catch((reason: unknown) => {
+    void controller.catalog.refreshCatalog('local').catch((reason: unknown) => {
       if (mounted.current) setError(message(reason));
     });
   }, [controller, readRuntimeContext, localAvailable]);
@@ -1488,7 +1579,7 @@ function WorkspaceView({
       setAccount(account);
       onAccountVerified?.(account);
       if (account?.owner && localAvailable)
-        void controller.refreshCatalog('remote').catch(() => {});
+        void controller.catalog.refreshCatalog('remote').catch(() => {});
     },
     [controller, onAccountVerified, localAvailable],
   );
@@ -1527,11 +1618,11 @@ function WorkspaceView({
         if (context.view === 'remote') setView('connections');
       }
       if (!context.localReady) return;
-      await controller.refreshCatalog('local');
+      await controller.catalog.refreshCatalog('local');
       const notification = context.notification;
       if (!notification || notification.eventId === notificationHandled.current) return;
       notificationHandled.current = notification.eventId;
-      const project = controller.state.catalogs.local?.targets.find(
+      const project = controller.view.state.catalogs.local?.targets.find(
         ({ target }) =>
           target.userId === notification.userId &&
           target.machineId === notification.machineId &&
@@ -1540,8 +1631,8 @@ function WorkspaceView({
       );
       if (!project) throw Error('通知对应的本机项目尚不可用，请恢复原电脑后重新读取。');
       setView('plain');
-      await controller.selectProject('local', project.target);
-      await controller.openSession(notification.sessionId);
+      await controller.catalog.selectProject('local', project.target);
+      await controller.sessions.openSession(notification.sessionId);
       hideMobileNavigation();
     });
   }, [runtimeContext, blocked, controller]);
@@ -1557,8 +1648,8 @@ function WorkspaceView({
           setNotice('');
           const result = addProjectResultSchema.parse(await addLocalProject());
           if (result.canceled || !mounted.current) return;
-          await controller.refreshCatalog('local');
-          const entry = controller.state.catalogs.local?.targets.find(
+          await controller.catalog.refreshCatalog('local');
+          const entry = controller.view.state.catalogs.local?.targets.find(
             ({ target }) =>
               target.localProjectId === result.projectId &&
               target.owner === result.identity.owner &&
@@ -1568,15 +1659,15 @@ function WorkspaceView({
               target.userId === result.identity.userId,
           );
           if (!entry) throw Error('主机已登记项目，目录尚未更新，请刷新本机项目列表。');
-          await controller.selectProject('local', entry.target);
+          await controller.catalog.selectProject('local', entry.target);
           if (!mounted.current) return;
           setView('plain');
           const initialAgent =
             entry.runtime.agents.find((agent) => agent.id === agentId) ?? entry.runtime.agents[0];
           if (initialAgent) {
-            const sessionId = await controller.createSession(initialAgent.id);
-            await controller.refreshSessions();
-            await controller.openSession(sessionId);
+            const sessionId = await controller.sessions.createSession(initialAgent.id);
+            await controller.catalog.refreshSessions();
+            await controller.sessions.openSession(sessionId);
           }
           if (!mounted.current) return;
           setNotice(
@@ -1646,8 +1737,8 @@ function WorkspaceView({
         state.scope?.source !== project.source ||
         canonical(state.scope.target) !== canonical(project.target)
       )
-        await controller.selectProject(project.source, project.target);
-      await controller.openSession(session.id);
+        await controller.catalog.selectProject(project.source, project.target);
+      await controller.sessions.openSession(session.id);
       hideMobileNavigation();
     });
   };
@@ -1661,7 +1752,13 @@ function WorkspaceView({
   ) => {
     run(async () => {
       try {
-        await controller.projectMetadata(project.source, project.target, session, action, title);
+        await controller.metadata.projectMetadata(
+          project.source,
+          project.target,
+          session,
+          action,
+          title,
+        );
         done?.();
       } catch (error) {
         failed?.(message(error));
@@ -1677,10 +1774,10 @@ function WorkspaceView({
         project.runtime.agents[0];
       if (!agent) throw Error('请先为此项目配置 Agent。');
       setView('plain');
-      await controller.selectProject(project.source, project.target);
-      const id = await controller.createSession(agent.id);
-      await controller.refreshSessions();
-      await controller.openSession(id);
+      await controller.catalog.selectProject(project.source, project.target);
+      const id = await controller.sessions.createSession(agent.id);
+      await controller.catalog.refreshSessions();
+      await controller.sessions.openSession(id);
       hideMobileNavigation();
     });
   };
@@ -1766,9 +1863,9 @@ function WorkspaceView({
               event.preventDefault();
               if (!selectedAgent || blocked) return;
               run(async () => {
-                const id = await controller.createSession(selectedAgent);
-                await controller.refreshSessions();
-                await controller.openSession(id);
+                const id = await controller.sessions.createSession(selectedAgent);
+                await controller.catalog.refreshSessions();
+                await controller.sessions.openSession(id);
                 setView('plain');
                 hideMobileNavigation();
               });
@@ -1847,14 +1944,19 @@ function WorkspaceView({
             )}
           </div>
           {view === 'plain' && (
-            <WorkspaceAttentionUI controller={controller} state={state} busy={blocked} run={run} />
+            <WorkspaceAttentionUI
+              controller={bindWorkspaceAttentionUiPort(controller)}
+              state={state}
+              busy={blocked}
+              run={run}
+            />
           )}
         </div>
         <nav className="workspace-projects" aria-label="电脑和项目">
           {Object.values(state.syncDisconnected ?? {}).some(Boolean) && (
             <p className="workspace-muted" role="status">
               实时连接中断，正在重连
-              <button onClick={() => run(() => controller.synchronize())}>重新同步</button>
+              <button onClick={() => run(() => controller.sync.synchronize())}>重新同步</button>
             </p>
           )}
           {navigation.unavailable.length > 0 && (
@@ -1879,7 +1981,7 @@ function WorkspaceView({
             onRefresh={() =>
               run(async () => {
                 for (const source of new Set(projects.map((project) => project.source)))
-                  await controller.refreshCatalog(source);
+                  await controller.catalog.refreshCatalog(source);
                 navigation.refresh('pinned');
               })
             }
@@ -1932,10 +2034,10 @@ function WorkspaceView({
                     disabled={blocked}
                     query={sessionQuery}
                     selectedAttention={selectedAttention}
-                    controller={controller}
+                    controller={bindWorkspaceNavigationPort(controller)}
                     revision={
-                      controller.projectRevision?.(project.source, project.target) ??
-                      controller.navigationRevision ??
+                      controller.catalog.projectRevision?.(project.source, project.target) ??
+                      controller.catalog.navigationRevision ??
                       0
                     }
                     unavailable={navigation.unavailable.includes(projectKey(project))}
@@ -1946,9 +2048,12 @@ function WorkspaceView({
                       let pending: Promise<void> | undefined;
                       run(() => {
                         pending =
-                          typeof controller.refreshProjectSessions === 'function'
-                            ? controller.refreshProjectSessions(project.source, project.target)
-                            : controller.synchronize({
+                          typeof controller.catalog.refreshProjectSessions === 'function'
+                            ? controller.catalog.refreshProjectSessions(
+                                project.source,
+                                project.target,
+                              )
+                            : controller.sync.synchronize({
                                 source: project.source,
                                 connectionId: state.catalogs[project.source]!.connectionId,
                                 owner: project.target.owner,
@@ -1982,7 +2087,7 @@ function WorkspaceView({
             onRefresh={() =>
               run(async () => {
                 for (const source of new Set(projects.map((project) => project.source)))
-                  await controller.refreshCatalog(source);
+                  await controller.catalog.refreshCatalog(source);
                 navigation.refresh('recent');
               })
             }
@@ -2035,8 +2140,8 @@ function WorkspaceView({
               disabled={blocked}
               onClick={() =>
                 run(async () => {
-                  await controller.refreshCatalog('local');
-                  if (state.catalogs.remote) await controller.refreshCatalog('remote');
+                  await controller.catalog.refreshCatalog('local');
+                  if (state.catalogs.remote) await controller.catalog.refreshCatalog('remote');
                 })
               }
             >
@@ -2069,8 +2174,8 @@ function WorkspaceView({
                 scopeLabel: state.project?.projectName,
                 error: state.modelError,
                 refresh: async () => {
-                  await controller.refreshAgentOptions(true);
-                  await controller.readUsage(true);
+                  await controller.sessions.refreshAgentOptions(true);
+                  await controller.sessions.readUsage(true);
                 },
               }
             : undefined
@@ -2114,7 +2219,7 @@ function WorkspaceView({
         <main hidden={view !== 'plain'} className="workspace-conversation">
           <WorkspaceConversation
             key={scopeKey}
-            controller={controller}
+            controller={bindWorkspaceConversationPort(controller)}
             state={state}
             busy={busy}
             run={run}
@@ -2137,15 +2242,15 @@ function WorkspaceView({
             visible={view === 'connections'}
             accountApi={accountApi}
             onAccountVerified={verified}
-            onBeforeLogout={() => controller.disconnectSource('remote')}
+            onBeforeLogout={() => controller.catalog.disconnectSource('remote')}
             activeTarget={state.scope?.source === 'remote' ? state.scope.target : undefined}
             pairingScope={
               pairingProject && { source: pairingProject.source, target: pairingProject.target }
             }
-            beforeMove={() => controller.flushDraft()}
+            beforeMove={() => controller.drafts.flushDraft()}
             endView={async () => {
-              await controller.disconnectSource('remote');
-              await controller.refreshCatalog('remote');
+              await controller.catalog.disconnectSource('remote');
+              await controller.catalog.refreshCatalog('remote');
             }}
             onBack={() => setView('plain')}
             openSettings={openSettings ? () => run(openSettings) : undefined}

@@ -149,14 +149,18 @@ async function environment() {
     form.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }));
   }
   function desktop(value: unknown) {
-    ports.google = createDesktopUiPorts(environment, {
-      version: 1,
-      appearance: async () => 'system',
-      onAppearance: () => () => {},
-      googleAuth: value as DesktopUiBridge['googleAuth'],
-      saveAttachment: async () => ({ status: 'cancelled' }),
-      cancelAttachmentSave: async () => {},
-    }).google;
+    ports.google = createDesktopUiPorts(
+      environment,
+      {
+        version: 1,
+        appearance: async () => 'system',
+        onAppearance: () => () => {},
+        googleAuth: value as DesktopUiBridge['googleAuth'],
+        saveAttachment: async () => ({ status: 'cancelled' }),
+        cancelAttachmentSave: async () => {},
+      },
+      async () => ({ canceled: true }),
+    ).google;
   }
   return {
     ...components,

@@ -6,11 +6,8 @@ import type {
   AgentSteerResult,
 } from '@moor/host/features/agents/driver';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
-import {
-  runtimeFeatureReport,
-  type SessionEvent,
-  type SessionEventState,
-} from '@moor/host/adapters/acp/events';
+import { runtimeFeatureReport } from '@moor/host/adapters/acp/events';
+import { type SessionEvent, type SessionEventState } from '@moor/protocol/session-events';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import type { QuestionAnswer, QuestionRequest } from '@moor/protocol/interaction-protocol';
 import { Flock, delta, metas, mirror, putMeta, vv } from '@moor/session/model';

@@ -1,3 +1,4 @@
+import { bindWorkspaceNavigationPagesPort } from '../../apps/web/src/features/sessions/workspace-navigation-pages';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -69,6 +70,7 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
     navigationProjects,
     projectKey,
     useNavigationSessions,
+    bindWorkspaceNavigationPort,
   } = await import('../../apps/web/src/features/sessions/workspace-navigation');
   const root = createRoot(dom.window.document.getElementById('app')!);
   let refreshing: Promise<void> | undefined;
@@ -76,10 +78,15 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
   let more: Promise<boolean> | undefined;
   const openings: { replicaId: string; projectId: string; sessionId: string }[] = [];
   function View({ query = '' }: { query?: string }) {
-    const [state, setState] = React.useState(f.controller.state);
-    React.useEffect(() => f.controller.subscribe(() => setState(f.controller.state)), []);
+    const [state, setState] = React.useState(f.controller.view.state);
+    React.useEffect(() => f.controller.view.subscribe(() => setState(f.controller.view.state)), []);
     const projects = navigationProjects(state),
-      nav = useNavigationSessions(f.controller, state, projects, query);
+      nav = useNavigationSessions(
+        bindWorkspaceNavigationPagesPort(f.controller),
+        state,
+        projects,
+        query,
+      );
     const entries = projects.flatMap((project) =>
       (nav.sessions[projectKey(project)] ?? [])
         .filter((session) => !session.isPinned)
@@ -113,8 +120,8 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
         React.createElement(NavigationProjectGroup, {
           key: projectKey(project),
           project,
-          controller: f.controller,
-          revision: f.controller.projectRevision(project.source, project.target),
+          controller: bindWorkspaceNavigationPort(f.controller),
+          revision: f.controller.catalog.projectRevision(project.source, project.target),
           sessions: nav.sessions[projectKey(project)],
           selected: false,
           disabled: false,
@@ -132,7 +139,7 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
           onRefresh: (item) =>
             (refreshing = (async () => {
               await beforeRefresh();
-              await f.controller.refreshProjectSessions(item.source, item.target);
+              await f.controller.catalog.refreshProjectSessions(item.source, item.target);
             })()),
         }),
       ),
@@ -153,7 +160,7 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
       .listCalls()
       .filter((request) => request.action === 'execute' && request.target.localProjectId === id);
   try {
-    const targets = navigationProjects(f.controller.state);
+    const targets = navigationProjects(f.controller.view.state);
     const duplicateEntries = targets.map((project, index) => ({
       project: {
         ...project,
@@ -207,13 +214,13 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
       assert(['pinned', 'unpinned'].includes(call.command.params.pinned));
     }
     const baseline = f.listCalls().length;
-    await React.act(async () => f.controller.refreshCatalog('local'));
+    await React.act(async () => f.controller.catalog.refreshCatalog('local'));
     assert.equal(f.listCalls().length, baseline, 'unchanged catalog does not reread all projects');
     const aReads = reads('project-a').length;
     for (const target of f.catalog.targets)
       target.runtime.projects.find((project) => project.id === 'project-b')!.rootPath =
         '/synthetic/moved-b';
-    await React.act(async () => f.controller.refreshCatalog('local'));
+    await React.act(async () => f.controller.catalog.refreshCatalog('local'));
     assert.equal(reads('project-a').length, aReads);
     assert.equal(reads('project-b').length, 4);
 
@@ -252,7 +259,7 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
     };
     f.rows.find((row) => row.id === 'project-a-session-094')!.title = 'Background title update';
     await React.act(async () =>
-      f.controller.synchronize({
+      f.controller.sync.synchronize({
         source: 'local',
         connectionId: f.catalog.connectionId,
         owner: f.catalog.owner,
@@ -301,7 +308,7 @@ test('React navigation consumes bounded summaries, cursors, server search and ar
       'clicking a project row preserves the exact selected project and replica',
     );
     assert.equal(
-      f.controller.state.scope,
+      f.controller.view.state.scope,
       undefined,
       'expansion never navigates or writes a draft',
     );

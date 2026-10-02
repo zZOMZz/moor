@@ -8,9 +8,13 @@
       "types": "./src/main.ts",
       "import": "./dist/main.js"
     },
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./args": {
+      "types": "./src/args.ts",
+      "import": "./dist/args.js"
+    },
+    "./state": {
+      "types": "./src/state.ts",
+      "import": "./dist/state.js"
     }
   },
   "scripts": {

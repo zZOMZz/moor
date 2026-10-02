@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import { attachmentActionSchema, ATTACHMENTS_FEATURE } from '@moor/protocol/attachment-protocol';
 import { sessionActionSchema, type SessionAction } from '@moor/protocol/protocol';
 import { sessionControlActionSchema } from '@moor/protocol/session-control-protocol';
@@ -24,16 +25,25 @@ import { emptyWorkspaceAttachments } from '../attachments/workspace-attachments'
 import { buildRespondPermission, buildSendTurn } from '../sessions/session-intent';
 import type { WorkspaceAttachmentsService } from './attachments';
 import type { WorkspaceCatalogService } from './catalog';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { Context, Project, same } from './model';
 import type { WorkspaceSessionsService } from './sessions';
 import type { WorkspaceSyncService } from './sync';
 /** Capabilities consumed by commands use cases; supplied only by the workspace composition root. */
 export interface WorkspaceCommandsPorts {
-  context: Pick<
-    WorkspaceContextService,
-    'value' | 'context' | 'uuid' | 'execute' | 'command' | 'emit' | 'generation' | 'closed'
+  context: FeatureContext<
+    'value' | 'context' | 'uuid' | 'execute' | 'command' | 'emit' | 'generation' | 'closed',
+    'draft' | 'ledger' | 'offline' | 'scope' | 'sendProgress' | 'session' | 'sessionId',
+    | 'session'
+    | 'tasks-action'
+    | 'send-turn'
+    | 'respond-permission'
+    | 'mutate'
+    | 'session-control'
+    | 'session-action'
+    | 'attachment-action'
+    | 'session-operations',
+    never
   >;
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger' | 'draftInput'>;
   sessions: Pick<

@@ -16,7 +16,7 @@ type Entry = {
 /** Host-local account telemetry. Session bodies never carry this cache. */
 export class AgentUsageCache {
   private entries = new Map<string, Entry>();
-  constructor(private now: () => number = Date.now) {}
+  constructor(private now: () => number) {}
   peek(key: string): AccountUsage {
     return structuredClone(
       this.entries.get(key)?.value ?? { version: 1, status: 'unknown', buckets: [] },

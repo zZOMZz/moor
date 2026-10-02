@@ -110,7 +110,6 @@ export const gitActionSchema = z.discriminatedUnion('action', [
 ]);
 export type GitAction = z.infer<typeof gitActionSchema>;
 export type GitPrepare = z.infer<typeof gitPrepareSchema>;
-export type GitRemove = z.infer<typeof gitRemoveSchema>;
 export const gitActionReceiptSchema = scope
   .extend({
     operationId: id,

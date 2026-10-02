@@ -8,7 +8,7 @@ import { withBrowserUiPorts } from '../../apps/web/tests/ui-ports';
 const workspaces: ManagedWorkspace[] = [
   {
     id: 'workspace-a',
-    name: 'Workspace A',
+    name: 'WorkspaceGraph A',
     hosts: [
       {
         id: 'host-a',
@@ -34,7 +34,7 @@ const workspaces: ManagedWorkspace[] = [
       },
     ],
   },
-  { id: 'workspace-b', name: 'Workspace B', hosts: [], projects: [], replicas: [] },
+  { id: 'workspace-b', name: 'WorkspaceGraph B', hosts: [], projects: [], replicas: [] },
 ];
 const target = {
   serverKey: 'https://synthetic.invalid',

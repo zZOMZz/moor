@@ -4,12 +4,19 @@ import {
   formatAttachmentSize,
   verifyAttachmentBytes,
 } from '@moor/client/features/attachments/attachments';
-import type { Workspace } from '@moor/client/features/workspace/compose';
+import type { WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import type { WorkspaceScope } from '@moor/client/operations/workspace/compose';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import { useEffect, useRef, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { useAttachmentExport } from '../../platform/ui-ports';
+const workspaceAttachmentViewPortSelection = { attachments: ['readAttachment'] } as const;
+export type WorkspaceAttachmentViewPort = WorkspacePort<
+  typeof workspaceAttachmentViewPortSelection
+>;
+export const bindWorkspaceAttachmentViewPort = (graph: WorkspaceAttachmentViewPort) =>
+  bindWorkspacePort(graph, workspaceAttachmentViewPortSelection);
 
 export function WorkspaceAttachmentView({
   controller,
@@ -19,14 +26,16 @@ export function WorkspaceAttachmentView({
   busy,
   run,
 }: {
-  controller: Workspace;
+  controller: WorkspaceAttachmentViewPort;
   scope: WorkspaceScope;
   sessionId: string;
   reference: AttachmentReference;
   busy: boolean;
   run(task: () => Promise<unknown>): void;
 }) {
-  const [value, setValue] = useState<Awaited<ReturnType<Workspace['readAttachment']>> | null>(null);
+  const [value, setValue] = useState<Awaited<
+    ReturnType<WorkspaceGraph['attachments']['readAttachment']>
+  > | null>(null);
   const [notice, setNotice] = useState('');
   const epoch = useRef(0),
     saving = useRef(false);
@@ -53,7 +62,7 @@ export function WorkspaceAttachmentView({
           onClick={() =>
             run(async () => {
               const version = epoch.current;
-              const read = await controller.readAttachment(reference);
+              const read = await controller.attachments.readAttachment(reference);
               if (version === epoch.current) {
                 setValue(read);
                 setNotice('');

@@ -1,4 +1,4 @@
-import type { Workspace } from '@moor/client/features/workspace/compose';
+import type { WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import type { WorkspaceScope } from '@moor/client/operations/workspace/compose';
 import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import { JSDOM } from 'jsdom';
@@ -88,11 +88,13 @@ test('shared browser attachment view escapes text and downloads only explicitly 
     pending: Promise<unknown> | undefined;
   const errors: string[] = [];
   const controller = {
-    readAttachment: async () => {
-      reads++;
-      return { source: 'cache', cacheSaved: true, data };
+    attachments: {
+      readAttachment: async () => {
+        reads++;
+        return { source: 'cache', cacheSaved: true, data };
+      },
     },
-  } as unknown as Workspace;
+  } as unknown as WorkspaceGraph;
   const run = (task: () => Promise<unknown>) => {
     pending = task().catch((error) => errors.push(error.message));
   };

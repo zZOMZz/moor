@@ -1,13 +1,8 @@
 import { buildRespondPermission } from '@moor/client/features/sessions/session-intent';
-import {
-  buildSessionPermission,
-  readClientSession,
-  sessionPermissionReviews,
-} from '@moor/session/session-operations';
-import { ClientSessionReplica } from '@moor/session/client-session-replica';
 import { prepareSessionIntent } from '@moor/host/features/sessions/prepare-intent';
-import { validateMutation } from '@moor/host/features/sessions/validate-mutation';
+import { ClientSessionReplica } from '@moor/session/client-session-replica';
 import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from '@moor/session/model';
+import { readClientSession, sessionPermissionReviews } from '@moor/session/session-operations';
 import { appendSessionText } from '@moor/session/session-output';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -156,12 +151,12 @@ for (const outcome of [
   { outcome: 'selected', optionId: 'allow' },
   { outcome: 'cancelled' },
 ] as const)
-  test(`permission builder ${outcome.outcome} only changes the reviewed CRDT outcome and passes actual Host validator`, (t) => {
+  test(`permission builder ${outcome.outcome} freezes the selected outcome and passes Host intent preparation`, (t) => {
     const f = fixture();
     t.after(f.close);
     assert.equal(f.reviews.length, 1);
     const before = structuredClone(f.read.history),
-      mutation = buildSessionPermission({
+      mutation = buildRespondPermission({
         scope,
         read: f.raw,
         review: f.reviews[0],
@@ -170,14 +165,21 @@ for (const outcome of [
       });
     assert.equal(mutation.expectedTurnId, 'user-turn');
     assert.equal(mutation.requestId, 'request-1');
-    assert.equal(mutation.kind, 'permission');
-    assert.equal(mutation.metaBundle, undefined);
+    assert.equal('update' in mutation, false);
+    assert.deepEqual(mutation.outcome, outcome);
     assert.deepEqual(mutation.permissionReview, {
       version: 1,
       assistantTurnId: f.reviews[0].assistantTurnId,
       itemJson: f.reviews[0].itemJson,
     });
-    const accepted = validateMutation(f.doc, f.flock, workspace, mutation);
+    const accepted = prepareSessionIntent(
+      f.doc,
+      f.flock,
+      f.raw.meta,
+      workspace,
+      { kind: 'respond-permission', value: mutation },
+      '2026-01-01T00:00:00.000Z',
+    );
     const validatedView = mirror(accepted.doc, scope.sessionId);
     const expected = structuredClone(before);
     (expected[1].items![0] as any).permissionRequest.outcome = outcome;
@@ -198,14 +200,21 @@ test('review extraction accepts repeated same-tool requests only when each immut
   t.after(f.close);
   assert.equal(f.reviews.length, 2);
   assert.equal(f.reviews[0].assistantTurnId, f.reviews[1].assistantTurnId);
-  const mutation = buildSessionPermission({
+  const mutation = buildRespondPermission({
     scope,
     read: f.raw,
     review: f.reviews[1],
     outcome: { outcome: 'cancelled' },
     operationId: 'second',
   });
-  const accepted = validateMutation(f.doc, f.flock, workspace, mutation),
+  const accepted = prepareSessionIntent(
+      f.doc,
+      f.flock,
+      f.raw.meta,
+      workspace,
+      { kind: 'respond-permission', value: mutation },
+      '2026-01-01T00:00:00.000Z',
+    ),
     view = mirror(accepted.doc, scope.sessionId);
   const items = view.getState().history[1].items as any[];
   assert.equal(items[0].permissionRequest.outcome, undefined);
@@ -251,7 +260,7 @@ test('permission builder rejects forged choices and any changed rendered review 
   const f = fixture();
   t.after(f.close);
   const call = (review: (typeof f.reviews)[number], selected = 'allow') =>
-    buildSessionPermission({
+    buildRespondPermission({
       scope,
       read: f.raw,
       review,

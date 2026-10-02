@@ -1,8 +1,16 @@
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState, WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
 import { BookOpen } from 'lucide-react';
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { SkillsPanel } from './skills-ui';
+const workspaceSkillsUiPortSelection = {
+  view: ['contextRevision'],
+  skills: ['openSkills'],
+} as const;
+export type WorkspaceSkillsUiPort = WorkspacePort<typeof workspaceSkillsUiPortSelection>;
+export const bindWorkspaceSkillsUiPort = (graph: WorkspaceSkillsUiPort) =>
+  bindWorkspacePort(graph, workspaceSkillsUiPortSelection);
 
 export function WorkspaceSkillsUI({
   controller,
@@ -11,20 +19,20 @@ export function WorkspaceSkillsUI({
   run,
   controlRef,
 }: {
-  controller: Workspace;
+  controller: WorkspaceSkillsUiPort;
   state: WorkspaceClientState;
   busy: boolean;
   controlRef?: Ref<{ open(): boolean }>;
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
-  const panel = useRef<ReturnType<Workspace['openSkills']> | null>(null);
+  const panel = useRef<ReturnType<WorkspaceGraph['skills']['openSkills']> | null>(null);
   useEffect(
     () => () => {
       panel.current?.close();
       panel.current = null;
     },
-    [controller, controller.contextRevision, state.offline],
+    [controller, controller.view.contextRevision, state.offline],
   );
   const close = () => {
     panel.current?.close();
@@ -39,7 +47,7 @@ export function WorkspaceSkillsUI({
   const open = () =>
     run(async () => {
       panel.current?.close();
-      panel.current = controller.openSkills(() => render((n) => n + 1));
+      panel.current = controller.skills.openSkills(() => render((n) => n + 1));
       render((n) => n + 1);
       if (!reason) await panel.current.controller.refresh();
     });

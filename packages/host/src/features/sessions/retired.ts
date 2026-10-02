@@ -26,7 +26,13 @@ import type { HostWorkspace } from '../runtime/workspace';
 
 type Host = Pick<
   HostWorkspace,
-  'store' | 'ensureConnected' | 'projectRootLease' | 'checkProject' | 'hash' | 'directoryIdentity'
+  | 'store'
+  | 'ensureConnected'
+  | 'projectRootLease'
+  | 'checkProject'
+  | 'hash'
+  | 'timestamp'
+  | 'directoryIdentity'
 >;
 const scopeKey = (scope: AttachmentScope) =>
   JSON.stringify([
@@ -140,7 +146,7 @@ export function inspectRetiredPreview(host: Host, input: unknown, project?: stri
     phase: 'unknown',
     message: RETIRED_SESSION_FEATURE,
     closed: true,
-    checkedAt: new Date().toISOString(),
+    checkedAt: host.timestamp(),
   });
 }
 function taskContext(host: Host, request: ContentScope, project?: string) {

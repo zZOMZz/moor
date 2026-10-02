@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import {
   GIT_OPERATIONS_FEATURE,
   GIT_WORKTREE_FEATURE,
@@ -7,13 +8,17 @@ import {
 import { WorkspacePersistence } from '../../operations/workspace/compose';
 import { GitWorkspaceController, gitWorkspaceKey, type GitSaved } from '../git/git-workspace';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { same } from './model';
 import type { WorkspaceSessionsService } from './sessions';
 /** Capabilities consumed by git use cases; supplied only by the workspace composition root. */
 export interface WorkspaceGitPorts {
-  context: Pick<WorkspaceContextService, 'context' | 'execute' | 'command' | 'value' | 'uuid'>;
+  context: FeatureContext<
+    'context' | 'execute' | 'command' | 'value' | 'uuid',
+    'offline' | 'project' | 'sessionId',
+    'git-state' | 'git-action' | 'git-operations',
+    never
+  >;
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger'>;
   store: Pick<
     WorkspacePersistence,

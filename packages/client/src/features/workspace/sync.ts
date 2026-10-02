@@ -1,17 +1,19 @@
+import type { FeatureContext } from './feature-context';
 import {
   workspaceChangeSchema,
   type WorkspaceChange,
   type WorkspaceSource,
 } from '@moor/protocol/workspace-client-protocol';
 import type { WorkspaceCatalogService } from './catalog';
-import type { WorkspaceContextService } from './context';
 import { same } from './model';
 import type { WorkspaceSessionsService } from './sessions';
 /** Capabilities consumed by sync use cases; supplied only by the workspace composition root. */
 export interface WorkspaceSyncPorts {
-  context: Pick<
-    WorkspaceContextService,
-    'closed' | 'value' | 'emit' | 'schedule' | 'generation' | 'current'
+  context: FeatureContext<
+    'closed' | 'value' | 'emit' | 'schedule' | 'generation' | 'current',
+    'catalogs' | 'scope' | 'sessionId' | 'sessionLoad' | 'syncDisconnected',
+    never,
+    never
   >;
   sessions: Pick<WorkspaceSessionsService, 'refreshSession'>;
   catalog: Pick<

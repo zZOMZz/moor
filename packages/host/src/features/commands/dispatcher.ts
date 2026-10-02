@@ -1,16 +1,12 @@
-import { assertHostCommandActive } from '@moor/protocol/host-command-contract';
-import { AppError, assert } from '@moor/protocol/protocol';
 import type { ConnectionAuthorityLease } from '@moor/protocol/connection-authority';
-import type { HostWorkspace } from '../runtime/workspace';
 import {
   HOST_COMMAND_METHODS,
-  hostCommandSchemas,
   hostCommandSchema,
-  type HostCommand,
   type HostCommandMethod,
 } from '@moor/protocol/host-command';
-export { HOST_COMMAND_METHODS, hostCommandSchemas, hostCommandSchema };
-export type { HostCommand, HostCommandMethod };
+import { assertHostCommandActive } from '@moor/protocol/host-command-contract';
+import { AppError, assert } from '@moor/protocol/protocol';
+import type { HostWorkspace } from '../runtime/workspace';
 
 // Type-only picks avoid importing the execution runtime, relay or transports.
 export type HostCommandWorkspace = Pick<
@@ -68,8 +64,8 @@ export interface HostCommandDependencies {
 export interface HostCommandContext {
   // Construct only from an authenticated connection; never take authority from params.
   authority?: ConnectionAuthorityLease;
-  // Optional entry guard for verified transports. Delivery checks remain with the caller.
-  current?(): void;
+  // Required authenticated request lifetime; carried through queued commit boundaries.
+  current(): void;
 }
 export type HostCommandError = { status: number; message: string; rejected: boolean };
 const rejectionMethods: readonly string[] = [
@@ -94,13 +90,13 @@ function record(value: unknown): Record<string, unknown> | undefined {
 /** Shared execution only. Response validation and transport encryption belong to their boundaries. */
 export class HostCommandDispatcher {
   constructor(private readonly dependencies: HostCommandDependencies) {}
-  async execute(raw: unknown, context: HostCommandContext = {}): Promise<unknown> {
+  async execute(raw: unknown, context: HostCommandContext): Promise<unknown> {
     const method = record(raw)?.method;
     if (typeof method === 'string' && !HOST_COMMAND_METHODS.includes(method as HostCommandMethod))
       throw new AppError(400, '不支持的操作');
     const command = hostCommandSchema.parse(raw);
     assertHostCommandActive(command);
-    context.current?.();
+    context.current();
     const workspace = this.dependencies.workspace(command.workspaceId);
     assert(this.dependencies.ready() && workspace && !workspace.closed, 409, '本机执行服务不可达');
     let result: unknown;
@@ -132,9 +128,17 @@ export class HostCommandDispatcher {
       assert(input.workspaceId === command.workspaceId, 400, '工作区不匹配');
       result = workspace.readMcp(input, command.localProjectId);
     } else if (command.method === 'session-control')
-      result = await workspace.controlManager.control(command.params, command.localProjectId);
+      result = await workspace.controlManager.control(
+        command.params,
+        command.localProjectId,
+        context.current,
+      );
     else if (command.method === 'session-operations')
-      result = await workspace.controlManager.recover(command.params, command.localProjectId);
+      result = await workspace.controlManager.recover(
+        command.params,
+        command.localProjectId,
+        context.current,
+      );
     else if (command.method === 'tasks-read')
       result = await workspace.readTasks(command.params, command.localProjectId);
     else if (command.method === 'tasks-action')
@@ -179,20 +183,31 @@ export class HostCommandDispatcher {
       assert(command.params.workspaceId === command.workspaceId, 400, '工作区不匹配');
       result =
         command.method === 'send-turn'
-          ? await workspace.sendTurn(command.params, command.localProjectId, context.authority)
+          ? await workspace.sendTurn(
+              command.params,
+              command.localProjectId,
+              context.authority,
+              context.current,
+            )
           : await workspace.respondPermission(
               command.params,
               command.localProjectId,
               context.authority,
+              context.current,
             );
     } else if (command.method === 'mutate') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.mutate(body, command.localProjectId, context.authority);
+      result = await workspace.mutate(
+        body,
+        command.localProjectId,
+        context.authority,
+        context.current,
+      );
     } else if (command.method === 'session-action') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.sessionAction(body, command.localProjectId);
+      result = await workspace.sessionAction(body, command.localProjectId, context.current);
     } else if (command.method === 'file-content') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
@@ -200,7 +215,7 @@ export class HostCommandDispatcher {
     } else if (command.method === 'attachment-action') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.attachmentAction(body, command.localProjectId);
+      result = await workspace.attachmentAction(body, command.localProjectId, context.current);
     } else if (command.method === 'read-attachment') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
@@ -220,11 +235,11 @@ export class HostCommandDispatcher {
     } else if (command.method === 'answer-question') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.answerQuestion(body, command.localProjectId);
+      result = await workspace.answerQuestion(body, command.localProjectId, context.current);
     } else if (command.method === 'steer') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
-      result = await workspace.steer(body, command.localProjectId);
+      result = await workspace.steer(body, command.localProjectId, context.current);
     } else if (command.method === 'search-sessions') {
       const body = command.params;
       assert(body.workspaceId === command.workspaceId, 400, '工作区不匹配');
@@ -258,12 +273,14 @@ export class HostCommandDispatcher {
         command.params.sessionId,
         command.params.turnId,
         command.localProjectId,
+        context.current,
       );
     else {
       const exhaustive: never = command;
       void exhaustive;
       throw new AppError(400, '不支持的操作');
     }
+    context.current();
     return result;
   }
   error(raw: unknown, error: unknown): HostCommandError {

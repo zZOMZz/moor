@@ -1,3 +1,4 @@
+import { syntheticClientRuntime } from '../fixtures/client-runtime';
 import {
   GitWorkspaceController,
   gitWorkspaceKey,
@@ -69,6 +70,8 @@ function fixture() {
     } = {},
   ) =>
     new GitWorkspaceController(t, {
+      ...syntheticClientRuntime,
+
       read: async (key) => structuredClone(cache.get(key)),
       compareWrite: async (key, expectedRevision, value, current) => {
         await options.beforeWrite?.(value);

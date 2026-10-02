@@ -8,9 +8,13 @@
       "types": "./src/main.ts",
       "import": "./dist/main.js"
     },
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./google-oidc": {
+      "types": "./src/google-oidc.ts",
+      "import": "./dist/google-oidc.js"
+    },
+    "./web-push": {
+      "types": "./src/web-push.ts",
+      "import": "./dist/web-push.js"
     }
   },
   "scripts": {

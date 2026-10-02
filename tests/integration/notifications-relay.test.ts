@@ -13,7 +13,7 @@ import { createECDH, createHash } from 'node:crypto';
 import { once } from 'node:events';
 import test, { type TestContext } from 'node:test';
 import { WebSocket } from 'ws';
-import type { WebPushResult, WebPushTransport } from '../../apps/relay/src/web-push';
+import type { WebPushResult, WebPushTransport } from '@moor/gateway/features/notifications/ports';
 
 const owner = 'synthetic-relay-account',
   now = 10000;

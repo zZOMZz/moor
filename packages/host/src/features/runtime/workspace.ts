@@ -358,7 +358,7 @@ export class HostWorkspace {
   closed = false;
   private capabilityAttempts = new Map<string, { revision: number; error?: unknown }>();
   private capabilityRevision = 0;
-  private usageCache = new AgentUsageCache();
+  private usageCache: AgentUsageCache;
   private attentionChanged: (actor: AttentionActor, sessionId: string) => void = () => {};
   setAttentionListener(listener: (actor: AttentionActor, sessionId: string) => void) {
     this.attentionChanged = listener;
@@ -400,7 +400,12 @@ export class HostWorkspace {
     githubWrite: SessionGithubWriteOptions,
     skills: SessionSkillsOptions,
   ) {
-    this.collaboration = new HostCollaborationService(this, store.collaborationPlanes);
+    this.usageCache = new AgentUsageCache(environment.now);
+    this.collaboration = new HostCollaborationService(
+      this,
+      store.collaborationPlanes,
+      environment.now,
+    );
     const notifyChanged = this.changed;
     this.changed = (sessionId) => {
       notifyChanged(sessionId);
@@ -425,6 +430,9 @@ export class HostWorkspace {
         this.persistInteraction(sessionId, run, edit, write),
     });
     this.updateCatalogue();
+  }
+  timestamp() {
+    return new Date(this.environment.now()).toISOString();
   }
   hash(value: string | Uint8Array) {
     return this.environment.hash(value);
@@ -864,7 +872,7 @@ export class HostWorkspace {
       this.machine.set(
         ['capabilityCatalogs', agentId, project.id, capabilityScope.directoryFingerprint],
         {
-          context: { ...capabilityScope, observedAt: Date.now() },
+          context: { ...capabilityScope, observedAt: this.environment.now() },
           runConfig,
           ...(session.inputCapabilities ? { inputCapabilities: session.inputCapabilities } : {}),
         } as never,
@@ -963,9 +971,10 @@ export class HostWorkspace {
       online: true,
     };
   }
-  async sessionAction(input: SessionAction, localProjectId?: string) {
+  async sessionAction(input: SessionAction, localProjectId?: string, checkpoint?: () => void) {
     const action = sessionActionSchema.parse(input);
     return this.serial(action.sessionId, async () => {
+      checkpoint?.();
       this.ensureConnected();
       assert(action.workspaceId === this.workspace.id, 400, '会话执行目标不匹配');
       assert(
@@ -1020,6 +1029,7 @@ export class HostWorkspace {
         ...(['pin', 'unpin'].includes(action.action) ? { isPinned: action.action === 'pin' } : {}),
       });
       const result = this.store.transaction(() => {
+        checkpoint?.();
         this.store.saveMetadata(next, [action.sessionId]);
         return journal.acceptSessionAction(this.workspace.id, action, metas(next)[name]);
       });
@@ -1259,11 +1269,11 @@ export class HostWorkspace {
       this.store.notifications.retry(channel, eventId, delayMs);
     else this.store.notifications.discard(eventId);
   }
-  answerQuestion(input: QuestionAnswer, localProjectId?: string) {
-    return this.interactions.answerQuestion(input, localProjectId);
+  answerQuestion(input: QuestionAnswer, localProjectId?: string, checkpoint?: () => void) {
+    return this.interactions.answerQuestion(input, localProjectId, checkpoint);
   }
-  steer(input: SteerRequest, localProjectId?: string) {
-    return this.interactions.steer(input, localProjectId);
+  steer(input: SteerRequest, localProjectId?: string, checkpoint?: () => void) {
+    return this.interactions.steer(input, localProjectId, checkpoint);
   }
   persistInteraction(
     id: string,
@@ -1527,9 +1537,11 @@ export class HostWorkspace {
   async attachmentAction(
     input: AttachmentAction,
     localProjectId?: string,
+    checkpoint?: () => void,
   ): Promise<AttachmentReceipt> {
     const action = attachmentActionSchema.parse(input);
     return this.serial(action.sessionId, async () => {
+      checkpoint?.();
       const scope = this.attachmentScope(action, localProjectId);
       const journal = this.store.journal;
       const receipt = journal.lookup(this.workspace.id, action);
@@ -1563,6 +1575,7 @@ export class HostWorkspace {
         assert(!stored.referenced, 409, '历史回合使用的附件不能删除');
       }
       return this.store.transaction(() => {
+        checkpoint?.();
         this.store.reserveAttachmentScope(scope);
         if (action.action === 'upload') this.store.saveAttachment(scope, action.attachment, bytes!);
         else this.store.removeAttachment(scope, id);
@@ -1706,10 +1719,17 @@ export class HostWorkspace {
           : undefined,
     };
   }
-  async attentionSeen(input: AttentionContext, itemId: string, inputRequest: AttentionSeen) {
+  async attentionSeen(
+    input: AttentionContext,
+    itemId: string,
+    inputRequest: AttentionSeen,
+    authority?: ConnectionAuthorityLease,
+  ) {
     const request = attentionSeenSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
+    this.checkAttentionAuthority(context, authority);
     return this.serial(context.sessionId!, async () => {
+      this.checkAttentionAuthority(context, authority);
       this.attentionTarget(context, true);
       const result = this.store.attention.seen(context, itemId, request);
       this.attentionChanged(context.actor, context.sessionId!);
@@ -1720,10 +1740,13 @@ export class HostWorkspace {
     input: AttentionContext,
     itemId: string,
     inputRequest: AttentionDisposition,
+    authority?: ConnectionAuthorityLease,
   ) {
     const request = attentionDispositionSchema.parse(inputRequest);
     const context = this.attentionTarget(input, true);
+    this.checkAttentionAuthority(context, authority);
     return this.serial(context.sessionId!, async () => {
+      this.checkAttentionAuthority(context, authority);
       this.attentionTarget(context, true);
       const result = this.store.attention.disposition(context, itemId, request);
       this.attentionChanged(context.actor, context.sessionId!);
@@ -1898,16 +1921,28 @@ export class HostWorkspace {
     );
     assert(!this.executionManager.busy.has(sessionId), 409, '此会话正在处理 Git 操作，指令未送达');
   }
-  async sendTurn(input: SendTurn, localProjectId?: string, authority?: ConnectionAuthorityLease) {
+  async sendTurn(
+    input: SendTurn,
+    localProjectId?: string,
+    authority?: ConnectionAuthorityLease,
+    checkpoint?: () => void,
+  ) {
     const value = sendTurnSchema.parse(input);
     return this.serial(value.sessionId, () =>
-      this.acceptSessionCommand({ kind: 'send-turn', value }, localProjectId, undefined, authority),
+      this.acceptSessionCommand(
+        { kind: 'send-turn', value },
+        localProjectId,
+        undefined,
+        authority,
+        checkpoint,
+      ),
     );
   }
   async respondPermission(
     input: RespondPermission,
     localProjectId?: string,
     authority?: ConnectionAuthorityLease,
+    checkpoint?: () => void,
   ) {
     const value = respondPermissionSchema.parse(input);
     return this.serial(value.sessionId, () =>
@@ -1916,13 +1951,19 @@ export class HostWorkspace {
         localProjectId,
         undefined,
         authority,
+        checkpoint,
       ),
     );
   }
-  async mutate(m: Mutation, localProjectId?: string, authority?: ConnectionAuthorityLease) {
+  async mutate(
+    m: Mutation,
+    localProjectId?: string,
+    authority?: ConnectionAuthorityLease,
+    checkpoint?: () => void,
+  ) {
     this.checkExecutionIdle(m.sessionId);
     return this.serial(m.sessionId, () =>
-      this.acceptSessionCommand(m, localProjectId, undefined, authority),
+      this.acceptSessionCommand(m, localProjectId, undefined, authority, checkpoint),
     );
   }
   private async acceptSessionCommand(
@@ -1933,7 +1974,12 @@ export class HostWorkspace {
       commit: (userTurnId: string) => AttentionReceipt;
     },
     authority?: ConnectionAuthorityLease,
+    checkpoint?: () => void,
   ) {
+    const current = () => {
+      checkpoint?.();
+      authority?.current();
+    };
     const intent = 'value' in input ? input : undefined;
     const originalInput = intent ? intent.value : (input as Mutation);
     const m: Pick<
@@ -1951,7 +1997,7 @@ export class HostWorkspace {
       : (input as Mutation);
     if (intent) assertSessionIntentScope(this.workspace, intent.value, localProjectId);
     this.ensureConnected();
-    authority?.current();
+    current();
     this.checkExecutionIdle(m.sessionId);
     assert(
       m.workspaceId === this.workspace.id && /^[A-Za-z0-9_-]{1,160}$/.test(m.sessionId),
@@ -2014,7 +2060,7 @@ export class HostWorkspace {
               : [],
           },
           intent,
-          new Date().toISOString(),
+          this.timestamp(),
         )
       : validateMutation(
           original,
@@ -2127,7 +2173,7 @@ export class HostWorkspace {
           id: assistantId,
           userTurnId: turnId,
           role: 'assistant',
-          timestamp: new Date().toISOString(),
+          timestamp: this.timestamp(),
           finished: false,
           items: [],
           fileDiff: null,
@@ -2142,7 +2188,7 @@ export class HostWorkspace {
     const from = original.version();
     try {
       result = this.store.transaction(() => {
-        authority?.current();
+        current();
         journal.stage(this.workspace.id, originalInput, turnId, undefined, effect?.binding);
         this.store.agents.bind(attachmentScope, agent);
         this.store.reserveAttachmentScope(attachmentScope);
@@ -2731,8 +2777,16 @@ export class HostWorkspace {
     }
     run.stopped = true;
   }
-  async cancel(sessionId: string, turnId: string, localProjectId?: string) {
-    return this.serial(sessionId, () => this.cancelLocked(sessionId, turnId, localProjectId));
+  async cancel(
+    sessionId: string,
+    turnId: string,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ) {
+    return this.serial(sessionId, () => {
+      checkpoint?.();
+      return this.cancelLocked(sessionId, turnId, localProjectId);
+    });
   }
   sessionChanged(sessionId: string) {
     this.changed(sessionId);

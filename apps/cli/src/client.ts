@@ -384,10 +384,18 @@ export class CliClient {
       ) {
         const state = result.receipt.status === 'abandoned' ? 'abandoned' : 'accepted';
         if (['pending', 'ending'].includes(op.state))
-          op = this.state.transition(op.operationId, ['pending', 'ending'], state, result.receipt);
+          op = await persistOriginalConfirmation(
+            op.operationId,
+            result.receipt.status === 'abandoned' ? 'abandoned' : 'confirmed',
+            () => this.state.assertCurrent(),
+            () =>
+              this.state.transition(op.operationId, ['pending', 'ending'], state, result.receipt),
+          );
       }
       return { ...summary(op), inspection: result };
-    } catch {
+    } catch (error) {
+      if (error instanceof ConfirmationPersistenceFailure)
+        throw new CliError('local-persistence', error.message, 6, op.operationId);
       throw new CliError(
         'unknown',
         '原操作核查尚未确认；原请求和结束意图已保留。',

@@ -1,4 +1,5 @@
-import type { HostCommandInput, HostCommandMethod } from '@moor/protocol/host-command';
+import type { HostCommandMethod, hostCommandSchemas } from '@moor/protocol/host-command';
+import type { z } from 'zod';
 
 export const scope = { workspaceId: 'workspace', localProjectId: 'project', sessionId: 'session' };
 const version = 'sha256:' + '1'.repeat(64);
@@ -65,7 +66,7 @@ const forkOriginal = {
 };
 export const cases: {
   [M in HostCommandMethod]: {
-    params: Extract<HostCommandInput, { method: M }>['params'];
+    params: z.input<(typeof hostCommandSchemas)[M]>;
     call: string;
   };
 } = {

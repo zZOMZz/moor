@@ -1,5 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { hostHash, hostUuid } from './identity';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative } from 'node:path';
 import { agentProgramFingerprint } from '../acp/program';
@@ -26,9 +26,10 @@ import { captureProjectSnapshot, enumerateProjectFiles } from '../files/snapshot
 import { HostWorkspace } from '../../features/runtime/workspace';
 import { projectSkillSources } from '../files/skills-sources';
 const environment: HostEnvironment = {
-  uuid: randomUUID,
+  uuid: hostUuid,
+  now: Date.now,
   yieldWork: setImmediate,
-  hash: (value) => createHash('sha256').update(value).digest('hex'),
+  hash: hostHash,
   programFingerprint: agentProgramFingerprint,
   directory: (input) => {
     const path = realpathSync(input),

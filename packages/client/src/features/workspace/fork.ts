@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import {
   FORK_OPERATIONS_FEATURE,
   forkCutoffSchema,
@@ -12,13 +13,17 @@ import { SessionForkController, sessionForkKey, type ForkSaved } from '../fork/s
 import { workspaceForkPending } from '../fork/workspace-fork';
 import { workspaceFeatureTarget } from '../mcp/workspace-mcp';
 import type { WorkspaceCatalogService } from './catalog';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { same } from './model';
 /** Capabilities consumed by fork use cases; supplied only by the workspace composition root. */
 export interface WorkspaceForkPorts {
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger'>;
-  context: Pick<WorkspaceContextService, 'context' | 'uuid' | 'value' | 'execute' | 'command'>;
+  context: FeatureContext<
+    'context' | 'uuid' | 'value' | 'execute' | 'command',
+    'offline' | 'project',
+    'fork-options' | 'fork-action' | 'fork-operations' | 'git-state',
+    never
+  >;
   store: Pick<WorkspacePersistence, 'read' | 'saveFork' | 'exclusiveOperation'>;
   catalog: Pick<WorkspaceCatalogService, 'refreshSessions'>;
 }

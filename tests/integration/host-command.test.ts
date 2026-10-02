@@ -2,13 +2,15 @@ import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { buildSessionTurn } from '@moor/session/session-operations';
 import type { AgentOpenOptions } from '@moor/host/features/agents/driver';
 import {
-  HOST_COMMAND_METHODS,
   HostCommandDispatcher,
+  type HostCommandWorkspace,
+} from '@moor/host/features/commands/dispatcher';
+import {
+  HOST_COMMAND_METHODS,
   hostCommandSchema,
   hostCommandSchemas,
   type HostCommandMethod,
-  type HostCommandWorkspace,
-} from '@moor/host/features/commands/dispatcher';
+} from '@moor/protocol/host-command';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { assertHostCommandActive, hostCommandFeatures } from '@moor/protocol/host-command-contract';
@@ -97,7 +99,10 @@ test('all 45 commands preserve the exact delegate, parsed payload, project and a
     const params = hostCommandSchemas[method].parse(cases[method].params);
     if (['preview-read', 'preview-action', 'preview-close'].includes(method)) {
       const before = f.calls.length;
-      await assert.rejects(f.dispatcher.execute(envelope(method)), status(410));
+      await assert.rejects(
+        f.dispatcher.execute(envelope(method), { current: () => {} }),
+        status(410),
+      );
       assert.equal(f.calls.length, before);
       continue;
     }
@@ -114,17 +119,24 @@ test('all 45 commands preserve the exact delegate, parsed payload, project and a
           : method === 'session'
             ? ['session', 'YQ==', scope.localProjectId]
             : method === 'cancel'
-              ? ['session', 'turn', scope.localProjectId]
-              : method === 'mutate' ||
-                  method === 'send-turn' ||
-                  method === 'respond-permission' ||
-                  method.startsWith('preview-')
-                ? [params, scope.localProjectId, authority]
-                : method.startsWith('github-') ||
-                    method.startsWith('git-') ||
-                    method.startsWith('fork-')
-                  ? [params, scope.localProjectId, checkpoint]
-                  : [params, scope.localProjectId];
+              ? ['session', 'turn', scope.localProjectId, checkpoint]
+              : method === 'mutate' || method === 'send-turn' || method === 'respond-permission'
+                ? [params, scope.localProjectId, authority, checkpoint]
+                : method.startsWith('preview-')
+                  ? [params, scope.localProjectId, authority]
+                  : method.startsWith('github-') ||
+                      method.startsWith('git-') ||
+                      method.startsWith('fork-') ||
+                      [
+                        'session-control',
+                        'session-operations',
+                        'session-action',
+                        'attachment-action',
+                        'answer-question',
+                        'steer',
+                      ].includes(method)
+                    ? [params, scope.localProjectId, checkpoint]
+                    : [params, scope.localProjectId];
     assert.deepEqual(f.calls.pop(), { method: call, args: expected }, method);
   }
 });
@@ -140,12 +152,16 @@ test('strict outer and every params schema reject malformed commands before any 
     { ...envelope('sessions'), authorityOwner: 'untrusted-owner' },
     { ...envelope('sessions'), unknown: true },
   ]) {
-    await assert.rejects(f.dispatcher.execute(raw), z.ZodError);
+    await assert.rejects(f.dispatcher.execute(raw, { current: () => {} }), z.ZodError);
   }
   for (const method of HOST_COMMAND_METHODS)
-    await assert.rejects(f.dispatcher.execute(envelope(method, null)), z.ZodError, method);
+    await assert.rejects(
+      f.dispatcher.execute(envelope(method, null), { current: () => {} }),
+      z.ZodError,
+      method,
+    );
   await assert.rejects(
-    f.dispatcher.execute({ ...envelope('sessions'), method: 'raw-shell' }),
+    f.dispatcher.execute({ ...envelope('sessions'), method: 'raw-shell' }, { current: () => {} }),
     status(400),
   );
   assert.equal(
@@ -167,15 +183,19 @@ test('legacy sessions, agent options, session version and cancel now enforce the
     ['cancel', { sessionId: 'session' }],
     ['cancel', { sessionId: 'session', turnId: 'turn', force: true }],
   ] as const)
-    await assert.rejects(f.dispatcher.execute(envelope(method, params)), z.ZodError);
+    await assert.rejects(
+      f.dispatcher.execute(envelope(method, params), { current: () => {} }),
+      z.ZodError,
+    );
   assert.equal(f.calls.length, 0);
   await f.dispatcher.execute(
     envelope('session', { sessionId: 'session', version: 'AAAA'.repeat(16384) }),
+    { current: () => {} },
   );
   assert.equal(f.calls.length, 1);
   const search = { ...cases['search-sessions'].params };
   delete search.limit;
-  await f.dispatcher.execute(envelope('search-sessions', search));
+  await f.dispatcher.execute(envelope('search-sessions', search), { current: () => {} });
   assert.equal((f.calls.at(-1)!.args[0] as { limit: number }).limit, 30);
 });
 
@@ -191,7 +211,9 @@ test('direct and nested workspace mismatches, unavailable workspaces and rejecte
     'github-write-action',
   ] as const) {
     await assert.rejects(
-      f.dispatcher.execute(envelope(method, { ...cases[method].params, workspaceId: 'other' })),
+      f.dispatcher.execute(envelope(method, { ...cases[method].params, workspaceId: 'other' }), {
+        current: () => {},
+      }),
       status(method === 'preview-action' ? 410 : 400),
     );
   }
@@ -205,12 +227,16 @@ test('direct and nested workspace mismatches, unavailable workspaces and rejecte
     await assert.rejects(
       f.dispatcher.execute(
         envelope(method, { ...params, request: { ...params.request, workspaceId: 'other' } }),
+        { current: () => {} },
       ),
       status(method === 'preview-close' ? 410 : 400),
     );
   }
   await assert.rejects(
-    f.dispatcher.execute({ ...envelope('sessions'), workspaceId: 'missing' }),
+    f.dispatcher.execute(
+      { ...envelope('sessions'), workspaceId: 'missing' },
+      { current: () => {} },
+    ),
     status(409),
   );
   await assert.rejects(
@@ -222,10 +248,16 @@ test('direct and nested workspace mismatches, unavailable workspaces and rejecte
     status(403),
   );
   f.unavailable();
-  await assert.rejects(f.dispatcher.execute(envelope('sessions')), status(409));
+  await assert.rejects(
+    f.dispatcher.execute(envelope('sessions'), { current: () => {} }),
+    status(409),
+  );
   const closed = fixture();
   closed.close();
-  await assert.rejects(closed.dispatcher.execute(envelope('sessions')), status(409));
+  await assert.rejects(
+    closed.dispatcher.execute(envelope('sessions'), { current: () => {} }),
+    status(409),
+  );
   assert.deepEqual(f.calls, []);
   assert.deepEqual(closed.calls, []);
 });
@@ -353,6 +385,7 @@ test('real Host keeps project and connection checks, rejects retired MCP, and ru
       action: 'create',
       agentId: agent.id,
     }),
+    { current: () => {} },
   );
   const request = {
     workspaceId: localScope.workspaceId,
@@ -360,15 +393,20 @@ test('real Host keeps project and connection checks, rejects retired MCP, and ru
     sessionId: localScope.sessionId,
     mcpVersion: 1,
   };
-  await dispatcher.execute(command('mcp-read', request));
+  await dispatcher.execute(command('mcp-read', request), { current: () => {} });
   await assert.rejects(
-    dispatcher.execute({ ...command('mcp-read', request), localProjectId: 'other' }),
+    dispatcher.execute(
+      { ...command('mcp-read', request), localProjectId: 'other' },
+      { current: () => {} },
+    ),
     status(400),
   );
   assert.equal(opens, 0);
   const turn = buildSessionTurn({
     scope: localScope,
-    read: await dispatcher.execute(command('session', { sessionId: localScope.sessionId })),
+    read: await dispatcher.execute(command('session', { sessionId: localScope.sessionId }), {
+      current: () => {},
+    }),
     agent: host.workspace.agents[0]!,
     prompt: 'Explicit synthetic instruction',
     operationId: 'send-original',
@@ -378,7 +416,9 @@ test('real Host keeps project and connection checks, rejects retired MCP, and ru
   });
   const extras = buildSessionTurn({
     scope: localScope,
-    read: await dispatcher.execute(command('session', { sessionId: localScope.sessionId })),
+    read: await dispatcher.execute(command('session', { sessionId: localScope.sessionId }), {
+      current: () => {},
+    }),
     agent: host.workspace.agents[0]!,
     prompt: 'Retired extras',
     operationId: 'retired-extra',
@@ -387,7 +427,10 @@ test('real Host keeps project and connection checks, rejects retired MCP, and ru
     now: '2026-09-13T00:00:00.000Z',
     mcpServerIds: ['mcpv_' + '1'.repeat(32)],
   });
-  await assert.rejects(dispatcher.execute(command('mutate', extras)), status(410));
+  await assert.rejects(
+    dispatcher.execute(command('mutate', extras), { current: () => {} }),
+    status(410),
+  );
   const authority = {
     serverOrigin: 'https://synthetic.invalid',
     ownerId: 'owner',
@@ -397,13 +440,14 @@ test('real Host keeps project and connection checks, rejects retired MCP, and ru
     },
   };
   await assert.rejects(
-    dispatcher.execute(command('mutate', turn), { authority }),
+    dispatcher.execute(command('mutate', turn), { current: () => {}, authority }),
     /original connection revoked/,
   );
   assert.equal(opens, 0);
   assert.equal(store.journal.has('send-original'), false);
   let checks = 0;
   const accepted = await dispatcher.execute(command('mutate', turn), {
+    current: () => {},
     authority: {
       ...authority,
       current() {

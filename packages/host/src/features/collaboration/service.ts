@@ -41,7 +41,7 @@ export class HostCollaborationService {
   constructor(
     private readonly host: HostWorkspace,
     private readonly planes: CollaborationPlanes,
-    private readonly now = Date.now,
+    private readonly now: () => number,
   ) {}
   private store(authorityId: string) {
     let store = this.#stores.get(authorityId);

@@ -46,9 +46,10 @@ function receipt(
 /** Durable session lifecycle operations. This manager never opens an Agent. */
 export class SessionControlManager {
   constructor(private host: HostWorkspace) {}
-  private context(scope: SessionControlScope, project?: string) {
+  private context(scope: SessionControlScope, project?: string, checkpoint?: () => void) {
     const lease = structuredClone(this.host.projectRootLease(scope, project));
     const current = () => {
+      checkpoint?.();
       this.host.ensureConnected();
       assert(
         scope.userId === this.host.workspace.userId &&
@@ -136,9 +137,13 @@ export class SessionControlManager {
     );
     return result;
   }
-  async control(input: SessionControlAction, project?: string): Promise<SessionControlReceipt> {
+  async control(
+    input: SessionControlAction,
+    project?: string,
+    checkpoint?: () => void,
+  ): Promise<SessionControlReceipt> {
     const action = sessionControlActionSchema.parse(input),
-      context = this.context(action, project);
+      context = this.context(action, project, checkpoint);
     const original: SessionOriginalOperation = { kind: 'control', value: action };
     return this.host.serial(action.sessionId, async () => {
       context.current();
@@ -181,7 +186,7 @@ export class SessionControlManager {
         view.dispose();
         doc.commit();
         const next = Flock.fromFile(this.host.meta.exportFile()),
-          now = new Date().toISOString();
+          now = this.host.timestamp();
         const taskOrigin = this.host.store.tasks.origin(context.lease);
         const runDefaults = readRunDefaults(this.host.store, agent.id).selection;
         putMeta(next, 'session-' + action.sessionId, {
@@ -254,9 +259,13 @@ export class SessionControlManager {
       return this.settleStop(action, original);
     });
   }
-  async recover(input: SessionOperation, project?: string): Promise<SessionOperationResult> {
+  async recover(
+    input: SessionOperation,
+    project?: string,
+    checkpoint?: () => void,
+  ): Promise<SessionOperationResult> {
     const request = sessionOperationSchema.parse(input),
-      context = this.context(request, project);
+      context = this.context(request, project, checkpoint);
     return this.host.serial(request.sessionId, async () => {
       context.current();
       const original = request.request;

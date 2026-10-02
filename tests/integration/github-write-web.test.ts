@@ -1,3 +1,4 @@
+import { syntheticClientRuntime } from '../fixtures/client-runtime';
 import {
   GithubWriteController,
   githubWriteKey,
@@ -112,6 +113,8 @@ function fixture() {
   };
   const create = (t = target, current = () => true) =>
     new GithubWriteController(t, {
+      ...syntheticClientRuntime,
+
       read: async (key) => structuredClone(cache.get(key)),
       compareWrite: async (key, revision, value, guard) => {
         if (!guard()) throw new Error('scope changed');

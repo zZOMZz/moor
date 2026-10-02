@@ -39,7 +39,7 @@ test('page cache evicts only its own oldest metadata keys and preserves other sc
     () => {},
   );
   const original = await f.store.read(scope, () => {}, 'draft');
-  const neighbor = await f.controller.listProjectSessionPage('local', b.target);
+  const neighbor = await f.controller.catalog.listProjectSessionPage('local', b.target);
   const requests: SessionPageRequest[] = [];
   for (let i = 0; i < 65; i++) {
     const request = sessionPageRequestSchema.parse({
@@ -66,7 +66,9 @@ test('page cache evicts only its own oldest metadata keys and preserves other sc
     rejected: false,
     message: 'offline',
   });
-  const cached = await f.controller.listProjectSessionPage('local', b.target, { fresh: true });
+  const cached = await f.controller.catalog.listProjectSessionPage('local', b.target, {
+    fresh: true,
+  });
   assert.deepEqual(cached.items, neighbor.items);
   assert.equal(cached.source, 'cache');
   assert.equal(

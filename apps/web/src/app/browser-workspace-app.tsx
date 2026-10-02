@@ -1,3 +1,4 @@
+import { systemClientRuntime } from '@moor/client/adapters/shared/runtime';
 import { BrowserHttpError, createBrowserWorkspaceHttp } from '@moor/client/adapters/browser/http';
 import { createWorkspace } from '@moor/client/features/workspace/compose';
 import { createWorkspacePersistence } from '@moor/client/operations/workspace/compose';
@@ -86,6 +87,8 @@ export async function bootBrowserWorkspace(
     initialCache: true,
   });
   const controller = createWorkspace({
+    ...systemClientRuntime,
+
     sessionReceived: beginSessionPerformanceRead,
     store,
     request: (request) => runtime.request(request),
@@ -209,8 +212,8 @@ export async function bootBrowserWorkspace(
       };
     }
   };
-  const unsubscribe = controller.subscribe(() => {
-    const state = controller.state;
+  const unsubscribe = controller.view.subscribe(() => {
+    const state = controller.view.state;
     if (state.scope && state.sessionId)
       void runtime.saveSelection(state.scope, state.sessionId).catch(() => {});
   });
@@ -224,7 +227,7 @@ export async function bootBrowserWorkspace(
     unsubscribe();
     root.unmount();
     runtime.close();
-    void controller.flushDraft().finally(() => controller.close());
+    void controller.drafts.flushDraft().finally(() => controller.lifecycle.close());
   }
   async function switchIdentity(value: Identity) {
     if (closed) return;
@@ -258,11 +261,11 @@ export async function bootBrowserWorkspace(
     />,
   );
   const restoring = (async () => {
-    await controller.refreshCatalog('remote');
+    await controller.catalog.refreshCatalog('remote');
     const saved = selectionSchema.safeParse(await runtime.selection());
     if (saved.success && !closed) {
-      await controller.selectProject('remote', saved.data.scope.target);
-      await controller.openSession(saved.data.sessionId).catch(() => {});
+      await controller.catalog.selectProject('remote', saved.data.scope.target);
+      await controller.sessions.openSession(saved.data.sessionId).catch(() => {});
     }
   })().catch(() => {});
   void identity.then(async (me) => {
@@ -274,10 +277,10 @@ export async function bootBrowserWorkspace(
     if (!me?.owner) return;
     await restoring;
     if (closed) return;
-    await controller.refreshCatalog('remote').catch(() => {});
-    if (controller.state.sessionId) {
-      await controller.refreshSessions().catch(() => {});
-      await controller.refreshSession().catch(() => {});
+    await controller.catalog.refreshCatalog('remote').catch(() => {});
+    if (controller.view.state.sessionId) {
+      await controller.catalog.refreshSessions().catch(() => {});
+      await controller.sessions.refreshSession().catch(() => {});
     }
     if (!me.localOnly) await reconcileNotificationAccount(owner).catch(() => {});
     connect();
@@ -289,7 +292,7 @@ export async function bootBrowserWorkspace(
       try {
         const event = parseNotificationNavigation(raw, owner, me.localOnly === true, Date.now());
         const targets =
-          controller.state.catalogs.remote?.targets.filter(
+          controller.view.state.catalogs.remote?.targets.filter(
             ({ target }) =>
               target.userId === event.userId &&
               target.machineId === event.machineId &&
@@ -298,8 +301,8 @@ export async function bootBrowserWorkspace(
               (!('deviceId' in event) || target.deviceId === event.deviceId),
           ) ?? [];
         if (targets.length !== 1) return;
-        await controller.selectProject('remote', targets[0]!.target);
-        await controller.openSession(event.sessionId, event.turnId);
+        await controller.catalog.selectProject('remote', targets[0]!.target);
+        await controller.sessions.openSession(event.sessionId, event.turnId);
       } catch {
         /* Navigation cannot authorize or replay a request. */
       }

@@ -470,6 +470,40 @@ test('first definite rejection permits new stage; a different device cannot reco
   assert.equal(f.requests.filter((r) => r.body?.includes(op.operationId)).length, count);
   assert.equal(f.state.operation(op.operationId)?.state, 'pending');
 });
+test('CLI recovery preserves Host confirmation when the local confirmation write fails', async (t) => {
+  const f = await fixture(t);
+  await f.run(['session', 'create', '--agent', 'agent']);
+  f.fault.lost = 'after';
+  await assert.rejects(f.run(['session', 'send', '--stdin'], 'original'));
+  await f.started.promise;
+  const original = f.state.operations().find((value) => value.state === 'pending')!;
+  assert.ok(original);
+  const savedTransition = f.state.transition.bind(f.state);
+  let attempted = 0;
+  f.state.transition = (...args) => {
+    if (args[0] === original.operationId && args[2] === 'accepted') {
+      attempted++;
+      throw Error('synthetic local confirmation write failure');
+    }
+    return savedTransition(...args);
+  };
+  await assert.rejects(
+    f.run(['operation', 'inspect', original.operationId]),
+    (error) =>
+      error instanceof CliError &&
+      error.code === 'local-persistence' &&
+      error.operationId === original.operationId &&
+      /主机/.test(error.message),
+  );
+  assert.equal(attempted, 1);
+  assert.equal(f.state.operation(original.operationId)?.state, 'pending');
+  assert.equal(f.counts().prompts, 1);
+  f.state.transition = savedTransition;
+  await f.run(['operation', 'inspect', original.operationId]);
+  assert.equal(f.state.operation(original.operationId)?.state, 'accepted');
+  assert.equal(f.counts().prompts, 1);
+  await f.finish();
+});
 test('wait timeout or explicit abort never stops or sends; HTTP deadline keeps a staged action unknown', async (t) => {
   const f = await fixture(t);
   await f.run(['session', 'create', '--agent', 'agent']);

@@ -60,13 +60,19 @@ export class WorkspaceContextService {
         throw Error('当前电脑、项目或会话已改变，请重新读取。');
     };
   }
+  resetSelection(
+    value: Pick<
+      WorkspaceClientState,
+      'catalogs' | 'errors' | 'sessions' | 'offline' | 'sessionLoad'
+    >,
+  ) {
+    this.value = value;
+  }
   uuid() {
-    return (this.options.uuid ?? (() => crypto.randomUUID()))();
+    return this.options.uuid();
   }
   schedule(milliseconds: number, work: () => void) {
-    if (this.options.schedule) return this.options.schedule(milliseconds, work);
-    const timer = setTimeout(work, milliseconds);
-    return () => clearTimeout(timer);
+    return this.options.schedule(milliseconds, work);
   }
   async request(request: WorkspaceRequest, current: () => void) {
     current();

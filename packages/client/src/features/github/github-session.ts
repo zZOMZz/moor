@@ -57,7 +57,7 @@ export type GithubSessionDependencies<T> = {
   appendInstruction(target: T, text: string, current: () => void): Promise<void>;
   beforeWrite(target: T, current: () => void): Promise<void>;
   changed?(target: T, current: () => void): Promise<void> | void;
-  uuid?(): string;
+  uuid(): string;
 };
 type BoundContext<T> = GithubSessionContext<T> & { target: T };
 export type GithubSessionMode = 'read' | 'write' | 'recovery';

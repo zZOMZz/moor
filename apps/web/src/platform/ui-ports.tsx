@@ -2,6 +2,7 @@ import { createContext, useContext, type ReactNode } from 'react';
 import type { GoogleAuthPort } from '@moor/client/features/auth/google-auth';
 import type { AttachmentExportPort } from '@moor/client/features/attachments/export';
 import type { CatalogSafetyPort } from '@moor/client/features/workspace/catalog-safety';
+import type { RetiredRecordsPort } from '@moor/client/features/workspace/retired-records';
 
 export type Appearance = 'dark' | 'light' | 'system';
 export interface AppearancePort {
@@ -26,6 +27,7 @@ export type UiPorts = {
   preferences: PreferencePort;
   navigation: NavigationPort;
   catalog: CatalogSafetyPort;
+  retired: RetiredRecordsPort;
 };
 const Google = createContext<GoogleAuthPort | null>(null);
 const Attachments = createContext<AttachmentExportPort | null>(null);
@@ -33,6 +35,7 @@ const AppearanceContext = createContext<AppearancePort | null>(null);
 const Preferences = createContext<PreferencePort | null>(null);
 const Navigation = createContext<NavigationPort | null>(null);
 const Catalog = createContext<CatalogSafetyPort | null>(null);
+const Retired = createContext<RetiredRecordsPort | null>(null);
 function required<T>(port: T | null, name: string): T {
   if (!port) throw Error(`${name}能力未由入口提供。`);
   return port;
@@ -43,6 +46,7 @@ export const useAppearancePort = () => required(useContext(AppearanceContext), '
 export const usePreferences = () => required(useContext(Preferences), '本机偏好');
 export const useNavigation = () => required(useContext(Navigation), '页面交互');
 export const useCatalogSafety = () => required(useContext(Catalog), '目录数据检查');
+export const useRetiredRecords = () => required(useContext(Retired), '历史数据读取与导出');
 
 /** Only the assembly receives the bundle; consumers obtain their individual interface. */
 export function UiPortsProvider({ ports, children }: { ports: UiPorts; children: ReactNode }) {
@@ -52,7 +56,9 @@ export function UiPortsProvider({ ports, children }: { ports: UiPorts; children:
         <AppearanceContext.Provider value={ports.appearance}>
           <Preferences.Provider value={ports.preferences}>
             <Navigation.Provider value={ports.navigation}>
-              <Catalog.Provider value={ports.catalog}>{children}</Catalog.Provider>
+              <Catalog.Provider value={ports.catalog}>
+                <Retired.Provider value={ports.retired}>{children}</Retired.Provider>
+              </Catalog.Provider>
             </Navigation.Provider>
           </Preferences.Provider>
         </AppearanceContext.Provider>

@@ -16,7 +16,7 @@ const LIMITS = Object.freeze({
   pendingBytes: 96 * 1024 * 1024,
 });
 const check = (value) => {
-  if (!value) throw Error('Workspace connection unavailable');
+  if (!value) throw Error('WorkspaceGraph connection unavailable');
 };
 function origin(value) {
   const url = new URL(value);

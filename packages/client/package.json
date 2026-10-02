@@ -28,6 +28,10 @@
       "types": "./src/adapters/node/workspace-client.ts",
       "import": "./dist/adapters/node/workspace-client.js"
     },
+    "./adapters/shared/runtime": {
+      "types": "./src/adapters/shared/runtime.ts",
+      "import": "./dist/adapters/shared/runtime.js"
+    },
     "./adapters/shared/workspace-transport": {
       "types": "./src/adapters/shared/workspace-transport.ts",
       "import": "./dist/adapters/shared/workspace-transport.js"
@@ -51,6 +55,10 @@
     "./features/collaboration/client": {
       "types": "./src/features/collaboration/client.ts",
       "import": "./dist/features/collaboration/client.js"
+    },
+    "./features/collaboration/page": {
+      "types": "./src/features/collaboration/page.ts",
+      "import": "./dist/features/collaboration/page.js"
     },
     "./features/files/file-content": {
       "types": "./src/features/files/file-content.ts",
@@ -112,6 +120,10 @@
       "types": "./src/features/notifications/worker.ts",
       "import": "./dist/features/notifications/worker.js"
     },
+    "./features/preview/annotation": {
+      "types": "./src/features/preview/annotation.ts",
+      "import": "./dist/features/preview/annotation.js"
+    },
     "./features/preview/project-preview": {
       "types": "./src/features/preview/project-preview.ts",
       "import": "./dist/features/preview/project-preview.js"
@@ -143,6 +155,10 @@
     "./features/workspace/compose": {
       "types": "./src/features/workspace/compose.ts",
       "import": "./dist/features/workspace/compose.js"
+    },
+    "./features/workspace/retired-records": {
+      "types": "./src/features/workspace/retired-records.ts",
+      "import": "./dist/features/workspace/retired-records.js"
     },
     "./features/workspace/workspace-records": {
       "types": "./src/features/workspace/workspace-records.ts",

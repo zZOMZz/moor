@@ -4,10 +4,10 @@ import { createHash } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from 'jose';
 import {
   createGoogleOidcProvider,
-  GOOGLE_ISSUER,
   GOOGLE_OIDC_FAILED,
   type GoogleOidcConfig,
 } from '@moor/app-relay/google-oidc';
+import { GOOGLE_ISSUER } from '@moor/gateway/features/auth/google';
 
 const NOW = 1_800_000_000_000;
 const config: GoogleOidcConfig = {

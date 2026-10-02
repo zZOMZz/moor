@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
-import type { GoogleIdentity } from '../../apps/relay/src/google-oidc';
+import type { GoogleIdentity } from '@moor/gateway/features/auth/google';
 
 const owner = 'synthetic-existing-owner',
   password = 'synthetic-local-password',

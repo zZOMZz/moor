@@ -2,6 +2,7 @@ import type { AgentConfig } from '../agents/driver';
 import type { ProjectSnapshot, ProjectFileTree } from '../files/model';
 export interface HostEnvironment {
   uuid(): string;
+  now(): number;
   yieldWork(): Promise<void>;
   hash(value: string | Uint8Array): string;
   directory(path: string): {

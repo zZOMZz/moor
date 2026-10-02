@@ -1,8 +1,10 @@
+import type { z } from 'zod';
+type GitRemove = z.infer<typeof gitRemoveSchema>;
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
 import { buildSessionTurn, readClientSession } from '@moor/session/session-operations';
 import type { AgentConfig, AgentDriver } from '@moor/host/features/agents/driver';
 import type { AgentForkCapabilities, AgentForkInput } from '@moor/host/features/agents/fork-model';
-import type { HostCommand } from '@moor/host/features/commands/dispatcher';
+import type { HostCommand } from '@moor/protocol/host-command';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import {
@@ -11,7 +13,7 @@ import {
   type ForkDirectory,
   type SessionFork,
 } from '@moor/protocol/fork-protocol';
-import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
+import type { GitPrepare, gitRemoveSchema } from '@moor/protocol/git-protocol';
 import { AppError, type Mutation } from '@moor/protocol/protocol';
 import { delta, Flock, metas, mirror, putMeta, vv } from '@moor/session/model';
 import assert from 'node:assert/strict';

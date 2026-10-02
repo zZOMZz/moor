@@ -1,7 +1,15 @@
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState, WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import { GitPullRequest } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { GithubSessionPanel } from './github-session-ui';
+const workspaceGithubUiPortSelection = {
+  view: ['contextRevision'],
+  github: ['openGithub'],
+} as const;
+export type WorkspaceGithubUiPort = WorkspacePort<typeof workspaceGithubUiPortSelection>;
+export const bindWorkspaceGithubUiPort = (graph: WorkspaceGithubUiPort) =>
+  bindWorkspacePort(graph, workspaceGithubUiPortSelection);
 
 export function WorkspaceGithubUI({
   controller,
@@ -9,20 +17,20 @@ export function WorkspaceGithubUI({
   busy,
   run,
 }: {
-  controller: Workspace;
+  controller: WorkspaceGithubUiPort;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
 }) {
   const [, render] = useState(0);
-  type Panel = Awaited<ReturnType<Workspace['openGithub']>>;
+  type Panel = Awaited<ReturnType<WorkspaceGraph['github']['openGithub']>>;
   const panel = useRef<Panel | null>(null);
   useEffect(
     () => () => {
       panel.current?.dispose();
       panel.current = null;
     },
-    [controller, controller.contextRevision],
+    [controller, controller.view.contextRevision],
   );
   const value = panel.current?.state;
   return (
@@ -36,7 +44,7 @@ export function WorkspaceGithubUI({
           run(async () => {
             panel.current?.dispose();
             panel.current = null;
-            panel.current = await controller.openGithub(() => render((n) => n + 1));
+            panel.current = await controller.github.openGithub(() => render((n) => n + 1));
             render((n) => n + 1);
           })
         }

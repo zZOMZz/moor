@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import test, { type TestContext } from 'node:test';
-import type { GoogleIdentity, GoogleOidcProvider } from '../../apps/relay/src/google-oidc';
+import type { GoogleIdentity, GoogleOidcProvider } from '@moor/gateway/features/auth/google';
 
 const prefix = '/api/auth/google';
 const identity: GoogleIdentity = {

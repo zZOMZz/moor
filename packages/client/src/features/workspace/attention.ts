@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import { actorKey } from '@moor/protocol/attention';
 import { AGENT_MODEL_OPTIONS_FEATURE, agentSchema } from '@moor/protocol/protocol';
 import { SESSION_INTENTS_FEATURE } from '@moor/protocol/session-intent-protocol';
@@ -20,7 +21,6 @@ import {
 import { workspaceAttentionKey } from '../attention/workspace-attention';
 import { buildSendTurn } from '../sessions/session-intent';
 import type { WorkspaceCatalogService } from './catalog';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import type { WorkspaceOptions } from './model';
 import { same } from './model';
@@ -28,9 +28,11 @@ import type { WorkspaceSessionsService } from './sessions';
 /** Capabilities consumed by attention use cases; supplied only by the workspace composition root. */
 export interface WorkspaceAttentionPorts {
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger'>;
-  context: Pick<
-    WorkspaceContextService,
-    'context' | 'value' | 'request' | 'uuid' | 'execute' | 'command'
+  context: FeatureContext<
+    'context' | 'value' | 'request' | 'uuid' | 'execute' | 'command',
+    'catalogs' | 'errors' | 'offline' | 'scope' | 'sessionId',
+    'session' | 'agent-options',
+    'attention'
   >;
   store: Pick<
     WorkspacePersistence,
@@ -165,7 +167,7 @@ export class WorkspaceAttentionService {
       },
       compareAndSet: (key, expected, value) => save(key, value, { expected }),
       request,
-      now: () => Date.parse((this.options.now ?? (() => new Date().toISOString()))()),
+      now: () => Date.parse(this.options.now()),
       uuid: () => this.ports.context.uuid(),
       changed,
       deliver: async (original, retry, authorized, onPending) => {

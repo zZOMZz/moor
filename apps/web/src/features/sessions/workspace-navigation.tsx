@@ -3,7 +3,6 @@ import { Dialog } from '@base-ui/react/dialog';
 import { Menu } from '@base-ui/react/menu';
 import {
   isWorkspaceListOfflineFailure,
-  type Workspace,
   type WorkspaceSessionPage,
 } from '@moor/client/features/workspace/compose';
 import { productCanonicalJson as canonical } from '@moor/protocol/canonical-json';
@@ -25,6 +24,11 @@ import {
   SquarePen,
 } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
+const workspaceNavigationPortSelection = { catalog: ['listProjectSessionPage'] } as const;
+export type WorkspaceNavigationPort = WorkspacePort<typeof workspaceNavigationPortSelection>;
+export const bindWorkspaceNavigationPort = (graph: WorkspaceNavigationPort) =>
+  bindWorkspacePort(graph, workspaceNavigationPortSelection);
 
 import {
   appendNavigationPage,
@@ -390,7 +394,7 @@ export function NavigationProjectGroup({
   onAction: ProjectAction;
   onCreate(project: NavigationProject): void;
   onRefresh(project: NavigationProject): void | Promise<void>;
-  controller?: Workspace;
+  controller?: WorkspaceNavigationPort;
   revision?: number;
   grouped?: boolean;
   selectedAttention?: NavigationAttention;
@@ -400,7 +404,7 @@ export function NavigationProjectGroup({
     [archived, setArchived] = useState(false);
   const [searchExpansion, setSearchExpansion] = useState<{ query: string; open: boolean }>();
   const listId = useId();
-  const paged = typeof controller?.listProjectSessionPage === 'function';
+  const paged = typeof controller?.catalog.listProjectSessionPage === 'function';
   const effectiveQuery = navigationSessionQuery(project, query);
   const searchQuery = query.trim();
   const open = searchQuery
@@ -414,7 +418,7 @@ export function NavigationProjectGroup({
   };
   const pageScope = canonical([projectKey(project), effectiveQuery, archived]);
   const [loaded, setLoaded] = useState<{
-    controller: Workspace;
+    controller: WorkspaceNavigationPort;
     scope: string;
     page: WorkspaceSessionPage;
   }>();
@@ -442,7 +446,7 @@ export function NavigationProjectGroup({
     setPageLoading(!quiet);
     if (!quiet) setPageError(undefined);
     try {
-      const next = await controller.listProjectSessionPage(project.source, project.target, {
+      const next = await controller.catalog.listProjectSessionPage(project.source, project.target, {
         archived: archived ? 'archived' : 'active',
         pinned: archived ? 'all' : 'unpinned',
         query: effectiveQuery,

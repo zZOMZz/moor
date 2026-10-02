@@ -1,6 +1,5 @@
 import {
   isWorkspaceListOfflineFailure,
-  type Workspace,
   type WorkspaceClientState,
   type WorkspaceSessionPage,
 } from '@moor/client/features/workspace/compose';
@@ -9,6 +8,20 @@ import { RequestFailure } from '@moor/protocol/request-failure';
 import type { SessionMetadata } from '@moor/protocol/session-responses';
 import type { WorkspaceSource } from '@moor/protocol/workspace-client-protocol';
 import { useEffect, useMemo, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
+const workspaceNavigationPagesPortSelection = {
+  catalog: [
+    'listProjectSessionPage',
+    'listProjectSessions',
+    'navigationRevision',
+    'projectRevision',
+  ],
+} as const;
+export type WorkspaceNavigationPagesPort = WorkspacePort<
+  typeof workspaceNavigationPagesPortSelection
+>;
+export const bindWorkspaceNavigationPagesPort = (graph: WorkspaceNavigationPagesPort) =>
+  bindWorkspacePort(graph, workspaceNavigationPagesPortSelection);
 export type NavigationProject = NonNullable<WorkspaceClientState['project']> & {
   source: WorkspaceSource;
 };
@@ -100,12 +113,12 @@ export function appendNavigationPage(
 /** Metadata summaries only. Project bodies, drafts and unknown operations never
  * participate in this reader or its invalidation/caching lifecycle. */
 export function useNavigationSessions(
-  controller: Workspace,
+  controller: WorkspaceNavigationPagesPort,
   state: WorkspaceClientState,
   visible?: NavigationProject[],
   query = '',
 ) {
-  const paged = typeof controller.listProjectSessionPage === 'function';
+  const paged = typeof controller.catalog.listProjectSessionPage === 'function';
   const projects = visible ?? navigationProjects(state);
   const reads = projects.flatMap((project) =>
     (paged ? (['pinned', 'recent'] as const) : (['all'] as const)).map((kind) => ({
@@ -118,8 +131,8 @@ export function useNavigationSessions(
         state.catalogs[project.source]?.actor ?? null,
       ]),
       generation:
-        controller.projectRevision?.(project.source, project.target) ??
-        controller.navigationRevision ??
+        controller.catalog.projectRevision?.(project.source, project.target) ??
+        controller.catalog.navigationRevision ??
         0,
       online: project.online,
     })),
@@ -145,7 +158,7 @@ export function useNavigationSessions(
     fresh = false,
   ): Promise<WorkspaceSessionPage> => {
     if (paged)
-      return controller.listProjectSessionPage(read.project.source, read.project.target, {
+      return controller.catalog.listProjectSessionPage(read.project.source, read.project.target, {
         archived: 'active',
         pinned: read.kind === 'pinned' ? 'pinned' : 'unpinned',
         query: read.query,
@@ -154,7 +167,7 @@ export function useNavigationSessions(
         fresh,
       });
     return {
-      items: await controller.listProjectSessions(read.project.source, read.project.target),
+      items: await controller.catalog.listProjectSessions(read.project.source, read.project.target),
       nextCursor: null,
       source: 'host',
       partial: false,

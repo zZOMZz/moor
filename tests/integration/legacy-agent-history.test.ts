@@ -9,11 +9,8 @@ import {
   type AgentForkAnchor,
 } from '@moor/host/features/agents/fork-model';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
-import {
-  accountRateLimitSchema,
-  normalizeSessionEvent,
-  sessionEventSchema,
-} from '@moor/host/adapters/acp/events';
+import { normalizeSessionEvent } from '@moor/host/adapters/acp/events';
+import { accountRateLimitSchema, sessionEventSchema } from '@moor/protocol/session-events';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import test from 'node:test';

@@ -1,6 +1,7 @@
 import { createBrowserUiPorts, type BrowserUiEnvironment } from '../browser/ui-ports';
 import type { UiPorts, Appearance } from '../ui-ports';
 import type { GoogleBegin } from '@moor/client/features/auth/google-auth';
+import type { RetiredRecordExport } from '@moor/client/features/workspace/retired-records';
 
 export type DesktopUiBridge = {
   version: number;
@@ -20,8 +21,10 @@ const valid = (value: unknown): value is Appearance =>
 export function createDesktopUiPorts(
   environment: BrowserUiEnvironment,
   bridge: DesktopUiBridge,
+  exportRetiredData: (value: RetiredRecordExport) => Promise<{ canceled: boolean }>,
 ): UiPorts {
   if (bridge.version !== 1) throw Error('桌面能力接口不可用。');
+  if (typeof exportRetiredData !== 'function') throw Error('桌面历史数据导出接口不可用。');
   const common = createBrowserUiPorts(environment);
   let appearance: Appearance = 'system';
   const listeners = new Set<() => void>();
@@ -36,6 +39,14 @@ export function createDesktopUiPorts(
   };
   return {
     ...common,
+    retired: {
+      read: common.retired.read,
+      async export(value, current) {
+        if (!current()) return { status: 'cancelled' };
+        const result = await exportRetiredData(value);
+        return { status: result.canceled ? 'cancelled' : 'saved' };
+      },
+    },
     appearance: {
       read: () => appearance,
       async change(value) {

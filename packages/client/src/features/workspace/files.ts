@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import {
   PROJECT_DIFF_FEATURE,
   PROJECT_TREE_FEATURE,
@@ -9,16 +10,22 @@ import { WorkspacePersistence, type WorkspaceScope } from '../../operations/work
 import { projectContentKey } from '../files/project-content';
 import { ProjectContentController } from '../files/project-content-controller';
 import { searchSessionContent, type SessionSearchView } from '../sessions/session-search';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { same } from './model';
 import type { WorkspaceSessionsService } from './sessions';
 /** Capabilities consumed by files use cases; supplied only by the workspace composition root. */
 export interface WorkspaceFilesPorts {
   store: Pick<WorkspacePersistence, 'contentCache' | 'cachedSession'>;
-  context: Pick<
-    WorkspaceContextService,
-    'context' | 'value' | 'execute' | 'command' | 'emit' | 'contextRevision'
+  context: FeatureContext<
+    'context' | 'value' | 'execute' | 'command' | 'emit' | 'contextRevision',
+    'offline' | 'project' | 'scope' | 'searchFocus' | 'session' | 'sessions',
+    | 'search-sessions'
+    | 'read-project-tree'
+    | 'read-turn-diff'
+    | 'read-diff-file'
+    | 'read-attachment'
+    | 'file-content',
+    never
   >;
   drafts: Pick<WorkspaceDraftsService, 'flushDraft'>;
   sessions: Pick<WorkspaceSessionsService, 'openSession'>;

@@ -138,7 +138,7 @@ export class InteractionController {
       write: (key: string, value: unknown) => Promise<void>;
       request: (method: 'answer-question' | 'steer', body: unknown) => Promise<unknown>;
       onChange?: () => void;
-      uuid?: () => string;
+      uuid: () => string;
     },
   ) {
     this.scope = Object.freeze(
@@ -215,7 +215,7 @@ export class InteractionController {
       sessionId: request.sessionId,
       expectedTurnId: request.expectedTurnId,
       requestId: request.requestId,
-      operationId: (this.dependencies.uuid ?? (() => crypto.randomUUID()))(),
+      operationId: this.dependencies.uuid(),
       answer,
     });
     return this.deliver(
@@ -242,7 +242,7 @@ export class InteractionController {
       localProjectId: this.scope.localProjectId,
       sessionId: this.scope.sessionId,
       expectedTurnId,
-      operationId: (this.dependencies.uuid ?? (() => crypto.randomUUID()))(),
+      operationId: this.dependencies.uuid(),
       prompt,
     });
     return this.deliver(

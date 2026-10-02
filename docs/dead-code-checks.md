@@ -15,11 +15,11 @@ pnpm production:check
 
 [检查入口](../scripts/validation/check-unused.mjs) 向 OXC 显式传入独立的 [tsconfig.knip.json](../tsconfig.knip.json)。它在运行前核对每个 workspace manifest 的源码导出映射，新增或修改包导出时必须同步映射。这个配置不改变应用的 TypeScript 编译或 Node 运行解析。合成回归分别在 `dist` 存在和不存在时检查同一消费者，确保确实使用的导出不被误报、真正未使用的导出仍能被发现。
 
-[Knip 配置](../knip.jsonc) 不再把全部 `src/**/*.ts` 显式声明为入口，也不关闭包入口导出检查。仍有一个工具限制：Knip 会将 manifest 的通配源码导出自动展开为入口。因此不能用它的“未使用文件为零”证明生产模块清理完成；文件可达性由下面的实际构建图补充验证。
+[Knip 配置](../knip.jsonc) 不把全部源码声明为入口，也不关闭包入口导出检查。所有 workspace manifest 均使用精确的规范导出；源码 alias 与 Knip 路径都由这些 manifest 产生。构建图仍独立验证 tree-shaking 后的生产消费者，避免测试引用掩盖无产品用途的实现。
 
 普通检查包含测试，生产模式排除测试和开发依赖。只在测试里使用的接口需要单独判断是否应保留为私有实现，不能根据生产模式输出机械删除安全回归。类型导出与运行值分别分析。
 
-六个内部 `private` 包仅保留实际使用的子路径导出。无任何根包导入消费者的 `src/index.ts` 转导及 manifest 的 `"."` 出口已删除；这不改变已有 `@moor/包名/模块` 导入。根项目仍通过真实子路径测试消费各包，相关 workspace 依赖继续保留。
+七个内部 `private` 包仅保留实际使用的子路径导出。无任何根包导入消费者的 `src/index.ts` 转导及 manifest 的 `"."` 出口已删除；这不改变已有 `@moor/包名/模块` 导入。根项目仍通过真实子路径测试消费各包，相关 workspace 依赖继续保留。
 
 ## 实际构建图
 
@@ -35,7 +35,7 @@ pnpm production:check
 
 开发性能面板有两个精确的非生产实现：[performance-panel.ts](../apps/web/src/features/performance/performance-panel.ts) 和 [performance-metrics.ts](../apps/web/src/features/performance/performance-metrics.ts)。门禁将它们单列为 `developmentOnly`，并反向检查所有生产构建图：任意一个实现写入生产产物都会失败。此分类不覆盖整个目录，新模块仍须提供真实消费者。
 
-[desktop-entry.ts](../apps/web/src/app/desktop-shell.ts) 仍是生产样式与启动脚本的连接模块。它只有在真实生产图已加载、顶层除模块连接与类型声明外仅保留精确的 `__MOOR_DEV_PERFORMANCE__` 声明和开发条件块时，才能以零输出字节归入 `linkage`。开发例外还要求该条件块实际动态导入面板，且面板通过运行值导入指标实现；删除这条源码链后，两个实现恢复为无消费者错误。测试引用不参与分类。
+[desktop-shell.ts](../apps/web/src/app/desktop-shell.ts) 仍是生产样式与启动脚本的连接模块。它只有在真实生产图已加载、顶层除模块连接与类型声明外仅保留精确的 `__MOOR_DEV_PERFORMANCE__` 声明和开发条件块时，才能以零输出字节归入 `linkage`。开发例外还要求该条件块实际动态导入面板，且面板通过运行值导入指标实现；删除这条源码链后，两个实现恢复为无消费者错误。测试引用不参与分类。
 
 [Electron Vite 配置](../electron.vite.config.mjs) 在开发时启用该编译标记，生产时设为 `false`；[实际 Electron 检查](../scripts/validation/check-desktop-vite.mjs) 通过 Vite 开发入口等待面板 DOM 安装，并检查它初始关闭，同时验证生产入口没有面板和开发桥。运行 `pnpm check:desktop:electron` 验证真实开发消费者，运行完整构建和 `pnpm production:check` 验证发行产物未包含开发实现。这些检查使用隔离数据；不代表真实 Agent 账户或用户负载下的性能基准。
 

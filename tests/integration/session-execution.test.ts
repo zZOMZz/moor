@@ -1,5 +1,7 @@
+import type { z } from 'zod';
+type GitRemove = z.infer<typeof gitRemoveSchema>;
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
-import type { HostCommand } from '@moor/host/features/commands/dispatcher';
+import type { HostCommand } from '@moor/protocol/host-command';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { readProjectFileBytes } from '@moor/host/adapters/files/read';
 import {
@@ -11,7 +13,7 @@ import {
 import { type ProjectGitOptions } from '@moor/host/features/git/model';
 import { captureProjectSnapshot, enumerateProjectFiles } from '@moor/host/adapters/files/snapshot';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
-import type { GitPrepare, GitRemove } from '@moor/protocol/git-protocol';
+import type { GitPrepare, gitRemoveSchema } from '@moor/protocol/git-protocol';
 import { gitActionReceiptSchema, gitStateResultSchema } from '@moor/protocol/git-protocol';
 import type { Mutation } from '@moor/protocol/protocol';
 import { Flock, LoroDoc, delta, metas, mirror, putMeta, vv } from '@moor/session/model';

@@ -1,22 +1,9 @@
 import {
-  accountRateLimitSchema,
-  runtimeFeatureReportSchema,
   sessionEventSchema,
-  sessionEventStateSchema,
   type RuntimeFeatureReport,
   type SessionEvent,
   type SessionEventState,
 } from '@moor/protocol/session-events';
-import { applySessionEvent } from '@moor/session/session-events';
-
-export {
-  accountRateLimitSchema,
-  applySessionEvent,
-  runtimeFeatureReportSchema,
-  sessionEventSchema,
-  sessionEventStateSchema,
-};
-export type { RuntimeFeatureReport, SessionEvent, SessionEventState };
 
 export type SessionEventResult =
   | { status: 'accepted'; event: SessionEvent }

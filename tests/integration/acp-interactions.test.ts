@@ -1,6 +1,6 @@
 import { createAcpDriver } from '@moor/host/adapters/acp/driver';
 import type { AgentCallbacks, AgentRunBinding } from '@moor/host/features/agents/driver';
-import type { SessionEvent } from '@moor/host/adapters/acp/events';
+import type { SessionEvent } from '@moor/protocol/session-events';
 import {
   INTERACTION_VERSION,
   type QuestionAnswer,

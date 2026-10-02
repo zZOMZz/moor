@@ -1,4 +1,4 @@
-import type { Workspace } from '@moor/client/features/workspace/compose';
+import type { WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import { FolderOpen, GitCompareArrows } from 'lucide-react';
 import {
   useCallback,
@@ -13,10 +13,18 @@ import {
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { ProjectContentPanel, type ProjectContentPanelProps } from './project-content-ui';
+const workspaceContentUiPortSelection = {
+  view: ['contextRevision'],
+  files: ['openProjectContent'],
+} as const;
+export type WorkspaceContentUiPort = WorkspacePort<typeof workspaceContentUiPortSelection>;
+export const bindWorkspaceContentUiPort = (graph: WorkspaceContentUiPort) =>
+  bindWorkspacePort(graph, workspaceContentUiPortSelection);
 
 export type WorkspaceContentHandle = { open(mode: 'tree' | 'changes', turnId?: string): boolean };
-type Panel = Awaited<ReturnType<Workspace['openProjectContent']>>;
+type Panel = Awaited<ReturnType<WorkspaceGraph['files']['openProjectContent']>>;
 const noop = () => {};
 const emptySnapshot = () => null;
 async function previewFirstChange(current: Panel) {
@@ -45,7 +53,7 @@ export function WorkspaceContentUI({
   quoteFocus,
   hideTriggers = false,
 }: {
-  controller: Workspace;
+  controller: WorkspaceContentUiPort;
   controlRef?: Ref<WorkspaceContentHandle>;
   dockContainer?: HTMLElement | null;
   onVisibilityChange?(open: boolean): void;
@@ -87,7 +95,7 @@ export function WorkspaceContentUI({
       panel.current?.dispose();
       panel.current = null;
     };
-  }, [controller, controller.contextRevision]);
+  }, [controller, controller.view.contextRevision]);
   const open = useCallback(
     (mode: 'tree' | 'changes', turnId?: string) =>
       latest.current.run(async () => {
@@ -97,7 +105,7 @@ export function WorkspaceContentUI({
         panel.current?.dispose();
         panel.current = null;
         setPanel(null);
-        const next = await latest.current.controller.openProjectContent(noop, mode, turnId);
+        const next = await latest.current.controller.files.openProjectContent(noop, mode, turnId);
         if (current !== generation.current) {
           next.dispose();
           return;

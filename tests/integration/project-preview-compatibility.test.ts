@@ -1,9 +1,9 @@
 import type { GitTarget } from '@moor/client/features/git/git-workspace';
+import { snapshotVersion } from '@moor/client/features/preview/project-preview';
 import {
   previewAnnotationSnapshotSchema,
-  snapshotVersion,
   type PreviewAnnotationSnapshot,
-} from '@moor/client/features/preview/project-preview';
+} from '@moor/client/features/preview/annotation';
 import {
   validateWorkspaceAnnotations,
   validateWorkspacePreview,

@@ -1,3 +1,4 @@
+import { syntheticClientRuntime } from './client-runtime';
 import { hostHash } from '@moor/host/adapters/composition/identity';
 import { createWorkspace } from '@moor/client/features/workspace/compose';
 import type { StorageBackend, StorageChange } from '@moor/client/operations/storage';
@@ -126,6 +127,8 @@ export async function paginationFixture(
   >();
   const controls: { after?: (request: WorkspaceRequest) => Promise<void> } = {};
   const controller = createWorkspace({
+    ...syntheticClientRuntime,
+
     store,
     schedule: () => () => {},
     request: async (input) => {
@@ -162,8 +165,8 @@ export async function paginationFixture(
       }
     },
   });
-  t.after(() => controller.close());
-  await controller.refreshCatalog('local');
+  t.after(() => controller.lifecycle.close());
+  await controller.catalog.refreshCatalog('local');
   return {
     controller,
     catalog,

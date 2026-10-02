@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import { productCanonicalJson } from '@moor/protocol/canonical-json';
 import { RequestFailure } from '@moor/protocol/request-failure';
 import {
@@ -13,7 +14,6 @@ import {
   type WorkspaceSource,
 } from '@moor/protocol/workspace-client-protocol';
 import { WorkspacePersistence } from '../../operations/workspace/compose';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import type { WorkspaceInteractionsService } from './interactions';
 import {
@@ -30,8 +30,7 @@ import type { WorkspaceSessionsService } from './sessions';
 import type { WorkspaceSyncService } from './sync';
 /** Capabilities consumed by catalog use cases; supplied only by the workspace composition root. */
 export interface WorkspaceCatalogPorts {
-  context: Pick<
-    WorkspaceContextService,
+  context: FeatureContext<
     | 'value'
     | 'closed'
     | 'request'
@@ -39,8 +38,22 @@ export interface WorkspaceCatalogPorts {
     | 'emit'
     | 'current'
     | 'context'
+    | 'resetSelection'
     | 'execute'
-    | 'command'
+    | 'command',
+    | 'catalogs'
+    | 'errors'
+    | 'ledger'
+    | 'offline'
+    | 'project'
+    | 'scope'
+    | 'sessionListError'
+    | 'sessionLoad'
+    | 'sessionPage'
+    | 'sessions'
+    | 'syncDisconnected',
+    'agent-options' | 'agent-usage' | 'sessions-page' | 'sessions',
+    'catalog'
   >;
   drafts: Pick<
     WorkspaceDraftsService,
@@ -195,13 +208,13 @@ export class WorkspaceCatalogService {
     this.ports.drafts.draftInput = undefined;
     this.ports.sessions.discardSessionReplica();
     this.ports.context.generation++;
-    this.ports.context.value = {
+    this.ports.context.resetSelection({
       catalogs: this.ports.context.value.catalogs,
       errors: this.ports.context.value.errors,
       sessions: [],
       offline: true,
       sessionLoad: { status: 'idle' },
-    };
+    });
     this.ports.drafts.draftWrites = Promise.resolve();
     this.ports.interactions.interactionWrites = Promise.resolve();
   }

@@ -187,10 +187,10 @@ export type WorkspaceOptions = {
   sessionReceived?: () => ((owner: object, sessionId: string, version: string) => void) | undefined;
   request: (request: WorkspaceRequest) => Promise<unknown>;
   store: WorkspacePersistence;
-  uuid?: () => string;
-  now?: () => string;
-  schedule?: (ms: number, work: () => void) => () => void;
+  uuid: () => string;
+  now: () => string;
+  schedule: (ms: number, work: () => void) => () => void;
   /** Yield low-priority cache work; tests inject deterministic barriers. */
-  yieldCache?: () => Promise<void>;
+  yieldCache: () => Promise<void>;
   restoreLegacy?: (scope: WorkspaceScope, sessionId: string, current: () => void) => Promise<void>;
 };

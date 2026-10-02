@@ -4,9 +4,37 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": {
-      "types": "./src/*.ts",
-      "import": "./dist/*.js"
+    "./client-session-replica": {
+      "types": "./src/client-session-replica.ts",
+      "import": "./dist/client-session-replica.js"
+    },
+    "./collaboration-document": {
+      "types": "./src/collaboration-document.ts",
+      "import": "./dist/collaboration-document.js"
+    },
+    "./collaboration-replica": {
+      "types": "./src/collaboration-replica.ts",
+      "import": "./dist/collaboration-replica.js"
+    },
+    "./model": {
+      "types": "./src/model.ts",
+      "import": "./dist/model.js"
+    },
+    "./session-events": {
+      "types": "./src/session-events.ts",
+      "import": "./dist/session-events.js"
+    },
+    "./session-operations": {
+      "types": "./src/session-operations.ts",
+      "import": "./dist/session-operations.js"
+    },
+    "./session-output": {
+      "types": "./src/session-output.ts",
+      "import": "./dist/session-output.js"
+    },
+    "./session-search-document": {
+      "types": "./src/session-search-document.ts",
+      "import": "./dist/session-search-document.js"
     }
   },
   "scripts": {

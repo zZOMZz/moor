@@ -4,10 +4,12 @@
     "baseUrl": ".",
     "paths": {
       "@moor/app-cli": ["./apps/cli/src/main.ts"],
-      "@moor/app-cli/*": ["./apps/cli/src/*.ts"],
+      "@moor/app-cli/args": ["./apps/cli/src/args.ts"],
+      "@moor/app-cli/state": ["./apps/cli/src/state.ts"],
       "@moor/app-host": ["./apps/host/src/main.ts"],
       "@moor/app-relay": ["./apps/relay/src/main.ts"],
-      "@moor/app-relay/*": ["./apps/relay/src/*.ts"],
+      "@moor/app-relay/google-oidc": ["./apps/relay/src/google-oidc.ts"],
+      "@moor/app-relay/web-push": ["./apps/relay/src/web-push.ts"],
       "@moor/app-web": ["./apps/web/src/app/web-entry.ts"],
       "@moor/client/adapters/browser/http": ["./packages/client/src/adapters/browser/http.ts"],
       "@moor/client/adapters/browser/workspace-client": [
@@ -19,6 +21,7 @@
       "@moor/client/adapters/node/workspace-client": [
         "./packages/client/src/adapters/node/workspace-client.ts"
       ],
+      "@moor/client/adapters/shared/runtime": ["./packages/client/src/adapters/shared/runtime.ts"],
       "@moor/client/adapters/shared/workspace-transport": [
         "./packages/client/src/adapters/shared/workspace-transport.ts"
       ],
@@ -36,6 +39,9 @@
       ],
       "@moor/client/features/collaboration/client": [
         "./packages/client/src/features/collaboration/client.ts"
+      ],
+      "@moor/client/features/collaboration/page": [
+        "./packages/client/src/features/collaboration/page.ts"
       ],
       "@moor/client/features/files/file-content": [
         "./packages/client/src/features/files/file-content.ts"
@@ -78,6 +84,9 @@
       "@moor/client/features/notifications/worker": [
         "./packages/client/src/features/notifications/worker.ts"
       ],
+      "@moor/client/features/preview/annotation": [
+        "./packages/client/src/features/preview/annotation.ts"
+      ],
       "@moor/client/features/preview/project-preview": [
         "./packages/client/src/features/preview/project-preview.ts"
       ],
@@ -99,6 +108,9 @@
       ],
       "@moor/client/features/workspace/compose": [
         "./packages/client/src/features/workspace/compose.ts"
+      ],
+      "@moor/client/features/workspace/retired-records": [
+        "./packages/client/src/features/workspace/retired-records.ts"
       ],
       "@moor/client/features/workspace/workspace-records": [
         "./packages/client/src/features/workspace/workspace-records.ts"
@@ -304,7 +316,16 @@
         "./packages/protocol/src/workspace-client-protocol.ts"
       ],
       "@moor/protocol/workspace-target": ["./packages/protocol/src/workspace-target.ts"],
-      "@moor/session/*": ["./packages/session/src/*.ts"],
+      "@moor/session/client-session-replica": ["./packages/session/src/client-session-replica.ts"],
+      "@moor/session/collaboration-document": ["./packages/session/src/collaboration-document.ts"],
+      "@moor/session/collaboration-replica": ["./packages/session/src/collaboration-replica.ts"],
+      "@moor/session/model": ["./packages/session/src/model.ts"],
+      "@moor/session/session-events": ["./packages/session/src/session-events.ts"],
+      "@moor/session/session-operations": ["./packages/session/src/session-operations.ts"],
+      "@moor/session/session-output": ["./packages/session/src/session-output.ts"],
+      "@moor/session/session-search-document": [
+        "./packages/session/src/session-search-document.ts"
+      ],
       "@moor/sync/adapters/sqlite": ["./packages/sync/src/adapters/sqlite.ts"],
       "@moor/sync/document/documents": ["./packages/sync/src/document/documents.ts"]
     }

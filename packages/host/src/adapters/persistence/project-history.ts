@@ -1,8 +1,3 @@
-import type { ProjectHistoryPersistence } from '../../features/persistence/history';
-import { createHash, randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
-import type { DatabaseSync } from 'node:sqlite';
-import { assert } from '@moor/protocol/protocol';
 import type { ContentScope } from '@moor/protocol/content-protocol';
 import type {
   ProjectContentIssue,
@@ -10,9 +5,14 @@ import type {
   ProjectDiffReference,
   ProjectSnapshotFileSummary,
 } from '@moor/protocol/project-content-protocol';
-import { compareProjectSnapshots } from '../files/snapshot';
+import { assert } from '@moor/protocol/protocol';
+import type { FrozenSearchDiff } from '@moor/session/session-search-document';
+import { createHash, randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import { isDeepStrictEqual } from 'node:util';
 import { type ProjectSnapshot, type ProjectSnapshotFile } from '../../features/files/model';
-import type { FrozenSearchDiff } from './search-index';
+import type { ProjectHistoryPersistence } from '../../features/persistence/history';
+import { compareProjectSnapshots } from '../files/snapshot';
 
 export type ProjectHistoryScope = ContentScope & { userId: string; machineId: string };
 export type StoredProjectDiff = {

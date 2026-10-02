@@ -1,18 +1,18 @@
-import { z } from 'zod';
-import { agentSchema, mutationSchema, id } from '@moor/protocol/protocol';
-import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from './model';
-import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
-import { sessionReadResponseSchema, validateSessionBundle } from '@moor/protocol/session-responses';
-import { taskPlanSchema, type TaskPlan } from '@moor/protocol/task-protocol';
+import { promptAttachmentsSchema } from '@moor/protocol/attachment-protocol';
+import type { AttachmentReference } from '@moor/protocol/content-protocol';
 import { mcpServerIdsSchema } from '@moor/protocol/mcp-protocol';
 import {
-  permissionItemJson,
   PERMISSION_REVIEW_MAX_BYTES,
+  permissionItemJson,
   permissionOptionIdSchema,
   permissionOutcomeSchema,
 } from '@moor/protocol/permission-review';
-import { promptAttachmentsSchema } from '@moor/protocol/attachment-protocol';
-import type { AttachmentReference } from '@moor/protocol/content-protocol';
+import { agentSchema, id, mutationSchema } from '@moor/protocol/protocol';
+import { resolveRunSelection, type RunSelection } from '@moor/protocol/run-config';
+import { sessionReadResponseSchema, validateSessionBundle } from '@moor/protocol/session-responses';
+import { taskPlanSchema, type TaskPlan } from '@moor/protocol/task-protocol';
+import { z } from 'zod';
+import { decode, delta, Flock, LoroDoc, mirror, putMeta, vv } from './model';
 export type SessionClientScope = {
   userId: string;
   machineId: string;
@@ -324,42 +324,4 @@ export function prepareSessionPermission(input: SessionPermissionInput) {
   )
     throw Error('审批选项不属于已审阅的请求。');
   return { read, review, outcome };
-}
-
-export function buildSessionPermission(input: SessionPermissionInput) {
-  const { read, review, outcome } = prepareSessionPermission(input);
-  const doc = new LoroDoc();
-  try {
-    doc.import(decode(read.update));
-    const before = vv(doc),
-      view = mirror(doc, input.scope.sessionId);
-    try {
-      view.setState((state) => {
-        const turn = state.history.find((entry) => entry.id === review.assistantTurnId)!;
-        const item = turn.items!.find(
-          (entry: any) => entry.permissionRequest?.requestId === review.requestId,
-        ) as { permissionRequest: { outcome?: unknown } };
-        item.permissionRequest.outcome = outcome;
-      });
-      doc.commit();
-      return mutationSchema.parse({
-        operationId: id.parse(input.operationId),
-        workspaceId: input.scope.workspaceId,
-        sessionId: input.scope.sessionId,
-        kind: 'permission',
-        expectedTurnId: review.expectedUserTurnId,
-        requestId: review.requestId,
-        permissionReview: {
-          version: 1,
-          assistantTurnId: review.assistantTurnId,
-          itemJson: review.itemJson,
-        },
-        update: delta(doc, before),
-      });
-    } finally {
-      view.dispose();
-    }
-  } finally {
-    doc.free();
-  }
 }

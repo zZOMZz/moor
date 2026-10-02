@@ -1,49 +1,44 @@
-import { spawn, type SpawnOptionsWithoutStdio } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { accessSync, constants, statSync } from 'node:fs';
-import { Readable, Writable } from 'node:stream';
-import * as nodeModule from 'node:module';
-import { isAbsolute } from 'node:path';
 import {
   ClientSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
   type CreateElicitationResponse,
 } from '@agentclientprotocol/sdk';
-import { AcpConfiguration } from './capabilities';
-import { agentAdapterEntry, inspectAgentProgram } from './program';
 import { identifyAgentModelFailure } from '@moor/protocol/agent-errors';
-import {
-  LOCAL_CODEX_NOT_INSTALLED,
-  type AgentDriver,
-  type AgentRunBinding,
-} from '../../features/agents/driver';
-import { canonicalMode, resolveRunSelection, selectionFromInput } from '@moor/protocol/run-config';
 import {
   agentUsageUpdateSchema,
   MOOR_USAGE_READ,
   MOOR_USAGE_UPDATED,
 } from '@moor/protocol/agent-usage';
-import { readAcpUsage, supportsUsage } from './usage';
-import { promptContent } from './attachment-input';
+import { steerRequestSchema } from '@moor/protocol/interaction-protocol';
 import { AppError, assert } from '@moor/protocol/protocol';
+import { canonicalMode, resolveRunSelection, selectionFromInput } from '@moor/protocol/run-config';
+import { type SessionEvent, type SessionEventState } from '@moor/protocol/session-events';
+import { applySessionEvent } from '@moor/session/session-events';
+import { spawn, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { accessSync, constants, statSync } from 'node:fs';
+import * as nodeModule from 'node:module';
+import { isAbsolute } from 'node:path';
+import { Readable, Writable } from 'node:stream';
 import {
-  forkCapabilities,
+  LOCAL_CODEX_NOT_INSTALLED,
+  type AgentDriver,
+  type AgentRunBinding,
+} from '../../features/agents/driver';
+import { promptContent } from './attachment-input';
+import { AcpConfiguration } from './capabilities';
+import { bridgeElicitation } from './elicitation';
+import { normalizePromptUsage, normalizeSessionEvent, runtimeFeatureReport } from './events';
+import {
   ForkAnchorObservation,
+  forkCapabilities,
   forkResult,
   nativeForkRequest,
   validateForkInput,
 } from './fork';
-import { steerRequestSchema } from '@moor/protocol/interaction-protocol';
-import { bridgeElicitation } from './elicitation';
-import {
-  applySessionEvent,
-  normalizePromptUsage,
-  normalizeSessionEvent,
-  runtimeFeatureReport,
-  type SessionEvent,
-  type SessionEventState,
-} from './events';
+import { agentAdapterEntry, inspectAgentProgram } from './program';
+import { readAcpUsage, supportsUsage } from './usage';
 const agentRequire = nodeModule.createRequire(import.meta.url);
 const runBindingSchema = steerRequestSchema.omit({ operationId: true, prompt: true }).strict();
 const launchAcp = (command: string, args: string[], options: SpawnOptionsWithoutStdio) =>

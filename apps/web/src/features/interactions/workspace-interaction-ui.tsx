@@ -6,10 +6,25 @@ import {
   steerStatus,
 } from '@moor/client/features/interactions/interactions';
 import { workspaceInteractionSnapshot } from '@moor/client/features/interactions/workspace-interactions';
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { STEER_FEATURE } from '@moor/protocol/interaction-protocol';
 import { useMemo, useRef, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { QuestionPanel, SteerPanel } from './interaction-ui';
+const workspaceInteractionUiPortSelection = {
+  drafts: ['reloadDraft'],
+  interactions: [
+    'answerQuestion',
+    'dismissInteraction',
+    'retryInteraction',
+    'saveQuestionDraft',
+    'saveSteerDraft',
+    'steer',
+  ],
+} as const;
+export type WorkspaceInteractionUiPort = WorkspacePort<typeof workspaceInteractionUiPortSelection>;
+export const bindWorkspaceInteractionUiPort = (graph: WorkspaceInteractionUiPort) =>
+  bindWorkspacePort(graph, workspaceInteractionUiPortSelection);
 
 export function WorkspaceInteractionUI({
   controller,
@@ -19,7 +34,7 @@ export function WorkspaceInteractionUI({
   onDirty,
   snapshot: suppliedSnapshot,
 }: {
-  controller: Workspace;
+  controller: WorkspaceInteractionUiPort;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
@@ -104,7 +119,7 @@ export function WorkspaceInteractionUI({
         disabled={busy}
         onClick={() =>
           void perform(async () => {
-            await controller.reloadDraft();
+            await controller.drafts.reloadDraft();
             dirty.current = false;
             savingVersion.current++;
             onDirty(false);
@@ -153,14 +168,14 @@ export function WorkspaceInteractionUI({
           <button
             type="button"
             disabled={busy || !!reason}
-            onClick={() => run(() => controller.retryInteraction())}
+            onClick={() => run(() => controller.interactions.retryInteraction())}
           >
             重试原交互
           </button>
           <button
             type="button"
             disabled={busy || !!reason || !canDismiss}
-            onClick={() => run(() => controller.dismissInteraction())}
+            onClick={() => run(() => controller.interactions.dismissInteraction())}
           >
             关闭原交互记录
           </button>
@@ -180,8 +195,12 @@ export function WorkspaceInteractionUI({
           reason={reason || (snapshot.capabilities?.questions ? '' : '当前运行时不能回答此问题。')}
           recovery={recovery}
           onClose={close}
-          onDraft={(values) => draft(() => controller.saveQuestionDraft(question.request, values))}
-          onAnswer={(answer) => perform(() => controller.answerQuestion(question.request, answer))}
+          onDraft={(values) =>
+            draft(() => controller.interactions.saveQuestionDraft(question.request, values))
+          }
+          onAnswer={(answer) =>
+            perform(() => controller.interactions.answerQuestion(question.request, answer))
+          }
         />
       )}
       {panel && 'steer' in panel && (
@@ -200,8 +219,8 @@ export function WorkspaceInteractionUI({
           closed={saved.closed}
           recovery={recovery}
           onClose={close}
-          onDraft={(prompt) => draft(() => controller.saveSteerDraft(prompt))}
-          onSubmit={(prompt) => perform(() => controller.steer(panel.steer, prompt))}
+          onDraft={(prompt) => draft(() => controller.interactions.saveSteerDraft(prompt))}
+          onSubmit={(prompt) => perform(() => controller.interactions.steer(panel.steer, prompt))}
         />
       )}
     </section>

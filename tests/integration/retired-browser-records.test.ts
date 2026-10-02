@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readRetiredSecureRecords } from '../../apps/web/src/platform/retired-records';
+import { readRetiredSecureRecords } from '../../apps/web/src/platform/browser/retired-records';
+import {
+  createBrowserUiPorts,
+  type BrowserUiEnvironment,
+} from '../../apps/web/src/platform/browser/ui-ports';
+import {
+  createDesktopUiPorts,
+  type DesktopUiBridge,
+} from '../../apps/web/src/platform/desktop/ui-ports';
 
 test('retired-data inspection does not create a missing database', async (t) => {
   let opened = false;
@@ -22,6 +30,50 @@ test('retired-data inspection does not create a missing database', async (t) => 
   );
   assert.deepEqual(await readRetiredSecureRecords(), []);
   assert.equal(opened, false);
+});
+test('retired export uses the explicitly assembled capability and never falls back from missing desktop support', async () => {
+  let downloads = 0,
+    saves = 0;
+  const environment = {
+    window: { document: { createElement: () => ({ click: () => downloads++ }) } },
+    location: {},
+    request: async () => {
+      throw Error('export must not request a Host');
+    },
+  } as unknown as BrowserUiEnvironment;
+  const bridge: DesktopUiBridge = {
+    version: 1,
+    appearance: async () => 'system',
+    onAppearance: () => () => {},
+    googleAuth: {
+      begin: async () => ({ flowId: 'unused', code: 'unused' }),
+      complete: async () => ({ completed: false }),
+      cancel: async () => {},
+    },
+    saveAttachment: async () => ({ status: 'cancelled' }),
+    cancelAttachmentSave: async () => {},
+  };
+  const value = {
+    format: 'moor-retired-web-v1' as const,
+    records: [{ key: 'original', value: { body: 'frozen original bytes' } }],
+  };
+  const browser = createBrowserUiPorts(environment);
+  assert.deepEqual(await browser.retired.export(value, () => true), { status: 'handed-off' });
+  assert.equal(downloads, 1);
+  assert.throws(
+    () => createDesktopUiPorts(environment, bridge, undefined as never),
+    /桌面历史数据导出接口不可用/,
+  );
+  const desktop = createDesktopUiPorts(environment, bridge, async (input) => {
+    assert.deepEqual(input, value);
+    saves++;
+    return { canceled: false };
+  });
+  assert.deepEqual(await desktop.retired.export(value, () => false), { status: 'cancelled' });
+  assert.equal(saves, 0);
+  assert.deepEqual(await desktop.retired.export(value, () => true), { status: 'saved' });
+  assert.equal(saves, 1);
+  assert.equal(downloads, 1);
 });
 
 test('retired-data inspection only opens readonly transactions and preserves unknown request bytes', async (t) => {

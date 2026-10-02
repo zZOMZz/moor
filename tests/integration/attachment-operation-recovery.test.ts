@@ -1,5 +1,6 @@
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
-import { HostCommandDispatcher, type HostCommand } from '@moor/host/features/commands/dispatcher';
+import { HostCommandDispatcher } from '@moor/host/features/commands/dispatcher';
+import { type HostCommand } from '@moor/protocol/host-command';
 import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
 import { HostWorkspace } from '@moor/host/features/runtime/workspace';
 import { attachmentActionSchema, type AttachmentAction } from '@moor/protocol/attachment-protocol';

@@ -2,15 +2,17 @@ import test from 'node:test';
 import strict from 'node:assert/strict';
 import type { InitializeResponse, PromptResponse, SessionUpdate } from '@agentclientprotocol/sdk';
 import {
-  applySessionEvent,
   normalizePromptUsage,
   normalizeSessionEvent,
   runtimeFeatureReport,
+} from '@moor/host/adapters/acp/events';
+import { applySessionEvent } from '@moor/session/session-events';
+import {
   runtimeFeatureReportSchema,
   sessionEventStateSchema,
   type SessionEvent,
   type SessionEventState,
-} from '@moor/host/adapters/acp/events';
+} from '@moor/protocol/session-events';
 
 function event(value: unknown): SessionEvent {
   const result = normalizeSessionEvent(value);

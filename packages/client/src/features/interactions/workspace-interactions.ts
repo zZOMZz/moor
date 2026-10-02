@@ -1,7 +1,9 @@
 import type { WorkspaceClientState } from '../workspace/model';
 import { interactionCapabilitiesSchema, questionItemSchema, steerItemSchema } from './interactions';
 
-export function workspaceInteractionSnapshot(state: WorkspaceClientState) {
+export function workspaceInteractionSnapshot(
+  state: Pick<WorkspaceClientState, 'session' | 'sessionLoad' | 'offline'>,
+) {
   const turns = state.session?.history.filter((turn) => turn.role === 'assistant') ?? [];
   const active = turns.filter((turn) => !turn.finished);
   const turn = active.length === 1 ? active[0] : undefined;

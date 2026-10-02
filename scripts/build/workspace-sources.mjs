@@ -21,19 +21,18 @@ export function workspaceSourceAliases(root = repository) {
       return Object.entries(manifest.exports).map(([path, conditions]) => {
         const source = conditions.types;
         const subpath = path === '.' ? '' : path.slice(1);
-        const wildcard = subpath.includes('*');
         if (
           !source?.startsWith('./src/') ||
-          (path !== '.' && !/^\.\/[A-Za-z0-9_./*-]+$/.test(path)) ||
+          (path !== '.' && !/^\.\/[A-Za-z0-9_./-]+$/.test(path)) ||
           path.includes('..') ||
-          (subpath.match(/\*/g)?.length ?? 0) > 1 ||
-          wildcard !== source.includes('*')
+          subpath.includes('*') ||
+          source.includes('*')
         )
           throw Error(`Unsupported source export ${manifest.name}${path}`);
-        const pattern = escapePattern(manifest.name + subpath).replace('\\*', '(.+)');
+        const pattern = escapePattern(manifest.name + subpath);
         return {
           find: new RegExp(`^${pattern}$`),
-          replacement: resolve(directory, source.replace('*', '$1')),
+          replacement: resolve(directory, source),
         };
       });
     });

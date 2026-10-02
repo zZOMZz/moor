@@ -48,7 +48,7 @@ const createSnapshot = () => ({
   workspaces: [
     {
       id: 'catalog',
-      name: 'Workspace',
+      name: 'WorkspaceGraph',
       hosts: [
         {
           id: 'host',

@@ -141,7 +141,7 @@ test('pushes win over late snapshots, null windows clear, failures retain dated 
   assert.deepEqual(cache.peek('a').buckets, []);
 });
 test('revoked contexts reject instead of populating cache; telemetry strips credentials', async () => {
-  const cache = new AgentUsageCache();
+  const cache = new AgentUsageCache(() => 1000);
   let valid = true,
     release!: (v: AgentUsageUpdate) => void;
   const guard = () => {

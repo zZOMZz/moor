@@ -215,7 +215,7 @@
   },
   "scripts": {
     "build": "node ../../scripts/build/build-package.mjs",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
     "test": "pnpm --filter @moor/host... run build && node ../../scripts/validation/test.mjs packages/host"
   },
   "dependencies": {

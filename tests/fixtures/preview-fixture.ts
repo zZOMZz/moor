@@ -1,4 +1,6 @@
-import type { PreviewViewport } from '@moor/protocol/preview-protocol';
+import type { z } from 'zod';
+type PreviewViewport = z.infer<typeof previewViewportSchema>;
+import type { previewViewportSchema } from '@moor/protocol/preview-protocol';
 import { createHash } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 

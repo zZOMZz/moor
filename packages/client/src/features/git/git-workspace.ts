@@ -73,7 +73,7 @@ export type GitWorkspaceDependencies<Method extends string = 'git-state' | 'git-
   request(method: Method, body: unknown): Promise<unknown>;
   current(): boolean;
   changed(): void;
-  uuid?(): string;
+  uuid(): string;
 };
 /** Only explicit prepare/remove/retry methods can transmit a Git action. */
 export class GitWorkspaceController {
@@ -234,7 +234,7 @@ export class GitWorkspaceController {
       const request = gitActionSchema.parse({
         ...this.scope(),
         gitVersion: 1,
-        operationId: this.dependencies.uuid?.() ?? crypto.randomUUID(),
+        operationId: this.dependencies.uuid(),
         expectedRevision: state.execution.revision,
         action: 'prepare',
         baseBranch,
@@ -261,7 +261,7 @@ export class GitWorkspaceController {
         gitActionSchema.parse({
           ...this.scope(),
           gitVersion: 1,
-          operationId: this.dependencies.uuid?.() ?? crypto.randomUUID(),
+          operationId: this.dependencies.uuid(),
           expectedRevision: state.execution.revision,
           action: 'remove',
           executionId: state.execution.executionId,
@@ -294,7 +294,7 @@ export class GitWorkspaceController {
         gitActionSchema.parse({
           ...this.scope(),
           gitVersion: 1,
-          operationId: this.dependencies.uuid?.() ?? crypto.randomUUID(),
+          operationId: this.dependencies.uuid(),
           expectedRevision: state.execution.revision,
           action: 'detach',
           executionId: state.execution.executionId,

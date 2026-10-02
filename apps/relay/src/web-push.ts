@@ -1,12 +1,3 @@
-import { createECDH, timingSafeEqual } from 'node:crypto';
-import { request as httpsRequest, type RequestOptions } from 'node:https';
-import type { ClientRequest, IncomingMessage } from 'node:http';
-import webPush from 'web-push';
-import { assert } from '@moor/protocol/protocol';
-import {
-  NOTIFICATION_LIMITS,
-  notificationEnvelopeSchema,
-} from '@moor/protocol/notification-protocol';
 import {
   decodePushKey,
   validatePushEndpoint,
@@ -16,11 +7,15 @@ import {
   type WebPushResult,
   type WebPushTransport,
 } from '@moor/gateway/features/notifications/ports';
-export {
-  validatePushEndpoint,
-  validatePushSubscription,
-} from '@moor/gateway/adapters/crypto/push-subscription';
-export type { WebPushResult, WebPushTransport };
+import {
+  NOTIFICATION_LIMITS,
+  notificationEnvelopeSchema,
+} from '@moor/protocol/notification-protocol';
+import { assert } from '@moor/protocol/protocol';
+import { createECDH, timingSafeEqual } from 'node:crypto';
+import type { ClientRequest, IncomingMessage } from 'node:http';
+import { request as httpsRequest, type RequestOptions } from 'node:https';
+import webPush from 'web-push';
 
 export type WebPushRequest = {
   endpoint: string;

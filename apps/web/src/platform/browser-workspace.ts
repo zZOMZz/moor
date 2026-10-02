@@ -17,7 +17,7 @@ import {
   WorkspacePersistence,
   type WorkspaceScope,
 } from '@moor/client/operations/workspace/compose';
-import { readLegacyWebRecord } from './retired-records';
+import { readLegacyWebRecord } from './browser/retired-records';
 import { browserOwnerKey as ownerKey } from './browser-storage';
 import {
   pendingSessionActionSchema,

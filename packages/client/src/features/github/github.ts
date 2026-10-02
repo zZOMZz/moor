@@ -441,7 +441,7 @@ export class GithubController {
       }
       const request = githubActionSchema.parse({
         ...this.scope(),
-        operationId: this.dependencies.uuid?.() ?? crypto.randomUUID(),
+        operationId: this.dependencies.uuid(),
         expectedRevision,
         action: 'bind',
         ...repo,
@@ -457,7 +457,7 @@ export class GithubController {
       if (this.pending) throw new Error('请先确认原 GitHub 绑定请求。');
       const request = githubActionSchema.parse({
         ...this.scope(),
-        operationId: this.dependencies.uuid?.() ?? crypto.randomUUID(),
+        operationId: this.dependencies.uuid(),
         expectedRevision: this.revision,
         action: 'unbind',
       });

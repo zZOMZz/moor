@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createECDH, createHmac, createDecipheriv, createPublicKey, verify } from 'node:crypto';
 import type { NotificationEnvelope } from '@moor/protocol/notification-protocol';
+import { createWebPushTransport, sendPushRequest } from '@moor/app-relay/web-push';
 import {
-  createWebPushTransport,
-  sendPushRequest,
   validatePushEndpoint,
   validatePushSubscription,
-} from '@moor/app-relay/web-push';
+} from '@moor/gateway/adapters/crypto/push-subscription';
 
 function keys(value: number) {
   const ecdh = createECDH('prime256v1');

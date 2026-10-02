@@ -193,12 +193,17 @@ export class SessionInteractions<Run extends InteractionRun> {
     return pending.promise;
   }
 
-  async answerQuestion(input: QuestionAnswer, localProjectId?: string): Promise<QuestionReceipt> {
+  async answerQuestion(
+    input: QuestionAnswer,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<QuestionReceipt> {
     let answer: QuestionAnswer | undefined;
     try {
       answer = questionAnswerSchema.parse(input);
       const parsed = answer;
       return await this.dependencies.serial(parsed.sessionId, async () => {
+        checkpoint?.();
         const owner = this.owner(parsed, localProjectId),
           journal = this.dependencies.journal,
           fingerprintScope = journalScope(parsed, owner),
@@ -220,6 +225,7 @@ export class SessionInteractions<Run extends InteractionRun> {
           accepted: true,
           delivered: true,
         };
+        checkpoint?.();
         this.dependencies.persist(
           parsed.sessionId,
           run,
@@ -300,13 +306,18 @@ export class SessionInteractions<Run extends InteractionRun> {
     return { persisted };
   }
 
-  async steer(input: SteerRequest, localProjectId?: string): Promise<SteerReceipt> {
+  async steer(
+    input: SteerRequest,
+    localProjectId?: string,
+    checkpoint?: () => void,
+  ): Promise<SteerReceipt> {
     let request: SteerRequest | undefined;
     try {
       request = steerRequestSchema.parse(input);
       const parsed = request,
         journal = this.dependencies.journal;
       const staged = await this.dependencies.serial(parsed.sessionId, async () => {
+        checkpoint?.();
         const owner = this.owner(parsed, localProjectId),
           fingerprintScope = journalScope(parsed, owner),
           record = journal.lookup(fingerprintScope, parsed);
@@ -334,6 +345,7 @@ export class SessionInteractions<Run extends InteractionRun> {
           409,
           '上一条追加指令尚未确认，请先查询或停止当前回合',
         );
+        checkpoint?.();
         this.dependencies.persist(
           parsed.sessionId,
           run,
@@ -377,6 +389,7 @@ export class SessionInteractions<Run extends InteractionRun> {
           session.id === nativeId
             ? run
             : undefined;
+        checkpoint?.();
         this.dependencies.persist(
           parsed.sessionId,
           current,
@@ -421,6 +434,7 @@ export class SessionInteractions<Run extends InteractionRun> {
           });
         } catch {
           await this.dependencies.serial(parsed.sessionId, async () => {
+            checkpoint?.();
             this.lease(parsed, owner, localProjectId);
             this.uncertain.add(run);
             settle('unknown', 'steer-unknown', {
@@ -430,6 +444,7 @@ export class SessionInteractions<Run extends InteractionRun> {
           throw new AppError(504, '追加指令结果未知；原请求不会再次发送，请查询回合或停止任务');
         }
         return await this.dependencies.serial(parsed.sessionId, async () => {
+          checkpoint?.();
           this.lease(parsed, owner, localProjectId);
           if (outcome.outcome === 'promptRequired') {
             settle('not-injected', 'steer-rejected', {

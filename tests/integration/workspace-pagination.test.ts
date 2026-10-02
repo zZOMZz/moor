@@ -6,14 +6,14 @@ test('modern clients request bounded summaries and exact cursors while preservin
   const f = await paginationFixture(t),
     target = f.catalog.targets[0].target;
   const [pinned, recent] = await Promise.all([
-    f.controller.listProjectSessionPage('local', target, { pinned: 'pinned' }),
-    f.controller.listProjectSessionPage('local', target, { pinned: 'unpinned' }),
+    f.controller.catalog.listProjectSessionPage('local', target, { pinned: 'pinned' }),
+    f.controller.catalog.listProjectSessionPage('local', target, { pinned: 'unpinned' }),
   ]);
   assert.equal(pinned.items.length, 5);
   assert.equal(recent.items.length, 30);
   assert.equal(recent.partial, true);
   assert.equal(recent.legacy, false);
-  const second = await f.controller.listProjectSessionPage('local', target, {
+  const second = await f.controller.catalog.listProjectSessionPage('local', target, {
     pinned: 'unpinned',
     cursor: recent.nextCursor!,
   });
@@ -43,38 +43,38 @@ test('modern clients request bounded summaries and exact cursors while preservin
 test('catalog refresh invalidates only changed execution projects and does not discard unaffected in-flight pages', async (t) => {
   const f = await paginationFixture(t),
     [a, b] = f.catalog.targets;
-  await f.controller.listProjectSessionPage('local', a.target);
-  await f.controller.listProjectSessionPage('local', b.target);
-  const before = f.controller.projectRevision('local', a.target);
-  await f.controller.refreshCatalog('local');
-  assert.equal(f.controller.projectRevision('local', a.target), before);
-  await f.controller.listProjectSessionPage('local', a.target);
+  await f.controller.catalog.listProjectSessionPage('local', a.target);
+  await f.controller.catalog.listProjectSessionPage('local', b.target);
+  const before = f.controller.catalog.projectRevision('local', a.target);
+  await f.controller.catalog.refreshCatalog('local');
+  assert.equal(f.controller.catalog.projectRevision('local', a.target), before);
+  await f.controller.catalog.listProjectSessionPage('local', a.target);
   assert.equal(f.listCalls().length, 2);
-  await f.controller.synchronize({
+  await f.controller.sync.synchronize({
     source: 'local',
     connectionId: f.catalog.connectionId,
     owner: f.catalog.owner,
     kind: 'changed',
     deviceId: a.target.deviceId,
   });
-  assert.equal(f.controller.projectRevision('local', a.target), before);
-  await f.controller.listProjectSessionPage('local', a.target);
+  assert.equal(f.controller.catalog.projectRevision('local', a.target), before);
+  await f.controller.catalog.listProjectSessionPage('local', a.target);
   assert.equal(f.listCalls().length, 2);
   for (const target of f.catalog.targets)
     target.runtime.projects.find((entry) => entry.id === b.target.localProjectId)!.rootPath =
       '/synthetic/moved-b';
-  await f.controller.synchronize({
+  await f.controller.sync.synchronize({
     source: 'local',
     connectionId: f.catalog.connectionId,
     owner: f.catalog.owner,
     kind: 'changed',
     deviceId: b.target.deviceId,
   });
-  assert.equal(f.controller.projectRevision('local', a.target), before);
-  assert(f.controller.projectRevision('local', b.target) > before);
-  await f.controller.listProjectSessionPage('local', a.target);
+  assert.equal(f.controller.catalog.projectRevision('local', a.target), before);
+  assert(f.controller.catalog.projectRevision('local', b.target) > before);
+  await f.controller.catalog.listProjectSessionPage('local', a.target);
   assert.equal(f.listCalls().length, 2);
-  await f.controller.listProjectSessionPage('local', b.target);
+  await f.controller.catalog.listProjectSessionPage('local', b.target);
   assert.equal(f.listCalls().length, 3);
   const entered = signal(),
     release = signal();
@@ -82,9 +82,9 @@ test('catalog refresh invalidates only changed execution projects and does not d
     entered.resolve();
     await release.promise;
   };
-  const pending = f.controller.listProjectSessionPage('local', a.target, { fresh: true });
+  const pending = f.controller.catalog.listProjectSessionPage('local', a.target, { fresh: true });
   await entered.promise;
-  await f.controller.refreshCatalog('local');
+  await f.controller.catalog.refreshCatalog('local');
   release.resolve();
   assert.equal((await pending).items.length, 30);
 });
@@ -92,35 +92,37 @@ test('catalog refresh invalidates only changed execution projects and does not d
 test('offline pages reveal only cached scope/cursor coverage and do not mark another project offline', async (t) => {
   const f = await paginationFixture(t),
     [a, b] = f.catalog.targets;
-  await f.controller.selectProject('local', a.target);
-  const first = await f.controller.listProjectSessionPage('local', b.target);
+  await f.controller.catalog.selectProject('local', a.target);
+  const first = await f.controller.catalog.listProjectSessionPage('local', b.target);
   f.failures.set(b.target.localProjectId, {
     code: 'network',
     status: null,
     rejected: false,
     message: 'Synthetic disconnect',
   });
-  const cached = await f.controller.listProjectSessionPage('local', b.target, { fresh: true });
+  const cached = await f.controller.catalog.listProjectSessionPage('local', b.target, {
+    fresh: true,
+  });
   assert.equal(cached.source, 'cache');
   assert.equal(cached.partial, true);
   assert.deepEqual(cached.items, first.items);
   await assert.rejects(
-    f.controller.listProjectSessionPage('local', b.target, {
+    f.controller.catalog.listProjectSessionPage('local', b.target, {
       cursor: first.nextCursor!,
       fresh: true,
     }),
   );
-  assert.equal(f.controller.state.offline, false);
-  assert.deepEqual(f.controller.state.scope!.target, a.target);
+  assert.equal(f.controller.view.state.offline, false);
+  assert.deepEqual(f.controller.view.state.scope!.target, a.target);
   await assert.rejects(
-    f.controller.listProjectSessionPage('local', { ...b.target, owner: 'other' }),
+    f.controller.catalog.listProjectSessionPage('local', { ...b.target, owner: 'other' }),
   );
 });
 
 test('auth, stale cursor, mapping and malformed-response failures never fall back to cached or legacy lists', async (t) => {
   const f = await paginationFixture(t),
     target = f.catalog.targets[0].target;
-  await f.controller.selectProject('local', target);
+  await f.controller.catalog.selectProject('local', target);
   for (const error of [
     { code: 'host', status: 401 },
     { code: 'host', status: 403 },
@@ -133,8 +135,10 @@ test('auth, stale cursor, mapping and malformed-response failures never fall bac
       rejected: false,
       message: 'Synthetic scope failure',
     });
-    await assert.rejects(f.controller.listProjectSessionPage('local', target, { fresh: true }));
-    assert.equal(f.controller.state.offline, false);
+    await assert.rejects(
+      f.controller.catalog.listProjectSessionPage('local', target, { fresh: true }),
+    );
+    assert.equal(f.controller.view.state.offline, false);
   }
   assert(
     f
@@ -147,33 +151,37 @@ test('auth, stale cursor, mapping and malformed-response failures never fall bac
     rejected: false,
     message: 'Expired',
   });
-  await assert.rejects(f.controller.refreshSessions());
-  assert.deepEqual(f.controller.state.sessions, []);
-  assert.equal(f.controller.state.offline, false);
+  await assert.rejects(f.controller.catalog.refreshSessions());
+  assert.deepEqual(f.controller.view.state.sessions, []);
+  assert.equal(f.controller.view.state.offline, false);
 });
 
 test('server filters find unloaded titles and archives, and a stale cursor requires an explicit fresh read', async (t) => {
   const f = await paginationFixture(t),
     target = f.catalog.targets[0].target;
-  const first = await f.controller.listProjectSessionPage('local', target, { pinned: 'unpinned' });
+  const first = await f.controller.catalog.listProjectSessionPage('local', target, {
+    pinned: 'unpinned',
+  });
   assert(!first.items.some((item) => item.title === 'Needle far session'));
-  const search = await f.controller.listProjectSessionPage('local', target, { query: 'Needle' });
+  const search = await f.controller.catalog.listProjectSessionPage('local', target, {
+    query: 'Needle',
+  });
   assert.equal(search.items.length, 1);
-  const archived = await f.controller.listProjectSessionPage('local', target, {
+  const archived = await f.controller.catalog.listProjectSessionPage('local', target, {
     archived: 'archived',
   });
   assert.equal(archived.items.length, 5);
   f.rows[0].title = 'Changed metadata';
   const before = f.listCalls().length;
   await assert.rejects(
-    f.controller.listProjectSessionPage('local', target, {
+    f.controller.catalog.listProjectSessionPage('local', target, {
       pinned: 'unpinned',
       cursor: first.nextCursor!,
       fresh: true,
     }),
   );
   assert.equal(f.listCalls().length, before + 1, 'a 409 must not silently restart or execute');
-  const refreshed = await f.controller.listProjectSessionPage('local', target, {
+  const refreshed = await f.controller.catalog.listProjectSessionPage('local', target, {
     pinned: 'unpinned',
     fresh: true,
   });
@@ -206,8 +214,8 @@ test('metadata pagination does not rewrite drafts or unknown operations, and leg
   );
   const before = await f.store.read(scope, () => {}, 'draft-session');
   const [one, two] = await Promise.all([
-    f.controller.listProjectSessionPage('local', target, { pinned: 'pinned' }),
-    f.controller.listProjectSessionPage('local', target, { pinned: 'unpinned' }),
+    f.controller.catalog.listProjectSessionPage('local', target, { pinned: 'pinned' }),
+    f.controller.catalog.listProjectSessionPage('local', target, { pinned: 'unpinned' }),
   ]);
   assert.equal(one.legacy, true);
   assert.equal(two.legacy, true);

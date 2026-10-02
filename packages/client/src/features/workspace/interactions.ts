@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import {
   questionRequestSchema,
   QUESTIONS_FEATURE,
@@ -14,7 +15,6 @@ import {
   type QuestionDraftValues,
 } from '../interactions/interactions';
 import { workspaceInteractionSnapshot } from '../interactions/workspace-interactions';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { Context, same } from './model';
 import type { WorkspaceSessionsService } from './sessions';
@@ -30,7 +30,12 @@ export interface WorkspaceInteractionsPorts {
     | 'attentionBlocked'
     | 'clearDraft'
   >;
-  context: Pick<WorkspaceContextService, 'uuid' | 'execute' | 'command' | 'context' | 'value'>;
+  context: FeatureContext<
+    'uuid' | 'execute' | 'command' | 'context' | 'value',
+    'draft' | 'ledger' | 'offline' | 'session' | 'sessionLoad',
+    'answer-question' | 'steer',
+    never
+  >;
   drafts: Pick<WorkspaceDraftsService, 'reloadLedger' | 'flushDraft' | 'draftInput'>;
   sessions: Pick<WorkspaceSessionsService, 'refreshSession'>;
 }

@@ -1,21 +1,15 @@
-import type { SessionSearchPersistence } from '../../features/persistence/search';
-import type { DatabaseSync } from 'node:sqlite';
-import { z } from 'zod';
-import { id } from '@moor/protocol/protocol';
 import { contentScopeSchema } from '@moor/protocol/content-protocol';
+import { id } from '@moor/protocol/protocol';
 import {
   SEARCH_LIMITS,
   searchEntrySchema,
   searchQuerySchema,
-  type SearchEntry,
   type SearchHit,
 } from '@moor/protocol/search-protocol';
 import { searchExcerpt, type SearchDocument } from '@moor/session/session-search-document';
-export {
-  sessionSearchDocument,
-  type SearchDocument,
-  type FrozenSearchDiff,
-} from '@moor/session/session-search-document';
+import type { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
+import type { SessionSearchPersistence } from '../../features/persistence/search';
 
 const searchScopeSchema = contentScopeSchema
   .extend({

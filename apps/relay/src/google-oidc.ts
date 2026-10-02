@@ -1,12 +1,7 @@
-import { timingSafeEqual } from 'node:crypto';
+import { GOOGLE_ISSUER, type GoogleOidcProvider } from '@moor/gateway/features/auth/google';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet, type JWK } from 'jose';
-import {
-  GOOGLE_ISSUER,
-  type GoogleIdentity,
-  type GoogleOidcProvider,
-} from '@moor/gateway/features/auth/google';
+import { timingSafeEqual } from 'node:crypto';
 
-export { GOOGLE_ISSUER };
 export const GOOGLE_OIDC_FAILED = 'Google 登录验证失败，请重新开始登录';
 const AUTHORIZATION_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -18,7 +13,6 @@ const MAX_JWKS_BYTES = 262_144;
 const JWKS_REFRESH_COOLDOWN_MS = 30_000;
 const JWKS_MAX_AGE_MS = 86_400_000;
 
-export type { GoogleIdentity, GoogleOidcProvider };
 export type GoogleOidcConfig = {
   clientId: string;
   clientSecret: string;

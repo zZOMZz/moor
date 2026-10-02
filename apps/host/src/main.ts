@@ -725,6 +725,7 @@ async function connect(target: Target) {
                     context,
                     params.itemId,
                     attentionSeenSchema.parse(params.input),
+                    attentionAuthority,
                   );
                   break;
                 case 'attention-disposition':
@@ -732,6 +733,7 @@ async function connect(target: Target) {
                     context,
                     params.itemId,
                     attentionDispositionSchema.parse(params.input),
+                    attentionAuthority,
                   );
                   break;
                 case 'attention-continue':
@@ -756,7 +758,7 @@ async function connect(target: Target) {
             }
           } else {
             const authority =
-              m.method !== 'mutate' || m.authorityOwner === undefined
+              m.authorityOwner === undefined
                 ? undefined
                 : connectionAuthoritySchema.parse({
                     serverOrigin: target.config.server,

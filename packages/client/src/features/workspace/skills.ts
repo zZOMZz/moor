@@ -1,11 +1,16 @@
+import type { FeatureContext } from './feature-context';
 import { SKILLS_FEATURE } from '@moor/protocol/skills-protocol';
 import { WorkspacePersistence } from '../../operations/workspace/compose';
 import { SkillsController } from '../skills/skills';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 /** Capabilities consumed by skills use cases; supplied only by the workspace composition root. */
 export interface WorkspaceSkillsPorts {
-  context: Pick<WorkspaceContextService, 'context' | 'value' | 'execute' | 'command'>;
+  context: FeatureContext<
+    'context' | 'value' | 'execute' | 'command',
+    'catalogs' | 'draft' | 'offline' | 'project' | 'session',
+    'skills-read',
+    never
+  >;
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger'>;
   store: Pick<WorkspacePersistence, 'saveDraft'>;
 }

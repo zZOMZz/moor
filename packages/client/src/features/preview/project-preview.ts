@@ -12,12 +12,9 @@ import { gitTargetSchema } from '../git/git-workspace';
 import {
   PREVIEW_ANNOTATION_LIMIT,
   previewAnnotationSchema,
-  previewAnnotationSnapshotSchema,
   type PreviewAnnotationSnapshot,
 } from './annotation';
 
-export { PREVIEW_ANNOTATION_LIMIT, previewAnnotationSchema, previewAnnotationSnapshotSchema };
-export type { PreviewAnnotationSnapshot };
 export const previewAnnotationSelectionSchema = z
   .object({
     id,

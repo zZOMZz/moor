@@ -103,12 +103,6 @@ export type HostCommand = {
     params: z.output<(typeof hostCommandSchemas)[M]>;
   };
 }[HostCommandMethod];
-export type HostCommandInput = {
-  [M in HostCommandMethod]: CommandScope & {
-    method: M;
-    params: z.input<(typeof hostCommandSchemas)[M]>;
-  };
-}[HostCommandMethod];
 export const hostCommandSchema = z
   .object({
     method: z.enum(HOST_COMMAND_METHODS),

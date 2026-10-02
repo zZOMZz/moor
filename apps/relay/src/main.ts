@@ -8,7 +8,8 @@ import {
   acquireRelayAccountLock,
   recoverAccount,
 } from './account-recovery';
-import { createWebPushTransport, validatePushSubscription } from './web-push';
+import { createWebPushTransport } from './web-push';
+import { validatePushSubscription } from '@moor/gateway/adapters/crypto/push-subscription';
 
 class StartupError extends Error {}
 function googleProvider(origin: string) {

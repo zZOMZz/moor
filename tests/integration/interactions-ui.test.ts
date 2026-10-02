@@ -2,7 +2,7 @@ import {
   questionDefaults,
   type QuestionDraftValues,
 } from '@moor/client/features/interactions/interactions';
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceGraph, WorkspaceClientState } from '@moor/client/features/workspace/compose';
 import { questionRequestSchema, type QuestionAnswer } from '@moor/protocol/interaction-protocol';
 import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
@@ -62,7 +62,7 @@ test('React question forms preserve all field types, save offline drafts and kee
   const { act, createElement } = await import('react');
   const { createRoot } = await import('react-dom/client');
   const { QuestionPanel } = await import('../../apps/web/src/features/interactions/interaction-ui');
-  const { WorkspaceInteractionUI } =
+  const { WorkspaceInteractionUI, bindWorkspaceInteractionUiPort } =
     await import('../../apps/web/src/features/interactions/workspace-interaction-ui');
   const { SessionInformation } =
     await import('../../apps/web/src/features/sessions/session-timeline');
@@ -230,18 +230,22 @@ test('React question forms preserve all field types, save offline drafts and kee
         createElement(WorkspaceInteractionUI, {
           state: interactionState,
           busy: false,
-          controller: {
-            saveSteerDraft: async () => {
-              throw Error('Synthetic disk failure');
+          controller: bindWorkspaceInteractionUiPort({
+            interactions: {
+              saveSteerDraft: async () => {
+                throw Error('Synthetic disk failure');
+              },
+              steer: async () => {
+                submissions++;
+              },
             },
-            reloadDraft: async () => {
-              reloads++;
-              if (failReload) throw Error('Synthetic reload failure');
+            drafts: {
+              reloadDraft: async () => {
+                reloads++;
+                if (failReload) throw Error('Synthetic reload failure');
+              },
             },
-            steer: async () => {
-              submissions++;
-            },
-          } as unknown as Workspace,
+          } as unknown as WorkspaceGraph),
           run: (task) => {
             void task();
             return true;

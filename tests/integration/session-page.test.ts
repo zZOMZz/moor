@@ -270,15 +270,18 @@ test('dispatcher binds the page body to its project route and calls no execution
     localProjectId: 'project-a',
     params: f.request(),
   };
-  const result: any = await dispatcher.execute(command);
+  const result: any = await dispatcher.execute(command, { current: () => {} });
   assert.equal(result.items.length, 30);
   assert.deepEqual(f.calls, ['project-a']);
   await assert.rejects(
-    dispatcher.execute({ ...command, localProjectId: 'project-b' }),
+    dispatcher.execute({ ...command, localProjectId: 'project-b' }, { current: () => {} }),
     status(400),
   );
   await assert.rejects(
-    dispatcher.execute({ ...command, params: { ...f.request(), workspaceId: 'other' } }),
+    dispatcher.execute(
+      { ...command, params: { ...f.request(), workspaceId: 'other' } },
+      { current: () => {} },
+    ),
     status(400),
   );
   assert.equal(f.calls.length, 1);

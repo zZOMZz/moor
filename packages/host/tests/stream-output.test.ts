@@ -1,23 +1,23 @@
+import { respondPermissionSchema } from '@moor/protocol/session-intent-protocol';
 import { createHostWorkspace } from '@moor/host/adapters/composition/workspace';
-import test, { type TestContext } from 'node:test';
+import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
+import { HostWorkspace } from '@moor/host/features/runtime/workspace';
+import { searchHostSessions } from '@moor/host/features/sessions/search';
+import { validateMutation } from '@moor/host/features/sessions/validate-mutation';
+import { LoroDoc, LoroList, LoroMap, mirror, putMeta } from '@moor/session/model';
+import {
+  buildSessionTurn,
+  readClientSession,
+  sessionPermissionReviews,
+} from '@moor/session/session-operations';
+import { appendSessionText } from '@moor/session/session-output';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LoroDoc, LoroList, LoroMap, mirror, putMeta } from '@moor/session/model';
-import { appendSessionText } from '@moor/session/session-output';
-import {
-  buildSessionPermission,
-  buildSessionTurn,
-  readClientSession,
-  sessionPermissionReviews,
-} from '@moor/session/session-operations';
-import { validateMutation } from '@moor/host/features/sessions/validate-mutation';
-import { RuntimeStore } from '@moor/host/adapters/persistence/workspace';
-import { HostWorkspace } from '@moor/host/features/runtime/workspace';
+import test, { type TestContext } from 'node:test';
 import { safeAgentMetadata } from '../src/features/attachments/agent-output';
-import { searchHostSessions } from '@moor/host/features/sessions/search';
 
 function fixture(
   t: TestContext,
@@ -973,7 +973,7 @@ test('delta-only output invalidates search, obeys expanded read budgets and inde
   );
 });
 
-test('existing client permission and next-turn builders preserve text containers and original receipts', async (t) => {
+test('permission intents and Host next-turn preparation preserve text containers and original receipts', async (t) => {
   const f = fixture(t, { history: 'old scalar transcript' });
   f.emit('new streamed reply');
   const options = [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }];
@@ -997,15 +997,21 @@ test('existing client permission and next-turn builders preserve text containers
   const response = await f.host.read(f.scope.sessionId, undefined, f.scope.localProjectId);
   const reviews = sessionPermissionReviews(readClientSession(response, f.scope), f.scope);
   assert.equal(reviews.length, 1);
-  const permission = buildSessionPermission({
-    scope: f.scope,
-    read: response,
-    review: reviews[0],
-    outcome: { outcome: 'selected', optionId: 'allow' },
+  const permission = respondPermissionSchema.parse({
+    intentVersion: 1,
+    ...f.scope,
     operationId: 'permission-a',
+    expectedTurnId: reviews[0].expectedUserTurnId,
+    requestId: reviews[0].requestId,
+    permissionReview: {
+      version: 1,
+      assistantTurnId: reviews[0].assistantTurnId,
+      itemJson: reviews[0].itemJson,
+    },
+    outcome: { outcome: 'selected', optionId: 'allow' },
   });
-  const receipt = await f.host.mutate(permission, f.scope.localProjectId);
-  assert.deepEqual(await f.host.mutate(permission, f.scope.localProjectId), receipt);
+  const receipt = await f.host.respondPermission(permission, f.scope.localProjectId);
+  assert.deepEqual(await f.host.respondPermission(permission, f.scope.localProjectId), receipt);
   assert.equal(resolutions, 1);
   f.emit('after permission');
   f.host.finish(f.scope.sessionId, f.run, 'handled');

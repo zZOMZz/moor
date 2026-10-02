@@ -264,306 +264,332 @@ const previousFileReference = {
   version: 'sha256:' + 'd'.repeat(64),
 };
 const controller: any = {
-  get state() {
-    return state;
+  view: {
+    identity: Object.freeze({}),
+    get state() {
+      return state;
+    },
+    contextRevision: 0,
+    subscribe(fn: () => void) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
   },
-  contextRevision: 0,
-  navigationRevision: 0,
-  scheduleSync() {},
-  async synchronize() {
-    this.navigationRevision++;
-    emit();
-  },
-  async projectMetadata(_source: string, target: any, shown: any, action: string, title?: string) {
-    const entry = sessions.find(
-      (session) =>
-        session.id === shown.id && session.project.localProjectId === target.localProjectId,
-    )!;
-    if (action === 'rename') entry.title = title!;
-    if (action === 'pin' || action === 'unpin') entry.isPinned = action === 'pin';
-    if (action === 'archive' || action === 'restore') entry.isArchived = action === 'archive';
-    this.navigationRevision++;
-    emit();
-  },
-  subscribe(fn: () => void) {
-    listeners.add(fn);
-    return () => listeners.delete(fn);
-  },
-  async refreshCatalog() {
-    return catalog;
-  },
-  async refreshSession() {
-    emit();
-  },
-  async refreshAgentOptions() {},
-  async readUsage() {},
-  async saveRunDefaults(selection: { modelId?: string; reasoningEffort?: string }) {
-    calls.push(`defaults:${selection.modelId ?? ''}:${selection.reasoningEffort ?? ''}`);
-  },
-  async readGitContext() {
-    return { execution: { branch: 'codex/ui' }, repository: { branch: 'main' } };
-  },
-  async openProjectContent(changed: () => void, mode: 'tree' | 'changes', turnId?: string) {
-    await contentGate;
-    const selected = state.scope.target;
-    const identity: ProjectContentTarget = {
-      owner: selected.owner,
-      deviceId: selected.deviceId,
-      catalogWorkspaceId: selected.catalogWorkspaceId,
-      replicaId: selected.replicaId,
-      workspaceId: selected.workspaceId,
-      localProjectId: selected.localProjectId,
-      sessionId: state.sessionId,
-    };
-    const snapshot = async (path: string, text: string) => {
-      const bytes = new TextEncoder().encode(text);
-      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-      const version =
-        'sha256:' + [...digest].map((value) => value.toString(16).padStart(2, '0')).join('');
-      return {
-        path,
-        size: bytes.length,
-        state: 'text' as const,
-        version,
-        mediaType: 'text/plain' as const,
-        text,
-      };
-    };
-    const files = await Promise.all(
-      fixtureFiles.map(async (file) => ({
-        path: file.path,
-        before: file.before === null ? null : await snapshot(file.path, file.before),
-        after: await snapshot(file.path, file.after),
-        previous: await snapshot(
-          file.path,
-          file.after.replaceAll('after snapshot', 'previous snapshot'),
-        ),
-        current: await snapshot(
-          file.path,
-          file.after.replaceAll('after snapshot', 'current working file'),
-        ),
-      })),
-    );
-    const summary = (file: Awaited<ReturnType<typeof snapshot>> | null) => {
-      if (!file) return null;
-      const { text: _text, ...value } = file;
-      return value;
-    };
-    const entries = [
-      { path: 'src', type: 'directory', size: 0 },
-      ...files.map((file) => ({ path: file.path, type: 'file', size: file.current.size })),
-    ];
-    const panel = new ProjectContentController<ProjectContentTarget>({
-      context: () => ({
-        target: identity,
-        generation: controller.contextRevision,
-        online: !state.offline,
-      }),
-      parseTarget: (input) => input as ProjectContentTarget,
-      contentTarget: (value) => value,
-      cache: {
-        read: async (_target, key) => contentCache.get(key),
-        writeBatch: async (_target, values, current) => {
-          current();
-          for (const [key, value] of values) contentCache.set(key, value);
-        },
-      },
-      request: async (_target, method, input) => {
-        const params = input as { path?: string; turnId?: string };
-        contentReads.push({ method, path: params.path, turnId: params.turnId });
-        if (state.offline) throw Error('Synthetic offline content must use its cache');
-        const reference = params.turnId === 'previous-turn' ? previousFileReference : fileReference;
-        const scope = {
-          contentVersion: 1,
-          workspaceId: identity.workspaceId,
-          localProjectId: identity.localProjectId,
-          sessionId: identity.sessionId,
-          confirmed: true,
-        };
-        if (method === 'read-project-tree')
-          return {
-            ...scope,
-            version: 'sha256:' + 'e'.repeat(64),
-            source: 'git',
-            entries,
-            offset: 0,
-            total: entries.length,
-            partial: false,
-            enumerationComplete: true,
-            issues: [],
-          };
-        if (method === 'file-content') {
-          const file = files.find((file) => file.path === params.path)!.current;
-          return {
-            ...scope,
-            path: params.path,
-            content: { version: file.version, byteLength: file.size, mediaType: 'text/plain' },
-            status: 'content',
-            encoding: 'base64',
-            data: btoa(file.text),
-          };
-        }
-        if (method === 'read-turn-diff')
-          return {
-            ...scope,
-            turnId: params.turnId,
-            state: 'ready',
-            reference,
-            changes: files.map((file) => ({
-              path: file.path,
-              kind: file.before ? 'modified' : 'added',
-              before: summary(file.before),
-              after: summary(params.turnId === 'previous-turn' ? file.previous : file.after),
-            })),
-            partial: false,
-            issues: [],
-            attribution: 'shared-project',
-          };
-        if (method === 'read-diff-file') {
-          const file = files.find((file) => file.path === params.path)!;
-          return {
-            ...scope,
-            turnId: params.turnId,
-            path: params.path,
-            reference,
-            before: file.before,
-            after: params.turnId === 'previous-turn' ? file.previous : file.after,
-            partial: false,
-            issues: [],
-            attribution: 'shared-project',
-          };
-        }
-        throw Error('Unexpected synthetic content request: ' + method);
-      },
-    });
-    const unsubscribe = panel.subscribe(changed);
-    await panel.open(
-      mode,
-      [
-        { id: 'assistant-turn', label: '整理项目', reference: fileReference },
-        { id: 'previous-turn', label: '上一回合', reference: previousFileReference },
-      ],
-      project.projectName,
-      turnId,
-    );
-    return Object.assign(panel, {
-      dispose() {
-        unsubscribe();
-        panel.close();
-      },
-    });
-  },
-  async listProjectSessions(_source: string, target: any) {
-    return sessions.filter((session) => session.project.localProjectId === target.localProjectId);
-  },
-  async listProjectSessionPage(_source: string, selected: any, options: any = {}) {
-    const { fresh: _fresh, ...filters } = options;
-    const request = sessionPageRequestSchema.parse({
-      pageVersion: 1,
-      workspaceId: selected.workspaceId,
-      localProjectId: selected.localProjectId,
-      ...filters,
-    });
-    const rows = sessions
-      .filter(
-        (session) =>
-          session.project.localProjectId === selected.localProjectId &&
-          sessionPageMatches(session, request),
+  catalog: {
+    navigationRevision: 0,
+    async refreshCatalog() {
+      return catalog;
+    },
+    async listProjectSessions(_source: string, target: any) {
+      return sessions.filter((session) => session.project.localProjectId === target.localProjectId);
+    },
+    async listProjectSessionPage(_source: string, selected: any, options: any = {}) {
+      const { fresh: _fresh, ...filters } = options;
+      const request = sessionPageRequestSchema.parse({
+        pageVersion: 1,
+        workspaceId: selected.workspaceId,
+        localProjectId: selected.localProjectId,
+        ...filters,
+      });
+      const rows = sessions
+        .filter(
+          (session) =>
+            session.project.localProjectId === selected.localProjectId &&
+            sessionPageMatches(session, request),
+        )
+        .sort(compareSessionPageItems);
+      const offset = request.cursor ? Number(request.cursor.replace(/^fixture_/, '')) : 0;
+      if (
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        (request.cursor && request.cursor !== `fixture_${offset}`)
       )
-      .sort(compareSessionPageItems);
-    const offset = request.cursor ? Number(request.cursor.replace(/^fixture_/, '')) : 0;
-    if (
-      !Number.isSafeInteger(offset) ||
-      offset < 0 ||
-      (request.cursor && request.cursor !== `fixture_${offset}`)
-    )
-      throw Error('Synthetic pagination cursor is invalid');
-    const end = offset + request.limit;
-    const { cursor: _cursor, ...page } = request;
-    const result = validateSessionPageResult(request, {
-      ...page,
-      confirmed: true,
-      revision: 'sha256:' + this.navigationRevision.toString(16).padStart(64, '0'),
-      items: rows.slice(offset, end),
-      nextCursor: end < rows.length ? `fixture_${end}` : null,
-    });
-    pageReads.push({
-      projectId: selected.localProjectId,
-      pinned: request.pinned,
-      limit: request.limit,
-      query: request.query,
-      cursor: request.cursor,
-    });
-    return { ...result, source: 'host', partial: result.nextCursor !== null };
+        throw Error('Synthetic pagination cursor is invalid');
+      const end = offset + request.limit;
+      const { cursor: _cursor, ...page } = request;
+      const result = validateSessionPageResult(request, {
+        ...page,
+        confirmed: true,
+        revision: 'sha256:' + controller.catalog.navigationRevision.toString(16).padStart(64, '0'),
+        items: rows.slice(offset, end),
+        nextCursor: end < rows.length ? `fixture_${end}` : null,
+      });
+      pageReads.push({
+        projectId: selected.localProjectId,
+        pinned: request.pinned,
+        limit: request.limit,
+        query: request.query,
+        cursor: request.cursor,
+      });
+      return { ...result, source: 'host', partial: result.nextCursor !== null };
+    },
+    async refreshSessions() {
+      state.sessions = sessions.filter(
+        (session) => session.project.localProjectId === state.scope.target.localProjectId,
+      );
+      emit();
+    },
+    async selectProject(source: string, selected: any) {
+      if (grouped) calls.push(`select:${source}:${selected.deviceId}:${selected.localProjectId}`);
+      state.project = catalog.targets.find(
+        (entry) => entry.target.localProjectId === selected.localProjectId,
+      );
+      state.scope = { source, target: selected };
+      state.session = undefined;
+      state.sessionId = undefined;
+      state.sessions = sessions.filter(
+        (session) => session.project.localProjectId === selected.localProjectId,
+      );
+      emit();
+    },
   },
-  async refreshSessions() {
-    state.sessions = sessions.filter(
-      (session) => session.project.localProjectId === state.scope.target.localProjectId,
-    );
-    emit();
+  sync: {
+    scheduleSync() {},
+    async synchronize() {
+      controller.catalog.navigationRevision++;
+      emit();
+    },
   },
-  async selectProject(source: string, selected: any) {
-    if (grouped) calls.push(`select:${source}:${selected.deviceId}:${selected.localProjectId}`);
-    state.project = catalog.targets.find(
-      (entry) => entry.target.localProjectId === selected.localProjectId,
-    );
-    state.scope = { source, target: selected };
-    state.session = undefined;
-    state.sessionId = undefined;
-    state.sessions = sessions.filter(
-      (session) => session.project.localProjectId === selected.localProjectId,
-    );
-    emit();
+  metadata: {
+    async projectMetadata(
+      _source: string,
+      target: any,
+      shown: any,
+      action: string,
+      title?: string,
+    ) {
+      const entry = sessions.find(
+        (session) =>
+          session.id === shown.id && session.project.localProjectId === target.localProjectId,
+      )!;
+      if (action === 'rename') entry.title = title!;
+      if (action === 'pin' || action === 'unpin') entry.isPinned = action === 'pin';
+      if (action === 'archive' || action === 'restore') entry.isArchived = action === 'archive';
+      controller.catalog.navigationRevision++;
+      emit();
+    },
   },
-  async createSession() {
-    calls.push('create');
-    const id = 'session-' + sessions.length;
-    sessions.push({
-      ...sessions[2]!,
-      id,
-      title: '新对话',
-      project: { kind: 'local', localProjectId: state.scope.target.localProjectId },
-      isPinned: false,
-      isArchived: false,
-    });
-    return id;
+  sessions: {
+    async refreshSession() {
+      emit();
+    },
+    async refreshAgentOptions() {},
+    async readUsage() {},
+    async saveRunDefaults(selection: { modelId?: string; reasoningEffort?: string }) {
+      calls.push(`defaults:${selection.modelId ?? ''}:${selection.reasoningEffort ?? ''}`);
+    },
+    async createSession() {
+      calls.push('create');
+      const id = 'session-' + sessions.length;
+      sessions.push({
+        ...sessions[2]!,
+        id,
+        title: '新对话',
+        project: { kind: 'local', localProjectId: state.scope.target.localProjectId },
+        isPinned: false,
+        isArchived: false,
+      });
+      return id;
+    },
+    async openSession(id: string) {
+      if (grouped)
+        calls.push(
+          `open:${state.scope.target.deviceId}:${state.scope.target.localProjectId}:${id}`,
+        );
+      state.draft ??= { revision: 0, text: '', selection: {} };
+      state.ledger ??= { operations: [] };
+      state.sessionId = id;
+      state.session = {
+        meta: sessions.find(
+          (entry) =>
+            entry.id === id && entry.project.localProjectId === state.scope.target.localProjectId,
+        ),
+        history,
+        agent,
+        online: true,
+        synced: true,
+        persisted: true,
+      };
+      emit();
+    },
+    async send() {
+      calls.push('send');
+    },
   },
-  async openSession(id: string) {
-    if (grouped)
-      calls.push(`open:${state.scope.target.deviceId}:${state.scope.target.localProjectId}:${id}`);
-    state.draft ??= { revision: 0, text: '', selection: {} };
-    state.ledger ??= { operations: [] };
-    state.sessionId = id;
-    state.session = {
-      meta: sessions.find(
-        (entry) =>
-          entry.id === id && entry.project.localProjectId === state.scope.target.localProjectId,
-      ),
-      history,
-      agent,
-      online: true,
-      synced: true,
-      persisted: true,
-    };
-    emit();
+  git: {
+    async readGitContext() {
+      return { execution: { branch: 'codex/ui' }, repository: { branch: 'main' } };
+    },
   },
-  async saveDraft(text: string, selection: unknown) {
-    state.draft = { revision: state.draft.revision + 1, text, selection };
-    emit();
+  files: {
+    async openProjectContent(changed: () => void, mode: 'tree' | 'changes', turnId?: string) {
+      await contentGate;
+      const selected = state.scope.target;
+      const identity: ProjectContentTarget = {
+        owner: selected.owner,
+        deviceId: selected.deviceId,
+        catalogWorkspaceId: selected.catalogWorkspaceId,
+        replicaId: selected.replicaId,
+        workspaceId: selected.workspaceId,
+        localProjectId: selected.localProjectId,
+        sessionId: state.sessionId,
+      };
+      const snapshot = async (path: string, text: string) => {
+        const bytes = new TextEncoder().encode(text);
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+        const version =
+          'sha256:' + [...digest].map((value) => value.toString(16).padStart(2, '0')).join('');
+        return {
+          path,
+          size: bytes.length,
+          state: 'text' as const,
+          version,
+          mediaType: 'text/plain' as const,
+          text,
+        };
+      };
+      const files = await Promise.all(
+        fixtureFiles.map(async (file) => ({
+          path: file.path,
+          before: file.before === null ? null : await snapshot(file.path, file.before),
+          after: await snapshot(file.path, file.after),
+          previous: await snapshot(
+            file.path,
+            file.after.replaceAll('after snapshot', 'previous snapshot'),
+          ),
+          current: await snapshot(
+            file.path,
+            file.after.replaceAll('after snapshot', 'current working file'),
+          ),
+        })),
+      );
+      const summary = (file: Awaited<ReturnType<typeof snapshot>> | null) => {
+        if (!file) return null;
+        const { text: _text, ...value } = file;
+        return value;
+      };
+      const entries = [
+        { path: 'src', type: 'directory', size: 0 },
+        ...files.map((file) => ({ path: file.path, type: 'file', size: file.current.size })),
+      ];
+      const panel = new ProjectContentController<ProjectContentTarget>({
+        context: () => ({
+          target: identity,
+          generation: controller.view.contextRevision,
+          online: !state.offline,
+        }),
+        parseTarget: (input) => input as ProjectContentTarget,
+        contentTarget: (value) => value,
+        cache: {
+          read: async (_target, key) => contentCache.get(key),
+          writeBatch: async (_target, values, current) => {
+            current();
+            for (const [key, value] of values) contentCache.set(key, value);
+          },
+        },
+        request: async (_target, method, input) => {
+          const params = input as { path?: string; turnId?: string };
+          contentReads.push({ method, path: params.path, turnId: params.turnId });
+          if (state.offline) throw Error('Synthetic offline content must use its cache');
+          const reference =
+            params.turnId === 'previous-turn' ? previousFileReference : fileReference;
+          const scope = {
+            contentVersion: 1,
+            workspaceId: identity.workspaceId,
+            localProjectId: identity.localProjectId,
+            sessionId: identity.sessionId,
+            confirmed: true,
+          };
+          if (method === 'read-project-tree')
+            return {
+              ...scope,
+              version: 'sha256:' + 'e'.repeat(64),
+              source: 'git',
+              entries,
+              offset: 0,
+              total: entries.length,
+              partial: false,
+              enumerationComplete: true,
+              issues: [],
+            };
+          if (method === 'file-content') {
+            const file = files.find((file) => file.path === params.path)!.current;
+            return {
+              ...scope,
+              path: params.path,
+              content: { version: file.version, byteLength: file.size, mediaType: 'text/plain' },
+              status: 'content',
+              encoding: 'base64',
+              data: btoa(file.text),
+            };
+          }
+          if (method === 'read-turn-diff')
+            return {
+              ...scope,
+              turnId: params.turnId,
+              state: 'ready',
+              reference,
+              changes: files.map((file) => ({
+                path: file.path,
+                kind: file.before ? 'modified' : 'added',
+                before: summary(file.before),
+                after: summary(params.turnId === 'previous-turn' ? file.previous : file.after),
+              })),
+              partial: false,
+              issues: [],
+              attribution: 'shared-project',
+            };
+          if (method === 'read-diff-file') {
+            const file = files.find((file) => file.path === params.path)!;
+            return {
+              ...scope,
+              turnId: params.turnId,
+              path: params.path,
+              reference,
+              before: file.before,
+              after: params.turnId === 'previous-turn' ? file.previous : file.after,
+              partial: false,
+              issues: [],
+              attribution: 'shared-project',
+            };
+          }
+          throw Error('Unexpected synthetic content request: ' + method);
+        },
+      });
+      const unsubscribe = panel.subscribe(changed);
+      await panel.open(
+        mode,
+        [
+          { id: 'assistant-turn', label: '整理项目', reference: fileReference },
+          { id: 'previous-turn', label: '上一回合', reference: previousFileReference },
+        ],
+        project.projectName,
+        turnId,
+      );
+      return Object.assign(panel, {
+        dispose() {
+          unsubscribe();
+          panel.close();
+        },
+      });
+    },
   },
-  queueDraft(
-    text: string,
-    selection: unknown,
-    _failed?: (error: unknown) => void,
-    saved?: () => void,
-  ) {
-    state.draft = { revision: state.draft.revision + 1, text, selection };
-    saved?.();
-    emit();
-  },
-  async flushDraft() {},
-  async send() {
-    calls.push('send');
+  drafts: {
+    async saveDraft(text: string, selection: unknown) {
+      state.draft = { revision: state.draft.revision + 1, text, selection };
+      emit();
+    },
+    queueDraft(
+      text: string,
+      selection: unknown,
+      _failed?: (error: unknown) => void,
+      saved?: () => void,
+    ) {
+      state.draft = { revision: state.draft.revision + 1, text, selection };
+      saved?.();
+      emit();
+    },
+    async flushDraft() {},
   },
 };
 const fixture = {
@@ -627,7 +653,7 @@ const fixture = {
       sessionLoad: { status: 'ready', source: 'cache' },
       session: { ...state.session, online: false },
     };
-    controller.contextRevision++;
+    controller.view.contextRevision++;
     emit();
   },
   longConversation() {

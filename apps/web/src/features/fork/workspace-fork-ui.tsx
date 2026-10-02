@@ -1,10 +1,20 @@
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState, WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import { FORK_OPERATIONS_FEATURE, SESSION_FORK_FEATURE } from '@moor/protocol/fork-protocol';
 import { GIT_OPERATIONS_FEATURE, GIT_WORKTREE_FEATURE } from '@moor/protocol/git-protocol';
 import { GitFork } from 'lucide-react';
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { GitWorkspacePanel } from '../git/git-workspace-ui';
 import { SessionForkPanel } from './session-fork-ui';
+const workspaceForkUiPortSelection = {
+  view: ['contextRevision'],
+  fork: ['openFork'],
+  sessions: ['openSession'],
+  git: ['openGit'],
+} as const;
+export type WorkspaceForkUiPort = WorkspacePort<typeof workspaceForkUiPortSelection>;
+export const bindWorkspaceForkUiPort = (graph: WorkspaceForkUiPort) =>
+  bindWorkspacePort(graph, workspaceForkUiPortSelection);
 
 export type WorkspaceForkHandle = { open(turnId?: string): boolean };
 
@@ -16,7 +26,7 @@ export function WorkspaceForkUI({
   navigate,
   controlRef,
 }: {
-  controller: Workspace;
+  controller: WorkspaceForkUiPort;
   controlRef?: Ref<WorkspaceForkHandle>;
   state: WorkspaceClientState;
   busy: boolean;
@@ -25,10 +35,10 @@ export function WorkspaceForkUI({
 }) {
   const [, render] = useState(0),
     [consent, setConsent] = useState('');
-  const panel = useRef<Awaited<ReturnType<Workspace['openFork']>> | null>(null);
+  const panel = useRef<Awaited<ReturnType<WorkspaceGraph['fork']['openFork']>> | null>(null);
   const resource = useRef<{
     id: string;
-    git: Awaited<ReturnType<Workspace['openGit']>>;
+    git: Awaited<ReturnType<WorkspaceGraph['git']['openGit']>>;
   } | null>(null);
   const close = () => {
     panel.current?.close();
@@ -38,7 +48,7 @@ export function WorkspaceForkUI({
     setConsent('');
     render((n) => n + 1);
   };
-  useEffect(() => close, [controller, controller.contextRevision]);
+  useEffect(() => close, [controller, controller.view.contextRevision]);
   const reason = state.offline
     ? '执行电脑离线，原 Fork 记录保留；连接后请手动读取。'
     : !state.project?.runtime.features?.includes(SESSION_FORK_FEATURE)
@@ -69,7 +79,7 @@ export function WorkspaceForkUI({
   const open = (turnId?: string) =>
     run(async () => {
       close();
-      panel.current = await controller.openFork(() => render((n) => n + 1));
+      panel.current = await controller.fork.openFork(() => render((n) => n + 1));
       render((n) => n + 1);
       if (!reason) await panel.current.refresh(turnId);
     });
@@ -97,12 +107,12 @@ export function WorkspaceForkUI({
           onRetry={() => run(() => panel.current!.retry())}
           onOpenChild={() =>
             navigate(() =>
-              controller.openSession(panel.current!.controller.receipt!.childSessionId),
+              controller.sessions.openSession(panel.current!.controller.receipt!.childSessionId),
             )
           }
           onOpenWorkspace={(id) =>
             run(async () => {
-              const git = await controller.openGit(() => render((n) => n + 1), id);
+              const git = await controller.git.openGit(() => render((n) => n + 1), id);
               resource.current = { id, git };
               render((n) => n + 1);
               if (!gitReason) await git.refresh();

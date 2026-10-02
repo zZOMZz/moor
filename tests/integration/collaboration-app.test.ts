@@ -3,6 +3,10 @@ import {
   type CollaborationStorage,
 } from '@moor/client/features/collaboration/client';
 import {
+  CollaborationPage,
+  type CollaborationPageAccess,
+} from '@moor/client/features/collaboration/page';
+import {
   collaborationReadResponseSchema,
   type CollaborationSyncRequest,
 } from '@moor/protocol/collaboration-protocol';
@@ -27,6 +31,86 @@ class Memory implements CollaborationStorage {
     this.values.set(key, structuredClone(value));
   }
 }
+
+for (const cause of ['unload', 'account-change', 'initialization-unload'] as const)
+  test(`collaboration page rejects late reads after ${cause} and preserves cached originals`, async (t) => {
+    const f = await syntheticCollaboration();
+    t.after(f.close);
+    const initial = collaborationReadResponseSchema.parse(
+      await (await f.ownerApi(f.route + '/enable', {})).json(),
+    );
+    const actor = {
+      kind: 'relay' as const,
+      authorityId: f.accounts.authorityId,
+      accountId: f.ownerId,
+    };
+    const storage = new Memory();
+    let owner = f.ownerId,
+      closed = 0,
+      stopped = 0;
+    let read = async () => initial;
+    const access: CollaborationPageAccess = {
+      owner: f.ownerId,
+      identity: async () => ({ owner, actor: { ...actor, accountId: owner } }),
+      read: () => read(),
+      sync: async () => {
+        throw Error('no automatic submission');
+      },
+      offer: async () => {
+        throw Error('no automatic offer');
+      },
+      enable: async () => initial,
+      member: async () => ({}),
+      invite: async () => 'synthetic-link',
+    };
+    const page = new CollaborationPage({
+      owner: f.ownerId,
+      origin: 'https://synthetic.invalid',
+      workspace: initial.scope.workspaceId,
+      replica: 'synthetic-replica',
+      session: initial.scope.sessionId,
+      storage,
+      access,
+      uuid: () => 'client-id',
+      now: () => 1000,
+      closeStorage: () => {
+        closed++;
+      },
+    });
+    page.onClose(() => {
+      stopped++;
+    });
+    if (cause !== 'initialization-unload') await page.open(Promise.resolve({ owner, actor }));
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entry = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    read = async () => {
+      entered();
+      await gate;
+      return initial;
+    };
+    const before = structuredClone([...storage.values]);
+    const pending =
+      cause === 'initialization-unload'
+        ? page.open(Promise.resolve({ owner, actor }))
+        : page.read();
+    const rejected = assert.rejects(pending, /页面已关闭|账号已变化/);
+    await entry;
+    if (cause === 'account-change') {
+      owner = 'different-account';
+      await assert.rejects(page.read(), /账号已变化/);
+    } else page.close();
+    release();
+    await rejected;
+    assert.equal(closed, 1);
+    assert.equal(stopped, 1);
+    assert.deepEqual([...storage.values], before);
+    assert.throws(page.current, /页面已关闭/);
+  });
 
 test('collaboration composer restores local text and never transmits edits on refresh or reconnect', async (t) => {
   const f = await syntheticCollaboration();
@@ -91,7 +175,7 @@ test('collaboration composer restores local text and never transmits edits on re
   );
   const { createElement, act } = await import('react');
   const { createRoot } = await import('react-dom/client');
-  const { CollaborationBoard } = await import('../../apps/web/src/app/collaboration-app');
+  const { CollaborationBoard } = await import('../../apps/web/src/features/collaboration/board');
   const root = createRoot(document.getElementById('app')!);
   t.after(async () => {
     await act(async () => root.unmount());
@@ -121,8 +205,22 @@ test('collaboration composer restores local text and never transmits edits on re
           client,
           initial,
           actor,
-          route: f.route,
-          refreshRead,
+          ports: {
+            current: () => {},
+            read: refreshRead,
+            now: () => 1000,
+            enable: () => f.ownerApi(f.route + '/enable', {}),
+            member: (accountId: string, role: string | null) =>
+              f.ownerApi(f.route + '/member', { accountId, role }),
+            invite: async () => 'https://synthetic.invalid/?invite=synthetic',
+            readDraft: () => localStorage.getItem(composerKey),
+            writeDraft: (value: string) => localStorage.setItem(composerKey, value),
+            copyLink: async () => {},
+            subscribeRefresh: (listener: () => void) => {
+              window.addEventListener('online', listener);
+              return () => window.removeEventListener('online', listener);
+            },
+          },
         }),
       );
     });

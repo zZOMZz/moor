@@ -26,6 +26,7 @@
     "check": "pnpm check:workspaces && tsc --noEmit && pnpm boundaries && pnpm docs:check",
     "check:workspaces": "pnpm --filter './packages/*' --filter './apps/*' --if-present run check",
     "boundaries": "node scripts/validation/check-package-boundaries.mjs",
+    "architecture:inventory": "node scripts/validation/check-package-boundaries.mjs --write-inventory",
     "docs:check": "node scripts/validation/check-doc-links.mjs",
     "knip": "node scripts/validation/check-unused.mjs",
     "knip:production": "node scripts/validation/check-unused.mjs --production",

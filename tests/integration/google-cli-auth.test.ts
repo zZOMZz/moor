@@ -13,7 +13,7 @@ import {
   CliGoogleAuth,
 } from '../../apps/cli/src/google-auth';
 import { CliState } from '../../apps/cli/src/state';
-import type { GoogleIdentity, GoogleOidcProvider } from '../../apps/relay/src/google-oidc';
+import type { GoogleIdentity, GoogleOidcProvider } from '@moor/gateway/features/auth/google';
 
 const NOW = 1_900_000_000_000;
 const identity: GoogleIdentity = {

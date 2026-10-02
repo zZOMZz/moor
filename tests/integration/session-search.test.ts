@@ -1,10 +1,12 @@
 import {
   SESSION_SEARCH_SCAN_SQL,
-  sessionSearchDocument,
   SessionSearchIndex,
-  type FrozenSearchDiff,
   type SearchScope,
 } from '@moor/host/adapters/persistence/search-index';
+import {
+  sessionSearchDocument,
+  type FrozenSearchDiff,
+} from '@moor/session/session-search-document';
 import {
   SEARCH_LIMITS,
   searchEntrySchema,

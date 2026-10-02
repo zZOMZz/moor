@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import {
   attachmentActionSchema,
   attachmentContentSchema,
@@ -17,13 +18,17 @@ import {
 } from '../attachments/attachments';
 import { emptyWorkspaceAttachments } from '../attachments/workspace-attachments';
 import type { WorkspaceCommandsService } from './commands';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import { Context, same } from './model';
 /** Capabilities consumed by attachments use cases; supplied only by the workspace composition root. */
 export interface WorkspaceAttachmentsPorts {
   drafts: Pick<WorkspaceDraftsService, 'flushDraft' | 'reloadLedger'>;
-  context: Pick<WorkspaceContextService, 'context' | 'value' | 'uuid' | 'execute' | 'command'>;
+  context: FeatureContext<
+    'context' | 'value' | 'uuid' | 'execute' | 'command',
+    'ledger' | 'offline',
+    'read-attachment',
+    never
+  >;
   store: Pick<WorkspacePersistence, 'saveAttachments' | 'attachmentContent' | 'stage'>;
   commands: Pick<WorkspaceCommandsService, 'deliverOperation'>;
 }

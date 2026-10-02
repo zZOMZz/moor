@@ -1,6 +1,15 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
+import { builtinModules } from 'node:module';
+import { writeFile } from 'node:fs/promises';
+import { format, resolveConfig } from 'prettier';
+import {
+  architectureRole,
+  inventoryMarkdown,
+  moduleInventory,
+  pureRoles,
+} from './architecture-roles.mjs';
 
 const root = process.cwd();
 const allowedDependencies = new Map([
@@ -32,6 +41,7 @@ const allowedDependencies = new Map([
 const extensions = ['', '.ts', '.tsx', '.js', '.cjs', '.mjs'];
 const sourceExtension = /\.(?:ts|tsx|js|cjs|mjs)$/;
 const errors = [];
+const nativeModules = new Set(builtinModules.map((name) => name.replace(/^node:/, '')));
 try {
   await readdir(join(root, 'src'));
   errors.push('legacy root src directory must be removed');
@@ -86,6 +96,22 @@ for (const workspace of workspaces) {
   for (const [name, version] of Object.entries(workspace.manifest.dependencies ?? {}))
     if (name.startsWith('@moor/') && version !== 'workspace:*')
       errors.push(`${workspace.manifest.name} must declare ${name} with workspace:*`);
+  for (const [entry, conditions] of Object.entries(workspace.manifest.exports ?? {})) {
+    if (
+      entry.includes('*') ||
+      !conditions.types ||
+      !conditions.import ||
+      !conditions.types.startsWith('./src/') ||
+      !conditions.import.startsWith('./dist/') ||
+      conditions.types.includes('*') ||
+      conditions.import.includes('*')
+    )
+      errors.push(
+        `${workspace.manifest.name} must export exact canonical source/build modules: ${entry}`,
+      );
+    else if (!workspace.files.includes(resolve(workspace.directory, conditions.types)))
+      errors.push(`${workspace.manifest.name} exports missing source module ${entry}`);
+  }
 }
 if (Object.keys(rootManifest.dependencies ?? {}).length)
   errors.push('root package must not own production dependencies');
@@ -97,6 +123,7 @@ const workspaceFor = (path) =>
 function imports(body, file) {
   const source = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true);
   const specifiers = new Set();
+  const role = architectureRole(root, file);
   function visit(node) {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
@@ -112,6 +139,55 @@ function imports(body, file) {
       ts.isStringLiteralLike(node.arguments[0])
     )
       specifiers.add(node.arguments[0].text);
+    if (pureRoles.has(role)) {
+      if (ts.isCallExpression(node)) {
+        const called = node.expression.getText(source);
+        if (
+          ['setTimeout', 'setInterval', 'fetch', 'Date.now', 'crypto.randomUUID'].includes(called)
+        )
+          errors.push(`${relative(root, file)} chooses a runtime capability in ${role}: ${called}`);
+        if (
+          (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+            (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
+          !ts.isStringLiteralLike(node.arguments[0])
+        )
+          errors.push(`${relative(root, file)} has an unresolved dynamic business dependency`);
+      }
+      if (
+        ts.isNewExpression(node) &&
+        ['Date', 'WebSocket', 'IndexedStorage', 'DatabaseSync'].includes(
+          node.expression.getText(source),
+        ) &&
+        (node.expression.getText(source) !== 'Date' || !node.arguments?.length)
+      )
+        errors.push(`${relative(root, file)} creates a runtime implementation in ${role}`);
+    }
+    if (
+      (role === 'core' || role === 'ui') &&
+      ts.isElementAccessExpression(node) &&
+      ts.isStringLiteralLike(node.argumentExpression) &&
+      /^moor[A-Z]/.test(node.argumentExpression.text)
+    )
+      errors.push(`${relative(root, file)} reads a platform bridge outside its adapter`);
+    if ((role === 'core' || role === 'ui') && ts.isPropertyAccessExpression(node)) {
+      if (
+        /^moor[A-Z]/.test(node.name.text) &&
+        ['window', 'globalThis'].includes(node.expression.getText(source))
+      )
+        errors.push(`${relative(root, file)} reads a platform bridge outside its adapter`);
+      if (
+        [
+          'window.localStorage',
+          'window.indexedDB',
+          'navigator.clipboard',
+          'location.protocol',
+          'window.location.protocol',
+        ].includes(node.getText(source))
+      )
+        errors.push(
+          `${relative(root, file)} chooses a platform implementation outside its adapter`,
+        );
+    }
     if (
       ts.isImportTypeNode(node) &&
       ts.isLiteralTypeNode(node.argument) &&
@@ -140,8 +216,10 @@ for (const workspace of workspaces) {
   };
   const allowed = allowedDependencies.get(workspace.manifest.name) ?? new Set();
   for (const file of workspace.files) {
+    const productionSource = file.startsWith(join(workspace.directory, 'src') + '/');
+    const role = architectureRole(root, file);
+    if (productionSource && !role) errors.push(`${relative(root, file)} has no architecture role`);
     for (const specifier of imports(await readFile(file, 'utf8'), file)) {
-      const productionSource = file.startsWith(join(workspace.directory, 'src') + '/');
       if (
         productionSource &&
         workspace.manifest.name === '@moor/protocol' &&
@@ -167,6 +245,16 @@ for (const workspace of workspaces) {
         errors.push(
           `${relative(root, file)} imports a runtime adapter into business: ${specifier}`,
         );
+      if (
+        pureRoles.has(role) &&
+        (nativeModules.has(specifier.replace(/^node:/, '')) ||
+          ['ws', 'electron', 'react', 'react-dom', '@moor/local-state'].some(
+            (name) => specifier === name || specifier.startsWith(name + '/'),
+          ))
+      )
+        errors.push(
+          `${relative(root, file)} imports an external runtime into ${role}: ${specifier}`,
+        );
       if (!specifier.startsWith('.') && (specifier.includes('/src/') || specifier.endsWith('/src')))
         errors.push(`${relative(root, file)} imports private source path ${specifier}`);
       if (specifier.startsWith('@moor/')) {
@@ -177,6 +265,18 @@ for (const workspace of workspaces) {
           errors.push(`${relative(root, file)} imports unknown Moor package ${specifier}`);
           continue;
         }
+        const targetWorkspace = workspaces.find((value) => value.manifest.name === targetName);
+        const entry = specifier === targetName ? '.' : '.' + specifier.slice(targetName.length);
+        const conditions = targetWorkspace?.manifest.exports?.[entry];
+        if (!conditions)
+          errors.push(`${relative(root, file)} imports a non-public module ${specifier}`);
+        else if (
+          pureRoles.has(role) &&
+          !pureRoles.has(
+            architectureRole(root, resolve(targetWorkspace.directory, conditions.types)),
+          )
+        )
+          errors.push(`${relative(root, file)} depends on an outer module via ${specifier}`);
         if (targetName !== workspace.manifest.name && !(targetName in declared))
           errors.push(`${relative(root, file)} does not declare ${targetName}`);
         if (targetName !== workspace.manifest.name && !allowed.has(targetName))
@@ -187,12 +287,19 @@ for (const workspace of workspaces) {
       }
       if (!specifier.startsWith('.')) continue;
       const base = resolve(dirname(file), specifier);
+      const sourceBase = /\.(?:js|jsx|mjs|cjs)$/.test(base)
+        ? base.replace(/\.(?:js|jsx|mjs|cjs)$/, '')
+        : base;
       let target;
-      for (const suffix of extensions) {
-        const candidate = normalize(base + suffix);
+      let targetFile;
+      for (const candidate of [
+        base,
+        ...extensions.map((suffix) => normalize(sourceBase + suffix)),
+      ]) {
         const owner = workspaceFor(candidate);
         if (owner?.files.includes(candidate)) {
           target = owner;
+          targetFile = candidate;
           break;
         }
         for (const index of ['index.ts', 'index.tsx', 'index.js']) {
@@ -200,11 +307,18 @@ for (const workspace of workspaces) {
           const indexedOwner = workspaceFor(indexed);
           if (indexedOwner?.files.includes(indexed)) {
             target = indexedOwner;
+            targetFile = indexed;
             break;
           }
         }
         if (target) break;
       }
+      if (pureRoles.has(role) && targetFile && !pureRoles.has(architectureRole(root, targetFile)))
+        errors.push(`${relative(root, file)} depends on an outer module via ${specifier}`);
+      if (pureRoles.has(role) && !targetFile)
+        errors.push(
+          `${relative(root, file)} has an unresolved relative business dependency: ${specifier}`,
+        );
       if (target && target !== workspace)
         errors.push(
           `${relative(root, file)} crosses into ${target.manifest.name} with ${specifier}`,
@@ -214,6 +328,20 @@ for (const workspace of workspaces) {
     }
   }
 }
+
+const inventoryFile = join(root, 'docs/architecture-modules.md');
+const inventory = await format(
+  inventoryMarkdown(
+    moduleInventory(
+      root,
+      workspaces.flatMap((workspace) => workspace.files),
+    ),
+  ),
+  { ...(await resolveConfig(inventoryFile)), parser: 'markdown' },
+);
+if (process.argv.includes('--write-inventory')) await writeFile(inventoryFile, inventory);
+else if ((await readFile(inventoryFile, 'utf8').catch(() => '')) !== inventory)
+  errors.push('Architecture module inventory is stale; run pnpm architecture:inventory');
 
 const packageGraph = new Map(
   workspaces

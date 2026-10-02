@@ -166,7 +166,7 @@ const server = createServer(async (request, response) => {
         assert.equal(input.connectionId, connectionId);
         for (const [key, expected] of Object.entries(target))
           assert.equal((input.target as Record<string, unknown>)[key], expected);
-        value = await dispatcher.execute(input.command);
+        value = await dispatcher.execute(input.command, { current: () => {} });
       }
       const version = vv(active.doc);
       requests.push({

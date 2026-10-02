@@ -45,7 +45,7 @@ window.__benchPermissionLoad=()=>{
 window.__benchPermissionUpdate=index=>{const turns=state.session.history;state.session={...state.session,version:'approval-stream-'+index,history:[turns[0],{...turns[1],items:[{type:'text',text:turns[1].items[0].text+' next '+index},benchmarkPermissionTool]}]};emit();};
 window.__benchPermissionOffline=value=>{state.offline=value;state.sessionLoad={status:'ready',source:value?'cache':'host'};state.session={...state.session,online:!value};emit();};
 window.__benchPermissionReplace=()=>{benchmarkPermissionTool=benchmarkPermissionToolFor(2);window.__benchPermissionUpdate('replacement');};
-controller.respondPermission=async(review,outcome)=>{calls.push('permission:'+review.requestId+':'+outcome.optionId);};
+controller.sessions.respondPermission=async(review,outcome)=>{calls.push('permission:'+review.requestId+':'+outcome.optionId);};
 let benchmarkReplica, benchmarkDoc, benchmarkHost, benchmarkResponse;
 window.__benchReplicaLoad=()=>{
  window.__benchLoad();state.focusedTurnId=undefined;

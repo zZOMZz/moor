@@ -1,8 +1,16 @@
 import { Dialog } from '@base-ui/react/dialog';
-import type { Workspace, WorkspaceClientState } from '@moor/client/features/workspace/compose';
+import type { WorkspaceClientState, WorkspaceGraph } from '@moor/client/features/workspace/compose';
 import { Inbox } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { bindWorkspacePort, type WorkspacePort } from '../../app/workspace-port';
 import { AttentionWorkbench } from './attention-ui';
+const workspaceAttentionUiPortSelection = {
+  view: ['contextRevision'],
+  attention: ['openAttention'],
+} as const;
+export type WorkspaceAttentionUiPort = WorkspacePort<typeof workspaceAttentionUiPortSelection>;
+export const bindWorkspaceAttentionUiPort = (graph: WorkspaceAttentionUiPort) =>
+  bindWorkspacePort(graph, workspaceAttentionUiPortSelection);
 
 export function WorkspaceAttentionUI({
   controller,
@@ -10,12 +18,12 @@ export function WorkspaceAttentionUI({
   busy,
   run,
 }: {
-  controller: Workspace;
+  controller: WorkspaceAttentionUiPort;
   state: WorkspaceClientState;
   busy: boolean;
   run(task: () => Promise<unknown>): boolean;
 }) {
-  type Panel = Awaited<ReturnType<Workspace['openAttention']>>;
+  type Panel = Awaited<ReturnType<WorkspaceGraph['attention']['openAttention']>>;
   const panel = useRef<Panel | null>(null),
     [, render] = useState(0);
   const close = () => {
@@ -31,7 +39,7 @@ export function WorkspaceAttentionUI({
       panel.current?.close();
       panel.current = null;
     };
-  }, [controller, controller.contextRevision]);
+  }, [controller, controller.view.contextRevision]);
   useEffect(() => {
     const value = panel.current,
       context = value?.controller.state.context;
@@ -51,7 +59,7 @@ export function WorkspaceAttentionUI({
         onClick={() =>
           run(async () => {
             close();
-            panel.current = await controller.openAttention(() => render((n) => n + 1));
+            panel.current = await controller.attention.openAttention(() => render((n) => n + 1));
             render((n) => n + 1);
           })
         }

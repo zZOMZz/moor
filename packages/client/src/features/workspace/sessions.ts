@@ -1,3 +1,4 @@
+import type { FeatureContext } from './feature-context';
 import {
   AGENT_CONTROLS_FEATURE,
   AGENT_RUN_DEFAULTS_FEATURE,
@@ -18,7 +19,6 @@ import {
 import { ClientSessionReplica } from '@moor/session/client-session-replica';
 import { z } from 'zod';
 import { WorkspacePersistence, type WorkspaceScope } from '../../operations/workspace/compose';
-import type { WorkspaceContextService } from './context';
 import type { WorkspaceDraftsService } from './drafts';
 import type { WorkspaceOptions } from './model';
 import {
@@ -37,8 +37,7 @@ import {
 import type { WorkspaceSyncService } from './sync';
 /** Capabilities consumed by sessions use cases; supplied only by the workspace composition root. */
 export interface WorkspaceSessionsPorts {
-  context: Pick<
-    WorkspaceContextService,
+  context: FeatureContext<
     | 'value'
     | 'context'
     | 'emit'
@@ -47,7 +46,23 @@ export interface WorkspaceSessionsPorts {
     | 'schedule'
     | 'closed'
     | 'execute'
-    | 'command'
+    | 'command',
+    | 'catalogs'
+    | 'draft'
+    | 'focusedTurnId'
+    | 'ledger'
+    | 'modelError'
+    | 'modelLoading'
+    | 'offline'
+    | 'searchFocus'
+    | 'sendProgress'
+    | 'session'
+    | 'sessionCache'
+    | 'sessionId'
+    | 'sessionLoad'
+    | 'usageLoading',
+    'session' | 'agent-options' | 'run-preferences' | 'agent-usage',
+    never
   >;
   store: Pick<
     WorkspacePersistence,
@@ -152,7 +167,7 @@ export class WorkspaceSessionsService {
       while (captured.pending.length) {
         // Publishing the Host view never waits for storage or compaction. Yield
         // between commits so a cache backlog cannot occupy one continuous task.
-        await (this.options.yieldCache?.() ?? new Promise<void>((done) => setTimeout(done, 0)));
+        await this.options.yieldCache();
         try {
           captured.current();
         } catch {
