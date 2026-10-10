@@ -644,13 +644,20 @@ app
       button: 'left',
       clickCount: 1,
     });
-    await until(
-      `Number(document.querySelector('[aria-label="调整审查面板宽度"]').getAttribute('aria-valuenow')) > ${resizeStart.width}`,
-    );
+    // Native input delivery is asynchronous; the visible width already changed
+    // during mouseMove, so it cannot signal that pointerup has persisted it.
+    await until('window.__moorWidthWrites > 0');
     const savedReviewWidth = await read(
       `Number(localStorage.getItem('moor-content-dock-width-v1'))`,
     );
     assert(savedReviewWidth > resizeStart.width, 'dragging saves the review width');
+    assert.equal(
+      savedReviewWidth,
+      await read(
+        `Number(document.querySelector('[aria-label="调整审查面板宽度"]').getAttribute('aria-valuenow'))`,
+      ),
+      'release saves the final visible review width',
+    );
     assert.equal(
       await read('window.__moorWidthWrites'),
       1,
